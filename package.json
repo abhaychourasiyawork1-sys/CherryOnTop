@@ -33,6 +33,7 @@
   "dependencies": {
     "better-sqlite3": "^13.0.3",
     "drizzle-orm": "^0.45.2",
+    "xstate": "^5.32.6",
     "zod": "^4.5.4"
   }
 }
