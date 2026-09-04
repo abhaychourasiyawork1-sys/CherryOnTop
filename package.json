@@ -32,12 +32,14 @@
     "org": "./dist/cli/index.js"
   },
   "dependencies": {
+    "@clack/prompts": "^1.7.0",
     "@trpc/client": "^11.18.0",
     "@trpc/server": "^11.18.0",
     "better-sqlite3": "^13.0.3",
     "commander": "^15.0.0",
     "drizzle-orm": "^0.45.2",
     "fastify": "^5.12.3",
+    "listr2": "^11.1.0",
     "pm2": "^7.0.4",
     "xstate": "^5.32.6",
     "zod": "^4.5.4"
