@@ -6,7 +6,10 @@ import { stopDaemon } from '../src/daemon/manager.js';
 
 const CLI = './dist/cli/index.js';
 const TEST_DB = fileURLToPath(new URL('../test-e2e.db', import.meta.url));
-const ENV = { ORG_DB_PATH: TEST_DB, ORG_DAEMON_PORT: '4188' };
+const ENV = { ORG_DB_PATH: TEST_DB, ORG_DAEMON_PORT: '4188', ORG_DAEMON_NAME: 'org-daemon-e2e' };
+
+// Distinct pm2 app name + port so this file does not race the manager integration test.
+Object.assign(process.env, ENV);
 
 describe('CLI end-to-end', () => {
   afterAll(async () => {

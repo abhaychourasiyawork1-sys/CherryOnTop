@@ -2,7 +2,11 @@ import pm2 from 'pm2';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const PROCESS_NAME = 'org-daemon';
+// Overridable so independent orgs (and parallel test workers) don't fight over
+// a single global pm2 app.
+function processName(): string {
+  return process.env.ORG_DAEMON_NAME ?? 'org-daemon';
+}
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // Resolve into dist/ from the package root, so this works both when running the
 // built daemon (dist/daemon/) and from source under Vitest (src/daemon/).
@@ -24,12 +28,13 @@ export async function startDaemon(): Promise<void> {
   await withPm2<void>((resolve, reject) => {
     pm2.start(
       {
-        name: PROCESS_NAME,
+        name: processName(),
         script: ENTRY_SCRIPT,
         // pm2 does not inherit the caller's env by default for these.
         env: {
           ...(process.env.ORG_DB_PATH ? { ORG_DB_PATH: process.env.ORG_DB_PATH } : {}),
           ...(process.env.ORG_DAEMON_PORT ? { ORG_DAEMON_PORT: process.env.ORG_DAEMON_PORT } : {}),
+          ...(process.env.ORG_DAEMON_NAME ? { ORG_DAEMON_NAME: process.env.ORG_DAEMON_NAME } : {}),
         },
       },
       (err) => {
@@ -47,7 +52,7 @@ export interface DaemonStatus {
 
 export async function daemonStatus(): Promise<DaemonStatus> {
   return withPm2<DaemonStatus>((resolve, reject) => {
-    pm2.describe(PROCESS_NAME, (err, list) => {
+    pm2.describe(processName(), (err, list) => {
       if (err) return reject(err);
       const proc = list[0];
       if (!proc || proc.pm2_env?.status !== 'online') return resolve({ running: false });
@@ -58,7 +63,7 @@ export async function daemonStatus(): Promise<DaemonStatus> {
 
 export async function stopDaemon(): Promise<void> {
   await withPm2<void>((resolve, reject) => {
-    pm2.delete(PROCESS_NAME, (err) => {
+    pm2.delete(processName(), (err) => {
       // Deleting a daemon that was never started is a no-op, not a failure.
       if (err && !/not found/i.test(String((err as Error).message))) return reject(err);
       resolve();
