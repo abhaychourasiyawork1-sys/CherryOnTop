@@ -1,22 +1,12 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import { execa } from 'execa';
-import { isClusterReachable, ensureLocalCluster } from './kind.js';
+import { isClusterReachable, ensureLocalCluster, isClusterAvailable } from './kind.js';
 import { buildExecutionJob } from './job-manifest.js';
 import { createJob, waitForJobCompletion, deleteJob } from './client.js';
 
-async function checkClusterAvailable(): Promise<boolean> {
-  try {
-    await execa('kind', ['--version']);
-    await execa('kubectl', ['version', '--client']);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-const CLUSTER_AVAILABLE = await checkClusterAvailable();
+const CLUSTER_AVAILABLE = await isClusterAvailable();
 if (!CLUSTER_AVAILABLE) {
-  console.log('kind/kubectl not found — skipping K8s client integration tests');
+  console.log('no cluster and none bootstrappable (kind/kubectl/docker) — skipping K8s client integration tests');
 }
 
 describe.skipIf(!CLUSTER_AVAILABLE)('K8s client (real cluster)', () => {

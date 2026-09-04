@@ -11,6 +11,27 @@ export async function isClusterReachable(): Promise<boolean> {
   }
 }
 
+async function commandSucceeds(bin: string, args: string[]): Promise<boolean> {
+  try {
+    await execa(bin, args, { timeout: 15_000 });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// The guard integration tests skip on. Binary presence is not enough: kind is
+// useless without a Docker daemon this user may actually talk to, so `docker
+// info` (not `docker --version`) is what decides it.
+export async function isClusterAvailable(): Promise<boolean> {
+  if (await isClusterReachable()) return true;
+  return (
+    (await commandSucceeds('kind', ['--version'])) &&
+    (await commandSucceeds('kubectl', ['version', '--client'])) &&
+    (await commandSucceeds('docker', ['info']))
+  );
+}
+
 async function hasExistingKubeconfigContext(): Promise<boolean> {
   try {
     const { stdout } = await execa('kubectl', ['config', 'current-context']);

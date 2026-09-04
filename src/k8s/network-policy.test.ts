@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { execa } from 'execa';
 import { buildEgressAllowlistPolicy, applyDefaultDenyPolicy, applyNetworkPolicy } from './network-policy.js';
+import { isClusterReachable } from './kind.js';
 
 describe('buildEgressAllowlistPolicy', () => {
   it('builds a policy denying ingress and allowlisting only the given egress targets', () => {
@@ -13,15 +14,8 @@ describe('buildEgressAllowlistPolicy', () => {
   });
 });
 
-async function checkClusterAvailable(): Promise<boolean> {
-  try {
-    await execa('kubectl', ['cluster-info'], { timeout: 5000 });
-    return true;
-  } catch {
-    return false;
-  }
-}
-const CLUSTER_AVAILABLE = await checkClusterAvailable();
+// These tests talk to whatever cluster is already up; they don't bootstrap one.
+const CLUSTER_AVAILABLE = await isClusterReachable();
 if (!CLUSTER_AVAILABLE) {
   console.log('no reachable cluster — skipping NetworkPolicy application tests');
 }
