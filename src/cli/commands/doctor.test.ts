@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
+import { execa } from 'execa';
 import { runChecks } from '../../doctor/checks.js';
-import { CHECKS, nodeVersionCheck } from './doctor.js';
+import { BINARY_PROBES, CHECKS, nodeVersionCheck, probe } from './doctor.js';
 
 describe('doctor Node version check (corrected floor)', () => {
   it('passes for Node 22', async () => {
@@ -18,4 +19,20 @@ describe('doctor check list', () => {
       'Node.js version', 'Docker', 'kind', 'kubectl', 'Kubernetes cluster',
     ]);
   });
+});
+
+// Regression: kubectl rejects `--version`, so a shared probe flag reported an
+// installed kubectl as "not found". Any binary on PATH must probe successfully.
+describe('binary probes detect an installed binary', () => {
+  for (const [bin, args] of Object.entries(BINARY_PROBES)) {
+    it(`probes ${bin} with args it accepts`, async () => {
+      const onPath = await execa('sh', ['-c', `command -v ${bin}`]).then(() => true).catch(() => false);
+      if (!onPath) {
+        console.log(`${bin} not on PATH — skipping its probe assertion`);
+        return;
+      }
+      if (bin === 'docker') return; // `docker info` needs a reachable daemon, not just the binary
+      expect(await probe(bin, args)).toBe(true);
+    });
+  }
 });

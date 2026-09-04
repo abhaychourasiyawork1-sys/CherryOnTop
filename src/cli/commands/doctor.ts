@@ -3,13 +3,22 @@ import { execa } from 'execa';
 import { runChecks, type DoctorCheck } from '../../doctor/checks.js';
 import { isClusterReachable, ensureLocalCluster } from '../../k8s/kind.js';
 
-async function binaryPresent(bin: string, versionFlag = '--version'): Promise<boolean> {
+// Probe args are per-binary on purpose: kubectl rejects `--version` (it wants
+// `version --client`), so a shared flag would report an installed kubectl as
+// missing.
+export async function probe(bin: string, args: string[]): Promise<boolean> {
   try {
-    await execa(bin, [versionFlag]);
+    await execa(bin, args, { timeout: 15_000 });
     return true;
   } catch {
     return false;
   }
+}
+
+// Execa errors are multi-line and carry the whole subprocess dump; a doctor line
+// wants the first line of it, not the transcript.
+function firstLine(err: unknown): string {
+  return String(err instanceof Error ? err.message : err).split('\n')[0];
 }
 
 // Takes the version string so the floor is testable without spawning another Node.
@@ -28,23 +37,34 @@ export function nodeVersionCheck(version: string): DoctorCheck {
   };
 }
 
+// The probe each binary check uses, exported so a test can assert an installed
+// binary is actually detected as installed.
+export const BINARY_PROBES: Record<string, string[]> = {
+  docker: ['info'],
+  kind: ['--version'],
+  kubectl: ['version', '--client'],
+};
+
 export const CHECKS: DoctorCheck[] = [
   nodeVersionCheck(process.versions.node),
   {
     name: 'Docker',
-    run: async () => (await binaryPresent('docker'))
-      ? { ok: true, message: 'installed' }
-      : { ok: false, message: 'not found — install Docker (required for the local kind cluster)' },
+    // `docker info`, not `docker --version`: a client binary whose daemon the
+    // user cannot reach fails every kind operation, so reporting it as
+    // "installed" would be a lie that costs an hour of debugging later.
+    run: async () => (await probe('docker', BINARY_PROBES.docker))
+      ? { ok: true, message: 'daemon reachable' }
+      : { ok: false, message: 'no reachable daemon — install Docker, and ensure your user can access /var/run/docker.sock' },
   },
   {
     name: 'kind',
-    run: async () => (await binaryPresent('kind'))
+    run: async () => (await probe('kind', BINARY_PROBES.kind))
       ? { ok: true, message: 'installed' }
       : { ok: false, message: 'not found — install kind: https://kind.sigs.k8s.io/docs/user/quick-start/' },
   },
   {
     name: 'kubectl',
-    run: async () => (await binaryPresent('kubectl'))
+    run: async () => (await probe('kubectl', BINARY_PROBES.kubectl))
       ? { ok: true, message: 'installed' }
       : { ok: false, message: 'not found — install kubectl: https://kubernetes.io/docs/tasks/tools/' },
   },
@@ -52,14 +72,14 @@ export const CHECKS: DoctorCheck[] = [
     name: 'Kubernetes cluster',
     run: async () => {
       if (await isClusterReachable()) return { ok: true, message: 'reachable' };
-      if (!(await binaryPresent('kind'))) {
-        return { ok: false, message: 'no cluster, and kind is not installed to bootstrap one — fix the kind check above first' };
+      if (!(await probe('kind', BINARY_PROBES.kind)) || !(await probe('docker', BINARY_PROBES.docker))) {
+        return { ok: false, message: 'no cluster, and no way to bootstrap one — fix the kind/Docker checks above first' };
       }
       try {
         await ensureLocalCluster();
         return { ok: true, message: 'bootstrapped a local kind cluster' };
       } catch (err) {
-        return { ok: false, message: `could not reach or bootstrap a cluster: ${String(err)}` };
+        return { ok: false, message: `could not bootstrap a cluster: ${firstLine(err)}` };
       }
     },
   },
