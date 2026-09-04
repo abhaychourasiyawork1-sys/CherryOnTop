@@ -1,0 +1,1300 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Accountable Agent Organization Runtime — Architecture Handoff</title>
+<meta name="description" content="Full architecture and implementation-level handoff for a local-first, CLI-driven, Kubernetes-sandboxed accountable agent organization runtime for software engineering.">
+<script type="module">
+  import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
+  mermaid.initialize({
+    startOnLoad: true,
+    theme: "base",
+    securityLevel: "loose",
+    themeVariables: {
+      primaryColor: "#eef2ff",
+      primaryTextColor: "#172033",
+      primaryBorderColor: "#6366f1",
+      lineColor: "#64748b",
+      secondaryColor: "#ecfeff",
+      tertiaryColor: "#f8fafc",
+      fontFamily: "Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif"
+    },
+    flowchart: { curve: "basis", htmlLabels: true, padding: 18 },
+    sequence: { useMaxWidth: true, actorMargin: 60, messageMargin: 40 },
+    state: { useMaxWidth: true }
+  });
+</script>
+<style>
+:root{
+  --bg:#f6f8fc; --panel:#fff; --ink:#172033; --muted:#5d687b;
+  --line:#e4e8f0; --accent:#4f46e5; --accent2:#0891b2; --good:#15803d;
+  --warn:#b45309; --danger:#b91c1c; --shadow:0 18px 50px rgba(15,23,42,.08);
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.65 Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+a{color:var(--accent);text-decoration:none} a:hover{text-decoration:underline}
+.hero{background:linear-gradient(135deg,#111827 0%,#312e81 52%,#0e7490 100%);color:white;padding:76px 7vw 64px;position:relative;overflow:hidden}
+.hero:after{content:"";position:absolute;inset:auto -10% -45% 35%;height:520px;border-radius:50%;background:rgba(255,255,255,.07)}
+.hero-inner{max-width:1180px;margin:auto;position:relative;z-index:1}
+.kicker{text-transform:uppercase;letter-spacing:.16em;font-weight:700;font-size:12px;color:#c7d2fe}
+h1{font-size:clamp(36px,5vw,64px);line-height:1.02;margin:14px 0 22px;max-width:950px}
+.hero p{font-size:19px;line-height:1.55;max-width:900px;color:#e5e7eb}
+.badges{display:flex;gap:10px;flex-wrap:wrap;margin-top:28px}
+.badge{padding:7px 12px;border:1px solid rgba(255,255,255,.2);border-radius:999px;background:rgba(255,255,255,.09);font-size:12px}
+.layout{display:grid;grid-template-columns:250px minmax(0,1fr);gap:34px;max-width:1280px;margin:0 auto;padding:34px 28px}
+nav{position:sticky;top:20px;height:max-content;background:rgba(255,255,255,.86);backdrop-filter:blur(10px);border:1px solid var(--line);border-radius:18px;padding:18px;box-shadow:var(--shadow)}
+nav h3{margin:0 0 12px;font-size:13px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted)}
+nav a{display:block;padding:7px 8px;border-radius:8px;color:#334155;font-size:13px}
+nav a:hover{background:#eef2ff;color:#3730a3;text-decoration:none}
+main{min-width:0}
+section{background:var(--panel);border:1px solid var(--line);border-radius:22px;padding:32px;margin-bottom:28px;box-shadow:0 10px 35px rgba(15,23,42,.045)}
+h2{font-size:31px;line-height:1.2;margin:0 0 8px}
+h3{font-size:21px;margin:30px 0 10px}
+h4{font-size:16px;margin:22px 0 8px}
+.lede{color:var(--muted);font-size:17px;margin-top:0}
+.callout{border-left:4px solid var(--accent);background:#eef2ff;padding:17px 19px;border-radius:0 12px 12px 0;margin:20px 0}
+.callout.good{border-left-color:var(--good);background:#ecfdf3}
+.callout.warn{border-left-color:var(--warn);background:#fffbeb}
+.callout.danger{border-left-color:var(--danger);background:#fef2f2}
+.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}
+.grid3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}
+.card{border:1px solid var(--line);border-radius:15px;padding:18px;background:#fbfcff}
+.card strong{display:block;margin-bottom:5px}
+.diagram{border:1px solid var(--line);border-radius:16px;background:#fcfdff;padding:18px;margin:18px 0;overflow:auto}
+.diagram .mermaid{min-width:650px}
+pre{background:#0f172a;color:#e2e8f0;border-radius:14px;padding:18px;overflow:auto;font-size:12.5px;line-height:1.55}
+code{font-family:"SFMono-Regular",Consolas,"Liberation Mono",monospace}
+table{width:100%;border-collapse:collapse;margin:15px 0;font-size:13px}
+th,td{border-bottom:1px solid var(--line);padding:10px 9px;text-align:left;vertical-align:top}
+th{background:#f8fafc}
+.pill{display:inline-block;padding:3px 8px;border-radius:999px;background:#eef2ff;color:#3730a3;font-size:11px;font-weight:700}
+.timeline{border-left:2px solid #c7d2fe;margin:20px 0 20px 10px;padding-left:22px}
+.timeline>div{position:relative;margin:0 0 22px}
+.timeline>div:before{content:"";position:absolute;left:-31px;top:7px;width:11px;height:11px;border-radius:50%;background:var(--accent);box-shadow:0 0 0 4px #eef2ff}
+.small{font-size:12px;color:var(--muted)}
+footer{max-width:1180px;margin:0 auto;padding:10px 28px 60px;color:var(--muted);font-size:12px}
+@media(max-width:900px){.layout{grid-template-columns:1fr}.layout nav{position:relative;top:auto}.grid,.grid3{grid-template-columns:1fr}.diagram .mermaid{min-width:500px}}
+</style>
+</head>
+<body>
+
+<header class="hero">
+<div class="hero-inner">
+<div class="kicker">Architecture Handoff · Implementation-Level Synthesis · v0.2</div>
+<h1>Accountable Agent Organization Runtime</h1>
+<p>A local-first, CLI-driven software-engineering agent organization inspired by Plasma AI Fractal, but extended with hierarchical accountability, temporal commitments, delegated authority, delegation economics, adaptive intelligence, dynamic runtime selection, and hierarchical organizational memory.</p>
+<div class="badges">
+<span class="badge">SDE-first</span><span class="badge">Local CLI</span><span class="badge">Recursive Nodes</span>
+<span class="badge">Accountability-first</span><span class="badge">Runtime-agnostic</span><span class="badge">Economically bounded</span>
+<span class="badge">TypeScript · Node.js</span><span class="badge">Kubernetes-Sandboxed</span><span class="badge">npm-installable</span>
+</div>
+</div>
+</header>
+
+<div class="layout">
+<nav>
+<h3>Contents</h3>
+<a href="#thesis">1. Product Thesis</a>
+<a href="#principles">2. Core Principles</a>
+<a href="#architecture">3. System Architecture</a>
+<a href="#node">4. Node Model</a>
+<a href="#lifecycle">5. Node Lifecycle</a>
+<a href="#intelligence">6. Intelligence Plane</a>
+<a href="#runtime">7. Runtime Adapters</a>
+<a href="#authority">8. Authority & Policy</a>
+<a href="#commitments">9. Commitments & Time</a>
+<a href="#economics">10. Delegation Economics</a>
+<a href="#memory">11. Memory & Learning</a>
+<a href="#communication">12. Communication & Handoffs</a>
+<a href="#sde">13. SDE Execution</a>
+<a href="#failure">14. Failure & Recovery</a>
+<a href="#example">15. End-to-End Example</a>
+<a href="#cli">16. CLI Surface</a>
+<a href="#implementation">17. Implementation Architecture & Tech Stack</a>
+<a href="#security">18. Execution Substrate & Security</a>
+<a href="#framing">19. Product Framing & Identity</a>
+<a href="#mvp">20. MVP Boundary</a>
+<a href="#tradeoffs">21. Trade-offs & Risks</a>
+<a href="#roadmap">22. Evolution Path</a>
+<a href="#decisions">23. Decisions Log</a>
+<a href="#sources">24. References</a>
+</nav>
+
+<main>
+
+<section id="thesis">
+<h2>1. Product Thesis</h2>
+<p class="lede">The product is not primarily a workflow engine. It is a runtime for forming and operating a temporary organization of accountable software-engineering agents.</p>
+
+<div class="callout good"><strong>Core invariant:</strong> Every task has exactly one accountable owner. Ownership may delegate execution, but delegation never transfers ultimate accountability.</div>
+
+<div class="diagram"><pre class="mermaid">
+flowchart TD
+    U["Client Goal"] --> R["Root Accountable Node"]
+    R --> P["Plan the outcome"]
+    P --> D{"Can I solve this myself?"}
+    D -- "Yes" --> E["Execute"]
+    D -- "No / inefficient" --> G["Delegation Economics"]
+    G --> C{"Delegation justified?"}
+    C -- "No" --> E
+    C -- "Yes" --> N["Create Child Commitment"]
+    N --> CH["Child Accountable Node"]
+    CH --> H["Handoff: status + evidence + artifacts"]
+    H --> R
+    E --> V["Verify"]
+    V --> F{"Definition of Done met?"}
+    F -- "No" --> RP["Re-plan / recover / delegate"]
+    RP --> P
+    F -- "Yes" --> OUT["Deliver outcome"]
+</pre></div>
+
+<h3>What problem this solves</h3>
+<div class="grid3">
+<div class="card"><strong>Accountability gap</strong>Agents often produce outputs without owning the outcome. The node contract makes ownership explicit and observable.</div>
+<div class="card"><strong>Static orchestration</strong>Fixed graphs decide the organization before the work is understood. Here, nodes can recursively form the team they need.</div>
+<div class="card"><strong>Runtime lock-in</strong>The organization is not tied to one vendor or harness. Nodes choose from available runtimes through adapters.</div>
+<div class="card"><strong>Context overload</strong>Parents do not need every child token. Structured handoffs compress operational knowledge while artifacts remain inspectable.</div>
+<div class="card"><strong>Unbounded swarms</strong>Delegation is an economic decision constrained by budget, latency, coordination cost, authority, and risk.</div>
+<div class="card"><strong>Repeated rediscovery</strong>Validated local experience can become organizational memory and improve future routing and planning.</div>
+</div>
+</section>
+
+<section id="principles">
+<h2>2. Core Principles</h2>
+<p class="lede">These are the architectural rules that emerged from the brainstorming session.</p>
+
+<table>
+<tr><th>Principle</th><th>Meaning</th><th>Why it matters</th></tr>
+<tr><td><b>Accountability over delegation</b></td><td>Exactly one node owns each outcome.</td><td>Prevents "everyone helped, nobody was responsible."</td></tr>
+<tr><td><b>Autonomy within authority</b></td><td>A child owns how it executes, but cannot exceed its granted authority.</td><td>Allows agent autonomy without uncontrolled behavior.</td></tr>
+<tr><td><b>Goal + constraints + DoD delegation</b></td><td>Parent gives outcome contract; child owns plan and execution.</td><td>Preserves autonomy while maintaining alignment.</td></tr>
+<tr><td><b>Router advises, node decides</b></td><td>Central intelligence produces candidates and evidence; accountable node chooses.</td><td>Keeps decision authority with the owner.</td></tr>
+<tr><td><b>Intelligence proportional to uncertainty</b></td><td>Do not research or spawn intelligence workers when local knowledge is enough.</td><td>Controls latency and cost.</td></tr>
+<tr><td><b>Delegation is economic</b></td><td>Spawn children only when expected benefit justifies total cost and risk.</td><td>Prevents agent explosion.</td></tr>
+<tr><td><b>Local first, promote later</b></td><td>Experience begins in node memory; validated patterns can become organizational memory.</td><td>Prevents global memory from becoming a junk drawer.</td></tr>
+<tr><td><b>Evidence-backed decisions</b></td><td>Important decisions record context, alternatives, evidence, expected outcome, and actual outcome.</td><td>Makes organizational learning possible.</td></tr>
+<tr><td><b>CLI is a client, not the architecture</b></td><td>Core services should later support a GUI without redesign.</td><td>Enables future UI without coupling the runtime to a terminal.</td></tr>
+</table>
+
+<div class="diagram"><pre class="mermaid">
+flowchart LR
+    A["Accountability"] --> B["Authority"]
+    B --> C["Autonomy"]
+    C --> D["Execution"]
+    D --> E["Verification"]
+    E --> F["Evidence"]
+    F --> G["Learning"]
+    G --> H["Better future decisions"]
+    H --> D
+</pre></div>
+</section>
+
+<section id="architecture">
+<h2>3. System Architecture</h2>
+<p class="lede">The recommended architecture is an Accountable Fractal Runtime: borrow Fractal's recursive execution primitives, but make accountability, intelligence, authority, economics, memory, and runtime selection first-class.</p>
+
+<div class="diagram"><pre class="mermaid">
+flowchart TB
+    subgraph UX["Client Layer"]
+      CLI["CLI"]
+      GUI["Future GUI"]
+    end
+
+    subgraph ORG["Organization Runtime / Control Plane"]
+      NR["Node Runtime"]
+      CE["Commitment Engine"]
+      AE["Authority Engine"]
+      EE["Economics Engine"]
+      SCH["Scheduler / Signals"]
+      ES["Event Store"]
+    end
+
+    subgraph INT["Intelligence Plane"]
+      IC["Intelligence Coordinator"]
+      EV["Evidence Worker"]
+      CAP["Capability Worker"]
+      RI["Runtime Intelligence"]
+      CI["Cost / Performance Intelligence"]
+      OM["Organizational Memory"]
+    end
+
+    subgraph EXEC["Execution Plane"]
+      RA["Runtime Adapter Registry"]
+      CL["Claude Code"]
+      CX["Codex"]
+      PI["Pi / Hermes / other harnesses"]
+      TOOLS["Tools / APIs / Shell"]
+    end
+
+    subgraph SDE["SDE Substrate"]
+      WT["Git Worktrees"]
+      REPO["Repository"]
+      TEST["Build / Test / Lint / Security"]
+      GIT["Git / PR"]
+    end
+
+    CLI --> NR
+    GUI -. later .-> NR
+    NR <--> CE
+    NR <--> AE
+    NR <--> EE
+    NR <--> SCH
+    NR --> ES
+    NR --> IC
+    IC --> EV
+    IC --> CAP
+    IC --> RI
+    IC --> CI
+    IC <--> OM
+    NR --> RA
+    RA --> CL
+    RA --> CX
+    RA --> PI
+    RA --> TOOLS
+    CL --> WT
+    CX --> WT
+    PI --> WT
+    WT --> REPO
+    WT --> TEST
+    TEST --> GIT
+    GIT --> ES
+</pre></div>
+
+<h3>Control plane vs. agency</h3>
+<div class="grid">
+<div class="card"><strong>Organization Runtime</strong>Enforces lifecycle, policy, budgets, authority, state, scheduling, events, and isolation. It should not secretly become the manager of every decision.</div>
+<div class="card"><strong>Accountable Nodes</strong>Own goals, commitments, plans, delegation choices, runtime choices, verification, and completion.</div>
+<div class="card"><strong>Intelligence Plane</strong>Provides evidence and candidates. It advises; it does not own the task.</div>
+<div class="card"><strong>Execution Plane</strong>Provides interchangeable harnesses and tools. It executes the node's chosen approach.</div>
+</div>
+
+<div class="callout">The architectural mental model is: <b>Organization Runtime = infrastructure + guardrails; Nodes = agency + responsibility.</b></div>
+
+<h3>Server / Host: one process for v0.1, two interfaces forever</h3>
+<p>The Organization Runtime is not a monolith. It is built as two logical components — modeled on the comparable split used by <a href="https://github.com/omnigent-ai/omnigent" target="_blank">Omnigent</a> — colocated in a single OS process for v0.1, but never sharing state through anything other than their defined interface:</p>
+
+<div class="diagram"><pre class="mermaid">
+flowchart TB
+    subgraph P["One local OS process for v0.1"]
+      subgraph SRV["Server"]
+        SQL["SQLite: nodes, commitments,<br/>decisions, events, memory"]
+        NRT["Node Runtime<br/>(in-memory state machines)"]
+        ENG["Commitment / Authority /<br/>Economics engines"]
+        ICORD["Intelligence Coordinator"]
+        API["HTTP + WebSocket API"]
+      end
+      subgraph HST["Host"]
+        K8S["K8s client (kind / real cluster)"]
+        REG["Runtime Adapter Registry"]
+        SEC["Per-Job Secret lifecycle"]
+      end
+    end
+    CLI["CLI (thin client)"] <--> API
+    API <--> NRT
+    NRT <--> ENG
+    NRT <--> ICORD
+    NRT --> HST
+    HST --> JOB["K8s Job (one per execution step)"]
+</pre></div>
+
+<div class="grid">
+<div class="card"><strong>Server</strong>Owns all durable state and the node lifecycle logic. Exposes the only API the CLI (and any future GUI) talk to.</div>
+<div class="card"><strong>Host</strong>Owns Kubernetes dispatch, the runtime adapter registry, and Secret lifecycle. Never touches SQLite directly.</div>
+</div>
+
+<div class="callout good"><b>Why split at all if they're colocated?</b> Because "remote workers" is already on this document's own roadmap (§22, v0.4). If Server and Host share one undifferentiated codebase now, giving Host its own machine later is a rewrite. If they only ever talk through one defined interface, it's a deployment change. See §17 for the full daemon-lifecycle and API design.</div>
+</section>
+
+<section id="node">
+<h2>4. Node Model</h2>
+<p class="lede">A node is the fundamental accountable unit. It is a persistent goal-oriented worker that can plan, execute, delegate, verify, and re-plan.</p>
+
+<div class="diagram"><pre class="mermaid">
+flowchart TB
+    NODE["ACCOUNTABLE NODE"]
+    NODE --> ID["Identity / Parent"]
+    NODE --> GOAL["Goal"]
+    NODE --> DOD["Definition of Done"]
+    NODE --> AUTH["Authority"]
+    NODE --> CON["Constraints"]
+    NODE --> BUD["Budget"]
+    NODE --> TIME["Deadline / Temporal State"]
+    NODE --> PLAN["Plan / Steps"]
+    NODE --> COM["Commitments"]
+    NODE --> MSG["Messages"]
+    NODE --> ART["Artifacts"]
+    NODE --> EVID["Evidence"]
+    NODE --> MEM["Local Memory"]
+    NODE --> CH["Children"]
+    NODE --> DEC["Decisions"]
+    NODE --> LOOP["Iteration Loop"]
+</pre></div>
+
+<h3>Node contract</h3>
+<pre><code>{
+  "goal": "Implement OAuth login",
+  "definition_of_done": [
+    "OAuth provider integrated",
+    "tests pass",
+    "security review complete",
+    "PR ready"
+  ],
+  "authority": {
+    "tools": ["git", "shell", "web"],
+    "spawn_children": true,
+    "max_child_count": 3,
+    "budget_usd": 3
+  },
+  "constraints": [
+    "preserve existing auth",
+    "do not change public API without approval"
+  ],
+  "deadline": {
+    "expected_at": "...",
+    "hard_at": "..."
+  }
+}</code></pre>
+
+<h3>Node responsibilities</h3>
+<ul>
+<li>Understand its goal and current state.</li>
+<li>Maintain a plan that can change as evidence changes.</li>
+<li>Choose whether to self-execute or delegate.</li>
+<li>Request intelligence when uncertainty justifies it.</li>
+<li>Choose a runtime from candidates.</li>
+<li>Operate within authority and economic envelopes.</li>
+<li>Maintain commitments and report temporal risk.</li>
+<li>Verify outcomes against the Definition of Done.</li>
+<li>Produce structured handoffs and durable artifacts.</li>
+<li>Escalate when it cannot safely or economically complete the outcome.</li>
+</ul>
+</section>
+
+<section id="lifecycle">
+<h2>5. Node Lifecycle</h2>
+<p class="lede">The lifecycle borrows the useful idea of a persistent iterative loop from Fractal, but expands it with intelligence, commitment management, economics, and explicit accountability.</p>
+
+<div class="diagram"><pre class="mermaid">
+stateDiagram-v2
+    [*] --> CREATED
+    CREATED --> ORIENT
+    ORIENT --> PLAN
+    PLAN --> INTELLIGENCE_GATE
+    INTELLIGENCE_GATE --> PLAN: evidence needed
+    INTELLIGENCE_GATE --> EXECUTION_DECISION: enough context
+    EXECUTION_DECISION --> SELF_EXECUTE
+    EXECUTION_DECISION --> DELEGATE
+    DELEGATE --> WAIT_CHILD
+    WAIT_CHILD --> REPLAN
+    SELF_EXECUTE --> VERIFY
+    WAIT_CHILD --> REPLAN: handoff
+    VERIFY --> COMPLETE: DoD satisfied
+    VERIFY --> REPLAN: gap / failure
+    REPLAN --> INTELLIGENCE_GATE
+    REPLAN --> ESCALATE: authority / budget / deadline boundary
+    ESCALATE --> WAIT_APPROVAL
+    WAIT_APPROVAL --> PLAN
+    COMPLETE --> [*]
+</pre></div>
+
+<h3>Iteration anatomy</h3>
+<div class="timeline">
+<div><b>1 · Observe</b><br>Read goal, commitments, messages, child state, artifacts, repository state, deadlines, budget, and relevant memory.</div>
+<div><b>2 · Orient</b><br>Determine what is known, unknown, blocked, stale, and at risk.</div>
+<div><b>3 · Plan</b><br>Define the next smallest useful execution strategy and decide whether decomposition is warranted.</div>
+<div><b>4 · Intelligence Gate</b><br>Estimate uncertainty. Reuse memory first; spawn targeted intelligence only when needed.</div>
+<div><b>5 · Execution Decision</b><br>Self-execute or delegate using delegation economics.</div>
+<div><b>6 · Runtime Selection</b><br>Ask the runtime registry/intelligence layer for candidates; node chooses.</div>
+<div><b>7 · Execute</b><br>Run work through a runtime adapter inside the allowed environment.</div>
+<div><b>8 · Verify</b><br>Compare actual result with Definition of Done and evidence requirements.</div>
+<div><b>9 · Commit / Handoff</b><br>Persist artifacts, decision records, state, and a concise handoff.</div>
+<div><b>10 · Re-plan / Complete</b><br>Continue, delegate, recover, escalate, or complete.</div>
+</div>
+
+<p class="small">Fractal currently implements a run → iteration → step hierarchy, discovers step files each iteration, records execution in local SQLite, and supports bounded time/cost/depth/child controls. This proposal treats those as inspiration and adds product-specific primitives around them. <a href="https://docs.plasma.ai/fractal/guide/loop.html" target="_blank">Fractal iteration-loop reference</a>.</p>
+
+<div class="callout good"><b>Implementation note (§17):</b> this diagram is deliberately drawn as a statechart because it <i>is</i> one — implemented directly with <a href="https://stately.ai/docs/xstate" target="_blank">XState</a> rather than a hand-rolled switch/if state machine, so the states and transitions above map 1:1 onto code.</div>
+</section>
+
+<section id="intelligence">
+<h2>6. Intelligence Plane</h2>
+<p class="lede">The Intelligence Plane is not one giant research agent. It is a coordinator that decides what intelligence is worth acquiring, then invokes specialized workers only when justified.</p>
+
+<div class="diagram"><pre class="mermaid">
+flowchart TB
+    N["Node asks: What do I need to know?"] --> IC["Intelligence Coordinator"]
+    IC --> Q{"Is existing memory sufficient?"}
+    Q -- "Yes" --> B["Reuse known intelligence"]
+    Q -- "No" --> U{"Which uncertainty matters?"}
+    U --> E["Evidence Worker"]
+    U --> C["Capability Worker"]
+    U --> R["Runtime Intelligence"]
+    U --> K["Cost / Performance Intelligence"]
+    E --> BND["Intelligence Bundle"]
+    C --> BND
+    R --> BND
+    K --> BND
+    B --> DEC["Node Decision"]
+    BND --> DEC
+</pre></div>
+
+<h3>Intelligence Bundle</h3>
+<table>
+<tr><th>Area</th><th>Output</th></tr>
+<tr><td>Task understanding</td><td>Task class, complexity, uncertainty, likely subproblems.</td></tr>
+<tr><td>Evidence</td><td>Relevant repository evidence, web evidence, prior work, sources, confidence.</td></tr>
+<tr><td>Capabilities</td><td>Required capabilities, available capabilities, missing capabilities.</td></tr>
+<tr><td>Runtime candidates</td><td>Harness/model/provider candidates and compatibility.</td></tr>
+<tr><td>Economics</td><td>Estimated cost, latency, delegation overhead, budget fit.</td></tr>
+<tr><td>Performance</td><td>Historical and task-specific outcomes, confidence.</td></tr>
+<tr><td>Risks</td><td>Technical, dependency, security, budget, deadline, authority risks.</td></tr>
+<tr><td>Recommendations</td><td>Candidate strategy and rationale, not a forced decision.</td></tr>
+<tr><td>Provenance</td><td>Evidence/source references for important claims.</td></tr>
+</table>
+
+<div class="callout good"><b>Efficiency principle:</b> Intelligence should be proportional to uncertainty. Low uncertainty should be cheap. High uncertainty can justify research and specialized workers.</div>
+
+<div class="diagram"><pre class="mermaid">
+flowchart LR
+    A["Low uncertainty"] --> M["Local / node memory"]
+    B["Medium uncertainty"] --> O["Organizational memory + targeted lookup"]
+    C["High uncertainty"] --> W["Spawn targeted intelligence workers"]
+    M --> D["Decision"]
+    O --> D
+    W --> D
+</pre></div>
+</section>
+
+<section id="runtime">
+<h2>7. Runtime Adapters</h2>
+<p class="lede">Nodes should be runtime-agnostic. The organization should be able to use the user's existing subscriptions and local harnesses instead of forcing a new model billing layer.</p>
+
+<div class="diagram"><pre class="mermaid">
+flowchart TB
+    NODE["Accountable Node"] --> RI["Runtime Intelligence"]
+    RI --> REG["Runtime Registry"]
+    REG --> CAND["Candidate Runtimes"]
+    CAND --> NODE
+    NODE --> CHOOSE["Node chooses runtime"]
+    CHOOSE --> ADAPT["Runtime Adapter"]
+    ADAPT --> CLAUDE["Claude Code"]
+    ADAPT --> CODEX["Codex"]
+    ADAPT --> PI["Pi"]
+    ADAPT --> HERMES["Hermes / future harness"]
+    ADAPT --> CUSTOM["Custom adapter"]
+</pre></div>
+
+<h3>Adapter contract</h3>
+<pre><code>RuntimeAdapter
+  discover() -> RuntimeDescriptor
+  validate(request, authority) -> Validation
+  estimate(request) -> CostLatencyEstimate
+  launch(request) -> ExecutionHandle
+  stream(handle) -> Events
+  stop(handle) -> StopResult
+  collect_usage(handle) -> Usage
+  normalize_result(handle) -> ExecutionResult</code></pre>
+
+<h3>Runtime descriptor</h3>
+<pre><code>{
+  "runtime": "codex",
+  "installed": true,
+  "authenticated": true,
+  "subscription_available": true,
+  "capabilities": ["repo", "shell", "coding"],
+  "models": ["..."],
+  "supports": {
+    "streaming": true,
+    "budget_limit": false,
+    "parallel_sessions": true
+  }
+}</code></pre>
+
+<div class="callout"><b>Decision boundary:</b> The runtime registry says what is available and the intelligence layer says what looks promising. The accountable node makes the final selection.</div>
+
+<h3>How <code>launch()</code> actually drives a harness</h3>
+<p>Adapters invoke each CLI in its built-in <b>headless / non-interactive streaming mode</b> — e.g. Claude Code's <code>--print --output-format stream-json</code> — and parse the result as structured events (tool calls, messages, results), the same mode the Claude Agent SDK itself is built on. No PTY, no ANSI-escape scraping of rendered terminal output. If a future harness genuinely has no scriptable mode, the adapter falls back to capturing plain stdout/stderr and the exit code rather than driving a pseudo-terminal.</p>
+<p class="small">Concretely (§17): the subprocess itself is spawned with <a href="https://github.com/sindresorhus/execa" target="_blank">execa</a>, and its stdout is piped through <a href="https://www.npmjs.com/package/ndjson" target="_blank">ndjson</a>'s parse transform to get one structured event object per line — no hand-rolled buffering or JSON.parse-per-chunk logic.</p>
+
+<p class="small">Fractal currently supports several coding-agent backends and per-node/per-step agent, provider, model, and effort overrides. See <a href="https://docs.plasma.ai/fractal/guide/agents.html" target="_blank">Fractal Agent Backends</a>.</p>
+</section>
+
+<section id="authority">
+<h2>8. Authority & Policy</h2>
+<p class="lede">Authority is distinct from capability. A runtime may technically be able to do something while a particular node is not permitted to do it.</p>
+
+<div class="diagram"><pre class="mermaid">
+flowchart TB
+    P["Platform Policy<br/>Maximum boundary"] --> PAR["Parent Authority"]
+    PAR --> CH["Child Authority"]
+    CH --> ACT["Node Action"]
+    P -. "cannot exceed" .-> CH
+    CAP["Runtime Capability"] --> ACT
+    SAN["Sandbox / Environment"] --> ACT
+    ACT --> RESULT["Allowed execution"]
+</pre></div>
+
+<h3>Three-way permission model</h3>
+<div class="grid3">
+<div class="card"><strong>Capability</strong>What the runtime/tool can technically do.</div>
+<div class="card"><strong>Authority</strong>What the node is permitted to do.</div>
+<div class="card"><strong>Sandbox</strong>What the execution environment physically exposes.</div>
+</div>
+
+<h3>Hybrid authority inheritance</h3>
+<pre><code>effective_authority(child)
+  = platform_maximum
+    ∩ parent_granted_subset
+    ∩ child_requested_scope
+    ∩ runtime_capabilities
+    ∩ sandbox_capabilities</code></pre>
+
+<h3>Examples</h3>
+<table>
+<tr><th>Action</th><th>Research Node</th><th>Engineering Node</th><th>Root</th></tr>
+<tr><td>Read repository</td><td>Allowed</td><td>Allowed</td><td>Allowed</td></tr>
+<tr><td>Write source</td><td>Usually no</td><td>Allowed in scope</td><td>Allowed</td></tr>
+<tr><td>Spawn children</td><td>Bounded</td><td>Bounded</td><td>Bounded</td></tr>
+<tr><td>Production deploy</td><td>No</td><td>Approval required</td><td>Policy dependent</td></tr>
+<tr><td>External customer message</td><td>No</td><td>Approval required</td><td>Policy dependent</td></tr>
+<tr><td>Increase project deadline</td><td>No</td><td>No</td><td>Approval / client boundary</td></tr>
+</table>
+
+<div class="callout good"><b>Security lesson from Fractal, resolved:</b> Git worktrees isolate branches, not the rest of the machine — the Fractal README itself warns that unattended agents can have broad shell/network/credential access. Rather than accepting that as a documented risk, v0.1 closes it structurally: every execution step runs inside a disposable, network-restricted Kubernetes Job, not directly on the host. Authority still governs what a node is <i>permitted</i> to request; the Job's Secret/network scope is the hard backstop underneath it regardless. Full mechanism in §18.</div>
+</section>
+
+<section id="commitments">
+<h2>9. Commitments & Time</h2>
+<p class="lede">A commitment converts "please do this" into an observable promise owned by a specific node.</p>
+
+<div class="diagram"><pre class="mermaid">
+flowchart TB
+    P["Parent delegates"] --> C["Child Commitment"]
+    C --> O["Owner"]
+    C --> G["Goal / Promise"]
+    C --> T["Temporal State"]
+    C --> S["Status"]
+    C --> E["Evidence"]
+    C --> R["Risk"]
+    C --> N["Next Action"]
+    T --> X["Expected completion"]
+    T --> H["Hard deadline"]
+    T --> L["Last progress"]
+    T --> K["Next check"]
+</pre></div>
+
+<h3>Temporal commitment model</h3>
+<pre><code>Commitment {
+  id
+  owner
+  parent_commitment
+  goal
+  definition_of_done
+
+  created_at
+  started_at
+  expected_at
+  due_at
+  last_progress_at
+  next_check_at
+  completed_at
+
+  status: pending | active | blocked | at_risk | completed | failed
+
+  dependencies[]
+  evidence[]
+  artifacts[]
+  risks[]
+  current_confidence
+  current_progress
+}</code></pre>
+
+<h3>Why both expected and hard time?</h3>
+<div class="grid">
+<div class="card"><strong>Expected time</strong>Enables schedule-drift prediction before a task becomes late.</div>
+<div class="card"><strong>Hard deadline</strong>Defines the actual boundary that triggers escalation or renegotiation.</div>
+<div class="card"><strong>Last progress</strong>Detects stale work even when the deadline is far away.</div>
+<div class="card"><strong>Next check</strong>Creates a deliberate observation point instead of continuous polling.</div>
+</div>
+
+<div class="diagram"><pre class="mermaid">
+flowchart LR
+    A["Expected completion"] --> B["Current progress"]
+    B --> C{"Projected completion"}
+    C -->|"ahead"| D["On track"]
+    C -->|"near deadline"| E["At risk"]
+    C -->|"past hard deadline"| F["Late / escalate"]
+    G["No progress for too long"] --> E
+</pre></div>
+</section>
+
+<section id="economics">
+<h2>10. Delegation Economics</h2>
+<p class="lede">Delegation is an explicit economic decision. The system must account for more than model dollars.</p>
+
+<div class="diagram"><pre class="mermaid">
+flowchart TB
+    NODE["Node considers subtask"] --> VAL["Expected Value"]
+    NODE --> COST["Total Cost"]
+    NODE --> RISK["Risk"]
+    VAL --> SCORE["Delegation Decision"]
+    COST --> SCORE
+    RISK --> SCORE
+    SCORE --> SELF["Do it myself"]
+    SCORE --> DEL["Delegate"]
+</pre></div>
+
+<h3>Total delegation cost</h3>
+<table>
+<tr><th>Cost dimension</th><th>Examples</th></tr>
+<tr><td>Model cost</td><td>Runtime/model usage dollars.</td></tr>
+<tr><td>Latency</td><td>Child startup, execution, waiting, synchronization.</td></tr>
+<tr><td>Coordination</td><td>Parent attention, handoffs, messages, merging results.</td></tr>
+<tr><td>Context cost</td><td>Context transfer and duplicated discovery.</td></tr>
+<tr><td>Verification cost</td><td>Checking whether the child did useful work.</td></tr>
+<tr><td>Failure surface</td><td>Additional failure modes and recovery paths.</td></tr>
+<tr><td>Opportunity cost</td><td>What else could have used the same budget/time.</td></tr>
+</table>
+
+<h3>Delegation envelope</h3>
+<pre><code>Parent allocation
+  budget: $10
+  deadline: 2h
+  max_children: 4
+
+Child allocation
+  budget: $3
+  deadline: 45m
+  max_children: 2
+
+Child may spend and delegate inside this envelope,
+but cannot expand the envelope without approval.</code></pre>
+
+<div class="diagram"><pre class="mermaid">
+flowchart TB
+    ROOT["Root: $100 / 8h"] --> R["Research: $15"]
+    ROOT --> ENG["Engineering: $50"]
+    ROOT --> QA["QA: $15"]
+    ROOT --> RES["Reserve: $20"]
+    ENG --> BE["Backend: $20"]
+    ENG --> FE["Frontend: $15"]
+    ENG --> TEST["Testing: $10"]
+    ENG --> RISK["Engineering reserve: $5"]
+</pre></div>
+
+<div class="callout good"><b>Reserve is intentional.</b> A capable node should not spend its entire budget on the initial plan. It should retain resources for failure recovery, runtime switching, and unexpected dependencies.</div>
+
+<h3>The v0.1 scoring formula</h3>
+<p>Delegation is decided by a transparent weighted heuristic, deliberately <i>not</i> by asking the harness's own reasoning to judge — every number behind the decision must be printable and reproducible, or "delegation is economic" is just a slogan rather than an evidence-backed decision:</p>
+<pre><code>score = estimated_value_of_delegating
+        − (model_cost + latency_cost + coordination_cost + verification_cost)
+        − risk_penalty
+
+delegate if score >= configurable_threshold, else self-execute</code></pre>
+<p>Inputs are cheap, already-available signals: task-class complexity from the Intelligence Bundle, remaining budget/deadline slack from the node's own commitment, and historical actuals for similar past tasks from node/org memory — falling back to conservative defaults when no history exists yet. The formula improves purely by accumulating history; no model training is required for v0.1.</p>
+
+<h3>Learning from economics</h3>
+<div class="diagram"><pre class="mermaid">
+flowchart LR
+    D["Delegation decision"] --> E["Execution"]
+    E --> O["Actual outcome"]
+    O --> A["Compare expected vs actual"]
+    A --> M["Organizational memory"]
+    M --> D
+</pre></div>
+</section>
+
+<section id="memory">
+<h2>11. Memory & Organizational Learning</h2>
+<p class="lede">Memory is hierarchical: working context is local, durable experience is node-local, and validated patterns can propagate upward into organizational memory.</p>
+
+<div class="diagram"><pre class="mermaid">
+flowchart TB
+    W["Working Memory"] --> N["Node Memory"]
+    N --> C["Candidate Learning"]
+    C --> V{"Evidence / repeated validation?"}
+    V -- "No" --> N
+    V -- "Yes" --> O["Organizational Memory"]
+    O --> FUT["Future Intelligence / Routing"]
+    FUT --> W
+</pre></div>
+
+<h3>Three levels</h3>
+<div class="grid3">
+<div class="card"><strong>Working Memory</strong>Current task context, observations, plan, immediate reasoning. Short-lived and runtime-oriented.</div>
+<div class="card"><strong>Node Memory</strong>Persistent local experience: findings, failures, decisions, artifacts, prior commitments, useful procedures.</div>
+<div class="card"><strong>Organizational Memory</strong>Validated reusable knowledge: runtime performance, strategies, failure modes, capability mappings, historical estimates.</div>
+</div>
+
+<h3>Promotion rule</h3>
+<pre><code>Local experience
+      ↓
+Candidate learning
+      ↓
+Evidence / provenance
+      ↓
+Validation or repeated outcomes
+      ↓
+Promote to organizational memory</code></pre>
+
+<div class="callout">Do not treat every agent statement as organizational truth. Organizational memory should be a curated evidence-backed layer, not a transcript dump.</div>
+</section>
+
+<section id="communication">
+<h2>12. Communication & Handoffs</h2>
+<p class="lede">Use both asynchronous structured messages for coordination and durable artifacts for knowledge. The parent should receive a compact handoff, not a giant context dump.</p>
+
+<div class="diagram"><pre class="mermaid">
+flowchart TB
+    P["Parent Node"] <--> MSG["Structured Message Plane"]
+    P <--> ART["Artifact / Knowledge Plane"]
+    C["Child Node"] <--> MSG
+    C --> ART
+    ART --> H["Structured Handoff"]
+    MSG --> H
+    H --> P
+</pre></div>
+
+<h3>Knowledge handoff schema</h3>
+<pre><code>HANDOFF
+  goal
+  status
+  progress
+  findings[]
+  evidence[]
+  decisions[]
+  open_questions[]
+  blockers[]
+  risks[]
+  recommendation
+  confidence
+  artifacts[]
+  commitments[]
+  next_action</code></pre>
+
+<h3>Message vs artifact</h3>
+<table>
+<tr><th>Use messages for</th><th>Use artifacts for</th></tr>
+<tr><td>Status changes</td><td>Code changes</td></tr>
+<tr><td>Blockers</td><td>Research reports</td></tr>
+<tr><td>Requests</td><td>Evidence bundles</td></tr>
+<tr><td>Escalations</td><td>Test output</td></tr>
+<tr><td>Decisions needing attention</td><td>Designs / plans / diffs</td></tr>
+</table>
+
+<div class="callout good"><b>Design goal:</b> Parent context should be a decision surface. Deep evidence remains inspectable through artifacts and provenance.</div>
+</section>
+
+<section id="sde">
+<h2>13. SDE Execution Model</h2>
+<p class="lede">Software engineering is the first domain because it provides concrete artifacts and strong verification surfaces.</p>
+
+<div class="diagram"><pre class="mermaid">
+flowchart TB
+    U["User: Build feature X"] --> ROOT["Root Node"]
+    ROOT --> INT["Understand repository + task"]
+    INT --> PLAN["Plan"]
+    PLAN --> R["Research"]
+    PLAN --> IMP["Implementation"]
+    PLAN --> SEC["Security / Review"]
+    IMP --> WT["Isolated Git Worktree"]
+    WT --> CODE["Code changes"]
+    CODE --> TEST["Tests / Lint / Build"]
+    TEST --> FAIL{"Pass?"}
+    FAIL -- "No" --> DBG["Debug / Re-plan"]
+    DBG --> CODE
+    FAIL -- "Yes" --> REV["Review"]
+    R --> H["Evidence Handoff"]
+    SEC --> H2["Review Handoff"]
+    H --> ROOT
+    H2 --> ROOT
+    REV --> PR["Commit / PR"]
+    PR --> CI["CI / Final Verification"]
+    CI --> DONE["Deliver"]
+</pre></div>
+
+<h3>Recommended SDE primitives</h3>
+<ul>
+<li>Repository discovery and scoped worktree creation.</li>
+<li>Git branch/worktree lifecycle per accountable node.</li>
+<li>Shell execution with policy/sandbox boundaries.</li>
+<li>Test, lint, build, type-check, and security verification.</li>
+<li>Diff inspection and review nodes.</li>
+<li>Commit and PR creation as durable deliverables.</li>
+<li>CI result ingestion as external evidence.</li>
+</ul>
+
+<p class="small">Fractal's current architecture uses a git-worktree per node and records run/iteration/step/cost metadata in local SQLite. Its seeded workflow includes prepare, plan, execute, review, and commit stages. See <a href="https://docs.plasma.ai/fractal/guide/plans.html" target="_blank">Plans and Steps</a> and <a href="https://github.com/plasma-ai/fractal" target="_blank">Fractal repository</a>.</p>
+</section>
+
+<section id="failure">
+<h2>14. Failure & Recovery</h2>
+<p class="lede">Failure is normal. The system should preserve state, classify failure, and choose the cheapest safe recovery path rather than blindly retrying.</p>
+
+<div class="diagram"><pre class="mermaid">
+flowchart TB
+    X["Execution"] --> F{"Failure / anomaly"}
+    F --> C{"Classify"}
+    C --> T["Transient"]
+    C --> K["Capability gap"]
+    C --> A["Authority boundary"]
+    C --> B["Budget / time risk"]
+    C --> D["Bad plan"]
+    C --> S["Security / policy"]
+    T --> RT["Retry / alternate runtime"]
+    K --> RC["Request capability / delegate"]
+    A --> ESC["Escalate for approval"]
+    B --> ECON["Re-plan economically"]
+    D --> RP["Re-plan"]
+    S --> STOP["Stop + preserve state"]
+    RT --> V["Verify"]
+    RC --> V
+    ESC --> V
+    ECON --> V
+    RP --> V
+</pre></div>
+
+<h3>Recovery hierarchy</h3>
+<ol>
+<li><b>Retry only when failure is plausibly transient.</b></li>
+<li><b>Change runtime</b> when the selected runtime is the problem.</li>
+<li><b>Change plan</b> when the approach is wrong.</li>
+<li><b>Delegate</b> when a capability or context gap is the bottleneck.</li>
+<li><b>Escalate</b> when authority, budget, deadline, or external consent is required.</li>
+<li><b>Stop safely</b> when policy/security boundaries are reached.</li>
+</ol>
+
+<h3>Failure evidence</h3>
+<p>Every failed attempt should retain enough structured evidence to answer: what was attempted, by whom, with what runtime, under what authority, what failed, what changed, what it cost, and what the next recovery action is.</p>
+
+<div class="callout warn">Do not allow failure handling to become recursive chaos. Recovery itself should be subject to delegation economics and authority limits.</div>
+</section>
+
+<section id="example">
+<h2>15. End-to-End Example: “Implement OAuth and Open a PR”</h2>
+<p class="lede">This walkthrough combines every primitive into one realistic SDE task.</p>
+
+<div class="diagram"><pre class="mermaid">
+sequenceDiagram
+    actor User
+    participant CLI
+    participant Srv as Server (daemon)
+    participant Root as Root Node (in-memory)
+    participant I as Implementation Child
+    participant Host
+    participant K8s as kind cluster
+    participant Job as Job pod
+
+    User->>CLI: org run "Implement OAuth + open PR"
+    CLI->>Srv: spawn daemon if not running (auto-bootstrap kind)
+    Srv->>Root: create root node, persist to SQLite
+    Root->>Root: Intelligence Gate: memory insufficient
+    Root->>Host: dispatch evidence-worker Job
+    Host->>K8s: create Secret + Job (egress: LLM + git remote only)
+    K8s->>Job: run harness headless, stream events
+    Job-->>Host: structured evidence events
+    Host-->>Root: evidence handoff, Secret deleted
+    Root->>Root: Economics: score clears delegation threshold
+    Root->>I: create child commitment (budget/deadline envelope)
+    I->>Host: dispatch implementation Job
+    Host->>K8s: create Secret + Job (worktree mounted)
+    Job-->>Host: tests fail (structured result)
+    I->>I: Re-plan via economics: switch runtime?
+    I->>Host: dispatch retry Job, alternate adapter
+    Job-->>Host: tests pass
+    I-->>Root: structured handoff (findings, evidence, confidence)
+    Root->>Root: needs deploy authority child lacks
+    Root->>CLI: escalate: org watch + desktop notification
+    User->>CLI: org approve impl-42
+    Root->>Host: final verification Job + PR
+    Job-->>Root: CI result
+    Root-->>User: Verified PR + evidence
+</pre></div>
+
+<h3>What makes this different from a normal agent</h3>
+<div class="grid">
+<div class="card"><strong>It owns the outcome</strong>Root remains accountable even when children execute most of the work.</div>
+<div class="card"><strong>It forms the team dynamically</strong>Research, implementation, and security nodes exist because the task justified them.</div>
+<div class="card"><strong>It chooses tools/runtimes dynamically</strong>The node can switch when evidence changes.</div>
+<div class="card"><strong>It tracks time and economics</strong>Every child has an envelope and every commitment has temporal state.</div>
+<div class="card"><strong>It learns</strong>Decisions and actual outcomes become evidence for future routing.</div>
+<div class="card"><strong>It verifies</strong>Completion requires evidence, tests, review, and CI—not just a model saying “done.”</div>
+</div>
+</section>
+
+<section id="cli">
+<h2>16. CLI Surface</h2>
+<p class="lede">The CLI should expose the organization as a living tree. The exact command names are illustrative; the important part is the mental model.</p>
+
+<div class="diagram"><pre class="mermaid">
+flowchart LR
+    RUN["run"] --> TREE["tree"]
+    RUN --> NODE["node"]
+    NODE --> STATUS["status"]
+    NODE --> COMMIT["commitment"]
+    NODE --> MSG["messages"]
+    NODE --> INT["intelligence"]
+    NODE --> DEC["decisions"]
+    NODE --> CHILD["children"]
+    NODE --> PAUSE["pause / resume"]
+    NODE --> APPROVE["approve / reject"]
+</pre></div>
+
+<table>
+<tr><th>Command family</th><th>Purpose</th></tr>
+<tr><td><code>org daemon start / status / stop</code></td><td>Explicit control of the background Server+Host process; <code>org run</code> auto-spawns it if not already running.</td></tr>
+<tr><td><code>org doctor</code></td><td>Preflight check for Docker/kind/kubectl and cluster reachability before first run.</td></tr>
+<tr><td><code>org run</code></td><td>Create root organization and start task (returns immediately — the daemon keeps working).</td></tr>
+<tr><td><code>org tree</code></td><td>Show hierarchy, status, commitments, and health as scriptable text (<code>--json</code> supported).</td></tr>
+<tr><td><code>org watch</code></td><td>Live Ink-based TUI: real-time tree, budgets, commitment risk, highlighted pending approvals.</td></tr>
+<tr><td><code>org node inspect</code></td><td>Inspect one node's contract, state, decisions, and evidence.</td></tr>
+<tr><td><code>org commitment</code></td><td>List temporal commitments and risk.</td></tr>
+<tr><td><code>org decision</code></td><td>Inspect evidence-backed decisions, including the economics score behind each delegation call.</td></tr>
+<tr><td><code>org intelligence</code></td><td>Inspect intelligence bundles and provenance.</td></tr>
+<tr><td><code>org approve / reject</code></td><td>Resolve an authority-boundary escalation from any terminal — the CLI is a stateless client to the daemon's API.</td></tr>
+<tr><td><code>org pause / resume</code></td><td>Control execution without destroying state.</td></tr>
+<tr><td><code>org events</code></td><td>Inspect event history and execution lineage.</td></tr>
+</table>
+
+<div class="callout">All commands other than <code>org daemon</code>/<code>org doctor</code> are thin clients over the Server's local HTTP + WebSocket API (§17) — nothing but the daemon itself holds state.</div>
+
+<pre><code>$ org run "Implement OAuth login and open a PR"
+Daemon not running — starting (bootstrapping local kind cluster)...
+Root node created. Run `org watch` or `org tree` to follow progress.
+
+$ org tree
+
+ROOT  ● active   42%   $3.20/$8
+├── research       ✓ complete
+├── implementation ● at-risk   68%
+│   ├── debugging  ✓ complete
+│   └── tests      ● active
+└── security       ● active
+
+Commitments:
+  implementation  due 18:00  projected 17:42
+  security        due 18:15  on-track
+
+Pending approval:
+  implementation  needs: production-deploy authority   [org approve impl-42]
+
+Risk:
+  CI pending</code></pre>
+</section>
+
+<section id="implementation">
+<h2>17. Implementation Architecture & Tech Stack</h2>
+<p class="lede">Everything above this section is conceptual and stack-agnostic. This section is where each concept becomes a specific, buildable choice — the outcome of a dedicated implementation-level brainstorming pass.</p>
+
+<h3>Daemon lifecycle</h3>
+<p>The daemon (Server+Host, §3) persists across CLI invocations — required for <code>org watch</code> and desktop-notification approvals to mean anything. <code>org run</code> detects whether one is already running (a local Unix domain socket / lock file) and auto-spawns it if not, including first-run <code>kind</code> cluster bootstrap. Every other command is a thin client hitting the Server's HTTP+WebSocket API. <code>org daemon start / status / stop</code> gives explicit control when needed.</p>
+
+<h3>Persistence: CRUD tables + append-only event log</h3>
+<p>SQLite via <code>better-sqlite3</code>, deliberately <b>not</b> full event sourcing. Mutable state tables (nodes, commitments, decisions, budgets) answer "what's true right now" without replaying history — the query patterns the CLI actually needs (<code>org tree</code>, commitment risk, decision inspection) are simplest against direct state. A separate append-only <code>events</code> table records every transition, giving <code>org events</code>, crash-recovery, and the audit trail the accountability model depends on — without the snapshot/projection machinery full event sourcing would require before there's evidence it's needed.</p>
+
+<div class="diagram"><pre class="mermaid">
+flowchart LR
+    T["State transition"] --> ST["Mutate state table<br/>(nodes/commitments/decisions)"]
+    T --> EV["Append to events table"]
+    ST --> Q1["org tree / org commitment<br/>(fast, direct query)"]
+    EV --> Q2["org events<br/>(audit trail / replay on crash)"]
+</pre></div>
+
+<h3>Tech stack</h3>
+<table>
+<tr><th>Layer</th><th>Choice</th><th>Why</th></tr>
+<tr><td>Language/runtime</td><td>TypeScript, Node.js LTS</td><td>One dependency graph; async I/O suits many concurrent streaming Jobs; matches the ecosystem users already have for Claude Code/Codex CLIs.</td></tr>
+<tr><td>CLI framework</td><td>Commander.js</td><td>Enough structure for the <code>org &lt;noun&gt; &lt;verb&gt;</code> tree without oclif's plugin-system overhead this doesn't need yet.</td></tr>
+<tr><td>Live dashboard</td><td>Ink</td><td>Powers <code>org watch</code>; same component model could scale to a future web dashboard.</td></tr>
+<tr><td>Daemon ↔ CLI API</td><td>Fastify + <a href="https://trpc.io/" target="_blank">tRPC</a> (official Fastify adapter) + <code>@fastify/websocket</code> for subscriptions</td><td>End-to-end typesafe procedures shared between daemon and CLI/TUI with zero codegen — the CLI and any future GUI both consume it, per the "CLI is a client" principle, without hand-writing REST routes and duplicating request/response types.</td></tr>
+<tr><td>Input/schema validation</td><td><a href="https://zod.dev/" target="_blank">zod</a></td><td>The de facto TS runtime-validation standard (100M+ weekly downloads); validates node contracts, CLI args, and every tRPC procedure input in one place instead of hand-rolled checks scattered across the codebase.</td></tr>
+<tr><td>State/event store</td><td>SQLite via <code>better-sqlite3</code>, with <a href="https://orm.drizzle.team/" target="_blank">Drizzle ORM</a> + <code>drizzle-kit</code> for schema/migrations/typed queries</td><td>Sync driver fits a single-writer local daemon; Drizzle (~2M weekly downloads) gives schema-in-TypeScript and generated migrations with no codegen step, instead of hand-written SQL strings and migration scripts.</td></tr>
+<tr><td>Node lifecycle engine</td><td><a href="https://stately.ai/docs/xstate" target="_blank">XState</a></td><td>Zero-dependency statechart library, widely used for backend workflow orchestration — implements the CREATED→...→COMPLETE lifecycle already drawn as a statechart in §5 directly, instead of a hand-rolled switch/if FSM.</td></tr>
+<tr><td>Process execution</td><td><a href="https://github.com/sindresorhus/execa" target="_blank">execa</a></td><td>~128M weekly downloads — the standard replacement for raw <code>child_process</code> when shelling out to <code>kind</code>, <code>kubectl</code>, or git; built-in promise API, clean stdout/stderr capture, no hand-rolled error handling.</td></tr>
+<tr><td>Harness output parsing</td><td><a href="https://www.npmjs.com/package/ndjson" target="_blank">ndjson</a></td><td>Standard streaming newline-delimited-JSON transform stream for consuming Claude Code's <code>stream-json</code> output record-by-record, instead of a hand-rolled line-buffering JSON parser.</td></tr>
+<tr><td>K8s control</td><td><code>@kubernetes/client-node</code></td><td>Official client, ~1-2M weekly downloads, actively maintained (v2.x) — confirmed as the right pick for Job/Secret/NetworkPolicy CRUD and log/event streaming.</td></tr>
+<tr><td>Local cluster</td><td>Shell out to <code>kind</code> CLI (via execa)</td><td>Researched and confirmed: no viable npm-native wrapper exists for <code>kind</code> (it's a Go binary with no official JS bindings) — shelling out is the correct choice, not a placeholder.</td></tr>
+<tr><td>Logging</td><td><code>pino</code></td><td>Structured JSON, cheap, pairs with the events table for <code>org events</code>.</td></tr>
+<tr><td>Desktop notifications</td><td><code>node-notifier</code></td><td>Confirmed still actively maintained (v10.x) for the approval-escalation flow (§9/§18) — no better cross-platform alternative found.</td></tr>
+<tr><td>Daemon process lifecycle</td><td><a href="https://pm2.keymetrics.io/" target="_blank">pm2</a> (programmatic API)</td><td>~2.8-3.6M weekly downloads, 600M+ total — battle-tested start/stop/status, crash auto-restart, and log capture behind <code>org daemon start/status/stop</code>, instead of hand-rolled detached-process + PID-file logic.</td></tr>
+<tr><td>Interactive CLI prompts</td><td><a href="https://github.com/bombshell-dev/clack" target="_blank">@clack/prompts</a></td><td>Modern TS-native successor to inquirer, beautifully styled with zero config — used for <code>org doctor</code>'s guided setup prompts.</td></tr>
+<tr><td>Preflight task UI</td><td><a href="https://listr2.kilic.dev/" target="_blank">listr2</a></td><td>Purpose-built terminal task lists with concurrent/sequential spinners — <code>org doctor</code>'s Docker/kind/kubectl/cluster checks, instead of hand-rolled spinner sequencing.</td></tr>
+<tr><td>TUI widgets</td><td><a href="https://github.com/vadimdemedes/ink-ui" target="_blank">@inkjs/ui</a></td><td>Official Ink companion (same author as Ink) shipping ProgressBar/Badge/Spinner/Alert/StatusMessage out of the box for <code>org watch</code>, instead of hand-rolled TUI widgets.</td></tr>
+<tr><td>Packaging</td><td>npm global package, <code>org doctor</code> preflight</td><td>Matches users already on the Node CLI ecosystem; catches missing Docker/kind/kubectl before a task fails mid-run.</td></tr>
+<tr><td>Runner image</td><td>Dockerfile in-repo → GHCR, pinned tag</td><td>One shared, reproducible base image; local-build fallback if unavailable.</td></tr>
+<tr><td>Project CI</td><td>GitHub Actions; a <code>kind</code>-backed integration job (<code>helm/kind-action</code>)</td><td>Exercises real Job/Secret/NetworkPolicy dispatch, not just mocked K8s calls.</td></tr>
+<tr><td>Test framework</td><td>Vitest</td><td>TS-native, fast; unit tests for the three engines as pure functions.</td></tr>
+</table>
+
+<div class="callout good"><b>Deliberately not added:</b> a dedicated "does this binary exist" package (e.g. <code>command-exists</code>). The most common one is unmaintained for 6+ years — checking via execa's own error path (<code>await execa('docker', ['--version'])</code>, catching <code>ENOENT</code>) is one line and avoids a barely-maintained single-purpose dependency. Not every gap needs a library.</div>
+
+<h3>Testing & verification</h3>
+<div class="grid">
+<div class="card"><strong>Product-level</strong>Unit tests for Commitment/Authority/Economics engines as pure functions; integration tests hitting the Fastify API against a temp SQLite file; a <code>kind</code>-backed CI job exercising real Job/Secret/NetworkPolicy dispatch; one end-to-end CLI smoke test (<code>org run</code> against a trivial fixture repo).</div>
+<div class="card"><strong>Target-repo level</strong>Unchanged from §13: build/lint/test/typecheck commands detected from the target repo's own conventions or named explicitly in the node's Definition of Done, run as a Job step, pass/fail + captured output stored as evidence.</div>
+</div>
+
+<h3>Observability</h3>
+<p>Structured JSON logs (<code>pino</code>) plus the events table already serving as the accountability timeline — no separate tracing backend (OpenTelemetry collector, etc.) for v0.1. The log shape is chosen so it can feed a real OTel pipeline later without rework, once there's evidence multiple concurrent Jobs actually need trace-level correlation.</p>
+</section>
+
+<section id="security">
+<h2>18. Execution Substrate & Security</h2>
+<p class="lede">The original architecture flagged git-worktree isolation as a real, named risk rather than assuming it was sufficient. This section is how that risk gets closed structurally, not just documented.</p>
+
+<div class="callout warn"><b>Deliberate trade-off:</b> Kubernetes-per-execution sandboxing was chosen over a lighter policy-only MVP option, even for a single local user. It means Docker + a local <code>kind</code> cluster become real v0.1 prerequisites, not an optional hardening pass — a heavier first-run bar in exchange for closing the risk immediately instead of deferring it.</p></div>
+
+<h3>Cluster bootstrap</h3>
+<p>On first use, if no kubeconfig/cluster is detected, the CLI provisions a local <code>kind</code> (Kubernetes-in-Docker) cluster automatically — one dependency (Docker) instead of two, and the cluster is disposable/recreatable. If a kubeconfig already points somewhere — a real cluster, Docker Desktop's K8s, a shared org cluster — that's used instead. The same code path scales from laptop to production cluster without changes.</p>
+
+<h3>Execution granularity: one Job per step, not per node</h3>
+<p>Every time a node's lifecycle reaches <b>Execute</b> and calls a runtime adapter, that's a single Kubernetes Job with the worktree mounted in — runs to completion, streams results back, then the pod terminates. The node itself stays an in-memory state machine in the daemon (§3/§4) that can spawn many such Jobs across its iteration loop. This keeps pods short-lived and disposable and avoids re-introducing per-node OS-process complexity.</p>
+
+<h3>Container image strategy</h3>
+<p>One shared base runner image (<code>org/runner</code>) with all supported harness CLIs, git, and common toolchains pre-installed — built from a Dockerfile in-repo, published to GHCR on release, pulled at a pinned tag by default with local-build fallback. Simplest to reason about; per-adapter or user-pluggable images are deferred until a concrete need for image customization shows up.</p>
+
+<h3>Credential injection</h3>
+<div class="diagram"><pre class="mermaid">
+flowchart LR
+    LOCAL["User's local auth<br/>(Claude Code/Codex login, git creds)"] --> DAEMON["Daemon reads once"]
+    DAEMON --> SEC["Create Job-scoped K8s Secret"]
+    SEC --> POD["Mounted read-only in pod"]
+    POD --> DONE["Job completes"]
+    DONE --> DEL["Secret deleted"]
+</pre></div>
+<p>Per-Job Kubernetes Secrets, mounted read-only, created immediately before the Job and deleted on completion. The daemon relays the user's <i>existing</i> local credentials rather than asking for new ones — subscription-based auth keeps working, and nothing long-lived sits in the cluster.</p>
+
+<h3>Network policy</h3>
+<table>
+<tr><th>Direction</th><th>Default</th></tr>
+<tr><td>Ingress</td><td>Denied entirely — nothing initiates a connection into a Job pod.</td></tr>
+<tr><td>Egress</td><td>Denied by default; allowlisted per Job to the LLM provider endpoint, the task's git remote, and package registries only if the Definition of Done requires installing dependencies.</td></tr>
+<tr><td>Pod-to-pod / cluster-internal</td><td>Blocked — nodes coordinate through the daemon, never directly with each other's pods.</td></tr>
+</table>
+
+<div class="callout good"><b>Ties back to §8's authority model:</b> capability (what a pod can technically reach) is now hard-bounded by NetworkPolicy and Secret scope, independent of whatever authority a node was granted — the "capability ∩ authority ∩ sandbox" formula in §8 has a real, enforced third term for the first time, not just a documented intention.</div>
+</section>
+
+<section id="framing">
+<h2>19. Product Framing & Identity</h2>
+<p class="lede">Prompted by how effectively <a href="https://github.com/chaitanyagiri/munder-difflin" target="_blank">Munder Difflin</a> uses narrative metaphor — an "office of agents," a named orchestrator, "desks" — to make an abstract multi-agent system feel concrete and demo-able.</p>
+
+<p>The decision here is deliberately restrained: adopt a <b>light organizational metaphor</b>, not a new mascot or persona. The vocabulary this document already uses — organization, accountable owner, delegation, commitment, authority, handoff — <i>is</i> the product's voice. CLI output, docs, and any future landing page or GUI should talk about "the organization" and "handoffs," not generic "agents" and "tasks." This is packaging what the architecture already implies, not a separate creative exercise that could block the technical work.</p>
+
+<div class="grid">
+<div class="card"><strong>What this changes in practice</strong><code>org tree</code> output, error messages, and escalation notifications use "accountable owner," "commitment," "handoff" — not "worker," "job," "task." Section/command naming throughout this document already does this; keep it consistent going forward.</div>
+<div class="card"><strong>What this explicitly defers</strong>A distinct visual brand identity, a named mascot/character, or marketing-site-level creative work — real investment, kept separate from and not blocking the architecture and implementation work.</div>
+</div>
+
+<div class="callout">The presentation lesson worth keeping from Munder Difflin beyond naming: lead with <i>what you can do</i> (a live <code>org watch</code> view, a real PR delivered) before <i>how it's built</i> — progressive disclosure, not architecture-first, when this product is eventually shown to someone outside this document.</div>
+</section>
+
+<section id="mvp">
+<h2>20. MVP Boundary</h2>
+<p class="lede">Keep the first implementation narrow in domain but strong in agent behavior.</p>
+
+<div class="diagram"><pre class="mermaid">
+flowchart TB
+    MVP["v0.1 Local SDE Organization"]
+    MVP --> CLI["CLI"]
+    MVP --> NODES["Accountable recursive nodes"]
+    MVP --> INT["Adaptive intelligence"]
+    MVP --> RT["Pluggable local runtimes"]
+    MVP --> AUTH["Authority + sandbox policy"]
+    MVP --> COM["Commitments + time"]
+    MVP --> ECO["Delegation economics"]
+    MVP --> MEM["Local + promoted memory"]
+    MVP --> SDE["Git / shell / tests / PR"]
+    MVP --> FAIL["Failure / recovery"]
+    MVP --> K8S["K8s-sandboxed execution (kind)"]
+    MVP --> NPM["npm-installable CLI + org doctor"]
+</pre></div>
+
+<h3>In scope</h3>
+<div class="grid3">
+<div class="card"><strong>Node runtime</strong>Recursive nodes, iteration, plans, state, children.</div>
+<div class="card"><strong>Accountability</strong>Contracts, commitments, temporal state, DoD.</div>
+<div class="card"><strong>Delegation economics</strong>Budget envelopes and the weighted-heuristic scoring formula (§10).</div>
+<div class="card"><strong>Intelligence</strong>Coordinator + targeted evidence/capability/runtime workers.</div>
+<div class="card"><strong>Runtime adapters</strong>Claude Code, Codex, Pi or another initial harness, driven headless (§7).</div>
+<div class="card"><strong>Memory</strong>Node memory + initial organizational promotion path.</div>
+<div class="card"><strong>SDE substrate</strong>Git worktrees, shell, tests, lint, build, PR.</div>
+<div class="card"><strong>Observability</strong>Events, tree, commitments, decisions, costs — structured logs, no tracing infra yet (§17).</div>
+<div class="card"><strong>Recovery</strong>Retry, re-plan, alternate runtime, delegate, escalate.</div>
+<div class="card"><strong>Execution substrate</strong>Per-step Kubernetes Jobs, auto-provisioned local <code>kind</code> cluster, ephemeral per-Job credentials (§18).</div>
+<div class="card"><strong>Packaging</strong>npm global install, <code>org doctor</code> preflight for Docker/kind/kubectl (§17).</div>
+</div>
+
+<div class="callout warn"><b>Prerequisite change from the original MVP:</b> v0.1 now requires Docker (for <code>kind</code>) in addition to Node.js — a real onboarding-friction cost taken on deliberately to close the sandboxing risk from day one rather than deferring it. See the trade-off entry in §21.</div>
+
+<h3>Explicitly out of scope for v0.1</h3>
+<ul>
+<li>General-purpose business agents.</li>
+<li>Autonomous sales/customer-service operations.</li>
+<li>Full autonomous email/calendar workflows.</li>
+<li>Distributed cloud workers.</li>
+<li>Multi-tenant SaaS control plane.</li>
+<li>Complex GUI.</li>
+<li>Dozens of integrations.</li>
+<li>Custom model training.</li>
+<li>Universal domain ontology.</li>
+</ul>
+
+<div class="callout good"><b>Domain-extensible, not domain-general.</b> The abstractions should not hard-code SDE concepts, but the first operational surface should be software engineering.</div>
+</section>
+
+<section id="tradeoffs">
+<h2>21. Trade-offs, Criticism & Risks</h2>
+<table>
+<tr><th>Risk</th><th>Why it happens</th><th>Mitigation</th></tr>
+<tr><td>Agent explosion</td><td>Recursive delegation can grow too quickly.</td><td>Delegation economics + max depth/children/descendants + budgets.</td></tr>
+<tr><td>Orchestrator becomes bottleneck</td><td>Central coordinator tries to reason about everything.</td><td>Node autonomy; intelligence coordinator is advisory and lazy.</td></tr>
+<tr><td>Memory pollution</td><td>Every observation becomes “knowledge.”</td><td>Local-first memory + evidence-backed promotion.</td></tr>
+<tr><td>Bad routing feedback</td><td>Historical data is noisy or task-mismatched.</td><td>Task-class conditioning, confidence, provenance, outcome evaluation.</td></tr>
+<tr><td>Context explosion</td><td>Parents receive full child transcripts.</td><td>Structured handoffs + artifacts + selective retrieval.</td></tr>
+<tr><td>Security exposure</td><td>Local harnesses may have broad permissions.</td><td><b>Resolved, not just mitigated:</b> per-step Kubernetes Jobs, default-deny network with a narrow allowlist, ephemeral per-Job Secrets (§18). Authority ≠ capability now has an enforced third term, not just a documented intention.</td></tr>
+<tr><td>False accountability</td><td>Agent says “done” without proof.</td><td>Definition of Done + verification + evidence + CI.</td></tr>
+<tr><td>Economic myopia</td><td>Optimizing only API cost hurts quality/time.</td><td>Total-cost model: money + latency + coordination + risk + opportunity cost, made concrete as a weighted-heuristic formula (§10).</td></tr>
+<tr><td>Too much intelligence</td><td>Every task triggers research.</td><td>Intelligence gate and uncertainty-based escalation.</td></tr>
+<tr><td>Vendor coupling</td><td>One harness becomes assumed infrastructure.</td><td>Runtime adapter contract + capability registry; headless/structured execution mode (§7) keeps adapters swappable.</td></tr>
+<tr><td>Premature generalization</td><td>Trying to support every domain in v0.1.</td><td>SDE-first, domain-extensible core.</td></tr>
+<tr><td>Onboarding friction</td><td>Kubernetes-per-execution sandboxing means Docker + a local <code>kind</code> cluster are now real v0.1 prerequisites, not optional hardening — a heavier first-run bar than a plain CLI install.</td><td>Single auto-bootstrap path (<code>org run</code> provisions <code>kind</code> automatically) and an <code>org doctor</code> preflight that fails fast with clear guidance rather than a confusing mid-task error. Accepted deliberately in exchange for closing the security risk immediately (§18) instead of deferring it.</td></tr>
+</table>
+
+<div class="diagram"><pre class="mermaid">
+quadrantChart
+    title Architectural priorities for MVP
+    x-axis Low effort --> High effort
+    y-axis Low impact --> High impact
+    quadrant-1 Invest
+    quadrant-2 Quick wins
+    quadrant-3 Defer
+    quadrant-4 Avoid overbuilding
+    "Accountability contracts": [0.35, 0.95]
+    "Commitment engine": [0.48, 0.90]
+    "Delegation economics": [0.60, 0.88]
+    "Runtime adapters": [0.52, 0.86]
+    "Intelligence coordinator": [0.68, 0.91]
+    "K8s sandboxing (kind)": [0.70, 0.93]
+    "npm packaging + org doctor": [0.30, 0.55]
+    "GUI": [0.82, 0.35]
+    "Multi-tenant cloud": [0.96, 0.22]
+    "Dozens of integrations": [0.92, 0.30]
+</pre></div>
+</section>
+
+<section id="roadmap">
+<h2>22. Evolution Path</h2>
+<p class="lede">The architecture should grow without forcing the MVP to become a distributed platform prematurely.</p>
+
+<div class="diagram"><pre class="mermaid">
+flowchart LR
+    V1["v0.1 Local CLI<br/>SDE"] --> V2["v0.2 Better<br/>organizational learning"]
+    V2 --> V3["v0.3 GUI / observability"]
+    V3 --> V4["v0.4 Remote workers"]
+    V4 --> V5["v0.5 Multi-project orgs"]
+    V5 --> V6["Future: broader domains"]
+</pre></div>
+
+<table>
+<tr><th>Stage</th><th>Focus</th></tr>
+<tr><td>v0.1</td><td>Local CLI, accountable nodes, recursive delegation, runtime adapters, commitments, economics, SDE verification.</td></tr>
+<tr><td>v0.2</td><td>Better performance histories, organizational memory promotion, routing calibration, richer evidence provenance.</td></tr>
+<tr><td>v0.3</td><td>GUI over the same event/state APIs: tree, commitments, live node status, evidence, approvals, costs.</td></tr>
+<tr><td>v0.4</td><td>Remote/distributed execution while retaining the same node contract and policy model.</td></tr>
+<tr><td>v0.5+</td><td>Multi-project organizations, richer external actions, additional domains.</td></tr>
+</table>
+</section>
+
+<section id="decisions">
+<h2>23. Decisions Log — Brainstorming Session</h2>
+<p class="lede">This section records the decisions that converged during the conversation so the handoff preserves not only the architecture but the reasoning behind it.</p>
+
+<div class="timeline">
+<div><span class="pill">D1</span> <b>Hierarchical ownership</b> — Adopted model C: every task has an accountable owner, with recursive children.</div>
+<div><span class="pill">D2</span> <b>Hybrid runtime selection</b> — Intelligence/router provides candidates; the accountable node chooses the runtime.</div>
+<div><span class="pill">D3</span> <b>Dual communication</b> — Structured messages for coordination plus durable artifacts for knowledge.</div>
+<div><span class="pill">D4</span> <b>Goal-contract delegation</b> — Parent gives goal, constraints, Definition of Done, and authority; child owns plan and execution.</div>
+<div><span class="pill">D5</span> <b>Temporal commitments</b> — Commitments include expected time, hard deadline, progress timestamps, risks, evidence, and next checks.</div>
+<div><span class="pill">D6</span> <b>Hybrid authority</b> — Platform defines maximum authority; parents grant subsets; children operate autonomously inside them.</div>
+<div><span class="pill">D7</span> <b>Delegation economics</b> — Delegation is an explicit value-vs-total-cost-vs-risk decision.</div>
+<div><span class="pill">D8</span> <b>Intelligence coordinator</b> — One coordinator lazily invokes specialized intelligence workers when uncertainty justifies it.</div>
+<div><span class="pill">D9</span> <b>Hierarchical memory</b> — Local memory first; validated learnings can be promoted into organizational memory.</div>
+<div><span class="pill">D10</span> <b>SDE-first</b> — First domain is software engineering; abstractions remain domain-extensible.</div>
+<div><span class="pill">D11</span> <b>Local-first CLI</b> — Execution initially happens on the user's machine using existing subscriptions/harnesses. GUI comes later.</div>
+<div><span class="pill">D12</span> <b>Fractal as inspiration</b> — Borrow recursive nodes, iteration, worktrees, messaging, plans, bounds, and local state; do not simply fork the architecture.</div>
+</div>
+
+<p class="lede" style="margin-top:26px">Session 2 (implementation-level pass) added the following, resolving the parts of the architecture above that were left conceptual:</p>
+
+<div class="timeline">
+<div><span class="pill">D13</span> <b>Pure TypeScript stack</b> — No polyglot split for v0.1. Intelligence-plane workers are constrained runtime-adapter invocations, not a separate Python/ML stack. One dependency graph, one build/debug story.</div>
+<div><span class="pill">D14</span> <b>Nodes are in-memory, not OS processes</b> — A single daemon holds the whole node tree as in-memory state machines checkpointed to SQLite. Only a node's execution step ever leaves the daemon.</div>
+<div><span class="pill">D15</span> <b>Headless/structured adapter execution</b> — Adapters drive each harness in its built-in non-interactive streaming mode (as the Claude Agent SDK itself does), not PTY-scraped terminal output.</div>
+<div><span class="pill">D16</span> <b>CRUD state + append-only event log</b> — Not full event sourcing. State tables answer "what's true now"; the events table is the audit/replay trail.</div>
+<div><span class="pill">D17</span> <b>Plain-text CLI + one live TUI</b> — Scriptable text output by default; <code>org watch</code> is the one Ink-based live dashboard.</div>
+<div><span class="pill">D18</span> <b>Kubernetes sandboxing from v0.1</b> — Chosen deliberately over a lighter policy-only MVP option, because the architecture's own worktree-isolation risk (see §18) needed a real, not documented-only, mitigation — even for a single local user.</div>
+<div><span class="pill">D19</span> <b>Auto-provisioned local <code>kind</code> cluster</b> — Zero manual cluster setup; an existing kubeconfig is used instead if one is already configured, so the same code path scales from laptop to production cluster.</div>
+<div><span class="pill">D20</span> <b>Job-per-execution-step granularity</b> — One Kubernetes Job per harness invocation, not one pod per node's lifetime. Keeps pods short-lived and disposable.</div>
+<div><span class="pill">D21</span> <b>Ephemeral per-Job credentials</b> — K8s Secrets scoped to a single Job, mounted read-only, deleted on completion. Nothing long-lived sits in the cluster.</div>
+<div><span class="pill">D22</span> <b>npm packaging with preflight checks</b> — <code>org doctor</code> verifies Docker/kind/kubectl before first run rather than failing opaquely mid-task.</div>
+<div><span class="pill">D23</span> <b>Structured logs over tracing infra</b> — <code>pino</code> logs plus the events table are sufficient for v0.1; OpenTelemetry is deferred until concurrent-Job correlation is a proven need.</div>
+<div><span class="pill">D24</span> <b>Light organizational metaphor, no mascot</b> — The existing vocabulary (organization, owner, delegation, commitment, handoff) is the product's voice, inspired by how Munder Difflin's narrative framing makes a multi-agent system feel concrete — without a separate creative/brand exercise.</div>
+<div><span class="pill">D25</span> <b>Default-deny network with a per-Job allowlist</b> — Egress limited to the LLM provider, the task's git remote, and package registries only when the DoD needs installs.</div>
+<div><span class="pill">D26</span> <b>Approval escalation via TUI + OS notification</b> — Not a blocking terminal prompt, since node execution is backgrounded and concurrent by design.</div>
+<div><span class="pill">D27</span> <b>Logical Server/Host split, colocated for v0.1</b> — Modeled on Omnigent's comparable production architecture (a meta-harness orchestrating Claude Code/Codex/Cursor/Pi with its own Server/Host-daemon split), so a future remote-worker version is a deployment change, not a redesign.</div>
+<div><span class="pill">D28</span> <b>Transparent weighted-heuristic economics</b> — Not LLM judgment. Every delegation decision must be printable and reproducible to stay evidence-backed, per the architecture's own accountability principle.</div>
+<div><span class="pill">D29</span> <b>One shared base runner image</b> — All supported harnesses pre-installed in a single published image for v0.1, not per-adapter or user-pluggable images.</div>
+</div>
+
+<p class="lede" style="margin-top:26px">Session 3 (library-research pass, 2026-09-05) replaced hand-rolled pieces of the stack with researched, actively-maintained, widely-adopted libraries — verified via live search, not assumed:</p>
+
+<div class="timeline">
+<div><span class="pill">D30</span> <b>zod for all validation</b> — 100M+ weekly downloads, the de facto TS validation standard; node contracts, CLI args, and tRPC inputs all validated in one place.</div>
+<div><span class="pill">D31</span> <b>tRPC over hand-written REST</b> — Official Fastify + WebSocket adapters give end-to-end typesafe daemon↔CLI procedures with zero codegen, replacing hand-written routes and duplicated types.</div>
+<div><span class="pill">D32</span> <b>Drizzle ORM over raw SQL</b> — ~2M weekly downloads; schema-in-TypeScript and generated migrations layered on the existing <code>better-sqlite3</code> driver, replacing hand-written SQL strings and migration scripts.</div>
+<div><span class="pill">D33</span> <b>XState for the node lifecycle</b> — Implements §5's CREATED→...→COMPLETE statechart directly instead of a hand-rolled FSM; zero-dependency, widely used for backend workflow orchestration.</div>
+<div><span class="pill">D34</span> <b>execa for all process execution</b> — ~128M weekly downloads; standard replacement for raw <code>child_process</code> across adapters and Host-side shelling to <code>kind</code>/<code>kubectl</code>/git.</div>
+<div><span class="pill">D35</span> <b>ndjson for harness output</b> — Standard streaming NDJSON parser for Claude Code's <code>stream-json</code> events, replacing a hand-rolled line-buffering parser.</div>
+<div><span class="pill">D36</span> <b>pm2 for daemon lifecycle</b> — ~2.8-3.6M weekly downloads, 600M+ total; production-grade start/stop/status and crash auto-restart via its programmatic API, replacing hand-rolled detached-process/PID-file logic.</div>
+<div><span class="pill">D37</span> <b>@clack/prompts + listr2 + @inkjs/ui for CLI/TUI polish</b> — Modern, purpose-built, actively maintained libraries for <code>org doctor</code> prompts/task lists and <code>org watch</code> widgets, instead of hand-rolled equivalents.</div>
+<div><span class="pill">D38</span> <b>@kubernetes/client-node and node-notifier reconfirmed</b> — Both independently verified as still the correct, actively-maintained choice; no change from D15/earlier picks.</div>
+<div><span class="pill">D39</span> <b>No JS wrapper for <code>kind</code>, and no <code>command-exists</code> dependency</b> — Researched and confirmed no viable npm-native <code>kind</code> binding exists (shelling out via execa stands); deliberately skipped adding a dependency for binary-existence checks since the common package is 6+ years unmaintained and execa's own error path covers it in one line.</div>
+</div>
+
+<h3>One-sentence product definition</h3>
+<div class="callout good" style="font-size:18px"><b>A recursively organized network of accountable software-engineering agent nodes that autonomously plan, delegate, select capabilities and runtimes, manage commitments, and optimize execution under explicit authority and economic constraints.</b></div>
+
+<h3>Core invariant</h3>
+<div class="callout" style="font-size:18px"><b>Every task has one accountable owner; ownership can delegate execution but never accountability.</b></div>
+</section>
+
+<section id="sources">
+<h2>24. References & Inspiration</h2>
+<p class="lede">External references used to ground the Fractal-specific portions of this handoff. The rest of the architecture is the proposed design synthesized from the brainstorming session.</p>
+
+<ul>
+<li><a href="https://github.com/plasma-ai/fractal" target="_blank">Plasma AI Fractal — GitHub repository</a> — recursive autonomous coding-agent nodes, git worktrees, bounded loops, local SQLite, supported backends, and security warning.</li>
+<li><a href="https://docs.plasma.ai/fractal/" target="_blank">Fractal Documentation</a> — architecture and user guide.</li>
+<li><a href="https://docs.plasma.ai/fractal/guide/loop.html" target="_blank">Fractal — The Iteration Loop</a> — run/iteration/step model, budgets, signals, execution, commits, and live steering.</li>
+<li><a href="https://docs.plasma.ai/fractal/guide/plans.html" target="_blank">Fractal — Plans and Steps</a> — plan history, step files, iterative planning and steering.</li>
+<li><a href="https://docs.plasma.ai/fractal/guide/agents.html" target="_blank">Fractal — Agent Backends</a> — backend/runtime abstraction and per-node/per-step selection.</li>
+<li><a href="https://docs.plasma.ai/fractal/cli/node.html" target="_blank">Fractal — Node CLI</a> — node creation, worktrees, lifecycle, scopes and configuration.</li>
+<li><a href="https://github.com/omnigent-ai/omnigent" target="_blank">Omnigent</a> — comparable open-source meta-harness orchestrating Claude Code, Codex, Cursor, and Pi with policy/sandboxing; its Server (state + API) / Host-daemon (execution) split directly informed §17's daemon architecture.</li>
+<li><a href="https://github.com/chaitanyagiri/munder-difflin" target="_blank">Munder Difflin</a> — reference for product presentation: narrative organizational metaphor plus layered visual evidence (screenshots, architecture diagrams, progressive disclosure), informing §19's product-framing decision.</li>
+</ul>
+
+<div class="callout warn"><b>Important:</b> This document now captures both the conceptual model <i>and</i> the concrete stack/architecture decisions (§17–19) needed to start building — but it is still not a phased implementation plan. That's the deliberate next step, produced separately (via a <code>writing-plans</code>-style pass against this document) once building actually begins.</div>
+</section>
+
+</main>
+</div>
+
+<footer>
+Generated as a detailed architecture handoff from the brainstorming session. Mermaid diagrams are rendered in-browser through Mermaid.js. If the file is opened without network access, the text and code remain readable, but diagrams may require access to the Mermaid CDN.
+</footer>
+
+</body>
+</html>
