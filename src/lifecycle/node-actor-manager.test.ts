@@ -13,20 +13,25 @@ afterEach(() => {
   }
 });
 
+// Deliberately an escalating contract: spawn-authorized, budget too small for a
+// child, and a long enough goal to read as high complexity. Every other outcome
+// would dispatch a real Kubernetes Job from what is meant to be a unit test.
+const GOAL = 'a deliberately long goal string that reads as high complexity to the coordinator, '.repeat(3);
 const CONTRACT = {
-  goal: 'test', definition_of_done: ['done'],
-  authority: { tools: [], spawn_children: false, max_child_count: 0, budget_usd: 0 }, constraints: [],
+  goal: GOAL, definition_of_done: ['done'],
+  authority: { tools: [], spawn_children: true, max_child_count: 2, budget_usd: 0.01 }, constraints: [],
 };
 
 describe('node-actor-manager', () => {
   it('persists state transitions and appends an event per transition', async () => {
     const db = createDb(TEST_DB);
-    insertNode(db, { id: 'n1', parentId: null, goal: 'test', contract: CONTRACT, state: 'CREATED', createdAt: 't0', updatedAt: 't0' });
+    insertNode(db, { id: 'n1', parentId: null, goal: GOAL, contract: CONTRACT, state: 'CREATED', createdAt: 't0', updatedAt: 't0' });
 
-    startNodeActor(db, 'n1', 'test');
-    // INTELLIGENCE_GATE resolves itself through an async invoke now, so the node
-    // walks to EXECUTION_DECISION with no event from this test.
-    await vi.waitFor(() => expect(getNode(db, 'n1')?.state).toBe('EXECUTION_DECISION'));
+    startNodeActor(db, 'n1', GOAL);
+    // INTELLIGENCE_GATE and EXECUTION_DECISION both resolve themselves through
+    // async invokes now, so the node walks all the way here with no event from
+    // this test.
+    await vi.waitFor(() => expect(getNode(db, 'n1')?.state).toBe('ESCALATE'));
 
     const recordedEvents = listEventsForNode(db, 'n1');
     expect(recordedEvents.length).toBeGreaterThanOrEqual(2);

@@ -1,23 +1,25 @@
 import { setup, fromPromise, assign } from 'xstate';
 import type { ExecuteStepResult } from '../execution/execute-step.js';
 import type { IntelligenceBundle } from '../intelligence/coordinator.js';
+import type { DecideExecutionResult } from '../engines/decide-execution.js';
 
 export interface NodeMachineContext {
   nodeId: string;
   goal: string;
   complexity?: 'low' | 'medium' | 'high';
   gateAttempts?: number;
+  executionAttempts?: number;
+  lastDecision?: DecideExecutionResult;
   lastResult?: ExecuteStepResult;
 }
 
-export type NodeMachineEvent =
-  | { type: 'START' }
-  | { type: 'SELF_EXECUTE' }
-  | { type: 'DELEGATE' }
-  | { type: 'DOD_MET' }
-  | { type: 'DOD_NOT_MET' };
+// SELF_EXECUTE/DELEGATE/DOD_MET/DOD_NOT_MET are all gone from the event union —
+// the machine decides and verifies these itself now. START is the only event a
+// caller still sends (Task 16 adds the approval pair).
+export type NodeMachineEvent = { type: 'START' };
 
 const MAX_GATE_ATTEMPTS = 3;
+const MAX_EXECUTION_ATTEMPTS = 3;
 
 export const nodeMachine = setup({
   types: {
@@ -31,6 +33,12 @@ export const nodeMachine = setup({
     }),
     assessUncertainty: fromPromise<IntelligenceBundle, { goal: string }>(async () => {
       throw new Error('assessUncertainty actor not provided');
+    }),
+    decideExecution: fromPromise<DecideExecutionResult, { goal: string; complexity: NodeMachineContext['complexity'] }>(async () => {
+      throw new Error('decideExecution actor not provided');
+    }),
+    delegateToChild: fromPromise<ExecuteStepResult, { nodeId: string; goal: string }>(async () => {
+      throw new Error('delegateToChild actor not provided');
     }),
   },
 }).createMachine({
@@ -69,9 +77,14 @@ export const nodeMachine = setup({
       },
     },
     EXECUTION_DECISION: {
-      on: {
-        SELF_EXECUTE: 'SELF_EXECUTE',
-        DELEGATE: 'DELEGATE',
+      invoke: {
+        src: 'decideExecution',
+        input: ({ context }) => ({ goal: context.goal, complexity: context.complexity }),
+        onDone: [
+          { target: 'SELF_EXECUTE', guard: ({ event }) => event.output.outcome === 'SELF_EXECUTE', actions: assign({ lastDecision: ({ event }) => event.output }) },
+          { target: 'DELEGATE', guard: ({ event }) => event.output.outcome === 'DELEGATE', actions: assign({ lastDecision: ({ event }) => event.output }) },
+          { target: 'ESCALATE', actions: assign({ lastDecision: ({ event }) => event.output }) },
+        ],
       },
     },
     SELF_EXECUTE: {
@@ -87,13 +100,36 @@ export const nodeMachine = setup({
         },
       },
     },
-    DELEGATE: { always: 'VERIFY' },
-    VERIFY: {
-      on: {
-        DOD_MET: 'COMPLETE',
-        DOD_NOT_MET: 'EXECUTION_DECISION',
+    DELEGATE: {
+      invoke: {
+        src: 'delegateToChild',
+        input: ({ context }) => ({ nodeId: context.nodeId, goal: context.goal }),
+        onDone: { target: 'VERIFY', actions: assign({ lastResult: ({ event }) => event.output }) },
+        onError: {
+          target: 'VERIFY',
+          actions: assign({ lastResult: ({ event }) => ({ succeeded: false, message: String(event.error), events: [] }) }),
+        },
       },
     },
+    // Task 16 replaces this with a real WAIT_APPROVAL follow-up.
+    ESCALATE: { type: 'final' },
+    // VERIFY resolves itself from the execution result. Nothing external sends a
+    // DoD verdict: a delegating parent awaits its child's terminal state, so a
+    // child parked here waiting on a human would deadlock the parent. Real
+    // DoD-checking (does the result actually satisfy definition_of_done?) is a
+    // later phase; today "the step succeeded" is the whole verdict.
+    VERIFY: {
+      always: [
+        { target: 'COMPLETE', guard: ({ context }) => context.lastResult?.succeeded === true },
+        {
+          target: 'EXECUTION_DECISION',
+          guard: ({ context }) => (context.executionAttempts ?? 0) < MAX_EXECUTION_ATTEMPTS,
+          actions: assign({ executionAttempts: ({ context }) => (context.executionAttempts ?? 0) + 1 }),
+        },
+        { target: 'FAILED' },
+      ],
+    },
     COMPLETE: { type: 'final' },
+    FAILED: { type: 'final' },
   },
 });

@@ -1,11 +1,15 @@
+import { randomUUID } from 'node:crypto';
 import { createActor, fromPromise, type Actor } from 'xstate';
 import { nodeMachine, type NodeMachineEvent } from './node-machine.js';
 import type { Db } from '../db/client.js';
-import { updateNodeState } from '../db/queries/nodes.js';
+import { updateNodeState, getNode } from '../db/queries/nodes.js';
 import { appendEvent } from '../db/queries/events.js';
 import { executeStep } from '../execution/execute-step.js';
 import { claudeCodeAdapter } from '../adapters/claude-code.js';
 import { assessUncertainty } from '../intelligence/coordinator.js';
+import { decideExecution } from '../engines/decide-execution.js';
+import { insertDecision } from '../db/queries/decisions.js';
+import type { NodeMachineContext } from './node-machine.js';
 import { deleteNodeNetworkPolicy } from '../k8s/cleanup.js';
 
 // ponytail: in-process actor registry, lost on daemon restart. Rehydrate from the
@@ -18,6 +22,21 @@ function productionMachine(db: Db, nodeId: string) {
   return nodeMachine.provide({
     actors: {
       assessUncertainty: fromPromise(async ({ input }: { input: { goal: string } }) => assessUncertainty(input)),
+      decideExecution: fromPromise(async ({ input }: { input: { goal: string; complexity: NodeMachineContext['complexity'] } }) => {
+        const node = getNode(db, nodeId);
+        if (!node) throw new Error(`Node ${nodeId} not found when deciding execution`);
+        const result = decideExecution({
+          goal: input.goal,
+          authority: node.contract.authority,
+          complexity: input.complexity ?? 'low',
+        });
+        insertDecision(db, {
+          id: randomUUID(), nodeId, type: 'execution_decision',
+          outcome: result.outcome, breakdown: result.breakdown,
+          createdAt: new Date().toISOString(),
+        });
+        return result;
+      }),
       executeStep: fromPromise(async ({ input }) => {
         const result = await executeStep({
           nodeId,
