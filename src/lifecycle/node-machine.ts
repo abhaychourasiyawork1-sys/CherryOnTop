@@ -22,7 +22,8 @@ export interface NodeMachineContext {
 export type NodeMachineEvent =
   | { type: 'START' }
   | { type: 'APPROVED' }
-  | { type: 'REJECTED' };
+  | { type: 'REJECTED' }
+  | { type: 'CANCEL' };
 
 const MAX_GATE_ATTEMPTS = 3;
 const MAX_EXECUTION_ATTEMPTS = 3;
@@ -54,6 +55,11 @@ export const nodeMachine = setup({
   id: 'accountableNode',
   context: ({ input }) => input,
   initial: 'CREATED',
+  // Root-level, so every state is cancellable — mid-execute, mid-delegate,
+  // parked on approval — without editing each one, and without a state added
+  // later being silently un-cancellable because someone forgot. Final states
+  // ignore it, so cancelling a finished node is a no-op rather than a rewrite.
+  on: { CANCEL: '.CANCELLED' },
   states: {
     CREATED: { on: { START: 'ORIENT' } },
     ORIENT: { always: 'PLAN' },
@@ -169,5 +175,8 @@ export const nodeMachine = setup({
     },
     COMPLETE: { type: 'final' },
     FAILED: { type: 'final' },
+    // A cancelled node is not a failed one: nothing went wrong with it, a human
+    // stopped it. Keeping them distinct is what makes `org tree` honest.
+    CANCELLED: { type: 'final' },
   },
 });

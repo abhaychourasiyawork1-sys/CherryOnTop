@@ -1,6 +1,9 @@
 import { z } from 'zod';
 
-export const CommitmentStatusSchema = z.enum(['pending', 'active', 'blocked', 'at_risk', 'completed', 'failed']);
+// 'cancelled' is distinct from 'failed': a commitment whose node a human stopped
+// was not attempted and found wanting. commitments.status is a free-text SQLite
+// column, so widening this enum needs no migration.
+export const CommitmentStatusSchema = z.enum(['pending', 'active', 'blocked', 'at_risk', 'completed', 'failed', 'cancelled']);
 
 export const CommitmentSchema = z.object({
   id: z.string(),

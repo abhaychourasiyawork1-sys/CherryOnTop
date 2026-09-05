@@ -94,4 +94,37 @@ describe('nodeMachine', () => {
     actor.send({ type: 'START' });
     await vi.waitFor(() => expect(actor.getSnapshot().value).toBe('COMPLETE'));
   });
+
+  it('cancels mid-flight into a final CANCELLED state', async () => {
+    const actor = createActor(machineWithMocks(), { input: { nodeId: 'n1', goal: 'test' } });
+    actor.start();
+    actor.send({ type: 'START' });
+    // The mocked actors resolve asynchronously, so this lands while the node is
+    // still working somewhere past CREATED — the realistic cancel case.
+    actor.send({ type: 'CANCEL' });
+    expect(actor.getSnapshot().value).toBe('CANCELLED');
+    expect(actor.getSnapshot().status).toBe('done');
+  });
+
+  it('cancels a node parked in WAIT_APPROVAL', async () => {
+    // A node blocked on a human is the single most likely thing to be cancelled.
+    const actor = createActor(machineWithMocks({ decideExecution: { outcome: 'ESCALATE', breakdown: {} } }), { input: { nodeId: 'n1', goal: 'test' } });
+    actor.start();
+    actor.send({ type: 'START' });
+    await vi.waitFor(() => expect(actor.getSnapshot().value).toBe('WAIT_APPROVAL'));
+    actor.send({ type: 'CANCEL' });
+    expect(actor.getSnapshot().value).toBe('CANCELLED');
+    expect(actor.getSnapshot().status).toBe('done');
+  });
+
+  it('cancels a node that has already reached COMPLETE without disturbing it', async () => {
+    // Final states ignore events; cancelling a finished node must be a no-op
+    // rather than resurrecting it into CANCELLED and rewriting history.
+    const actor = createActor(machineWithMocks(), { input: { nodeId: 'n1', goal: 'test' } });
+    actor.start();
+    actor.send({ type: 'START' });
+    await vi.waitFor(() => expect(actor.getSnapshot().value).toBe('COMPLETE'));
+    actor.send({ type: 'CANCEL' });
+    expect(actor.getSnapshot().value).toBe('COMPLETE');
+  });
 });
