@@ -84,6 +84,12 @@ export const CHECKS: DoctorCheck[] = [
       }
     },
   },
+  {
+    name: 'Anthropic API key',
+    run: async () => process.env.ANTHROPIC_API_KEY
+      ? { ok: true, message: 'set' }
+      : { ok: false, message: 'ANTHROPIC_API_KEY is not set — export it before `org run` (get one at https://console.anthropic.com/settings/keys)' },
+  },
 ];
 
 export function registerDoctorCommand(program: Command): void {

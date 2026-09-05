@@ -14,9 +14,9 @@ describe('doctor Node version check (corrected floor)', () => {
 });
 
 describe('doctor check list', () => {
-  it('checks Node, Docker, kind, kubectl and the cluster', () => {
+  it('checks Node, Docker, kind, kubectl, the cluster and the API key', () => {
     expect(CHECKS.map((c) => c.name)).toEqual([
-      'Node.js version', 'Docker', 'kind', 'kubectl', 'Kubernetes cluster',
+      'Node.js version', 'Docker', 'kind', 'kubectl', 'Kubernetes cluster', 'Anthropic API key',
     ]);
   });
 });
@@ -35,4 +35,30 @@ describe('binary probes detect an installed binary', () => {
       expect(await probe(bin, args)).toBe(true);
     });
   }
+});
+
+describe('Anthropic API key check', () => {
+  it('passes when ANTHROPIC_API_KEY is set', async () => {
+    const original = process.env.ANTHROPIC_API_KEY;
+    process.env.ANTHROPIC_API_KEY = 'sk-ant-test-value';
+    try {
+      const check = CHECKS.find((c) => c.name === 'Anthropic API key');
+      expect(check).toBeDefined();
+      expect((await check!.run()).ok).toBe(true);
+    } finally {
+      if (original === undefined) delete process.env.ANTHROPIC_API_KEY;
+      else process.env.ANTHROPIC_API_KEY = original;
+    }
+  });
+
+  it('fails when ANTHROPIC_API_KEY is unset', async () => {
+    const original = process.env.ANTHROPIC_API_KEY;
+    delete process.env.ANTHROPIC_API_KEY;
+    try {
+      const check = CHECKS.find((c) => c.name === 'Anthropic API key');
+      expect((await check!.run()).ok).toBe(false);
+    } finally {
+      if (original !== undefined) process.env.ANTHROPIC_API_KEY = original;
+    }
+  });
 });

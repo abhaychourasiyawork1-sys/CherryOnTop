@@ -97,9 +97,10 @@ function productionMachine(db: Db, nodeId: string) {
           goal: input.goal,
           namespace: NAMESPACE,
           worktreePath: process.env.ORG_WORKTREE_PATH ?? `/tmp/org-worktrees/${nodeId}`,
-          // ponytail: no credentials plumbed yet — the Secret is created empty until
-          // the credential-broker task lands.
-          credentials: {},
+          // G4 fix: was always {}, so no real invocation could authenticate. The
+          // key becomes the container's env var of the same name via envFrom —
+          // Claude Code reads it natively, no extra wiring.
+          credentials: process.env.ANTHROPIC_API_KEY ? { ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY } : {},
           adapter: runnerImageOverride() ? stopgapAdapter : claudeCodeAdapter,
           image: runnerImageOverride(),
         });
