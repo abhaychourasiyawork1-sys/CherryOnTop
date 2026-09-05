@@ -19,7 +19,7 @@ import { insertCommitment, updateCommitmentStatus, listCommitmentsForNode } from
 import { resolveCredentials } from '../execution/credentials.js';
 import os from 'node:os';
 import { CHILD_BUDGET_USD } from '../engines/decide-execution.js';
-import { deleteNodeNetworkPolicy } from '../k8s/cleanup.js';
+import { deleteNodeNetworkPolicy, deleteNodeJobs } from '../k8s/cleanup.js';
 
 // ponytail: in-process actor registry, lost on daemon restart. Rehydrate from the
 // event log if nodes need to survive a restart.
@@ -139,7 +139,9 @@ export function startNodeActor(db: Db, nodeId: string, goal: string): void {
     if (snapshot.status === 'done') {
       // A node's commitment is only accountable if it is closed out; the
       // terminal transition is the one place that knows the verdict.
-      const outcome = snapshot.value === 'COMPLETE' ? 'completed' : 'failed';
+      const outcome = snapshot.value === 'COMPLETE' ? 'completed'
+        : snapshot.value === 'CANCELLED' ? 'cancelled'
+        : 'failed';
       for (const commitment of listCommitmentsForNode(db, nodeId)) {
         updateCommitmentStatus(db, commitment.id, outcome, now);
       }
@@ -155,6 +157,16 @@ export function startNodeActor(db: Db, nodeId: string, goal: string): void {
   actor.start();
   actors.set(nodeId, actor);
   actor.send({ type: 'START' });
+}
+
+/** Stops a node and tears down its cluster-side work. Order matters: CANCEL
+ *  first, so the actor reaches CANCELLED and its terminal handler releases the
+ *  NetworkPolicy and closes commitments; then delete the Jobs, so an in-flight
+ *  executeStep sees its Job disappear and returns the cancelled result rather
+ *  than running on against a node that has already stopped. */
+export async function cancelNode(db: Db, nodeId: string): Promise<void> {
+  actors.get(nodeId)?.send({ type: 'CANCEL' });
+  await deleteNodeJobs(nodeId, NAMESPACE);
 }
 
 export function getNodeActor(nodeId: string): Actor<typeof nodeMachine> | undefined {

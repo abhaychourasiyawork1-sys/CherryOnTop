@@ -77,3 +77,23 @@ describe.skipIf(!CLUSTER_AVAILABLE)('followJobLogs', () => {
     await execa('kubectl', ['delete', 'secret', 'follow-secret', '-n', 'default']).catch(() => {});
   }, 120_000);
 });
+
+describe.skipIf(!CLUSTER_AVAILABLE)('waitForJobCompletion when the Job is deleted underneath it', () => {
+  it('reports a cancelled Job rather than throwing a 404', async () => {
+    await execa('kubectl', ['create', 'secret', 'generic', 'gone-secret', '--from-literal=x=y', '-n', 'default']).catch(() => {});
+    const job = buildExecutionJob({
+      nodeId: 'gone', namespace: 'default', image: 'busybox:1.36',
+      command: ['sh', '-c', 'sleep 300'], worktreePath: '/tmp', secretName: 'gone-secret',
+    });
+    const jobName = await createJob(job);
+
+    const waiting = waitForJobCompletion(jobName, 'default');
+    await new Promise((r) => setTimeout(r, 2000));
+    await deleteJob(jobName, 'default');
+
+    const result = await waiting;
+    expect(result.succeeded).toBe(false);
+    expect(result.message).toMatch(/cancelled/i);
+    await execa('kubectl', ['delete', 'secret', 'gone-secret', '-n', 'default']).catch(() => {});
+  }, 120_000);
+});

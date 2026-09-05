@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { router, publicProcedure } from '../trpc.js';
 import { NodeContractSchema } from '../../schemas/node-contract.js';
 import { insertNode, getNode, listNodes } from '../../db/queries/nodes.js';
-import { getNodeActor, sendToNode } from '../../lifecycle/node-actor-manager.js';
+import { getNodeActor, sendToNode, cancelNode } from '../../lifecycle/node-actor-manager.js';
 import { resolveApproval, getApproval, listPendingApprovals } from '../../db/queries/approvals.js';
 import { insertCommitment } from '../../db/queries/commitments.js';
 
@@ -44,6 +44,13 @@ export const nodeRouter = router({
   tree: publicProcedure.query(({ ctx }) => listNodes(ctx.db)),
 
   listPendingApprovals: publicProcedure.query(({ ctx }) => listPendingApprovals(ctx.db)),
+
+  cancel: publicProcedure
+    .input(z.object({ nodeId: z.string() }))
+    .mutation(async ({ input, ctx }) => {
+      await cancelNode(ctx.db, input.nodeId);
+      return { ok: true as const };
+    }),
 
   resolveApproval: publicProcedure
     .input(z.object({ approvalId: z.string(), decision: z.enum(['approved', 'rejected']) }))

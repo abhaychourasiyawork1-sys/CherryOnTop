@@ -38,7 +38,19 @@ export async function waitForJobCompletion(
   const { batch } = loadApis();
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
-    const job = await batch.readNamespacedJobStatus({ name: jobName, namespace });
+    let job;
+    try {
+      job = await batch.readNamespacedJobStatus({ name: jobName, namespace });
+    } catch (err) {
+      // The Job vanishing underneath a running step is a graceful outcome, not
+      // a crash — cancellation deletes it deliberately, and a 404 here is how
+      // every caller finds out. Throwing instead would surface a cancelled node
+      // as an unhandled ApiException in the daemon log.
+      if (err instanceof k8s.ApiException && err.code === 404) {
+        return { succeeded: false, message: 'Job was cancelled' };
+      }
+      throw err;
+    }
     const status = job.status;
     if (status?.succeeded && status.succeeded > 0) {
       return { succeeded: true, message: 'Job completed successfully' };
