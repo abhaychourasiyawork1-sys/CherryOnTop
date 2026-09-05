@@ -39,7 +39,9 @@ const defaultDeps: ExecuteStepDeps = {
   createJob, waitForJobCompletion, deleteJob, streamJobLogs,
 };
 
-const RUNNER_IMAGE = 'ghcr.io/abhaychourasiyawork1-sys/cherryontop-runner:dev';
+// Local tag, not a registry reference: no GHCR account is needed to use this
+// tool on your own machine. Build and load it with ./scripts/build-runner-image.sh.
+const RUNNER_IMAGE = 'cherryontop-runner:local';
 
 // G2 fix: still wide on IP range (per-provider CIDR allowlists are a Phase 5
 // config task — providers' ranges shift and need a maintained source), but now

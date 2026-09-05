@@ -85,6 +85,22 @@ export const CHECKS: DoctorCheck[] = [
     },
   },
   {
+    name: 'Runner image',
+    run: async () => {
+      try {
+        const { stdout } = await execa('sh', [
+          '-c',
+          'docker exec org-local-control-plane crictl images 2>/dev/null | grep -c cherryontop-runner || true',
+        ]);
+        return stdout.trim() !== '0' && stdout.trim() !== ''
+          ? { ok: true, message: 'loaded into the cluster' }
+          : { ok: false, message: 'not loaded — run ./scripts/build-runner-image.sh' };
+      } catch (err) {
+        return { ok: false, message: `could not check — run ./scripts/build-runner-image.sh (${firstLine(err)})` };
+      }
+    },
+  },
+  {
     name: 'Anthropic API key',
     run: async () => process.env.ANTHROPIC_API_KEY
       ? { ok: true, message: 'set' }

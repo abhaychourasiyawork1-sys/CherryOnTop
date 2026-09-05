@@ -14,9 +14,9 @@ describe('doctor Node version check (corrected floor)', () => {
 });
 
 describe('doctor check list', () => {
-  it('checks Node, Docker, kind, kubectl, the cluster and the API key', () => {
+  it('checks Node, Docker, kind, kubectl, the cluster, the runner image and the API key', () => {
     expect(CHECKS.map((c) => c.name)).toEqual([
-      'Node.js version', 'Docker', 'kind', 'kubectl', 'Kubernetes cluster', 'Anthropic API key',
+      'Node.js version', 'Docker', 'kind', 'kubectl', 'Kubernetes cluster', 'Runner image', 'Anthropic API key',
     ]);
   });
 });
