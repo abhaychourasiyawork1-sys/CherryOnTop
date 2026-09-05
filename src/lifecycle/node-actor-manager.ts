@@ -1,8 +1,8 @@
 import { randomUUID } from 'node:crypto';
-import { createActor, fromPromise, type Actor } from 'xstate';
+import { createActor, fromPromise, waitFor, type Actor } from 'xstate';
 import { nodeMachine, type NodeMachineEvent } from './node-machine.js';
 import type { Db } from '../db/client.js';
-import { updateNodeState, getNode } from '../db/queries/nodes.js';
+import { updateNodeState, getNode, insertNode } from '../db/queries/nodes.js';
 import { appendEvent } from '../db/queries/events.js';
 import { executeStep } from '../execution/execute-step.js';
 import { claudeCodeAdapter } from '../adapters/claude-code.js';
@@ -10,6 +10,10 @@ import { assessUncertainty } from '../intelligence/coordinator.js';
 import { decideExecution } from '../engines/decide-execution.js';
 import { insertDecision } from '../db/queries/decisions.js';
 import type { NodeMachineContext } from './node-machine.js';
+import { delegateToChild, type DelegateChildDeps } from './delegate-child.js';
+import { insertCommitment } from '../db/queries/commitments.js';
+import { effectiveAuthority } from '../engines/authority.js';
+import { CHILD_BUDGET_USD } from '../engines/decide-execution.js';
 import { deleteNodeNetworkPolicy } from '../k8s/cleanup.js';
 
 // ponytail: in-process actor registry, lost on daemon restart. Rehydrate from the
@@ -17,6 +21,48 @@ import { deleteNodeNetworkPolicy } from '../k8s/cleanup.js';
 const actors = new Map<string, Actor<typeof nodeMachine>>();
 
 const NAMESPACE = process.env.ORG_K8S_NAMESPACE ?? 'org-exec';
+
+function realDelegateDeps(db: Db): DelegateChildDeps {
+  return {
+    createChildNode: (parentId, goal, budgetUsd) => {
+      const parent = getNode(db, parentId);
+      if (!parent) throw new Error(`Parent node ${parentId} not found`);
+      const id = randomUUID();
+      const now = new Date().toISOString();
+      const parentAuthority = parent.contract.authority;
+      // There is no separate platform-policy concept in the codebase yet (doc §8
+      // describes one, nothing implements it), so the parent's own authority
+      // stands in as the platform maximum.
+      // Delegation depth is bounded by max_child_count: each generation spends
+      // one, and a child with none left cannot spawn. Without this a goal that
+      // reads as high-complexity delegates to a child with the same goal, which
+      // delegates again, forever.
+      const remainingChildren = Math.max(parentAuthority.max_child_count - 1, 0);
+      const childAuthority = effectiveAuthority(parentAuthority, parentAuthority, {
+        ...parentAuthority,
+        budget_usd: budgetUsd,
+        max_child_count: remainingChildren,
+        spawn_children: remainingChildren > 0,
+      });
+      insertNode(db, {
+        id, parentId, goal,
+        contract: { ...parent.contract, goal, authority: childAuthority },
+        state: 'CREATED', createdAt: now, updatedAt: now,
+      });
+      return id;
+    },
+    recordCommitment: (childId, goal) => {
+      const now = new Date().toISOString();
+      insertCommitment(db, {
+        id: randomUUID(), owner: childId, goal, definition_of_done: [goal],
+        status: 'pending', created_at: now,
+        dependencies: [], evidence: [], risks: [],
+      }, now);
+    },
+    startChild: (childId, goal) => startNodeActor(db, childId, goal),
+    waitForChild: (childId) => waitForNodeCompletion(childId),
+  };
+}
 
 function productionMachine(db: Db, nodeId: string) {
   return nodeMachine.provide({
@@ -37,6 +83,9 @@ function productionMachine(db: Db, nodeId: string) {
         });
         return result;
       }),
+      delegateToChild: fromPromise(async ({ input }: { input: { nodeId: string; goal: string } }) =>
+        delegateToChild({ parentId: nodeId, goal: input.goal, childBudgetUsd: CHILD_BUDGET_USD }, realDelegateDeps(db)),
+      ),
       executeStep: fromPromise(async ({ input }) => {
         const result = await executeStep({
           nodeId,
@@ -89,4 +138,13 @@ export function sendToNode(nodeId: string, event: NodeMachineEvent): void {
   const actor = actors.get(nodeId);
   if (!actor) throw new Error(`No active actor for node ${nodeId}`);
   actor.send(event);
+}
+
+export async function waitForNodeCompletion(nodeId: string, timeoutMs = 300_000): Promise<{ succeeded: boolean }> {
+  const actor = actors.get(nodeId);
+  if (!actor) throw new Error(`No active actor for node ${nodeId}`);
+  const snapshot = await waitFor(actor, (s) => s.status === 'done', { timeout: timeoutMs });
+  // COMPLETE is the only terminal state that means the goal was met — FAILED and
+  // ESCALATE are both terminal too, and neither is a success.
+  return { succeeded: snapshot.value === 'COMPLETE' };
 }
