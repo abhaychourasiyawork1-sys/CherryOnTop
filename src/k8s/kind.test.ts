@@ -43,3 +43,14 @@ describe.skipIf(!(await isClusterAvailable()))('getKubeDnsClusterIp', () => {
     expect(ip).toMatch(/^\d{1,3}(\.\d{1,3}){3}$/);
   }, 60_000);
 });
+
+describe.skipIf(!(await isClusterAvailable()))('ensureLocalCluster host mount', () => {
+  it('mounts the home directory at /host inside the control-plane node', async () => {
+    await ensureLocalCluster();
+    const { stdout } = await execa('docker', [
+      'inspect', 'org-local-control-plane', '--format', '{{json .Mounts}}',
+    ]);
+    const mounts = JSON.parse(stdout) as { Source: string; Destination: string }[];
+    expect(mounts.some((m) => m.Destination === '/host')).toBe(true);
+  }, 180_000);
+});
