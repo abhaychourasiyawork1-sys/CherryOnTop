@@ -5,6 +5,7 @@ import { updateNodeState } from '../db/queries/nodes.js';
 import { appendEvent } from '../db/queries/events.js';
 import { executeStep } from '../execution/execute-step.js';
 import { claudeCodeAdapter } from '../adapters/claude-code.js';
+import { deleteNodeNetworkPolicy } from '../k8s/cleanup.js';
 
 // ponytail: in-process actor registry, lost on daemon restart. Rehydrate from the
 // event log if nodes need to survive a restart.
@@ -44,6 +45,15 @@ export function startNodeActor(db: Db, nodeId: string, goal: string): void {
     const now = new Date().toISOString();
     updateNodeState(db, nodeId, String(snapshot.value), now);
     appendEvent(db, { nodeId, type: 'state.transition', payload: { state: snapshot.value }, createdAt: now });
+
+    // G3 fix: the per-node egress policy outlives the node otherwise. A done
+    // actor is one that reached a final state (COMPLETE/FAILED), which it never
+    // leaves, so it is a safe point to release cluster-side resources.
+    if (snapshot.status === 'done') {
+      deleteNodeNetworkPolicy(nodeId, NAMESPACE).catch((err) => {
+        console.error(`Failed to clean up NetworkPolicy for node ${nodeId}:`, err);
+      });
+    }
   });
   actor.start();
   actors.set(nodeId, actor);
