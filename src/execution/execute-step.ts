@@ -3,6 +3,7 @@ import { buildExecutionJob } from '../k8s/job-manifest.js';
 import { createJob, waitForJobCompletion, deleteJob, streamJobLogs } from '../k8s/client.js';
 import { createEphemeralSecret, deleteSecret } from '../k8s/secrets.js';
 import { buildEgressAllowlistPolicy, applyNetworkPolicy } from '../k8s/network-policy.js';
+import { getKubeDnsClusterIp } from '../k8s/kind.js';
 import type { RuntimeAdapter, StructuredEvent } from '../adapters/adapter.js';
 
 export interface ExecuteStepInput {
@@ -44,10 +45,11 @@ const RUNNER_IMAGE = 'ghcr.io/abhaychourasiyawork1-sys/cherryontop-runner:dev';
 // config task — providers' ranges shift and need a maintained source), but now
 // excludes the addresses a compromised runner could actually do damage with:
 // cloud metadata (credential theft) and RFC1918 ranges (lateral movement).
-// ponytail: excluding 10.0.0.0/8 also excludes kind's service CIDR, so kube-dns
-// is unreachable and a runner cannot resolve names — TCP/443 to literal IPs only.
-// Harmless while the runner image is unpublished and nothing real dispatches;
-// a DNS egress rule is required before Phase 5's real image ships.
+// G6 fix: excluding RFC1918 ranges also excluded kind's service CIDR, so
+// kube-dns was unreachable — a runner could only reach literal IPs, not
+// hostnames. The narrow fix is a dedicated DNS rule below (added at call time,
+// since the cluster's DNS IP is only known once a cluster exists), not widening
+// the exclusion itself.
 const DEFAULT_EGRESS_ALLOWLIST = [
   {
     ip: '0.0.0.0/0',
@@ -66,7 +68,10 @@ export async function executeStep(
   try {
     // The policy is per-node, not per-step, so it outlives this call; the node's
     // terminal transition deletes it (k8s/cleanup.ts).
-    const policy = buildEgressAllowlistPolicy(input.nodeId, DEFAULT_EGRESS_ALLOWLIST);
+    const dnsIp = await getKubeDnsClusterIp();
+    const policy = buildEgressAllowlistPolicy(input.nodeId, DEFAULT_EGRESS_ALLOWLIST, [
+      { to: [{ ipBlock: { cidr: `${dnsIp}/32` } }], ports: [{ port: 53, protocol: 'UDP' }, { port: 53, protocol: 'TCP' }] },
+    ]);
     await d.applyNetworkPolicy(policy, input.namespace);
 
     const job = buildExecutionJob({

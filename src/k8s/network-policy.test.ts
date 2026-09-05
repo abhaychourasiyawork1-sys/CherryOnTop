@@ -41,3 +41,11 @@ it('excludes metadata and private-range addresses from a wide-open allowlist', (
     '169.254.169.254/32', '10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16',
   ]);
 });
+
+it('appends extra raw egress rules verbatim, for cases the simple ip/ports shape cannot express', () => {
+  const policy = buildEgressAllowlistPolicy('n1', [{ ip: '0.0.0.0/0', ports: [443] }], [
+    { to: [{ ipBlock: { cidr: '10.96.0.10/32' } }], ports: [{ port: 53, protocol: 'UDP' }, { port: 53, protocol: 'TCP' }] },
+  ]);
+  expect(policy.spec?.egress).toHaveLength(2);
+  expect(policy.spec?.egress?.[1].ports?.[0].protocol).toBe('UDP');
+});

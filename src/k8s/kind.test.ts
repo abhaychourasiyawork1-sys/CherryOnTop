@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { execa } from 'execa';
-import { isClusterReachable, isClusterAvailable, ensureLocalCluster, NAMESPACE } from './kind.js';
+import { isClusterReachable, isClusterAvailable, ensureLocalCluster, getKubeDnsClusterIp, NAMESPACE } from './kind.js';
 
 async function hasKindBinary(): Promise<boolean> {
   try {
@@ -33,5 +33,13 @@ describe.skipIf(!(await isClusterAvailable()))('ensureLocalCluster default-deny 
     await ensureLocalCluster();
     const { stdout } = await execa('kubectl', ['get', 'networkpolicy', 'default-deny-all', '-n', NAMESPACE, '-o', 'name']);
     expect(stdout.trim()).toBe('networkpolicy.networking.k8s.io/default-deny-all');
+  }, 60_000);
+});
+
+describe.skipIf(!(await isClusterAvailable()))('getKubeDnsClusterIp', () => {
+  it('returns a real IP address from the running cluster', async () => {
+    await ensureLocalCluster();
+    const ip = await getKubeDnsClusterIp();
+    expect(ip).toMatch(/^\d{1,3}(\.\d{1,3}){3}$/);
   }, 60_000);
 });

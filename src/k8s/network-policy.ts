@@ -1,5 +1,5 @@
 import * as k8s from '@kubernetes/client-node';
-import type { V1NetworkPolicy } from '@kubernetes/client-node';
+import type { V1NetworkPolicy, V1NetworkPolicyEgressRule } from '@kubernetes/client-node';
 
 function loadNetworkingApi() {
   const kc = new k8s.KubeConfig();
@@ -15,6 +15,9 @@ function statusOf(err: unknown): number | undefined {
 export function buildEgressAllowlistPolicy(
   nodeId: string,
   allowedTargets: { ip: string; ports: number[]; except?: string[] }[],
+  // The simple ip/ports shape is TCP-only and single-CIDR; DNS needs UDP, so
+  // rather than growing that shape a caller can pass raw rules through.
+  extraEgressRules: V1NetworkPolicyEgressRule[] = [],
 ): V1NetworkPolicy {
   return {
     apiVersion: 'networking.k8s.io/v1',
@@ -24,10 +27,13 @@ export function buildEgressAllowlistPolicy(
       podSelector: { matchLabels: { 'org.nodeId': nodeId } },
       policyTypes: ['Ingress', 'Egress'],
       ingress: [],
-      egress: allowedTargets.map((target) => ({
-        to: [{ ipBlock: { cidr: target.ip, ...(target.except ? { except: target.except } : {}) } }],
-        ports: target.ports.map((port) => ({ port, protocol: 'TCP' })),
-      })),
+      egress: [
+        ...allowedTargets.map((target) => ({
+          to: [{ ipBlock: { cidr: target.ip, ...(target.except ? { except: target.except } : {}) } }],
+          ports: target.ports.map((port) => ({ port, protocol: 'TCP' })),
+        })),
+        ...extraEgressRules,
+      ],
     },
   };
 }

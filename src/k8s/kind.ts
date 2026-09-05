@@ -70,3 +70,11 @@ async function ensureNamespace(namespace: string): Promise<void> {
   const { stdout } = await execa('kubectl', ['create', 'namespace', namespace, '--dry-run=client', '-o', 'yaml']);
   await execa('kubectl', ['apply', '-f', '-'], { input: stdout });
 }
+
+// Only knowable once a cluster exists, so it can't be a module-level constant.
+export async function getKubeDnsClusterIp(): Promise<string> {
+  const { stdout } = await execa('kubectl', [
+    'get', 'svc', 'kube-dns', '-n', 'kube-system', '-o', 'jsonpath={.spec.clusterIP}',
+  ]);
+  return stdout.trim();
+}
