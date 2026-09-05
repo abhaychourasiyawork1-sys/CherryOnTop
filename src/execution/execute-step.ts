@@ -32,11 +32,12 @@ export interface ExecuteStepDeps {
   waitForJobCompletion: typeof waitForJobCompletion;
   deleteJob: typeof deleteJob;
   streamJobLogs: typeof streamJobLogs;
+  getKubeDnsClusterIp: typeof getKubeDnsClusterIp;
 }
 
 const defaultDeps: ExecuteStepDeps = {
   createEphemeralSecret, deleteSecret, applyNetworkPolicy,
-  createJob, waitForJobCompletion, deleteJob, streamJobLogs,
+  createJob, waitForJobCompletion, deleteJob, streamJobLogs, getKubeDnsClusterIp,
 };
 
 // Local tag, not a registry reference: no GHCR account is needed to use this
@@ -70,7 +71,7 @@ export async function executeStep(
   try {
     // The policy is per-node, not per-step, so it outlives this call; the node's
     // terminal transition deletes it (k8s/cleanup.ts).
-    const dnsIp = await getKubeDnsClusterIp();
+    const dnsIp = await d.getKubeDnsClusterIp();
     const policy = buildEgressAllowlistPolicy(input.nodeId, DEFAULT_EGRESS_ALLOWLIST, [
       { to: [{ ipBlock: { cidr: `${dnsIp}/32` } }], ports: [{ port: 53, protocol: 'UDP' }, { port: 53, protocol: 'TCP' }] },
     ]);

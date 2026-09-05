@@ -19,6 +19,7 @@ describe('executeStep', () => {
       waitForJobCompletion: vi.fn(async () => { calls.push('waitJob'); return { succeeded: true, message: 'ok' }; }),
       deleteJob: vi.fn(async () => { calls.push('deleteJob'); }),
       streamJobLogs: vi.fn(async () => { calls.push('streamLogs'); return '{"type":"result","payload":{"success":true}}\n'; }),
+      getKubeDnsClusterIp: vi.fn(async () => '10.96.0.10'),
     };
 
     const result = await executeStep(
@@ -39,6 +40,7 @@ describe('executeStep', () => {
       waitForJobCompletion: vi.fn(async () => ({ succeeded: false, message: 'boom' })),
       deleteJob: vi.fn(async () => {}),
       streamJobLogs: vi.fn(async () => ''),
+      getKubeDnsClusterIp: vi.fn(async () => '10.96.0.10'),
     };
 
     const result = await executeStep(
@@ -60,6 +62,7 @@ describe('executeStep', () => {
       waitForJobCompletion: vi.fn(async () => ({ succeeded: true, message: 'ok' })),
       deleteJob: vi.fn(async () => {}),
       streamJobLogs: vi.fn(async () => ''),
+      getKubeDnsClusterIp: vi.fn(async () => '10.96.0.10'),
     };
 
     await expect(

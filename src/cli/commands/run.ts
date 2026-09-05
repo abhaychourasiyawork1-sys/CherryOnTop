@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { existsSync } from 'node:fs';
 import type { Command } from 'commander';
 import { toContainerPath } from '../../k8s/kind.js';
 import { daemonStatus, startDaemon } from '../../daemon/manager.js';
@@ -37,8 +38,17 @@ export function registerRunCommand(program: Command): void {
     .option('--repo <path>', 'local repository the node should operate on (defaults to the current directory)')
     .action(async (goal: string, options: { spawn: boolean; budget: number; maxChildren: number; repo?: string }) => {
       // Validated here, at the boundary closest to the user, so a path the
-      // sandbox cannot see fails before a node is ever created.
-      const repoPath = toContainerPath(path.resolve(options.repo ?? process.cwd()));
+      // sandbox cannot see fails before a node is ever created. The .git check
+      // is the second half of that guard: the mounted directory is handed to an
+      // agent running with permission prompts disabled, so "the directory I
+      // happened to be standing in" is not good enough.
+      const repo = path.resolve(options.repo ?? process.cwd());
+      if (!existsSync(path.join(repo, '.git'))) {
+        console.error(`${repo} is not a git repository — pass --repo <path> to point at the one you want worked on.`);
+        process.exitCode = 1;
+        return;
+      }
+      const repoPath = toContainerPath(repo);
       const status = await daemonStatus();
       if (!status.running) {
         console.log('Daemon not running — starting...');
@@ -59,6 +69,6 @@ export function registerRunCommand(program: Command): void {
         repoPath,
       });
       console.log(`Root node created: ${result.id}`);
-      console.log(`Operating on: ${path.resolve(options.repo ?? process.cwd())} (mounted at ${repoPath} inside the sandbox)`);
+      console.log(`Operating on: ${repo} (mounted at ${repoPath} inside the sandbox)`);
     });
 }

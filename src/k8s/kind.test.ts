@@ -61,6 +61,13 @@ describe('toContainerPath', () => {
     expect(() => toContainerPath('/etc/passwd')).toThrow(/outside the home directory/);
   });
 
+  // The runner gets the mounted directory with permission prompts disabled, so
+  // one forgotten `cd` must not hand it the whole home directory.
+  it('refuses the home directory itself', () => {
+    expect(() => toContainerPath(os.homedir())).toThrow(/entire home directory/);
+    expect(() => toContainerPath(`${os.homedir()}/`)).toThrow(/entire home directory/);
+  });
+
   it('maps a real subdirectory correctly', () => {
     expect(toContainerPath(`${os.homedir()}/Desktop/CherryOnTop`)).toBe('/host/Desktop/CherryOnTop');
   });
