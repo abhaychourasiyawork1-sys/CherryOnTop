@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import { existsSync, unlinkSync } from 'node:fs';
 import { createDb } from '../db/client.js';
 import { getNode, insertNode } from '../db/queries/nodes.js';
@@ -19,15 +19,14 @@ const CONTRACT = {
 };
 
 describe('node-actor-manager', () => {
-  it('persists state transitions and appends an event per transition', () => {
+  it('persists state transitions and appends an event per transition', async () => {
     const db = createDb(TEST_DB);
     insertNode(db, { id: 'n1', parentId: null, goal: 'test', contract: CONTRACT, state: 'CREATED', createdAt: 't0', updatedAt: 't0' });
 
     startNodeActor(db, 'n1', 'test');
-    expect(getNode(db, 'n1')?.state).toBe('INTELLIGENCE_GATE');
-
-    sendToNode('n1', { type: 'CONTEXT_SUFFICIENT' });
-    expect(getNode(db, 'n1')?.state).toBe('EXECUTION_DECISION');
+    // INTELLIGENCE_GATE resolves itself through an async invoke now, so the node
+    // walks to EXECUTION_DECISION with no event from this test.
+    await vi.waitFor(() => expect(getNode(db, 'n1')?.state).toBe('EXECUTION_DECISION'));
 
     const recordedEvents = listEventsForNode(db, 'n1');
     expect(recordedEvents.length).toBeGreaterThanOrEqual(2);
@@ -35,6 +34,6 @@ describe('node-actor-manager', () => {
   });
 
   it('throws when sending to a node with no active actor', () => {
-    expect(() => sendToNode('missing', { type: 'CONTEXT_SUFFICIENT' })).toThrow();
+    expect(() => sendToNode('missing', { type: 'DOD_MET' })).toThrow();
   });
 });

@@ -1,25 +1,24 @@
 import { setup, fromPromise, assign } from 'xstate';
 import type { ExecuteStepResult } from '../execution/execute-step.js';
+import type { IntelligenceBundle } from '../intelligence/coordinator.js';
 
 export interface NodeMachineContext {
   nodeId: string;
   goal: string;
+  complexity?: 'low' | 'medium' | 'high';
+  gateAttempts?: number;
   lastResult?: ExecuteStepResult;
 }
 
 export type NodeMachineEvent =
   | { type: 'START' }
-  | { type: 'CONTEXT_SUFFICIENT' }
-  | { type: 'CONTEXT_INSUFFICIENT' }
   | { type: 'SELF_EXECUTE' }
   | { type: 'DELEGATE' }
   | { type: 'DOD_MET' }
   | { type: 'DOD_NOT_MET' };
 
-// Phase 1 skeleton with SELF_EXECUTE now backed by a real invoked actor.
-// ORIENT/PLAN/DELEGATE still pass straight through and the caller drives the
-// decision events; Phase 3 replaces those with economics/intelligence actors
-// without changing these state names.
+const MAX_GATE_ATTEMPTS = 3;
+
 export const nodeMachine = setup({
   types: {
     context: {} as NodeMachineContext,
@@ -27,11 +26,11 @@ export const nodeMachine = setup({
     input: {} as NodeMachineContext,
   },
   actors: {
-    // Placeholder — production wiring (node-actor-manager.ts) `.provide()`s the
-    // real execute-step-backed actor; tests `.provide()` a mock. This default
-    // exists only so the machine type-checks and can be inspected in isolation.
     executeStep: fromPromise<ExecuteStepResult, { nodeId: string; goal: string }>(async () => {
-      throw new Error('executeStep actor not provided — call nodeMachine.provide({ actors: { executeStep: ... } })');
+      throw new Error('executeStep actor not provided');
+    }),
+    assessUncertainty: fromPromise<IntelligenceBundle, { goal: string }>(async () => {
+      throw new Error('assessUncertainty actor not provided');
     }),
   },
 }).createMachine({
@@ -43,9 +42,30 @@ export const nodeMachine = setup({
     ORIENT: { always: 'PLAN' },
     PLAN: { always: 'INTELLIGENCE_GATE' },
     INTELLIGENCE_GATE: {
-      on: {
-        CONTEXT_SUFFICIENT: 'EXECUTION_DECISION',
-        CONTEXT_INSUFFICIENT: 'PLAN',
+      invoke: {
+        src: 'assessUncertainty',
+        input: ({ context }) => ({ goal: context.goal }),
+        onDone: [
+          {
+            target: 'EXECUTION_DECISION',
+            guard: ({ event }) => event.output.sufficientContext,
+            actions: assign({ complexity: ({ event }) => event.output.complexity }),
+          },
+          // Re-planning for more context is bounded: PLAN -> GATE -> PLAN with a
+          // coordinator that keeps reporting "not enough" is an infinite tight
+          // loop otherwise. After MAX_GATE_ATTEMPTS we proceed on what we have
+          // rather than spinning — a decision made on thin context is still a
+          // decision, and it gets recorded as one.
+          {
+            target: 'PLAN',
+            guard: ({ context }) => (context.gateAttempts ?? 0) < MAX_GATE_ATTEMPTS,
+            actions: assign({
+              complexity: ({ event }) => event.output.complexity,
+              gateAttempts: ({ context }) => (context.gateAttempts ?? 0) + 1,
+            }),
+          },
+          { target: 'EXECUTION_DECISION', actions: assign({ complexity: ({ event }) => event.output.complexity }) },
+        ],
       },
     },
     EXECUTION_DECISION: {
@@ -58,17 +78,12 @@ export const nodeMachine = setup({
       invoke: {
         src: 'executeStep',
         input: ({ context }) => ({ nodeId: context.nodeId, goal: context.goal }),
-        onDone: {
-          target: 'VERIFY',
-          actions: assign({ lastResult: ({ event }) => event.output }),
-        },
+        onDone: { target: 'VERIFY', actions: assign({ lastResult: ({ event }) => event.output }) },
         // A dispatch failure is a verifiable outcome, not a crash: VERIFY gets a
-        // failed result and DOD_NOT_MET can re-plan around it.
+        // failed result and the loop can re-plan around it.
         onError: {
           target: 'VERIFY',
-          actions: assign({
-            lastResult: ({ event }) => ({ succeeded: false, message: String(event.error), events: [] }),
-          }),
+          actions: assign({ lastResult: ({ event }) => ({ succeeded: false, message: String(event.error), events: [] }) }),
         },
       },
     },
@@ -76,7 +91,7 @@ export const nodeMachine = setup({
     VERIFY: {
       on: {
         DOD_MET: 'COMPLETE',
-        DOD_NOT_MET: 'INTELLIGENCE_GATE',
+        DOD_NOT_MET: 'EXECUTION_DECISION',
       },
     },
     COMPLETE: { type: 'final' },
