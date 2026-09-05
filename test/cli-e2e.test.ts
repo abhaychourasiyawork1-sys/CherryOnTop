@@ -9,9 +9,13 @@ const TEST_DB = fileURLToPath(new URL('../test-e2e.db', import.meta.url));
 // A node now drives itself into a real Kubernetes dispatch with no external
 // event, so this e2e run needs the stopgap image (the default runner image is
 // unpublished and would leave a Job stuck in ContainerCreating).
+// The key is a placeholder: this run uses the stopgap image, which never calls
+// the API. It is present because `org run` refuses to dispatch without one —
+// that guard is the fix for a daemon holding a stale, keyless environment.
 const ENV = {
   ORG_DB_PATH: TEST_DB, ORG_DAEMON_PORT: '4188', ORG_DAEMON_NAME: 'org-daemon-e2e',
   ORG_RUNNER_IMAGE: 'busybox:1.36', ORG_WORKTREE_PATH: '/tmp',
+  ANTHROPIC_API_KEY: 'sk-ant-e2e-placeholder',
 };
 
 // Distinct pm2 app name + port so this file does not race the manager integration test.

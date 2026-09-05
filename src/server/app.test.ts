@@ -16,6 +16,22 @@ afterEach(() => {
 const noopStartNode = () => {};
 
 describe('Fastify + tRPC app', () => {
+  it('reports whether the daemon itself holds an API key', async () => {
+    const original = process.env.ANTHROPIC_API_KEY;
+    const app = buildServer(TEST_DB, () => {});
+    try {
+      process.env.ANTHROPIC_API_KEY = 'sk-ant-test';
+      let res = await app.inject({ method: 'GET', url: '/trpc/daemon.ping' });
+      expect(JSON.parse(res.body).result.data.hasApiKey).toBe(true);
+      delete process.env.ANTHROPIC_API_KEY;
+      res = await app.inject({ method: 'GET', url: '/trpc/daemon.ping' });
+      expect(JSON.parse(res.body).result.data.hasApiKey).toBe(false);
+    } finally {
+      if (original === undefined) delete process.env.ANTHROPIC_API_KEY;
+      else process.env.ANTHROPIC_API_KEY = original;
+    }
+  });
+
   it('responds to daemon.ping', async () => {
     const app = buildServer(TEST_DB, noopStartNode);
     const response = await app.inject({ method: 'GET', url: '/trpc/daemon.ping' });

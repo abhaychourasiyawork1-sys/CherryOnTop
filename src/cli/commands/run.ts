@@ -2,7 +2,7 @@ import path from 'node:path';
 import { existsSync } from 'node:fs';
 import type { Command } from 'commander';
 import { toContainerPath } from '../../k8s/kind.js';
-import { daemonStatus, startDaemon } from '../../daemon/manager.js';
+import { daemonStatus, startDaemon, stopDaemon } from '../../daemon/manager.js';
 import { createDaemonClient } from '../../daemon/client.js';
 
 function nonNegativeNumber(label: string) {
@@ -55,7 +55,26 @@ export function registerRunCommand(program: Command): void {
         await startDaemon();
       }
       await waitForDaemon();
-      const client = createDaemonClient();
+      let client = createDaemonClient();
+
+      if (!process.env.ANTHROPIC_API_KEY) {
+        console.error('ANTHROPIC_API_KEY is not set — every step would fail authentication inside the sandbox.');
+        console.error('Export it and re-run: export ANTHROPIC_API_KEY=sk-ant-...  (see `org doctor`)');
+        process.exitCode = 1;
+        return;
+      }
+      // The daemon captures its environment once, at start. A daemon started
+      // before the key was exported holds a stale env, and the only symptom is
+      // every run failing authentication minutes later, with nothing on screen
+      // saying why. Restarting is safe precisely here: a keyless daemon's
+      // in-flight nodes are already doomed to the same failure.
+      if (!(await client.daemon.ping.query()).hasApiKey) {
+        console.log('Daemon was started without ANTHROPIC_API_KEY — restarting it so this run can authenticate...');
+        await stopDaemon();
+        await startDaemon();
+        await waitForDaemon();
+        client = createDaemonClient();
+      }
       const result = await client.node.create.mutate({
         goal,
         definition_of_done: [goal],
