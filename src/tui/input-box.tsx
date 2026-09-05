@@ -114,6 +114,10 @@ export function InputBox({ onSubmit, onInterrupt, onQuit, busy = false }: Props)
       return;
     }
 
+    // `?` on an empty line is the help shortcut; anywhere else it is just a
+    // character, since goals legitimately contain question marks.
+    if (input === '?' && value === '') { submit('/help'); return; }
+
     if (key.backspace || key.delete) { setValue((v) => v.slice(0, -1)); return; }
     // Ctrl/meta chords are commands, not text — appending them would put
     // control characters into a goal.
