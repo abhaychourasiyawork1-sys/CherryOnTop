@@ -41,17 +41,22 @@ async function hasExistingKubeconfigContext(): Promise<boolean> {
   }
 }
 
+export const NAMESPACE = 'org-exec';
+
 export async function ensureLocalCluster(): Promise<void> {
-  if (await hasExistingKubeconfigContext()) {
-    if (await isClusterReachable()) return;
+  const alreadyUp = (await hasExistingKubeconfigContext()) && (await isClusterReachable());
+
+  if (!alreadyUp) {
+    const { stdout } = await execa('kind', ['get', 'clusters']).catch(() => ({ stdout: '' }));
+    if (!stdout.split('\n').includes(CLUSTER_NAME)) {
+      await execa('kind', ['create', 'cluster', '--name', CLUSTER_NAME], { timeout: 120_000 });
+    }
   }
 
-  const { stdout } = await execa('kind', ['get', 'clusters']).catch(() => ({ stdout: '' }));
-  if (!stdout.split('\n').includes(CLUSTER_NAME)) {
-    await execa('kind', ['create', 'cluster', '--name', CLUSTER_NAME], { timeout: 120_000 });
-  }
-
-  await ensureNamespace('org-exec');
+  // Always, never only on the create path: an existing cluster still needs the
+  // namespace, and skipping it here left every executeStep failing on a
+  // machine that already had a cluster.
+  await ensureNamespace(NAMESPACE);
 }
 
 // kubectl rather than the API client: `create --dry-run | apply` is the one-liner

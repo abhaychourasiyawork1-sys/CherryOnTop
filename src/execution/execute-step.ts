@@ -12,6 +12,9 @@ export interface ExecuteStepInput {
   worktreePath: string;
   credentials: Record<string, string>;
   adapter: RuntimeAdapter;
+  /** Overrides the runner image. Phase 5 builds the real one; until then this is
+   *  how an integration test dispatches a genuine Job with a stand-in image. */
+  image?: string;
 }
 
 export interface ExecuteStepResult {
@@ -49,13 +52,16 @@ export async function executeStep(
 
   const secretName = await d.createEphemeralSecret(input.nodeId, input.credentials, input.namespace);
   try {
+    // ponytail: the policy is per-node and outlives the step, so policies
+    // accumulate one per node for the cluster's lifetime. Garbage-collect them
+    // when a node reaches COMPLETE if that count ever matters.
     const policy = buildEgressAllowlistPolicy(input.nodeId, DEFAULT_EGRESS_ALLOWLIST);
     await d.applyNetworkPolicy(policy, input.namespace);
 
     const job = buildExecutionJob({
       nodeId: input.nodeId,
       namespace: input.namespace,
-      image: RUNNER_IMAGE,
+      image: input.image ?? RUNNER_IMAGE,
       command: input.adapter.buildCommand(input.goal),
       worktreePath: input.worktreePath,
       secretName,
