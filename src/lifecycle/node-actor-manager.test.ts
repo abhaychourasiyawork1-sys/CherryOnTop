@@ -23,7 +23,7 @@ const CONTRACT = {
 };
 
 describe('node-actor-manager', () => {
-  it('persists state transitions and appends an event per transition', async () => {
+  it('persists state transitions and appends an event per transition, plus the decision it made', async () => {
     const db = createDb(TEST_DB);
     insertNode(db, { id: 'n1', parentId: null, goal: GOAL, contract: CONTRACT, state: 'CREATED', createdAt: 't0', updatedAt: 't0' });
 
@@ -35,7 +35,13 @@ describe('node-actor-manager', () => {
 
     const recordedEvents = listEventsForNode(db, 'n1');
     expect(recordedEvents.length).toBeGreaterThanOrEqual(2);
-    expect(recordedEvents.every((e) => e.type === 'state.transition')).toBe(true);
+    expect(recordedEvents.filter((e) => e.type === 'state.transition').length).toBeGreaterThanOrEqual(2);
+
+    // The decision is logged as an event too, so a live transcript can narrate
+    // why the node escalated instead of only that it did.
+    const decision = recordedEvents.find((e) => e.type === 'decision.made');
+    expect(decision).toBeDefined();
+    expect((decision!.payload as { outcome: string }).outcome).toBe('ESCALATE');
   });
 
   it('throws when sending to a node with no active actor', () => {

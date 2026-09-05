@@ -78,11 +78,20 @@ function productionMachine(db: Db, nodeId: string) {
           authority: node.contract.authority,
           complexity: input.complexity ?? 'low',
         });
+        const decidedAt = new Date().toISOString();
         insertDecision(db, {
           id: randomUUID(), nodeId, type: 'execution_decision',
           outcome: result.outcome, breakdown: result.breakdown,
-          createdAt: new Date().toISOString(),
+          createdAt: decidedAt,
         });
+        // Also an event, so a watching transcript can narrate *why* a node did
+        // what it did as it happens. The decisions table stays the durable
+        // record; this is the live notification of the same fact.
+        const decisionPayload = { outcome: result.outcome, breakdown: result.breakdown };
+        const decisionEventId = appendEvent(db, {
+          nodeId, type: 'decision.made', payload: decisionPayload, createdAt: decidedAt,
+        });
+        publish({ id: decisionEventId, nodeId, type: 'decision.made', payload: decisionPayload, createdAt: decidedAt });
         return result;
       }),
       escalate: fromPromise(async ({ input }: { input: { nodeId: string; reason: string } }) =>
