@@ -6,6 +6,7 @@ export interface OrgStats {
   active: number;
   complete: number;
   failed: number;
+  cancelled: number;
   totalCostUsd: number;
   /** Approvals still waiting on a human — what the status line reports as
    *  "waiting on you", not everything that was ever escalated. */
@@ -16,7 +17,11 @@ export function getOrgStats(db: Db): OrgStats {
   const allNodes = db.select().from(nodes).all();
   const complete = allNodes.filter((n) => n.state === 'COMPLETE').length;
   const failed = allNodes.filter((n) => n.state === 'FAILED').length;
-  const active = allNodes.length - complete - failed;
+  const cancelled = allNodes.filter((n) => n.state === 'CANCELLED').length;
+  // Every terminal state subtracts. Deriving `active` by subtraction means a
+  // state added later is counted as running until it is listed here — which is
+  // exactly what CANCELLED did.
+  const active = allNodes.length - complete - failed - cancelled;
 
   // Real spend, not the budget: only a `result` event from an actual Claude Code
   // run carries what the run cost.
@@ -28,5 +33,5 @@ export function getOrgStats(db: Db): OrgStats {
 
   const pendingApprovals = db.select().from(approvals).where(eq(approvals.status, 'pending')).all().length;
 
-  return { active, complete, failed, totalCostUsd, pendingApprovals };
+  return { active, complete, failed, cancelled, totalCostUsd, pendingApprovals };
 }

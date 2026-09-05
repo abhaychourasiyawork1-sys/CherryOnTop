@@ -32,9 +32,14 @@ describe('getOrgStats', () => {
     insertApproval(db, { id: 'a1', nodeId: 'n3', reason: 'budget', status: 'pending', createdAt: 't0' });
     insertApproval(db, { id: 'a2', nodeId: 'n1', reason: 'budget', status: 'approved', createdAt: 't0' });
 
+    insertNode(db, { id: 'n4', parentId: null, goal: 'x', contract: CONTRACT, state: 'CANCELLED', repoPath: null, createdAt: 't0', updatedAt: 't0' });
+
     const stats = getOrgStats(db);
     expect(stats.complete).toBe(1);
     expect(stats.failed).toBe(1);
+    // A cancelled node is finished, not running — deriving active by
+    // subtraction previously counted it as still working.
+    expect(stats.cancelled).toBe(1);
     expect(stats.active).toBe(1);
     expect(stats.totalCostUsd).toBeCloseTo(0.07, 5);
     // Only the still-pending one counts — the status line reports what is

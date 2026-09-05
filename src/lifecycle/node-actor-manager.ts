@@ -12,7 +12,7 @@ import { assessUncertainty } from '../intelligence/coordinator.js';
 import { decideExecution } from '../engines/decide-execution.js';
 import { insertDecision } from '../db/queries/decisions.js';
 import { escalate } from '../approvals/escalation.js';
-import { insertApproval } from '../db/queries/approvals.js';
+import { insertApproval, getPendingApproval, resolveApproval } from '../db/queries/approvals.js';
 import type { NodeMachineContext } from './node-machine.js';
 import { delegateToChild, childAuthority, type DelegateChildDeps } from './delegate-child.js';
 import { insertCommitment, updateCommitmentStatus, listCommitmentsForNode } from '../db/queries/commitments.js';
@@ -175,6 +175,11 @@ export function startNodeActor(db: Db, nodeId: string, goal: string): void {
  *  than running on against a node that has already stopped. */
 export async function cancelNode(db: Db, nodeId: string): Promise<void> {
   actors.get(nodeId)?.send({ type: 'CANCEL' });
+  // A node cancelled while parked on approval would otherwise leave its
+  // approval row pending forever — reported as "waiting on you" for a node
+  // that no longer exists, and offered by /approve's completion.
+  const pending = getPendingApproval(db, nodeId);
+  if (pending) resolveApproval(db, pending.id, 'cancelled', new Date().toISOString());
   await deleteNodeJobs(nodeId, NAMESPACE);
 }
 

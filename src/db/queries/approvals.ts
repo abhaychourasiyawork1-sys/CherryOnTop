@@ -23,7 +23,7 @@ export function getPendingApproval(db: Db, nodeId: string): ApprovalRecord | und
     .get() as ApprovalRecord | undefined;
 }
 
-export function resolveApproval(db: Db, id: string, status: 'approved' | 'rejected', resolvedAt: string): void {
+export function resolveApproval(db: Db, id: string, status: 'approved' | 'rejected' | 'cancelled', resolvedAt: string): void {
   db.update(approvals).set({ status, resolvedAt }).where(eq(approvals.id, id)).run();
 }
 
