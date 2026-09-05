@@ -6,6 +6,7 @@ import { updateNodeState, getNode, insertNode } from '../db/queries/nodes.js';
 import { appendEvent } from '../db/queries/events.js';
 import { executeStep } from '../execution/execute-step.js';
 import { claudeCodeAdapter } from '../adapters/claude-code.js';
+import { stopgapAdapter } from '../adapters/stopgap.js';
 import { assessUncertainty } from '../intelligence/coordinator.js';
 import { decideExecution } from '../engines/decide-execution.js';
 import { insertDecision } from '../db/queries/decisions.js';
@@ -21,6 +22,15 @@ import { deleteNodeNetworkPolicy } from '../k8s/cleanup.js';
 const actors = new Map<string, Actor<typeof nodeMachine>>();
 
 const NAMESPACE = process.env.ORG_K8S_NAMESPACE ?? 'org-exec';
+
+// ponytail: the default runner image (execute-step.ts) is not published yet, so
+// there is no image a real dispatch can actually pull. Setting ORG_RUNNER_IMAGE
+// swaps in a stand-in image and the matching stopgap adapter — the escape hatch
+// integration tests use, and the one to delete once Phase 5 ships the image.
+// Read per dispatch, not at import: tests set it after this module is loaded.
+function runnerImageOverride(): string | undefined {
+  return process.env.ORG_RUNNER_IMAGE;
+}
 
 function realDelegateDeps(db: Db): DelegateChildDeps {
   return {
@@ -95,7 +105,8 @@ function productionMachine(db: Db, nodeId: string) {
           // ponytail: no credentials plumbed yet — the Secret is created empty until
           // the credential-broker task lands.
           credentials: {},
-          adapter: claudeCodeAdapter,
+          adapter: runnerImageOverride() ? stopgapAdapter : claudeCodeAdapter,
+          image: runnerImageOverride(),
         });
         // The runner's structured output is the point of the whole dispatch; drop it
         // into the node's event log so `org tree` can show what actually happened.
