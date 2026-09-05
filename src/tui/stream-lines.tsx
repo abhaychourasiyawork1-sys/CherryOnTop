@@ -7,8 +7,8 @@ function DiffLine({ line }: { line: string }) {
   return <Text color={color} dimColor={!color}>  {line}</Text>;
 }
 
-/** One rendered stream line. Shared so the node-detail summary and the full
- *  output screen can never drift apart in how they show the same event. */
+/** One rendered stream line. The transcript view owns list layout and gutters;
+ *  this only knows how a single line looks. */
 export function StreamLine({ line }: { line: RenderedLine }) {
   if (line.kind === 'diff') {
     return (
@@ -23,12 +23,4 @@ export function StreamLine({ line }: { line: RenderedLine }) {
   if (line.kind === 'thinking') return <Text dimColor italic>{line.content}</Text>;
   if (line.kind === 'summary') return <Text color="magenta">— {line.content}</Text>;
   return <Text>{line.content}</Text>;
-}
-
-export function StreamLines({ lines }: { lines: RenderedLine[] }) {
-  return (
-    <Box flexDirection="column">
-      {lines.map((line) => <StreamLine key={line.key} line={line} />)}
-    </Box>
-  );
 }
