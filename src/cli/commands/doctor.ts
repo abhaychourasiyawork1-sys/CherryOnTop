@@ -72,15 +72,19 @@ export const CHECKS: DoctorCheck[] = [
   {
     name: 'Kubernetes cluster',
     run: async () => {
-      if (await isClusterReachable()) return { ok: true, message: 'reachable' };
-      if (!(await probe('kind', BINARY_PROBES.kind)) || !(await probe('docker', BINARY_PROBES.docker))) {
+      const wasReachable = await isClusterReachable();
+      if (!wasReachable && (!(await probe('kind', BINARY_PROBES.kind)) || !(await probe('docker', BINARY_PROBES.docker)))) {
         return { ok: false, message: 'no cluster, and no way to bootstrap one — fix the kind/Docker checks above first' };
       }
       try {
+        // Called even when the cluster already answers: it is what reapplies the
+        // org-exec namespace and its default-deny backstop, and what notices a
+        // cluster missing the /host mount. Skipping it on the reachable path
+        // meant a cluster could report green while lacking both.
         await ensureLocalCluster();
-        return { ok: true, message: 'bootstrapped a local kind cluster' };
+        return { ok: true, message: wasReachable ? 'reachable' : 'bootstrapped a local kind cluster' };
       } catch (err) {
-        return { ok: false, message: `could not bootstrap a cluster: ${firstLine(err)}` };
+        return { ok: false, message: `could not ${wasReachable ? 'verify' : 'bootstrap'} the cluster: ${firstLine(err)}` };
       }
     },
   },
