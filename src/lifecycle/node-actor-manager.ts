@@ -56,6 +56,12 @@ function realDelegateDeps(db: Db): DelegateChildDeps {
         max_child_count: remainingChildren,
         spawn_children: remainingChildren > 0,
       });
+      // Spawn authority a child cannot afford to use is worse than none: it sends
+      // the child straight to ESCALATE and asks a human to approve the same
+      // delegation again, one generation down. Gate on the *effective* budget —
+      // the requested one has already been capped by the parent's.
+      childAuthority.spawn_children =
+        childAuthority.spawn_children && childAuthority.budget_usd >= CHILD_BUDGET_USD;
       insertNode(db, {
         id, parentId, goal,
         contract: { ...parent.contract, goal, authority: childAuthority },

@@ -35,6 +35,8 @@ export async function startDaemon(): Promise<void> {
           ...(process.env.ORG_DB_PATH ? { ORG_DB_PATH: process.env.ORG_DB_PATH } : {}),
           ...(process.env.ORG_DAEMON_PORT ? { ORG_DAEMON_PORT: process.env.ORG_DAEMON_PORT } : {}),
           ...(process.env.ORG_DAEMON_NAME ? { ORG_DAEMON_NAME: process.env.ORG_DAEMON_NAME } : {}),
+          ...(process.env.ORG_RUNNER_IMAGE ? { ORG_RUNNER_IMAGE: process.env.ORG_RUNNER_IMAGE } : {}),
+          ...(process.env.ORG_WORKTREE_PATH ? { ORG_WORKTREE_PATH: process.env.ORG_WORKTREE_PATH } : {}),
         },
       },
       (err) => {
