@@ -11,7 +11,7 @@ afterEach(() => {
 
 describe('decision router', () => {
   it('lists decisions for a node id', async () => {
-    const app = buildServer(TEST_DB);
+    const app = buildServer(TEST_DB, () => {});
     const input = encodeURIComponent(JSON.stringify({ nodeId: 'does-not-exist' }));
     const response = await app.inject({ method: 'GET', url: `/trpc/decision.listForNode?input=${input}` });
     expect(response.statusCode).toBe(200);

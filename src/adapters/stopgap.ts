@@ -8,9 +8,14 @@ import { claudeCodeAdapter } from './claude-code.js';
 // ORG_RUNNER_IMAGE is set; never on the default path.
 export const stopgapAdapter: RuntimeAdapter = {
   name: 'stopgap',
-  buildCommand: (goal) => [
-    'sh', '-c',
-    `printf '%s\\n' '{"type":"message","payload":{"text":"${goal.replace(/'/g, '')}"}}' '{"type":"result","payload":{"success":true}}'`,
-  ],
+  buildCommand: (goal) => {
+    // Build the lines as real JSON, then single-quote them for sh — a goal
+    // containing a quote character would otherwise emit malformed JSON.
+    const lines = [
+      JSON.stringify({ type: 'message', payload: { text: goal } }),
+      JSON.stringify({ type: 'result', payload: { success: true } }),
+    ].map((line) => `'${line.replace(/'/g, `'\\''`)}'`);
+    return ['sh', '-c', `printf '%s\\n' ${lines.join(' ')}`];
+  },
   parseEventStream: claudeCodeAdapter.parseEventStream,
 };

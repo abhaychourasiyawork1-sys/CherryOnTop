@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import { existsSync, unlinkSync } from 'node:fs';
 import { buildServer } from './app.js';
 
@@ -10,9 +10,14 @@ afterEach(() => {
   }
 });
 
+// node.create starts a real node, which now walks itself all the way into a live
+// Kubernetes dispatch with no external event. Every server built here gets a spy
+// in place of that, so a unit test never touches a cluster.
+const noopStartNode = () => {};
+
 describe('Fastify + tRPC app', () => {
   it('responds to daemon.ping', async () => {
-    const app = buildServer(TEST_DB);
+    const app = buildServer(TEST_DB, noopStartNode);
     const response = await app.inject({ method: 'GET', url: '/trpc/daemon.ping' });
     expect(response.statusCode).toBe(200);
     const body = JSON.parse(response.body);
@@ -20,7 +25,8 @@ describe('Fastify + tRPC app', () => {
   });
 
   it('creates a node via node.create and retrieves it via node.get', async () => {
-    const app = buildServer(TEST_DB);
+    const startNode = vi.fn();
+    const app = buildServer(TEST_DB, startNode);
     const createResponse = await app.inject({
       method: 'POST',
       url: '/trpc/node.create',
@@ -38,5 +44,6 @@ describe('Fastify + tRPC app', () => {
     const getResponse = await app.inject({ method: 'GET', url: `/trpc/node.get?input=${encodeURIComponent(JSON.stringify({ id: nodeId }))}` });
     const getBody = JSON.parse(getResponse.body);
     expect(getBody.result.data.goal).toBe('test goal');
+    expect(startNode).toHaveBeenCalledWith(expect.anything(), nodeId, 'test goal');
   });
 });

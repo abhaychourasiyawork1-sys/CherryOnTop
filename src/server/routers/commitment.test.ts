@@ -11,7 +11,7 @@ afterEach(() => {
 
 describe('commitment router', () => {
   it('lists commitments for a node id', async () => {
-    const app = buildServer(TEST_DB);
+    const app = buildServer(TEST_DB, () => {});
     const input = encodeURIComponent(JSON.stringify({ nodeId: 'does-not-exist' }));
     const response = await app.inject({ method: 'GET', url: `/trpc/commitment.listForNode?input=${input}` });
     expect(response.statusCode).toBe(200);

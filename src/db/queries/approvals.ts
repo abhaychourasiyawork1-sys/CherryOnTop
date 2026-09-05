@@ -2,6 +2,9 @@ import { and, eq } from 'drizzle-orm';
 import type { Db } from '../client.js';
 import { approvals } from '../schema.js';
 
+/** The approval row. Deliberately the only definition — nothing parses approvals
+ *  from untrusted input, so a Zod schema alongside it would just be a second
+ *  place to keep in sync. */
 export interface ApprovalRecord {
   id: string; nodeId: string; reason: string; status: string; createdAt: string; resolvedAt?: string;
 }

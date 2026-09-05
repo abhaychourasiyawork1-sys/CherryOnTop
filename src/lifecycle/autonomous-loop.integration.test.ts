@@ -4,6 +4,7 @@ import { execa } from 'execa';
 import { createDb } from '../db/client.js';
 import { insertNode } from '../db/queries/nodes.js';
 import { startNodeActor, getNodeActor, waitForNodeCompletion } from './node-actor-manager.js';
+import { getNode } from '../db/queries/nodes.js';
 import { listDecisionsForNode } from '../db/queries/decisions.js';
 import { isClusterReachable, ensureLocalCluster, NAMESPACE } from '../k8s/kind.js';
 
@@ -52,7 +53,9 @@ describe.skipIf(!CLUSTER_AVAILABLE)('autonomous lifecycle, real cluster', () => 
     // (a genuine K8s Job round-trip) and VERIFY all resolve themselves.
     const result = await waitForNodeCompletion('auto-1', 240_000);
     expect(result.succeeded).toBe(true);
-    expect(getNodeActor('auto-1')!.getSnapshot().value).toBe('COMPLETE');
+    // The persisted state, not the actor: a finished actor is evicted from the
+    // registry, and the DB row is the durable record either way.
+    expect(getNode(db, 'auto-1')?.state).toBe('COMPLETE');
 
     const decisions = listDecisionsForNode(db, 'auto-1');
     expect(decisions).toHaveLength(1);

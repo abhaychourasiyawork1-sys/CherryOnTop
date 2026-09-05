@@ -6,7 +6,7 @@ import { isClusterReachable } from './kind.js';
 describe('buildEgressAllowlistPolicy', () => {
   it('builds a policy denying ingress and allowlisting only the given egress targets', () => {
     const policy = buildEgressAllowlistPolicy('n1', [{ ip: '140.82.112.0/20', ports: [443] }]);
-    expect(policy.spec?.podSelector.matchLabels).toEqual({ 'org.nodeId': 'n1' });
+    expect(policy.spec?.podSelector?.matchLabels).toEqual({ 'org.nodeId': 'n1' });
     expect(policy.spec?.policyTypes).toEqual(['Ingress', 'Egress']);
     expect(policy.spec?.ingress).toEqual([]);
     expect(policy.spec?.egress?.[0].to?.[0].ipBlock?.cidr).toBe('140.82.112.0/20');

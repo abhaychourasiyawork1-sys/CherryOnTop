@@ -39,6 +39,6 @@ describe('node-actor-manager', () => {
   });
 
   it('throws when sending to a node with no active actor', () => {
-    expect(() => sendToNode('missing', { type: 'DOD_MET' })).toThrow();
+    expect(() => sendToNode('missing', { type: 'APPROVED' })).toThrow();
   });
 });

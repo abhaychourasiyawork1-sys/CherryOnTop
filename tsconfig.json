@@ -14,5 +14,6 @@
     "jsxImportSource": "react"
   },
   "include": ["src"],
-  "exclude": ["src/**/*.test.ts"]
+  // Tests are typechecked (npm run typecheck) but not emitted (npm run build).
+  "exclude": []
 }

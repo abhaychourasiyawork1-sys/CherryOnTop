@@ -10,6 +10,9 @@ export interface NodeMachineContext {
   gateAttempts?: number;
   executionAttempts?: number;
   lastDecision?: DecideExecutionResult;
+  /** Set only by a human approval: the budget a node may spend on a child despite
+   *  its own authority being too small. Undefined means "stay inside authority". */
+  approvedBudgetUsd?: number;
   lastResult?: ExecuteStepResult;
 }
 
@@ -40,7 +43,7 @@ export const nodeMachine = setup({
     decideExecution: fromPromise<DecideExecutionResult, { goal: string; complexity: NodeMachineContext['complexity'] }>(async () => {
       throw new Error('decideExecution actor not provided');
     }),
-    delegateToChild: fromPromise<ExecuteStepResult, { nodeId: string; goal: string }>(async () => {
+    delegateToChild: fromPromise<ExecuteStepResult, { nodeId: string; goal: string; approvedBudgetUsd?: number }>(async () => {
       throw new Error('delegateToChild actor not provided');
     }),
     escalate: fromPromise<string, { nodeId: string; reason: string }>(async () => {
@@ -109,7 +112,9 @@ export const nodeMachine = setup({
     DELEGATE: {
       invoke: {
         src: 'delegateToChild',
-        input: ({ context }) => ({ nodeId: context.nodeId, goal: context.goal }),
+        input: ({ context }) => ({
+          nodeId: context.nodeId, goal: context.goal, approvedBudgetUsd: context.approvedBudgetUsd,
+        }),
         onDone: { target: 'VERIFY', actions: assign({ lastResult: ({ event }) => event.output }) },
         onError: {
           target: 'VERIFY',
@@ -122,7 +127,9 @@ export const nodeMachine = setup({
         src: 'escalate',
         input: ({ context }) => ({
           nodeId: context.nodeId,
-          reason: 'insufficient budget for delegation',
+          reason: context.lastDecision
+            ? `${context.lastDecision.outcome}: needs ${context.lastDecision.breakdown.requiredBudget ?? '?'} USD, has ${context.lastDecision.breakdown.availableBudget ?? '?'}`
+            : 'authority boundary reached',
         }),
         onDone: 'WAIT_APPROVAL',
       },
@@ -133,7 +140,14 @@ export const nodeMachine = setup({
     // decision against the same unchanged authority and escalate again.
     WAIT_APPROVAL: {
       on: {
-        APPROVED: 'DELEGATE',
+        APPROVED: {
+          target: 'DELEGATE',
+          // Approval has to grant something, or the child is created inside the
+          // same authority that blocked it and the approval was theatre.
+          actions: assign({
+            approvedBudgetUsd: ({ context }) => context.lastDecision?.breakdown.requiredBudget ?? 1,
+          }),
+        },
         REJECTED: 'FAILED',
       },
     },

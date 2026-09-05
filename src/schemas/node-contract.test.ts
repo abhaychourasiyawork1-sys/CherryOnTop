@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { NodeContractSchema } from './node-contract';
+import { NodeContractSchema } from './node-contract.js';
 
 describe('NodeContractSchema', () => {
   it('accepts a valid node contract', () => {

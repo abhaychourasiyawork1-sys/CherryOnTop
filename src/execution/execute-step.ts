@@ -44,6 +44,10 @@ const RUNNER_IMAGE = 'ghcr.io/abhaychourasiyawork1-sys/cherryontop-runner:dev';
 // config task — providers' ranges shift and need a maintained source), but now
 // excludes the addresses a compromised runner could actually do damage with:
 // cloud metadata (credential theft) and RFC1918 ranges (lateral movement).
+// ponytail: excluding 10.0.0.0/8 also excludes kind's service CIDR, so kube-dns
+// is unreachable and a runner cannot resolve names — TCP/443 to literal IPs only.
+// Harmless while the runner image is unpublished and nothing real dispatches;
+// a DNS egress rule is required before Phase 5's real image ships.
 const DEFAULT_EGRESS_ALLOWLIST = [
   {
     ip: '0.0.0.0/0',
@@ -60,9 +64,8 @@ export async function executeStep(
 
   const secretName = await d.createEphemeralSecret(input.nodeId, input.credentials, input.namespace);
   try {
-    // ponytail: the policy is per-node and outlives the step, so policies
-    // accumulate one per node for the cluster's lifetime. Garbage-collect them
-    // when a node reaches COMPLETE if that count ever matters.
+    // The policy is per-node, not per-step, so it outlives this call; the node's
+    // terminal transition deletes it (k8s/cleanup.ts).
     const policy = buildEgressAllowlistPolicy(input.nodeId, DEFAULT_EGRESS_ALLOWLIST);
     await d.applyNetworkPolicy(policy, input.namespace);
 

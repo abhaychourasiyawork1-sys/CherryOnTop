@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { createActor, fromPromise } from 'xstate';
 import { nodeMachine } from './node-machine.js';
+import type { ExecuteStepResult } from '../execution/execute-step.js';
 
 function machineWithMocks(overrides: {
   assessUncertainty?: { sufficientContext: boolean; complexity: 'low' | 'medium' | 'high' };
@@ -11,8 +12,8 @@ function machineWithMocks(overrides: {
     actors: {
       assessUncertainty: fromPromise(async () => overrides.assessUncertainty ?? { sufficientContext: true, complexity: 'low' as const }),
       decideExecution: fromPromise(async () => overrides.decideExecution ?? { outcome: 'SELF_EXECUTE' as const, breakdown: {} }),
-      executeStep: fromPromise(async () => ({ message: 'ok', events: [], ...(overrides.executeStep ?? { succeeded: true }) })),
-      delegateToChild: fromPromise(async () => ({ succeeded: true, message: 'ok', events: [] })),
+      executeStep: fromPromise(async (): Promise<ExecuteStepResult> => ({ message: 'ok', events: [], ...(overrides.executeStep ?? { succeeded: true }) })),
+      delegateToChild: fromPromise(async (): Promise<ExecuteStepResult> => ({ succeeded: true, message: 'ok', events: [] })),
       escalate: fromPromise(async () => 'approval-1'),
     },
   });

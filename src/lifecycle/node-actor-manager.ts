@@ -13,9 +13,8 @@ import { insertDecision } from '../db/queries/decisions.js';
 import { escalate } from '../approvals/escalation.js';
 import { insertApproval } from '../db/queries/approvals.js';
 import type { NodeMachineContext } from './node-machine.js';
-import { delegateToChild, type DelegateChildDeps } from './delegate-child.js';
-import { insertCommitment } from '../db/queries/commitments.js';
-import { effectiveAuthority } from '../engines/authority.js';
+import { delegateToChild, childAuthority, type DelegateChildDeps } from './delegate-child.js';
+import { insertCommitment, updateCommitmentStatus, listCommitmentsForNode } from '../db/queries/commitments.js';
 import { CHILD_BUDGET_USD } from '../engines/decide-execution.js';
 import { deleteNodeNetworkPolicy } from '../k8s/cleanup.js';
 
@@ -36,35 +35,17 @@ function runnerImageOverride(): string | undefined {
 
 function realDelegateDeps(db: Db): DelegateChildDeps {
   return {
-    createChildNode: (parentId, goal, budgetUsd) => {
+    createChildNode: (parentId, goal, budgetUsd, approvedBudgetUsd) => {
       const parent = getNode(db, parentId);
       if (!parent) throw new Error(`Parent node ${parentId} not found`);
       const id = randomUUID();
       const now = new Date().toISOString();
-      const parentAuthority = parent.contract.authority;
-      // There is no separate platform-policy concept in the codebase yet (doc §8
-      // describes one, nothing implements it), so the parent's own authority
-      // stands in as the platform maximum.
-      // Delegation depth is bounded by max_child_count: each generation spends
-      // one, and a child with none left cannot spawn. Without this a goal that
-      // reads as high-complexity delegates to a child with the same goal, which
-      // delegates again, forever.
-      const remainingChildren = Math.max(parentAuthority.max_child_count - 1, 0);
-      const childAuthority = effectiveAuthority(parentAuthority, parentAuthority, {
-        ...parentAuthority,
-        budget_usd: budgetUsd,
-        max_child_count: remainingChildren,
-        spawn_children: remainingChildren > 0,
-      });
-      // Spawn authority a child cannot afford to use is worse than none: it sends
-      // the child straight to ESCALATE and asks a human to approve the same
-      // delegation again, one generation down. Gate on the *effective* budget —
-      // the requested one has already been capped by the parent's.
-      childAuthority.spawn_children =
-        childAuthority.spawn_children && childAuthority.budget_usd >= CHILD_BUDGET_USD;
       insertNode(db, {
         id, parentId, goal,
-        contract: { ...parent.contract, goal, authority: childAuthority },
+        contract: {
+          ...parent.contract, goal,
+          authority: childAuthority(parent.contract.authority, budgetUsd, approvedBudgetUsd),
+        },
         state: 'CREATED', createdAt: now, updatedAt: now,
       });
       return id;
@@ -104,8 +85,11 @@ function productionMachine(db: Db, nodeId: string) {
       escalate: fromPromise(async ({ input }: { input: { nodeId: string; reason: string } }) =>
         escalate(input.nodeId, input.reason, { insertApproval: (record) => insertApproval(db, record) }),
       ),
-      delegateToChild: fromPromise(async ({ input }: { input: { nodeId: string; goal: string } }) =>
-        delegateToChild({ parentId: nodeId, goal: input.goal, childBudgetUsd: CHILD_BUDGET_USD }, realDelegateDeps(db)),
+      delegateToChild: fromPromise(async ({ input }: { input: { nodeId: string; goal: string; approvedBudgetUsd?: number } }) =>
+        delegateToChild({
+          parentId: nodeId, goal: input.goal,
+          childBudgetUsd: CHILD_BUDGET_USD, approvedBudgetUsd: input.approvedBudgetUsd,
+        }, realDelegateDeps(db)),
       ),
       executeStep: fromPromise(async ({ input }) => {
         const result = await executeStep({
@@ -142,9 +126,19 @@ export function startNodeActor(db: Db, nodeId: string, goal: string): void {
     // actor is one that reached a final state (COMPLETE/FAILED), which it never
     // leaves, so it is a safe point to release cluster-side resources.
     if (snapshot.status === 'done') {
+      // A node's commitment is only accountable if it is closed out; the
+      // terminal transition is the one place that knows the verdict.
+      const outcome = snapshot.value === 'COMPLETE' ? 'completed' : 'failed';
+      for (const commitment of listCommitmentsForNode(db, nodeId)) {
+        updateCommitmentStatus(db, commitment.id, outcome, now);
+      }
       deleteNodeNetworkPolicy(nodeId, NAMESPACE).catch((err) => {
         console.error(`Failed to clean up NetworkPolicy for node ${nodeId}:`, err);
       });
+      // Drop the actor: otherwise every node ever run stays resident in a
+      // long-lived daemon. Deferred a tick so anything awaiting this same
+      // transition (waitForNodeCompletion, a delegating parent) still resolves.
+      setTimeout(() => actors.delete(nodeId), 0);
     }
   });
   actor.start();
