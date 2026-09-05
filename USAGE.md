@@ -8,7 +8,7 @@
 4. `org doctor` — this auto-bootstraps a local Kubernetes cluster (`kind`) the first time. Fix anything it reports red, then re-run it.
 5. `./scripts/build-runner-image.sh` — builds the sandbox image and loads it into the cluster. Re-run it if `org doctor` ever reports the runner image missing (recreating the cluster clears it).
 
-If your user isn't in the `docker` group, prefix commands with `sg docker -c "..."` — `org doctor` tells you when this is the problem.
+If your user isn't in the `docker` group, prefix **setup** commands with `sg docker -c "..."` (`org doctor` tells you when this is the problem). Everyday use — `org run`, `org tree`, `org watch`, `org approve` — talks to Kubernetes, not Docker, and needs no group membership.
 
 ## Every time you want to use it
 
@@ -19,7 +19,7 @@ If your user isn't in the `docker` group, prefix commands with `sg docker -c "..
 5. `org tree` — quick status check any time. `org commitment <id>` / `org decision <id>` — see what it decided and why, with the full score breakdown.
 6. When you're done for the session: `org daemon stop`.
 
-The daemon inherits your environment at start time, so if you export `ANTHROPIC_API_KEY` after it's already running, restart it (`org daemon stop`, then any `org run`) before the key takes effect.
+The daemon captures your environment when it starts. If you export `ANTHROPIC_API_KEY` after it is already running, `org run` notices and restarts the daemon for you — you don't have to. With no key set anywhere, `org run` refuses rather than dispatching work that would fail authentication several minutes later.
 
 ## What it actually does
 
