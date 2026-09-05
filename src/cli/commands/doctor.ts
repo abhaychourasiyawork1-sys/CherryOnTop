@@ -3,6 +3,8 @@ import { execa } from 'execa';
 import * as clack from '@clack/prompts';
 import { runChecks, type DoctorCheck } from '../../doctor/checks.js';
 import { isClusterReachable, ensureLocalCluster } from '../../k8s/kind.js';
+import os from 'node:os';
+import { hasOauthCredentials } from '../../execution/credentials.js';
 
 // Probe args are per-binary on purpose: kubectl rejects `--version` (it wants
 // `version --client`), so a shared flag would report an installed kubectl as
@@ -105,10 +107,12 @@ export const CHECKS: DoctorCheck[] = [
     },
   },
   {
-    name: 'Anthropic API key',
-    run: async () => process.env.ANTHROPIC_API_KEY
-      ? { ok: true, message: 'set' }
-      : { ok: false, message: 'ANTHROPIC_API_KEY is not set — export it before `org run` (get one at https://console.anthropic.com/settings/keys)' },
+    name: 'Claude authentication',
+    run: async () => {
+      if (hasOauthCredentials(os.homedir())) return { ok: true, message: 'using your Claude subscription (logged in via `claude login`)' };
+      if (process.env.ANTHROPIC_API_KEY) return { ok: true, message: 'using ANTHROPIC_API_KEY' };
+      return { ok: false, message: 'no Claude auth found — run `claude login` to use your subscription, or export ANTHROPIC_API_KEY (get one at https://console.anthropic.com/settings/keys)' };
+    },
   },
 ];
 

@@ -1,5 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import { execa } from 'execa';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import { runChecks } from '../../doctor/checks.js';
 import { BINARY_PROBES, CHECKS, nodeVersionCheck, probe } from './doctor.js';
 
@@ -16,7 +19,7 @@ describe('doctor Node version check (corrected floor)', () => {
 describe('doctor check list', () => {
   it('checks Node, Docker, kind, kubectl, the cluster, the runner image and the API key', () => {
     expect(CHECKS.map((c) => c.name)).toEqual([
-      'Node.js version', 'Docker', 'kind', 'kubectl', 'Kubernetes cluster', 'Runner image', 'Anthropic API key',
+      'Node.js version', 'Docker', 'kind', 'kubectl', 'Kubernetes cluster', 'Runner image', 'Claude authentication',
     ]);
   });
 });
@@ -37,28 +40,56 @@ describe('binary probes detect an installed binary', () => {
   }
 });
 
-describe('Anthropic API key check', () => {
-  it('passes when ANTHROPIC_API_KEY is set', async () => {
-    const original = process.env.ANTHROPIC_API_KEY;
+// os.homedir() respects $HOME on POSIX, so these override it to a scratch
+// directory rather than touching the real machine's own ~/.claude — the dev
+// box running this suite may have a genuine logged-in subscription.
+describe('Claude authentication check', () => {
+  it('passes when ANTHROPIC_API_KEY is set and no OAuth file exists', async () => {
+    const originalKey = process.env.ANTHROPIC_API_KEY;
+    const originalHome = process.env.HOME;
     process.env.ANTHROPIC_API_KEY = 'sk-ant-test-value';
+    process.env.HOME = mkdtempSync(path.join(tmpdir(), 'org-doctor-'));
     try {
-      const check = CHECKS.find((c) => c.name === 'Anthropic API key');
+      const check = CHECKS.find((c) => c.name === 'Claude authentication');
       expect(check).toBeDefined();
       expect((await check!.run()).ok).toBe(true);
     } finally {
-      if (original === undefined) delete process.env.ANTHROPIC_API_KEY;
-      else process.env.ANTHROPIC_API_KEY = original;
+      if (originalKey === undefined) delete process.env.ANTHROPIC_API_KEY;
+      else process.env.ANTHROPIC_API_KEY = originalKey;
+      rmSync(process.env.HOME!, { recursive: true, force: true });
+      if (originalHome !== undefined) process.env.HOME = originalHome;
     }
   });
 
-  it('fails when ANTHROPIC_API_KEY is unset', async () => {
-    const original = process.env.ANTHROPIC_API_KEY;
+  it('passes on the OAuth file alone, with no API key set', async () => {
+    const originalKey = process.env.ANTHROPIC_API_KEY;
+    const originalHome = process.env.HOME;
     delete process.env.ANTHROPIC_API_KEY;
+    process.env.HOME = mkdtempSync(path.join(tmpdir(), 'org-doctor-'));
+    mkdirSync(path.join(process.env.HOME, '.claude'), { recursive: true });
+    writeFileSync(path.join(process.env.HOME, '.claude', '.credentials.json'), '{}');
     try {
-      const check = CHECKS.find((c) => c.name === 'Anthropic API key');
+      const check = CHECKS.find((c) => c.name === 'Claude authentication');
+      expect((await check!.run()).ok).toBe(true);
+    } finally {
+      if (originalKey !== undefined) process.env.ANTHROPIC_API_KEY = originalKey;
+      rmSync(process.env.HOME!, { recursive: true, force: true });
+      if (originalHome !== undefined) process.env.HOME = originalHome;
+    }
+  });
+
+  it('fails when neither is available', async () => {
+    const originalKey = process.env.ANTHROPIC_API_KEY;
+    const originalHome = process.env.HOME;
+    delete process.env.ANTHROPIC_API_KEY;
+    process.env.HOME = mkdtempSync(path.join(tmpdir(), 'org-doctor-'));
+    try {
+      const check = CHECKS.find((c) => c.name === 'Claude authentication');
       expect((await check!.run()).ok).toBe(false);
     } finally {
-      if (original !== undefined) process.env.ANTHROPIC_API_KEY = original;
+      if (originalKey !== undefined) process.env.ANTHROPIC_API_KEY = originalKey;
+      rmSync(process.env.HOME!, { recursive: true, force: true });
+      if (originalHome !== undefined) process.env.HOME = originalHome;
     }
   });
 });

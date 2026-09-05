@@ -15,6 +15,8 @@ import { insertApproval } from '../db/queries/approvals.js';
 import type { NodeMachineContext } from './node-machine.js';
 import { delegateToChild, childAuthority, type DelegateChildDeps } from './delegate-child.js';
 import { insertCommitment, updateCommitmentStatus, listCommitmentsForNode } from '../db/queries/commitments.js';
+import { resolveCredentials } from '../execution/credentials.js';
+import os from 'node:os';
 import { CHILD_BUDGET_USD } from '../engines/decide-execution.js';
 import { deleteNodeNetworkPolicy } from '../k8s/cleanup.js';
 
@@ -99,10 +101,10 @@ function productionMachine(db: Db, nodeId: string) {
           namespace: NAMESPACE,
           // Falls back to the old /tmp path only when no --repo was given.
           worktreePath: node?.repoPath ?? process.env.ORG_WORKTREE_PATH ?? `/tmp/org-worktrees/${nodeId}`,
-          // G4 fix: was always {}, so no real invocation could authenticate. The
-          // key becomes the container's env var of the same name via envFrom —
-          // Claude Code reads it natively, no extra wiring.
-          credentials: process.env.ANTHROPIC_API_KEY ? { ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY } : {},
+          // Subscription (via `claude login`) is preferred over an API key —
+          // see credentials.ts. Read fresh on every dispatch, so unlike the
+          // ANTHROPIC_API_KEY env var this path has no daemon-restart staleness.
+          credentials: resolveCredentials(os.homedir(), process.env.ANTHROPIC_API_KEY),
           adapter: runnerImageOverride() ? stopgapAdapter : claudeCodeAdapter,
           image: runnerImageOverride(),
         });

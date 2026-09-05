@@ -84,6 +84,7 @@ export async function executeStep(
       command: input.adapter.buildCommand(input.goal),
       worktreePath: input.worktreePath,
       secretName,
+      includeOauthCredentials: 'CLAUDE_CREDENTIALS_JSON' in input.credentials,
     });
 
     const jobName = await d.createJob(job);

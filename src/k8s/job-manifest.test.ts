@@ -44,3 +44,26 @@ describe('buildExecutionJob', () => {
     expect(security?.runAsUser).toBeGreaterThan(0);
   });
 });
+
+it('mounts the OAuth credential secret key to the exact file claude reads, when present', () => {
+  const job = buildExecutionJob({
+    nodeId: 'n1', namespace: 'org-exec', image: 'node:22-slim',
+    command: ['echo', 'hi'], worktreePath: '/tmp/w', secretName: 'org-secret-n1',
+    includeOauthCredentials: true,
+  });
+  const container = job.spec?.template.spec?.containers[0];
+  const mount = container?.volumeMounts?.find((m) => m.mountPath === '/home/node/.claude/.credentials.json');
+  expect(mount?.subPath).toBe('.credentials.json');
+  const volume = job.spec?.template.spec?.volumes?.find((v) => v.name === mount?.name);
+  expect(volume?.secret?.secretName).toBe('org-secret-n1');
+  expect(volume?.secret?.items?.[0]).toEqual({ key: 'CLAUDE_CREDENTIALS_JSON', path: '.credentials.json' });
+});
+
+it('adds no OAuth volume when not requested', () => {
+  const job = buildExecutionJob({
+    nodeId: 'n1', namespace: 'org-exec', image: 'node:22-slim',
+    command: ['echo', 'hi'], worktreePath: '/tmp/w', secretName: 'org-secret-n1',
+  });
+  expect(job.spec?.template.spec?.containers[0].volumeMounts).toHaveLength(1);
+  expect(job.spec?.template.spec?.volumes).toHaveLength(1);
+});

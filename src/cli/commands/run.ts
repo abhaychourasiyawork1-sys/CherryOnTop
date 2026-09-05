@@ -1,9 +1,11 @@
 import path from 'node:path';
+import os from 'node:os';
 import { existsSync } from 'node:fs';
 import type { Command } from 'commander';
 import { toContainerPath } from '../../k8s/kind.js';
 import { daemonStatus, startDaemon, stopDaemon } from '../../daemon/manager.js';
 import { createDaemonClient } from '../../daemon/client.js';
+import { hasOauthCredentials } from '../../execution/credentials.js';
 
 function nonNegativeNumber(label: string) {
   return (raw: string): number => {
@@ -57,18 +59,19 @@ export function registerRunCommand(program: Command): void {
       await waitForDaemon();
       let client = createDaemonClient();
 
-      if (!process.env.ANTHROPIC_API_KEY) {
-        console.error('ANTHROPIC_API_KEY is not set — every step would fail authentication inside the sandbox.');
-        console.error('Export it and re-run: export ANTHROPIC_API_KEY=sk-ant-...  (see `org doctor`)');
+      const oauth = hasOauthCredentials(os.homedir());
+      if (!oauth && !process.env.ANTHROPIC_API_KEY) {
+        console.error('No Claude authentication found — every step would fail inside the sandbox.');
+        console.error('Either run `claude login` to use your subscription, or export ANTHROPIC_API_KEY=sk-ant-...  (see `org doctor`)');
         process.exitCode = 1;
         return;
       }
-      // The daemon captures its environment once, at start. A daemon started
-      // before the key was exported holds a stale env, and the only symptom is
-      // every run failing authentication minutes later, with nothing on screen
-      // saying why. Restarting is safe precisely here: a keyless daemon's
-      // in-flight nodes are already doomed to the same failure.
-      if (!(await client.daemon.ping.query()).hasApiKey) {
+      // Only the ANTHROPIC_API_KEY env-var path can go stale: the daemon
+      // captures its environment once, at start, so exporting the key after
+      // the daemon is already running leaves it invisible until a restart. The
+      // OAuth path has no such gap — credentials.ts reads the subscription's
+      // file fresh from disk on every single dispatch.
+      if (!oauth && !(await client.daemon.ping.query()).hasApiKey) {
         console.log('Daemon was started without ANTHROPIC_API_KEY — restarting it so this run can authenticate...');
         await stopDaemon();
         await startDaemon();
