@@ -84,8 +84,20 @@ export function App() {
     let highestReplayedId = 0;
     const buffered: BusEvent[] = [];
 
-    const handle = (event: BusEvent) => {
+    // Events are handled through a promise chain so they cannot reorder while
+    // one of them waits on a tree refresh.
+    let chain: Promise<void> = Promise.resolve();
+    const enqueue = (work: () => Promise<void>) => { chain = chain.then(work).catch(() => {}); };
+
+    const handle = async (event: BusEvent): Promise<void> => {
       setStatusToken((t) => t + 1);
+
+      // Resolve the node's goal and parent BEFORE rendering it. A header is
+      // written into <Static> permanently, so one printed as "(unknown goal)"
+      // because the tree had not been fetched yet can never be corrected —
+      // which is exactly what a freshly created node hits, every time.
+      if (!nodeMeta.current[event.nodeId]) await refreshTree();
+
       apply(transcript.current.feed(event));
 
       if (event.type !== 'state.transition') return;
@@ -93,8 +105,7 @@ export function App() {
       if (!state) return;
 
       const known = nodeMeta.current[event.nodeId];
-      // A transition for a node we have never seen is delegation creating one.
-      if (!known) { void refreshTree(); return; }
+      if (!known) return;
 
       if (state === 'WAIT_APPROVAL') notifyApprovalNeeded(event.nodeId, known.goal);
       if (TERMINAL_STATES.includes(state) && known.parentId === null) {
@@ -109,7 +120,7 @@ export function App() {
           if (!alive) return;
           if (!replayed) { buffered.push(event); return; }
           if (event.id !== undefined && event.id <= highestReplayedId) return;
-          handle(event);
+          enqueue(() => handle(event));
         },
       },
     );
@@ -126,7 +137,7 @@ export function App() {
       replayed = true;
       for (const event of buffered) {
         if (event.id !== undefined && event.id <= highestReplayedId) continue;
-        handle(event);
+        enqueue(() => handle(event));
       }
       buffered.length = 0;
     })();
@@ -167,6 +178,9 @@ export function App() {
 
   const handleSubmit = useCallback((raw: string) => {
     setBusy(true);
+    // Echo immediately: node.create starts the node synchronously, so its first
+    // events can otherwise beat the command's own output into the transcript.
+    emit([{ kind: 'command', key: `echo${Date.now()}`, input: `> ${raw}`, output: [] }]);
     void runInput(raw, context)
       .then((produced) => emit(produced))
       .finally(() => { setBusy(false); void refreshTree(); setStatusToken((t) => t + 1); });
