@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { execa } from 'execa';
-import { isClusterReachable } from './kind.js';
+import { isClusterReachable, isClusterAvailable, ensureLocalCluster, NAMESPACE } from './kind.js';
 
 async function hasKindBinary(): Promise<boolean> {
   try {
@@ -26,4 +26,12 @@ describe('isClusterReachable', () => {
     // No assumption about cluster existing yet; just confirm the function completes.
     await expect(isClusterReachable()).resolves.not.toThrow();
   });
+});
+
+describe.skipIf(!(await isClusterAvailable()))('ensureLocalCluster default-deny wiring', () => {
+  it('applies a default-deny NetworkPolicy to the org-exec namespace', async () => {
+    await ensureLocalCluster();
+    const { stdout } = await execa('kubectl', ['get', 'networkpolicy', 'default-deny-all', '-n', NAMESPACE, '-o', 'name']);
+    expect(stdout.trim()).toBe('networkpolicy.networking.k8s.io/default-deny-all');
+  }, 60_000);
 });

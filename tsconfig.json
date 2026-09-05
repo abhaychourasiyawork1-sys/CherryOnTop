@@ -9,8 +9,11 @@
     "outDir": "dist",
     "rootDir": "src",
     "declaration": false,
-    "resolveJsonModule": true
+    "resolveJsonModule": true,
+    "jsx": "react-jsx",
+    "jsxImportSource": "react"
   },
   "include": ["src"],
-  "exclude": ["src/**/*.test.ts"]
+  // Tests are typechecked (npm run typecheck) but not emitted (npm run build).
+  "exclude": []
 }

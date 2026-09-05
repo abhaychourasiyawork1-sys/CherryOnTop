@@ -1,4 +1,5 @@
 import { execa } from 'execa';
+import { applyDefaultDenyPolicy } from './network-policy.js';
 
 const CLUSTER_NAME = 'org-local';
 
@@ -57,6 +58,10 @@ export async function ensureLocalCluster(): Promise<void> {
   // namespace, and skipping it here left every executeStep failing on a
   // machine that already had a cluster.
   await ensureNamespace(NAMESPACE);
+  // G1 fix: built and tested in Phase 2 but never actually called. The per-node
+  // egress policy already implies deny-by-default for pods it selects; this is
+  // the namespace-wide backstop for anything reaching org-exec another way.
+  await applyDefaultDenyPolicy(NAMESPACE);
 }
 
 // kubectl rather than the API client: `create --dry-run | apply` is the one-liner

@@ -1,78 +1,97 @@
 import { describe, it, expect, vi } from 'vitest';
 import { createActor, fromPromise } from 'xstate';
 import { nodeMachine } from './node-machine.js';
+import type { ExecuteStepResult } from '../execution/execute-step.js';
 
-function machineWithMockExecute(result: { succeeded: boolean }) {
+function machineWithMocks(overrides: {
+  assessUncertainty?: { sufficientContext: boolean; complexity: 'low' | 'medium' | 'high' };
+  decideExecution?: { outcome: 'SELF_EXECUTE' | 'DELEGATE' | 'ESCALATE'; breakdown: Record<string, number> };
+  executeStep?: { succeeded: boolean };
+} = {}) {
   return nodeMachine.provide({
     actors: {
-      executeStep: fromPromise(async () => ({ message: 'mock', events: [], ...result })),
+      assessUncertainty: fromPromise(async () => overrides.assessUncertainty ?? { sufficientContext: true, complexity: 'low' as const }),
+      decideExecution: fromPromise(async () => overrides.decideExecution ?? { outcome: 'SELF_EXECUTE' as const, breakdown: {} }),
+      executeStep: fromPromise(async (): Promise<ExecuteStepResult> => ({ message: 'ok', events: [], ...(overrides.executeStep ?? { succeeded: true }) })),
+      delegateToChild: fromPromise(async (): Promise<ExecuteStepResult> => ({ succeeded: true, message: 'ok', events: [] })),
+      escalate: fromPromise(async () => 'approval-1'),
     },
   });
 }
 
 describe('nodeMachine', () => {
-  it('starts in CREATED and moves through ORIENT/PLAN to INTELLIGENCE_GATE on START', () => {
-    const actor = createActor(machineWithMockExecute({ succeeded: true }), { input: { nodeId: 'n1', goal: 'test' } });
+  it('auto-progresses from CREATED through the whole loop to COMPLETE on START alone', async () => {
+    const actor = createActor(machineWithMocks(), { input: { nodeId: 'n1', goal: 'test' } });
     actor.start();
     expect(actor.getSnapshot().value).toBe('CREATED');
     actor.send({ type: 'START' });
-    expect(actor.getSnapshot().value).toBe('INTELLIGENCE_GATE');
+    await vi.waitFor(() => expect(actor.getSnapshot().value).toBe('COMPLETE'));
   });
 
-  it('loops back to PLAN when context is insufficient, then proceeds when sufficient', () => {
-    const actor = createActor(machineWithMockExecute({ succeeded: true }), { input: { nodeId: 'n1', goal: 'test' } });
+  it('loops back to PLAN on insufficient context, but gives up after a bounded number of retries', async () => {
+    const actor = createActor(machineWithMocks({ assessUncertainty: { sufficientContext: false, complexity: 'low' } }), { input: { nodeId: 'n1', goal: 'test' } });
     actor.start();
     actor.send({ type: 'START' });
-    actor.send({ type: 'CONTEXT_INSUFFICIENT' });
-    expect(actor.getSnapshot().value).toBe('INTELLIGENCE_GATE');
-    actor.send({ type: 'CONTEXT_SUFFICIENT' });
-    expect(actor.getSnapshot().value).toBe('EXECUTION_DECISION');
+    // PLAN -> INTELLIGENCE_GATE -> (insufficient) -> PLAN is a real loop, and with a
+    // coordinator that never reports sufficiency it must terminate rather than spin.
+    await vi.waitFor(() => expect(actor.getSnapshot().status).toBe('done'));
+    expect(actor.getSnapshot().context.gateAttempts).toBe(3);
   });
 
-  it('reaches COMPLETE via SELF_EXECUTE -> VERIFY -> DOD_MET when execution succeeds', async () => {
-    const actor = createActor(machineWithMockExecute({ succeeded: true }), { input: { nodeId: 'n1', goal: 'test' } });
+  it('carries complexity into context from the coordinator', async () => {
+    const actor = createActor(machineWithMocks({ assessUncertainty: { sufficientContext: true, complexity: 'high' } }), { input: { nodeId: 'n1', goal: 'test' } });
     actor.start();
     actor.send({ type: 'START' });
-    actor.send({ type: 'CONTEXT_SUFFICIENT' });
-    actor.send({ type: 'SELF_EXECUTE' });
-    await vi.waitFor(() => expect(actor.getSnapshot().value).toBe('VERIFY'));
-    actor.send({ type: 'DOD_MET' });
-    expect(actor.getSnapshot().value).toBe('COMPLETE');
+    await vi.waitFor(() => expect(actor.getSnapshot().value).toBe('COMPLETE'));
+    expect(actor.getSnapshot().context.complexity).toBe('high');
+  });
+
+  it('records the decision breakdown in context', async () => {
+    const actor = createActor(machineWithMocks({ decideExecution: { outcome: 'SELF_EXECUTE', breakdown: { score: 0.42 } } }), { input: { nodeId: 'n1', goal: 'test' } });
+    actor.start();
+    actor.send({ type: 'START' });
+    await vi.waitFor(() => expect(actor.getSnapshot().value).toBe('COMPLETE'));
+    expect(actor.getSnapshot().context.lastDecision?.breakdown.score).toBe(0.42);
+  });
+
+  it('retries execution when the step fails, then lands in FAILED at the retry cap', async () => {
+    const actor = createActor(machineWithMocks({ executeStep: { succeeded: false } }), { input: { nodeId: 'n1', goal: 'test' } });
+    actor.start();
+    actor.send({ type: 'START' });
+    await vi.waitFor(() => expect(actor.getSnapshot().value).toBe('FAILED'));
+    expect(actor.getSnapshot().context.executionAttempts).toBe(3);
+  });
+
+  it('escalates through to WAIT_APPROVAL when the decision combinator says so', async () => {
+    const actor = createActor(machineWithMocks({ decideExecution: { outcome: 'ESCALATE', breakdown: { requiredBudget: 1, availableBudget: 0.01 } } }), { input: { nodeId: 'n1', goal: 'test' } });
+    actor.start();
+    actor.send({ type: 'START' });
+    await vi.waitFor(() => expect(actor.getSnapshot().value).toBe('WAIT_APPROVAL'));
+  });
+
+  it('APPROVED resumes the blocked delegation through to COMPLETE', async () => {
+    const actor = createActor(machineWithMocks({ decideExecution: { outcome: 'ESCALATE', breakdown: {} } }), { input: { nodeId: 'n1', goal: 'test' } });
+    actor.start();
+    actor.send({ type: 'START' });
+    await vi.waitFor(() => expect(actor.getSnapshot().value).toBe('WAIT_APPROVAL'));
+    actor.send({ type: 'APPROVED' });
+    await vi.waitFor(() => expect(actor.getSnapshot().value).toBe('COMPLETE'));
+  });
+
+  it('REJECTED sends the node to FAILED', async () => {
+    const actor = createActor(machineWithMocks({ decideExecution: { outcome: 'ESCALATE', breakdown: {} } }), { input: { nodeId: 'n1', goal: 'test' } });
+    actor.start();
+    actor.send({ type: 'START' });
+    await vi.waitFor(() => expect(actor.getSnapshot().value).toBe('WAIT_APPROVAL'));
+    actor.send({ type: 'REJECTED' });
+    expect(actor.getSnapshot().value).toBe('FAILED');
     expect(actor.getSnapshot().status).toBe('done');
   });
 
-  it('re-plans when DoD is not met after verification', async () => {
-    const actor = createActor(machineWithMockExecute({ succeeded: true }), { input: { nodeId: 'n1', goal: 'test' } });
+  it('transitions to DELEGATE, awaits the child, and completes on its result', async () => {
+    const actor = createActor(machineWithMocks({ decideExecution: { outcome: 'DELEGATE', breakdown: {} } }), { input: { nodeId: 'n1', goal: 'test' } });
     actor.start();
     actor.send({ type: 'START' });
-    actor.send({ type: 'CONTEXT_SUFFICIENT' });
-    actor.send({ type: 'SELF_EXECUTE' });
-    await vi.waitFor(() => expect(actor.getSnapshot().value).toBe('VERIFY'));
-    actor.send({ type: 'DOD_NOT_MET' });
-    expect(actor.getSnapshot().value).toBe('INTELLIGENCE_GATE');
-  });
-
-  it('carries the execution result into context on SELF_EXECUTE completion', async () => {
-    const actor = createActor(machineWithMockExecute({ succeeded: false }), { input: { nodeId: 'n1', goal: 'test' } });
-    actor.start();
-    actor.send({ type: 'START' });
-    actor.send({ type: 'CONTEXT_SUFFICIENT' });
-    actor.send({ type: 'SELF_EXECUTE' });
-    await vi.waitFor(() => expect(actor.getSnapshot().value).toBe('VERIFY'));
-    expect(actor.getSnapshot().context.lastResult?.succeeded).toBe(false);
-  });
-
-  it('still reaches VERIFY with a failed result when the execute actor throws', async () => {
-    const machine = nodeMachine.provide({
-      actors: { executeStep: fromPromise(async () => { throw new Error('cluster unreachable'); }) },
-    });
-    const actor = createActor(machine, { input: { nodeId: 'n1', goal: 'test' } });
-    actor.start();
-    actor.send({ type: 'START' });
-    actor.send({ type: 'CONTEXT_SUFFICIENT' });
-    actor.send({ type: 'SELF_EXECUTE' });
-    await vi.waitFor(() => expect(actor.getSnapshot().value).toBe('VERIFY'));
-    expect(actor.getSnapshot().context.lastResult?.succeeded).toBe(false);
-    expect(actor.getSnapshot().context.lastResult?.message).toContain('cluster unreachable');
+    await vi.waitFor(() => expect(actor.getSnapshot().value).toBe('COMPLETE'));
   });
 });

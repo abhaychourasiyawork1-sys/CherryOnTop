@@ -8,6 +8,20 @@
       "when": 1788557358681,
       "tag": "0000_fearless_speed",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1788602298893,
+      "tag": "0001_cooing_anthem",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1788602990485,
+      "tag": "0002_perfect_firestar",
+      "breakpoints": true
     }
   ]
 }

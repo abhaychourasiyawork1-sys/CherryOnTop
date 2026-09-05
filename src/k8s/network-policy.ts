@@ -14,7 +14,7 @@ function statusOf(err: unknown): number | undefined {
 
 export function buildEgressAllowlistPolicy(
   nodeId: string,
-  allowedTargets: { ip: string; ports: number[] }[],
+  allowedTargets: { ip: string; ports: number[]; except?: string[] }[],
 ): V1NetworkPolicy {
   return {
     apiVersion: 'networking.k8s.io/v1',
@@ -25,7 +25,7 @@ export function buildEgressAllowlistPolicy(
       policyTypes: ['Ingress', 'Egress'],
       ingress: [],
       egress: allowedTargets.map((target) => ({
-        to: [{ ipBlock: { cidr: target.ip } }],
+        to: [{ ipBlock: { cidr: target.ip, ...(target.except ? { except: target.except } : {}) } }],
         ports: target.ports.map((port) => ({ port, protocol: 'TCP' })),
       })),
     },

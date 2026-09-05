@@ -1,5 +1,6 @@
 import type { Command } from 'commander';
 import { execa } from 'execa';
+import * as clack from '@clack/prompts';
 import { runChecks, type DoctorCheck } from '../../doctor/checks.js';
 import { isClusterReachable, ensureLocalCluster } from '../../k8s/kind.js';
 
@@ -91,6 +92,11 @@ export function registerDoctorCommand(program: Command): void {
     .description('Check that required dependencies are present')
     .action(async () => {
       const ok = await runChecks(CHECKS);
+      if (ok) {
+        clack.log.success('All checks passed — ready to run `org run`.');
+      } else {
+        clack.log.warn('Some checks failed. Re-run `org doctor` after fixing them — each failing line above names the missing piece and, where applicable, an install link.');
+      }
       process.exitCode = ok ? 0 : 1;
     });
 }

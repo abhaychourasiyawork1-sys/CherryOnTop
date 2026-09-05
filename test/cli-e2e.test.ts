@@ -6,7 +6,13 @@ import { stopDaemon } from '../src/daemon/manager.js';
 
 const CLI = './dist/cli/index.js';
 const TEST_DB = fileURLToPath(new URL('../test-e2e.db', import.meta.url));
-const ENV = { ORG_DB_PATH: TEST_DB, ORG_DAEMON_PORT: '4188', ORG_DAEMON_NAME: 'org-daemon-e2e' };
+// A node now drives itself into a real Kubernetes dispatch with no external
+// event, so this e2e run needs the stopgap image (the default runner image is
+// unpublished and would leave a Job stuck in ContainerCreating).
+const ENV = {
+  ORG_DB_PATH: TEST_DB, ORG_DAEMON_PORT: '4188', ORG_DAEMON_NAME: 'org-daemon-e2e',
+  ORG_RUNNER_IMAGE: 'busybox:1.36', ORG_WORKTREE_PATH: '/tmp',
+};
 
 // Distinct pm2 app name + port so this file does not race the manager integration test.
 Object.assign(process.env, ENV);
@@ -26,5 +32,14 @@ describe('CLI end-to-end', () => {
 
     const treeResult = await execa('node', [CLI, 'tree'], { env: ENV });
     expect(treeResult.stdout).toContain('end-to-end test goal');
-  }, 30000);
+
+    // Let the node reach a terminal state before afterAll kills the daemon:
+    // stopping it mid-dispatch orphans the Job, Secret and NetworkPolicy it
+    // created, since the cleanup runs in the daemon that is about to die.
+    for (let i = 0; i < 40; i++) {
+      const { stdout } = await execa('node', [CLI, 'tree'], { env: ENV });
+      if (/COMPLETE|FAILED/.test(stdout)) break;
+      await new Promise((r) => setTimeout(r, 1000));
+    }
+  }, 60000);
 });
