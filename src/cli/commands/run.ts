@@ -34,14 +34,15 @@ export function registerRunCommand(program: Command): void {
       // agent running with permission prompts disabled, so "the directory I
       // happened to be standing in" is not good enough.
       let repo: string;
+      let repoPath: string;
       try {
         repo = resolveRepoPath(options.repo);
+        repoPath = toContainerPath(repo);
       } catch (err) {
-        console.error(`${err instanceof Error ? err.message : String(err)} Pass --repo <path>.`);
+        console.error(`${err instanceof Error ? err.message : String(err)}`);
         process.exitCode = 1;
         return;
       }
-      const repoPath = toContainerPath(repo);
       const status = await daemonStatus();
       if (!status.running) {
         console.log('Daemon not running — starting...');

@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { Box, Text } from 'ink';
 import { tuiClient } from '../client.js';
+import { formatScore } from '../format.js';
 import type { Decision } from '../../schemas/decision.js';
 
 export function DecisionLogScreen({ nodeId }: { nodeId: string }) {
@@ -22,7 +23,7 @@ export function DecisionLogScreen({ nodeId }: { nodeId: string }) {
       {decisions?.map((d) => (
         <Box key={d.id} flexDirection="column" marginTop={1}>
           <Text bold>{d.type}: <Text color="cyan">{d.outcome}</Text> <Text dimColor>{d.createdAt}</Text></Text>
-          {Object.entries(d.breakdown).map(([k, v]) => <Text key={k} dimColor>  {k}: {v}</Text>)}
+          {Object.entries(d.breakdown).map(([k, v]) => <Text key={k} dimColor>  {k}: {formatScore(v)}</Text>)}
         </Box>
       ))}
       <Box marginTop={1}><Text dimColor>[esc] back</Text></Box>

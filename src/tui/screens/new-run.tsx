@@ -59,6 +59,7 @@ export function NewRunScreen({ onCreated }: { onCreated: (nodeId: string) => voi
         <Box>
           <Text>Allow delegation? </Text>
           <ConfirmInput
+            defaultChoice="cancel"
             onConfirm={() => { setSpawn(true); setField('budget'); }}
             onCancel={() => { setSpawn(false); setField('budget'); }}
           />

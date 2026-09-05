@@ -10,16 +10,21 @@
 4. `org doctor` — this auto-bootstraps a local Kubernetes cluster (`kind`) the first time. Fix anything it reports red, then re-run it.
 5. `./scripts/build-runner-image.sh` — builds the sandbox image and loads it into the cluster. Re-run it if `org doctor` ever reports the runner image missing (recreating the cluster clears it).
 
-If your user isn't in the `docker` group, prefix **setup** commands with `sg docker -c "..."` (`org doctor` tells you when this is the problem). Everyday use — `org run`, `org tree`, `org watch`, `org approve` — talks to Kubernetes, not Docker, and needs no group membership.
+If your user isn't in the `docker` group, prefix **setup** commands with `sg docker -c "..."` (`org doctor` tells you when this is the problem). Everyday use — `org`, `org run`, `org tree`, `org approve` — talks to Kubernetes, not Docker, and needs no group membership.
 
 ## Every time you want to use it
 
 1. `cd` into the repository you want the organization to work on. It must live somewhere under your home directory.
-2. `org run "<describe what you want done>"` — creates a root accountable node. Add `--repo <path>` to point at a different repository, and `--spawn --budget <usd> --max-children <n>` if you want it able to delegate subtasks to child nodes (a child costs $1 of budget; below that, it asks you for approval instead of failing silently).
-3. `org watch` (in another terminal) — live view of the organization tree as it works.
-4. If something needs your approval: `org approvals` lists what's pending, `org approve <id>` or `org reject <id>` resolves it.
-5. `org tree` — quick status check any time. `org commitment <id>` / `org decision <id>` — see what it decided and why, with the full score breakdown.
-6. When you're done for the session: `org daemon stop`.
+2. `org` — opens the interactive dashboard, which is the normal way to use this. It starts the daemon if it isn't running. From there: `n` starts a run (goal, repo, delegation, budget, max children), `t` opens the tree, `enter` drills into a node, `a` jumps to whatever is waiting on your approval, `q` quits.
+3. Inside a node: the lifecycle line shows where it is, the decision block shows the full score breakdown behind `SELF_EXECUTE`/`DELEGATE`/`ESCALATE`, and the output section renders Claude Code's actual reasoning, tool calls and diffs **live, as they happen**. `l` opens the full unabridged output (scroll with `↑↓`/`jk`, `f` jumps back to live), `d` opens every decision the node has made, `esc` goes back.
+4. If a node is waiting on you, its detail screen offers `y` approve / `r` reject in place.
+
+The scriptable commands still work standalone if you prefer them or need them in a script:
+
+- `org run "<what you want done>"` — creates a root node. `--repo <path>` points at a different repository; `--spawn --budget <usd> --max-children <n>` lets it delegate (a child costs $1 of budget; below that, it asks for approval instead of failing silently).
+- `org tree` — quick status check. `org commitment <id>` / `org decision <id>` — what it decided and why.
+- `org approvals`, `org approve <id>`, `org reject <id>` — the approval flow outside the dashboard.
+- `org daemon stop` — when you're done for the session.
 
 If you're logged in via `claude login`, that's it — no daemon-restart gotchas, since the subscription's credentials are read fresh from disk on every single run. The API-key path is different: the daemon only captures `ANTHROPIC_API_KEY` when it starts, so if you export it after the daemon is already running, `org run` notices and restarts the daemon for you — you don't have to. With neither available, `org run` refuses rather than dispatching work that would fail authentication several minutes later.
 

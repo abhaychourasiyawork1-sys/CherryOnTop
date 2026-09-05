@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { Box, Text, useInput } from 'ink';
 import { tuiClient } from '../client.js';
+import { formatScore } from '../format.js';
 import { useNodeStream } from '../use-node-stream.js';
 import { StreamLines } from '../stream-lines.js';
 import type { Decision } from '../../schemas/decision.js';
@@ -106,7 +107,7 @@ export function NodeDetailScreen({
         <Box flexDirection="column" marginTop={1}>
           <Text bold>Decision: <Text color="cyan">{latestDecision.outcome}</Text></Text>
           {Object.entries(latestDecision.breakdown).map(([k, v]) => (
-            <Text key={k} dimColor>  {k}: {v}</Text>
+            <Text key={k} dimColor>  {k}: {formatScore(v)}</Text>
           ))}
           {decisions.length > 1 && <Text dimColor>  ({decisions.length} decisions — [d] for all)</Text>}
         </Box>

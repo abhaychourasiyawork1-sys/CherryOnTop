@@ -97,7 +97,7 @@ export function TreeScreen({ onOpenNode, onNewRun }: { onOpenNode: (nodeId: stri
       {!filtering && filter && <Text dimColor>filter: {filter}</Text>}
       {visible.length === 0 && <Text dimColor>No nodes{filter ? ' match that filter' : ' yet'}. Press [n] to start one.</Text>}
       {visible.map(({ node, depth }, i) => (
-        <Text key={node.id} inverse={i === cursor}>
+        <Text key={node.id} inverse={i === cursor} wrap="truncate-end">
           {'  '.repeat(depth)}
           <Text color={stateColor(node.state)}>{badge(node.state)}</Text>
           {' '}{node.id.slice(0, 8)}  {node.state.padEnd(20)} {node.goal}
