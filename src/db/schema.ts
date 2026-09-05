@@ -36,3 +36,12 @@ export const decisions = sqliteTable('decisions', {
   data: text('data', { mode: 'json' }).$type<Decision>().notNull(),
   createdAt: text('created_at').notNull(),
 });
+
+export const approvals = sqliteTable('approvals', {
+  id: text('id').primaryKey(),
+  nodeId: text('node_id').notNull(),
+  reason: text('reason').notNull(),
+  status: text('status').notNull(),
+  createdAt: text('created_at').notNull(),
+  resolvedAt: text('resolved_at'),
+});
