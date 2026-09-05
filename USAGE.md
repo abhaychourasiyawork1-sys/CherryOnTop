@@ -15,15 +15,31 @@ If your user isn't in the `docker` group, prefix **setup** commands with `sg doc
 ## Every time you want to use it
 
 1. `cd` into the repository you want the organization to work on. It must live somewhere under your home directory.
-2. `org` — opens the interactive dashboard, which is the normal way to use this. It starts the daemon if it isn't running. From there: `n` starts a run (goal, repo, delegation, budget, max children), `t` opens the tree, `enter` drills into a node, `a` jumps to whatever is waiting on your approval, `q` quits.
-3. Inside a node: the lifecycle line shows where it is, the decision block shows the full score breakdown behind `SELF_EXECUTE`/`DELEGATE`/`ESCALATE`, and the output section renders Claude Code's actual reasoning, tool calls and diffs **live, as they happen**. `l` opens the full unabridged output (scroll with `↑↓`/`jk`, `f` jumps back to live), `d` opens every decision the node has made, `esc` goes back.
-4. If a node is waiting on you, its detail screen offers `y` approve / `r` reject in place.
+2. `org` — opens the interactive session, which is the normal way to use this. It starts the daemon if it isn't running.
+3. **Type what you want done and press enter.** That starts a run against the current directory. Everything the organization does then streams into one transcript: what each node decided and *why*, and Claude Code's actual reasoning, tool calls and diffs as they happen.
+4. **Type `/` for commands.** A menu appears with every command and what it does; `⇥` completes, and `⇥` after a command completes its argument from live state (`/approve ⇥` offers the ids actually waiting on you). `?` on an empty line opens help.
+
+The commands:
+
+| Command | What it does |
+|---|---|
+| `/run [--spawn] [--budget <usd>] [--max-children <n>] [--repo <path>] <goal>` | A run with options — plain text is this with defaults |
+| `/tree` | The node tree as it stands |
+| `/why <id>` | The full scoring behind a node's decisions |
+| `/approve <id>` · `/reject <id>` · `/approvals` | The approval flow |
+| `/stop <id>` | Cancel a running node and tear down its sandbox |
+| `/focus [id]` | Narrow the transcript to one node; bare `/focus` restores everything |
+| `/verbose` | Show the raw events normally suppressed |
+| `/cost` · `/doctor` · `/daemon start\|stop\|status` | Spend, environment checks, daemon control |
+| `/history [n]` · `/clear` · `/notify` · `/help` · `/quit` | Transcript and session control |
+
+`esc` interrupts the node you are focused on (or the only one running). `ctrl+c` twice quits — runs keep going in the daemon, and reopening `org` replays recent activity.
 
 The scriptable commands still work standalone if you prefer them or need them in a script:
 
-- `org run "<what you want done>"` — creates a root node. `--repo <path>` points at a different repository; `--spawn --budget <usd> --max-children <n>` lets it delegate (a child costs $1 of budget; below that, it asks for approval instead of failing silently).
-- `org tree` — quick status check. `org commitment <id>` / `org decision <id>` — what it decided and why.
-- `org approvals`, `org approve <id>`, `org reject <id>` — the approval flow outside the dashboard.
+- `org run "<what you want done>"` — same flags as `/run`.
+- `org tree`, `org commitment <id>`, `org decision <id>` — status and reasoning.
+- `org approvals`, `org approve <id>`, `org reject <id>` — the approval flow outside the session.
 - `org daemon stop` — when you're done for the session.
 
 If you're logged in via `claude login`, that's it — no daemon-restart gotchas, since the subscription's credentials are read fresh from disk on every single run. The API-key path is different: the daemon only captures `ANTHROPIC_API_KEY` when it starts, so if you export it after the daemon is already running, `org run` notices and restarts the daemon for you — you don't have to. With neither available, `org run` refuses rather than dispatching work that would fail authentication several minutes later.
