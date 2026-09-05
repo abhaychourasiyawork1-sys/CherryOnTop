@@ -46,7 +46,7 @@ function realDelegateDeps(db: Db): DelegateChildDeps {
           ...parent.contract, goal,
           authority: childAuthority(parent.contract.authority, budgetUsd, approvedBudgetUsd),
         },
-        state: 'CREATED', createdAt: now, updatedAt: now,
+        state: 'CREATED', repoPath: parent.repoPath, createdAt: now, updatedAt: now,
       });
       return id;
     },
@@ -92,11 +92,13 @@ function productionMachine(db: Db, nodeId: string) {
         }, realDelegateDeps(db)),
       ),
       executeStep: fromPromise(async ({ input }) => {
+        const node = getNode(db, nodeId);
         const result = await executeStep({
           nodeId,
           goal: input.goal,
           namespace: NAMESPACE,
-          worktreePath: process.env.ORG_WORKTREE_PATH ?? `/tmp/org-worktrees/${nodeId}`,
+          // Falls back to the old /tmp path only when no --repo was given.
+          worktreePath: node?.repoPath ?? process.env.ORG_WORKTREE_PATH ?? `/tmp/org-worktrees/${nodeId}`,
           // G4 fix: was always {}, so no real invocation could authenticate. The
           // key becomes the container's env var of the same name via envFrom —
           // Claude Code reads it natively, no extra wiring.

@@ -1,0 +1,1 @@
+ALTER TABLE `nodes` ADD `repo_path` text;

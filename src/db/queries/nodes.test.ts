@@ -51,6 +51,18 @@ describe('node queries', () => {
     expect(listNodes(db)).toHaveLength(2);
   });
 
+  it('stores and retrieves an optional repoPath', () => {
+    const db = createDb(TEST_DB);
+    insertNode(db, { id: 'n1', parentId: null, goal: 'test', contract: CONTRACT, state: 'CREATED', createdAt: 't0', updatedAt: 't0', repoPath: '/host/my-repo' });
+    expect(getNode(db, 'n1')?.repoPath).toBe('/host/my-repo');
+  });
+
+  it('defaults repoPath to null when not given', () => {
+    const db = createDb(TEST_DB);
+    insertNode(db, { id: 'n2', parentId: null, goal: 'test', contract: CONTRACT, state: 'CREATED', createdAt: 't0', updatedAt: 't0', repoPath: null });
+    expect(getNode(db, 'n2')?.repoPath).toBeNull();
+  });
+
   it('returns undefined for a missing node', () => {
     const db = createDb(TEST_DB);
     expect(getNode(db, 'missing')).toBeUndefined();

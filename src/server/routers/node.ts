@@ -9,13 +9,17 @@ import { insertCommitment } from '../../db/queries/commitments.js';
 
 export const nodeRouter = router({
   create: publicProcedure
-    .input(NodeContractSchema)
+    .input(NodeContractSchema.extend({ repoPath: z.string().nullable().default(null) }))
     .mutation(({ input, ctx }) => {
+      // repoPath is operational plumbing, not part of the conceptual goal
+      // contract — persisting it inside the contract JSON too would just be the
+      // same fact in two places to keep in sync.
+      const { repoPath, ...contract } = input;
       const id = randomUUID();
       const now = new Date().toISOString();
       insertNode(ctx.db, {
-        id, parentId: null, goal: input.goal, contract: input,
-        state: 'CREATED', createdAt: now, updatedAt: now,
+        id, parentId: null, goal: contract.goal, contract,
+        state: 'CREATED', repoPath, createdAt: now, updatedAt: now,
       });
       // A root node owns a commitment just as a delegated child does — otherwise
       // `org commitment <id>` is empty for the only id `org run` hands back.

@@ -9,6 +9,7 @@ export const nodes = sqliteTable('nodes', {
   goal: text('goal').notNull(),
   contract: text('contract', { mode: 'json' }).$type<NodeContract>().notNull(),
   state: text('state').notNull(),
+  repoPath: text('repo_path'),
   createdAt: text('created_at').notNull(),
   updatedAt: text('updated_at').notNull(),
 });

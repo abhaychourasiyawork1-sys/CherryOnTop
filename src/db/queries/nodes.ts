@@ -9,6 +9,10 @@ export interface NodeRecord {
   goal: string;
   contract: NodeContract;
   state: string;
+  /** The container-side path of the repo this node operates on (see
+   *  toContainerPath). Optional: a node created before --repo, or without it,
+   *  has none. */
+  repoPath?: string | null;
   createdAt: string;
   updatedAt: string;
 }

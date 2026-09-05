@@ -22,6 +22,13 @@
       "when": 1788602990485,
       "tag": "0002_perfect_firestar",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1788607437413,
+      "tag": "0003_youthful_doctor_spectrum",
+      "breakpoints": true
     }
   ]
 }

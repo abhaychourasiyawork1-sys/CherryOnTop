@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
+import os from 'node:os';
 import { execa } from 'execa';
-import { isClusterReachable, isClusterAvailable, ensureLocalCluster, getKubeDnsClusterIp, NAMESPACE } from './kind.js';
+import { isClusterReachable, isClusterAvailable, ensureLocalCluster, getKubeDnsClusterIp, toContainerPath, NAMESPACE } from './kind.js';
 
 async function hasKindBinary(): Promise<boolean> {
   try {
@@ -53,4 +54,14 @@ describe.skipIf(!(await isClusterAvailable()))('ensureLocalCluster host mount', 
     const mounts = JSON.parse(stdout) as { Source: string; Destination: string }[];
     expect(mounts.some((m) => m.Destination === '/host')).toBe(true);
   }, 180_000);
+});
+
+describe('toContainerPath', () => {
+  it('rejects a path outside the home directory', () => {
+    expect(() => toContainerPath('/etc/passwd')).toThrow(/outside the home directory/);
+  });
+
+  it('maps a real subdirectory correctly', () => {
+    expect(toContainerPath(`${os.homedir()}/Desktop/CherryOnTop`)).toBe('/host/Desktop/CherryOnTop');
+  });
 });
