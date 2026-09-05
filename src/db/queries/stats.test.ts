@@ -3,6 +3,7 @@ import { existsSync, unlinkSync } from 'node:fs';
 import { createDb } from '../client.js';
 import { insertNode } from './nodes.js';
 import { appendEvent } from './events.js';
+import { insertApproval } from './approvals.js';
 import { getOrgStats } from './stats.js';
 
 const TEST_DB = './test-stats.db';
@@ -28,11 +29,16 @@ describe('getOrgStats', () => {
     appendEvent(db, { nodeId: 'n2', type: 'exec.result', payload: { type: 'result', total_cost_usd: 0.02 }, createdAt: 't0' });
     // Not a cost event — must not be counted.
     appendEvent(db, { nodeId: 'n3', type: 'state.transition', payload: { state: 'ORIENT' }, createdAt: 't0' });
+    insertApproval(db, { id: 'a1', nodeId: 'n3', reason: 'budget', status: 'pending', createdAt: 't0' });
+    insertApproval(db, { id: 'a2', nodeId: 'n1', reason: 'budget', status: 'approved', createdAt: 't0' });
 
     const stats = getOrgStats(db);
     expect(stats.complete).toBe(1);
     expect(stats.failed).toBe(1);
     expect(stats.active).toBe(1);
     expect(stats.totalCostUsd).toBeCloseTo(0.07, 5);
+    // Only the still-pending one counts — the status line reports what is
+    // blocked on the user right now, not everything ever escalated.
+    expect(stats.pendingApprovals).toBe(1);
   });
 });

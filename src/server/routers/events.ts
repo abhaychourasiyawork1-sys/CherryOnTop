@@ -1,12 +1,16 @@
 import { z } from 'zod';
 import { router, publicProcedure } from '../trpc.js';
-import { listEventsForNode } from '../../db/queries/events.js';
+import { listEventsForNode, listRecentEvents } from '../../db/queries/events.js';
 import { subscribeAll, subscribeToNode, type BusEvent } from '../../events/bus.js';
 
 export const eventsRouter = router({
   listForNode: publicProcedure
     .input(z.object({ nodeId: z.string() }))
     .query(({ input, ctx }) => listEventsForNode(ctx.db, input.nodeId)),
+
+  recent: publicProcedure
+    .input(z.object({ limit: z.number().min(1).max(1000).default(200), before: z.number().optional() }))
+    .query(({ input, ctx }) => listRecentEvents(ctx.db, input)),
 
   subscribe: publicProcedure
     .input(z.object({ nodeId: z.string().optional() }))

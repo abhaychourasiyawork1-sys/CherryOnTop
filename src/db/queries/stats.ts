@@ -1,12 +1,15 @@
 import { eq } from 'drizzle-orm';
 import type { Db } from '../client.js';
-import { nodes, events } from '../schema.js';
+import { nodes, events, approvals } from '../schema.js';
 
 export interface OrgStats {
   active: number;
   complete: number;
   failed: number;
   totalCostUsd: number;
+  /** Approvals still waiting on a human — what the status line reports as
+   *  "waiting on you", not everything that was ever escalated. */
+  pendingApprovals: number;
 }
 
 export function getOrgStats(db: Db): OrgStats {
@@ -23,5 +26,7 @@ export function getOrgStats(db: Db): OrgStats {
     return sum + (payload?.total_cost_usd ?? 0);
   }, 0);
 
-  return { active, complete, failed, totalCostUsd };
+  const pendingApprovals = db.select().from(approvals).where(eq(approvals.status, 'pending')).all().length;
+
+  return { active, complete, failed, totalCostUsd, pendingApprovals };
 }
