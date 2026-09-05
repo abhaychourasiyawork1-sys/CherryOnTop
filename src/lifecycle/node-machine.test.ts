@@ -13,6 +13,7 @@ function machineWithMocks(overrides: {
       decideExecution: fromPromise(async () => overrides.decideExecution ?? { outcome: 'SELF_EXECUTE' as const, breakdown: {} }),
       executeStep: fromPromise(async () => ({ message: 'ok', events: [], ...(overrides.executeStep ?? { succeeded: true }) })),
       delegateToChild: fromPromise(async () => ({ succeeded: true, message: 'ok', events: [] })),
+      escalate: fromPromise(async () => 'approval-1'),
     },
   });
 }
@@ -60,11 +61,30 @@ describe('nodeMachine', () => {
     expect(actor.getSnapshot().context.executionAttempts).toBe(3);
   });
 
-  it('transitions to ESCALATE when the decision combinator says so', async () => {
+  it('escalates through to WAIT_APPROVAL when the decision combinator says so', async () => {
     const actor = createActor(machineWithMocks({ decideExecution: { outcome: 'ESCALATE', breakdown: { requiredBudget: 1, availableBudget: 0.01 } } }), { input: { nodeId: 'n1', goal: 'test' } });
     actor.start();
     actor.send({ type: 'START' });
-    await vi.waitFor(() => expect(actor.getSnapshot().value).toBe('ESCALATE'));
+    await vi.waitFor(() => expect(actor.getSnapshot().value).toBe('WAIT_APPROVAL'));
+  });
+
+  it('APPROVED resumes the blocked delegation through to COMPLETE', async () => {
+    const actor = createActor(machineWithMocks({ decideExecution: { outcome: 'ESCALATE', breakdown: {} } }), { input: { nodeId: 'n1', goal: 'test' } });
+    actor.start();
+    actor.send({ type: 'START' });
+    await vi.waitFor(() => expect(actor.getSnapshot().value).toBe('WAIT_APPROVAL'));
+    actor.send({ type: 'APPROVED' });
+    await vi.waitFor(() => expect(actor.getSnapshot().value).toBe('COMPLETE'));
+  });
+
+  it('REJECTED sends the node to FAILED', async () => {
+    const actor = createActor(machineWithMocks({ decideExecution: { outcome: 'ESCALATE', breakdown: {} } }), { input: { nodeId: 'n1', goal: 'test' } });
+    actor.start();
+    actor.send({ type: 'START' });
+    await vi.waitFor(() => expect(actor.getSnapshot().value).toBe('WAIT_APPROVAL'));
+    actor.send({ type: 'REJECTED' });
+    expect(actor.getSnapshot().value).toBe('FAILED');
+    expect(actor.getSnapshot().status).toBe('done');
   });
 
   it('transitions to DELEGATE, awaits the child, and completes on its result', async () => {

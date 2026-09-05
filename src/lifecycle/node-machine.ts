@@ -16,7 +16,10 @@ export interface NodeMachineContext {
 // SELF_EXECUTE/DELEGATE/DOD_MET/DOD_NOT_MET are all gone from the event union —
 // the machine decides and verifies these itself now. START is the only event a
 // caller still sends (Task 16 adds the approval pair).
-export type NodeMachineEvent = { type: 'START' };
+export type NodeMachineEvent =
+  | { type: 'START' }
+  | { type: 'APPROVED' }
+  | { type: 'REJECTED' };
 
 const MAX_GATE_ATTEMPTS = 3;
 const MAX_EXECUTION_ATTEMPTS = 3;
@@ -39,6 +42,9 @@ export const nodeMachine = setup({
     }),
     delegateToChild: fromPromise<ExecuteStepResult, { nodeId: string; goal: string }>(async () => {
       throw new Error('delegateToChild actor not provided');
+    }),
+    escalate: fromPromise<string, { nodeId: string; reason: string }>(async () => {
+      throw new Error('escalate actor not provided');
     }),
   },
 }).createMachine({
@@ -111,8 +117,26 @@ export const nodeMachine = setup({
         },
       },
     },
-    // Task 16 replaces this with a real WAIT_APPROVAL follow-up.
-    ESCALATE: { type: 'final' },
+    ESCALATE: {
+      invoke: {
+        src: 'escalate',
+        input: ({ context }) => ({
+          nodeId: context.nodeId,
+          reason: 'insufficient budget for delegation',
+        }),
+        onDone: 'WAIT_APPROVAL',
+      },
+    },
+    // Approval means "exceed your authority this once", so it resumes at the
+    // step the authority check blocked — delegation, the only thing that
+    // escalates today. Sending it back to PLAN instead would re-run the same
+    // decision against the same unchanged authority and escalate again.
+    WAIT_APPROVAL: {
+      on: {
+        APPROVED: 'DELEGATE',
+        REJECTED: 'FAILED',
+      },
+    },
     // VERIFY resolves itself from the execution result. Nothing external sends a
     // DoD verdict: a delegating parent awaits its child's terminal state, so a
     // child parked here waiting on a human would deadlock the parent. Real

@@ -31,7 +31,7 @@ describe('node-actor-manager', () => {
     // INTELLIGENCE_GATE and EXECUTION_DECISION both resolve themselves through
     // async invokes now, so the node walks all the way here with no event from
     // this test.
-    await vi.waitFor(() => expect(getNode(db, 'n1')?.state).toBe('ESCALATE'));
+    await vi.waitFor(() => expect(getNode(db, 'n1')?.state).toBe('WAIT_APPROVAL'));
 
     const recordedEvents = listEventsForNode(db, 'n1');
     expect(recordedEvents.length).toBeGreaterThanOrEqual(2);

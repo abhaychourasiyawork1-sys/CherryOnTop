@@ -10,6 +10,8 @@ import { stopgapAdapter } from '../adapters/stopgap.js';
 import { assessUncertainty } from '../intelligence/coordinator.js';
 import { decideExecution } from '../engines/decide-execution.js';
 import { insertDecision } from '../db/queries/decisions.js';
+import { escalate } from '../approvals/escalation.js';
+import { insertApproval } from '../db/queries/approvals.js';
 import type { NodeMachineContext } from './node-machine.js';
 import { delegateToChild, type DelegateChildDeps } from './delegate-child.js';
 import { insertCommitment } from '../db/queries/commitments.js';
@@ -93,6 +95,9 @@ function productionMachine(db: Db, nodeId: string) {
         });
         return result;
       }),
+      escalate: fromPromise(async ({ input }: { input: { nodeId: string; reason: string } }) =>
+        escalate(input.nodeId, input.reason, { insertApproval: (record) => insertApproval(db, record) }),
+      ),
       delegateToChild: fromPromise(async ({ input }: { input: { nodeId: string; goal: string } }) =>
         delegateToChild({ parentId: nodeId, goal: input.goal, childBudgetUsd: CHILD_BUDGET_USD }, realDelegateDeps(db)),
       ),
