@@ -32,3 +32,12 @@ describe.skipIf(!CLUSTER_AVAILABLE)('NetworkPolicy application (real cluster)', 
     await execa('kubectl', ['delete', 'networkpolicy', 'org-egress-n1', '-n', 'default']).catch(() => {});
   }, 15_000);
 });
+
+it('excludes metadata and private-range addresses from a wide-open allowlist', () => {
+  const policy = buildEgressAllowlistPolicy('n1', [
+    { ip: '0.0.0.0/0', ports: [443], except: ['169.254.169.254/32', '10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16'] },
+  ]);
+  expect(policy.spec?.egress?.[0].to?.[0].ipBlock?.except).toEqual([
+    '169.254.169.254/32', '10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16',
+  ]);
+});

@@ -40,8 +40,16 @@ const defaultDeps: ExecuteStepDeps = {
 
 const RUNNER_IMAGE = 'ghcr.io/abhaychourasiyawork1-sys/cherryontop-runner:dev';
 
+// G2 fix: still wide on IP range (per-provider CIDR allowlists are a Phase 5
+// config task — providers' ranges shift and need a maintained source), but now
+// excludes the addresses a compromised runner could actually do damage with:
+// cloud metadata (credential theft) and RFC1918 ranges (lateral movement).
 const DEFAULT_EGRESS_ALLOWLIST = [
-  { ip: '0.0.0.0/0', ports: [443] }, // ponytail: wide-open :443 until per-provider CIDRs are configured; tighten before this leaves Phase 2.
+  {
+    ip: '0.0.0.0/0',
+    ports: [443],
+    except: ['169.254.169.254/32', '10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16'],
+  },
 ];
 
 export async function executeStep(
