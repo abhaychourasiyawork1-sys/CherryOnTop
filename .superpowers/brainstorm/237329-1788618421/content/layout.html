@@ -1,0 +1,50 @@
+<h2>Which screen layout feels right?</h2>
+<p class="subtitle">Both are real terminal-app patterns. Mockups below use monospace + box-drawing to show the actual feel, not a web UI.</p>
+
+<div class="split">
+  <div class="mockup">
+    <div class="mockup-header">A — Drill-down (k9s-style)</div>
+    <div class="mockup-body">
+      <pre style="font-family:monospace;font-size:12px;line-height:1.4;background:#0d1117;color:#c9d1d9;padding:14px;border-radius:6px;white-space:pre;overflow-x:auto;">
+ org  ›  tree                                    [?] help  [q] quit
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ ● a3f1  DELEGATE      Implement OAuth login...
+   ├─ ✓ e5a2  COMPLETE    Backend: token refresh
+   └─ ● d57c  EXECUTION_DECISION  Frontend: login UI
+                                             ↑ selected (enter to drill in)
+
+ [enter] open node   [n] new run   [a] approvals   [/] search
+      </pre>
+      <p style="margin-top:10px;font-size:13px;color:var(--muted,#666)">Press <b>Enter</b> on a node → the whole screen becomes that node's detail (state, decision, live log). Press <b>Esc</b> to go back up. One thing on screen at a time, always full width.</p>
+    </div>
+  </div>
+  <div class="mockup">
+    <div class="mockup-header">B — Multi-pane (always-visible)</div>
+    <div class="mockup-body">
+      <pre style="font-family:monospace;font-size:12px;line-height:1.4;background:#0d1117;color:#c9d1d9;padding:14px;border-radius:6px;white-space:pre;overflow-x:auto;">
+ TREE────────────────┬ NODE d57c ─────────────────────────
+ ● a3f1 DELEGATE     │ state: EXECUTION_DECISION
+ ├✓ e5a2 COMPLETE     │ decision: scoring...
+ └●d57c EXEC_DECISION │   estimatedValue 1.2
+                      │   modelCost      0.30
+                      ├──────────────────────────────────
+                      │ LIVE OUTPUT
+                      │ ▸ reading src/auth/login.tsx
+                      │ ▸ editing... ▌
+ [tab] switch pane    │
+      </pre>
+      <p style="margin-top:10px;font-size:13px;color:var(--muted,#666)">Tree, selected node's detail, and its live output all visible at once, always. <b>Tab</b> moves focus between panes; the tree pane shrinks but never disappears.</p>
+    </div>
+  </div>
+</div>
+
+<div class="options" style="margin-top:20px">
+  <div class="option" data-choice="a" onclick="toggleSelect(this)">
+    <div class="letter">A</div>
+    <div class="content"><h3>Drill-down</h3><p>Simpler, scales cleanly to deep trees, one focus at a time</p></div>
+  </div>
+  <div class="option" data-choice="b" onclick="toggleSelect(this)">
+    <div class="letter">B</div>
+    <div class="content"><h3>Multi-pane</h3><p>See tree + detail + live output simultaneously, no navigating away</p></div>
+  </div>
+</div>

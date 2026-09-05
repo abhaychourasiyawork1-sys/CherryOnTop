@@ -4,6 +4,7 @@ import { nodeMachine, type NodeMachineEvent } from './node-machine.js';
 import type { Db } from '../db/client.js';
 import { updateNodeState, getNode, insertNode } from '../db/queries/nodes.js';
 import { appendEvent } from '../db/queries/events.js';
+import { publish } from '../events/bus.js';
 import { executeStep } from '../execution/execute-step.js';
 import { claudeCodeAdapter } from '../adapters/claude-code.js';
 import { stopgapAdapter } from '../adapters/stopgap.js';
@@ -107,13 +108,17 @@ function productionMachine(db: Db, nodeId: string) {
           credentials: resolveCredentials(os.homedir(), process.env.ANTHROPIC_API_KEY),
           adapter: runnerImageOverride() ? stopgapAdapter : claudeCodeAdapter,
           image: runnerImageOverride(),
+          // The runner's structured output is the point of the whole dispatch.
+          // Was: a loop over result.events run once, after the whole Job
+          // finished. Now: called per-event, live, as executeStep's follow-mode
+          // stream delivers them — this is what makes the TUI's live output real.
+          onEvent: (event) => {
+            const now = new Date().toISOString();
+            const type = `exec.${event.type}`;
+            const id = appendEvent(db, { nodeId, type, payload: event.payload, createdAt: now });
+            publish({ id, nodeId, type, payload: event.payload, createdAt: now });
+          },
         });
-        // The runner's structured output is the point of the whole dispatch; drop it
-        // into the node's event log so `org tree` can show what actually happened.
-        const now = new Date().toISOString();
-        for (const event of result.events) {
-          appendEvent(db, { nodeId, type: `exec.${event.type}`, payload: event.payload, createdAt: now });
-        }
         return result;
       }),
     },
@@ -125,7 +130,8 @@ export function startNodeActor(db: Db, nodeId: string, goal: string): void {
   actor.subscribe((snapshot) => {
     const now = new Date().toISOString();
     updateNodeState(db, nodeId, String(snapshot.value), now);
-    appendEvent(db, { nodeId, type: 'state.transition', payload: { state: snapshot.value }, createdAt: now });
+    const transitionId = appendEvent(db, { nodeId, type: 'state.transition', payload: { state: snapshot.value }, createdAt: now });
+    publish({ id: transitionId, nodeId, type: 'state.transition', payload: { state: snapshot.value }, createdAt: now });
 
     // G3 fix: the per-node egress policy outlives the node otherwise. A done
     // actor is one that reached a final state (COMPLETE/FAILED), which it never

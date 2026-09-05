@@ -20,6 +20,7 @@ const busyboxAdapter: RuntimeAdapter = {
     'sh', '-c',
     `printf '%s\\n' '{"type":"message","payload":{"text":"${goal}"}}' '{"type":"result","payload":{"success":true}}'`,
   ],
+  parseLine: claudeCodeAdapter.parseLine,
   parseEventStream: claudeCodeAdapter.parseEventStream,
 };
 
@@ -49,8 +50,9 @@ describe.skipIf(!CLUSTER_AVAILABLE)('executeStep against a real cluster', () => 
 
     expect(result.succeeded).toBe(true);
     expect(result.events.map((e) => e.type)).toEqual(['message', 'result']);
-    expect(result.events[0].payload).toEqual({ text: 'hello from the sandbox' });
-    expect(result.events[1].payload).toEqual({ success: true });
+    // Post-G8, the payload is the whole raw line, not just its `payload` field.
+    expect(result.events[0].payload).toEqual({ type: 'message', payload: { text: 'hello from the sandbox' } });
+    expect(result.events[1].payload).toEqual({ type: 'result', payload: { success: true } });
 
     // The ephemeral Secret and the Job must both be gone — a leaked credential
     // outliving its Job is the exact failure this phase's design exists to avoid.

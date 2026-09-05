@@ -1,4 +1,5 @@
 import { router, publicProcedure } from '../trpc.js';
+import { getOrgStats } from '../../db/queries/stats.js';
 
 export const daemonRouter = router({
   // hasApiKey reports the *daemon's* env, not the CLI's. They diverge whenever
@@ -9,4 +10,6 @@ export const daemonRouter = router({
     pid: process.pid,
     hasApiKey: Boolean(process.env.ANTHROPIC_API_KEY),
   })),
+
+  stats: publicProcedure.query(({ ctx }) => getOrgStats(ctx.db)),
 });

@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll } from 'vitest';
 import { execa } from 'execa';
 import { isClusterReachable, ensureLocalCluster, isClusterAvailable } from './kind.js';
 import { buildExecutionJob } from './job-manifest.js';
-import { createJob, waitForJobCompletion, deleteJob } from './client.js';
+import { createJob, waitForJobCompletion, deleteJob, followJobLogs } from './client.js';
 
 const CLUSTER_AVAILABLE = await isClusterAvailable();
 if (!CLUSTER_AVAILABLE) {
@@ -45,5 +45,35 @@ describe.skipIf(!CLUSTER_AVAILABLE)('K8s client (real cluster)', () => {
 
     await deleteJob(jobName, 'default');
     await execa('kubectl', ['delete', 'secret', 'fail-secret', '-n', 'default']).catch(() => {});
+  }, 120_000);
+});
+
+describe.skipIf(!CLUSTER_AVAILABLE)('followJobLogs', () => {
+  it('delivers log lines progressively while the Job is still running, not all at once at the end', async () => {
+    await execa('kubectl', ['create', 'secret', 'generic', 'follow-secret', '--from-literal=x=y', '-n', 'default']).catch(() => {});
+    const job = buildExecutionJob({
+      nodeId: 'test-follow', namespace: 'default', image: 'busybox:1.36',
+      command: ['sh', '-c', 'echo line1; sleep 2; echo line2; sleep 2; echo line3'],
+      worktreePath: '/tmp', secretName: 'follow-secret',
+    });
+
+    const jobName = await createJob(job);
+    const received: { line: string; at: number }[] = [];
+    const start = Date.now();
+    const stop = await followJobLogs(jobName, 'default', (line) => {
+      received.push({ line, at: Date.now() - start });
+    });
+
+    await waitForJobCompletion(jobName, 'default');
+    stop();
+
+    expect(received.map((r) => r.line)).toEqual(['line1', 'line2', 'line3']);
+    // The whole thing ran over ~4s of sleeps; if every line arrived within the
+    // same handful of milliseconds, this isn't actually following — it's a
+    // buffered fetch that happened to run after completion.
+    expect(received[2].at - received[0].at).toBeGreaterThan(1500);
+
+    await deleteJob(jobName, 'default');
+    await execa('kubectl', ['delete', 'secret', 'follow-secret', '-n', 'default']).catch(() => {});
   }, 120_000);
 });

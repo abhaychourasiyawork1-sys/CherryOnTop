@@ -17,5 +17,6 @@ export const stopgapAdapter: RuntimeAdapter = {
     ].map((line) => `'${line.replace(/'/g, `'\\''`)}'`);
     return ['sh', '-c', `printf '%s\\n' ${lines.join(' ')}`];
   },
+  parseLine: claudeCodeAdapter.parseLine,
   parseEventStream: claudeCodeAdapter.parseEventStream,
 };

@@ -9,8 +9,10 @@ export interface EventRecord {
   createdAt: string;
 }
 
-export function appendEvent(db: Db, record: EventRecord): void {
-  db.insert(events).values(record).run();
+/** Returns the new row's id, which is what lets a live subscriber tell an event
+ *  it already replayed from history apart from a genuinely new one. */
+export function appendEvent(db: Db, record: EventRecord): number {
+  return Number(db.insert(events).values(record).run().lastInsertRowid);
 }
 
 export function listEventsForNode(db: Db, nodeId: string) {

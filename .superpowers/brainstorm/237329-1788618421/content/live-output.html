@@ -1,0 +1,43 @@
+<h2>Live output, rendered like Claude Code itself</h2>
+<p class="subtitle">Not raw JSON events — parsed and formatted the same visual language Claude Code's own CLI uses: reasoning text flows naturally, tool calls get a marker + one-line summary, edits show a real diff. This is what streams live under a node while it's executing.</p>
+
+<div class="mockup">
+  <div class="mockup-header">Zoomed in: the LIVE OUTPUT section, mid-execution</div>
+  <div class="mockup-body">
+    <pre style="font-family:monospace;font-size:12.5px;line-height:1.55;background:#0d1117;color:#c9d1d9;padding:16px;border-radius:6px;white-space:pre;overflow-x:auto;">
+ LIVE OUTPUT ──────────────────────────────────────────── ● streaming
+
+ I'll look at the current login form before making the OAuth
+ changes. Let me start by reading the existing component.
+
+ <span style="color:#79c0ff">●</span> Read <span style="color:#c9d1d9">src/auth/LoginForm.tsx</span>
+
+ The form currently only supports email/password. I need to add
+ an OAuth button that redirects to the Google provider.
+
+ <span style="color:#79c0ff">●</span> Edit <span style="color:#c9d1d9">src/auth/LoginForm.tsx</span>
+ <span style="color:#3fb950">   + import { GoogleLoginButton } from './GoogleLoginButton';</span>
+ <span style="color:#3fb950">   +   &lt;GoogleLoginButton onSuccess={handleOAuthSuccess} /&gt;</span>
+ <span style="color:#f85149">   -   &lt;/form&gt;</span>
+ <span style="color:#3fb950">   +   &lt;/form&gt;</span>
+
+ <span style="color:#79c0ff">●</span> Bash <span style="color:#c9d1d9">npm test -- LoginForm</span>
+   ▌ running...
+
+ [f] follow / pause scroll   [x] expand all diffs   [esc] back
+    </pre>
+  </div>
+</div>
+
+<p class="section" style="margin-top:14px">Reasoning text streams token-by-token as it arrives (same feel as watching Claude Code type). Tool calls collapse to one line with a marker (<b>●</b>) the moment they start, and resolve in place — a <code>Read</code> stays one line, an <code>Edit</code> expands to a compact diff, a <code>Bash</code> call shows a spinner until it returns. Long diffs truncate with "<code>x</code> to expand"; you're never forced to scroll past something you didn't ask to see.</p>
+
+<div class="options" style="margin-top:10px">
+  <div class="option" data-choice="good" onclick="toggleSelect(this)">
+    <div class="letter">✓</div>
+    <div class="content"><h3>Yes — this is the rendering I meant</h3><p>Proceed with this formatting for live output, everywhere it appears</p></div>
+  </div>
+  <div class="option" data-choice="more" onclick="toggleSelect(this)">
+    <div class="letter">+</div>
+    <div class="content"><h3>Close, but adjust something</h3><p>Tell me what to change in the terminal</p></div>
+  </div>
+</div>

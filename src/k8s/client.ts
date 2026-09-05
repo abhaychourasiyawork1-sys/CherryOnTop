@@ -1,3 +1,5 @@
+import { PassThrough } from 'node:stream';
+import { createInterface } from 'node:readline';
 import * as k8s from '@kubernetes/client-node';
 import type { V1Job } from '@kubernetes/client-node';
 
@@ -5,6 +7,7 @@ function loadApis() {
   const kc = new k8s.KubeConfig();
   kc.loadFromDefault();
   return {
+    kc,
     batch: kc.makeApiClient(k8s.BatchV1Api),
     core: kc.makeApiClient(k8s.CoreV1Api),
   };
@@ -59,4 +62,51 @@ export async function streamJobLogs(jobName: string, namespace: string): Promise
   const podName = pods.items[0]?.metadata?.name;
   if (!podName) return '';
   return core.readNamespacedPodLog({ name: podName, namespace });
+}
+
+/** Waits until the Job's pod exists and its container has actually started.
+ *  Following logs any earlier fails: right after createJob there is no pod at
+ *  all, and a pod in ContainerCreating has no log endpoint yet. */
+async function waitForRunnablePod(
+  jobName: string,
+  namespace: string,
+  timeoutMs: number,
+): Promise<string | undefined> {
+  const { core } = loadApis();
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    const pods = await core.listNamespacedPod({ namespace, labelSelector: `job-name=${jobName}` });
+    const pod = pods.items[0];
+    const phase = pod?.status?.phase;
+    if (pod?.metadata?.name && phase && phase !== 'Pending') {
+      return pod.metadata.name;
+    }
+    await new Promise((r) => setTimeout(r, 500));
+  }
+  return undefined;
+}
+
+/** Streams a Job's pod logs line by line as they are produced. The returned
+ *  function stops following. Resolves once following has started (or once it is
+ *  clear no pod will start within the timeout), not when the pod finishes. */
+export async function followJobLogs(
+  jobName: string,
+  namespace: string,
+  onLine: (line: string) => void,
+  podWaitTimeoutMs = 120_000,
+): Promise<() => void> {
+  const { kc } = loadApis();
+  const podName = await waitForRunnablePod(jobName, namespace, podWaitTimeoutMs);
+  if (!podName) return () => {};
+
+  const passthrough = new PassThrough();
+  const rl = createInterface({ input: passthrough, crlfDelay: Infinity });
+  rl.on('line', onLine);
+
+  const controller = await new k8s.Log(kc).log(namespace, podName, 'runner', passthrough, { follow: true });
+
+  return () => {
+    controller.abort();
+    rl.close();
+  };
 }

@@ -8,7 +8,7 @@ import { registerCommitmentCommand } from './commands/commitment.js';
 import { registerDecisionCommand } from './commands/decision.js';
 import { registerApproveCommand } from './commands/approve.js';
 import { registerApprovalsCommand } from './commands/approvals.js';
-import { registerWatchCommand } from './commands/watch.js';
+import { registerDashboardCommand } from './commands/dashboard.js';
 
 const program = new Command();
 program.name('org').description('Accountable Agent Organization Runtime CLI');
@@ -21,6 +21,6 @@ registerCommitmentCommand(program);
 registerDecisionCommand(program);
 registerApproveCommand(program);
 registerApprovalsCommand(program);
-registerWatchCommand(program);
+registerDashboardCommand(program);
 
 program.parseAsync(process.argv);

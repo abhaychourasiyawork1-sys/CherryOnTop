@@ -1,0 +1,55 @@
+<h2>Good — here's what "drill in" actually shows</h2>
+<p class="subtitle">Same pattern (one focused screen), but the node-detail screen is dense with everything: lifecycle progress, the decision that was made and why, and live output as it happens. Nothing is hidden — it's organized, not sparse.</p>
+
+<div class="mockup">
+  <div class="mockup-header">Preview: node detail screen (after pressing Enter on d57c)</div>
+  <div class="mockup-body">
+    <pre style="font-family:monospace;font-size:12px;line-height:1.45;background:#0d1117;color:#c9d1d9;padding:16px;border-radius:6px;white-space:pre;overflow-x:auto;">
+ org › tree › d57c                                          [esc] back
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ Frontend: login UI                                    budget $2.00/$5
+
+ LIFECYCLE
+   CREATED → ORIENT → PLAN → <span style="color:#58a6ff">●INTELLIGENCE_GATE</span> → EXECUTION_DECISION
+             → SELF_EXECUTE/DELEGATE → VERIFY → COMPLETE
+                              ╰─ you are here, deciding now
+
+ THOUGHT PROCESS — Intelligence Gate                         2s ago
+   goal length 214 chars → complexity: <b>high</b>
+   sufficientContext: true  (no evidence workers needed — cheap path)
+
+ THOUGHT PROCESS — Execution Decision                        just now
+   authority.spawn_children: true   budget: $2.00
+   ┌─────────────────────┬────────┐
+   │ estimatedValue      │  1.20  │
+   │ modelCost           │  0.30  │
+   │ latencyCost         │  0.15  │
+   │ coordinationCost    │  0.15  │
+   │ verificationCost    │  0.10  │
+   │ riskPenalty         │  0.20  │
+   ├─────────────────────┼────────┤
+   │ score               │  0.30  │  ≥ threshold 0.30 → <b>DELEGATE</b>
+   └─────────────────────┴────────┘
+
+ LIVE OUTPUT ─────────────────────────────────────────── ● streaming
+   ▸ reading src/auth/LoginForm.tsx
+   ▸ tool_call: edit_file src/auth/LoginForm.tsx
+   ▸ writing... ▌
+
+ [c] commitment  [d] full decision log  [l] full output  [esc] back
+    </pre>
+  </div>
+</div>
+
+<p class="section" style="margin-top:16px">This is the shape for every node — lifecycle position, the reasoning behind whatever it just decided (fully printable, matches <code>org decision</code> today), and live output while something is actually running. Sections collapse away when not relevant (e.g. no live-output section once a step is done, its final output moves under <b>[l] full output</b> instead).</p>
+
+<div class="options" style="margin-top:10px">
+  <div class="option" data-choice="good" onclick="toggleSelect(this)">
+    <div class="letter">✓</div>
+    <div class="content"><h3>This is the right density</h3><p>Proceed with drill-down using this level of detail per screen</p></div>
+  </div>
+  <div class="option" data-choice="more" onclick="toggleSelect(this)">
+    <div class="letter">+</div>
+    <div class="content"><h3>Still want more visible at once</h3><p>Tell me what's missing or should not be tucked behind a key</p></div>
+  </div>
+</div>

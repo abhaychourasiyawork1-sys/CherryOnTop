@@ -1,21 +1,10 @@
-import path from 'node:path';
 import os from 'node:os';
-import { existsSync } from 'node:fs';
 import type { Command } from 'commander';
 import { toContainerPath } from '../../k8s/kind.js';
 import { daemonStatus, startDaemon, stopDaemon } from '../../daemon/manager.js';
 import { createDaemonClient } from '../../daemon/client.js';
 import { hasOauthCredentials } from '../../execution/credentials.js';
-
-function nonNegativeNumber(label: string) {
-  return (raw: string): number => {
-    const value = Number(raw);
-    if (!Number.isFinite(value) || value < 0) {
-      throw new Error(`${label} must be a non-negative number, got "${raw}"`);
-    }
-    return value;
-  };
-}
+import { nonNegativeNumber, resolveRepoPath } from '../validation.js';
 
 async function waitForDaemon(retries = 20): Promise<void> {
   const client = createDaemonClient();
@@ -44,9 +33,11 @@ export function registerRunCommand(program: Command): void {
       // is the second half of that guard: the mounted directory is handed to an
       // agent running with permission prompts disabled, so "the directory I
       // happened to be standing in" is not good enough.
-      const repo = path.resolve(options.repo ?? process.cwd());
-      if (!existsSync(path.join(repo, '.git'))) {
-        console.error(`${repo} is not a git repository — pass --repo <path> to point at the one you want worked on.`);
+      let repo: string;
+      try {
+        repo = resolveRepoPath(options.repo);
+      } catch (err) {
+        console.error(`${err instanceof Error ? err.message : String(err)} Pass --repo <path>.`);
         process.exitCode = 1;
         return;
       }

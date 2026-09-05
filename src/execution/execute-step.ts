@@ -1,6 +1,5 @@
-import { Readable } from 'node:stream';
 import { buildExecutionJob } from '../k8s/job-manifest.js';
-import { createJob, waitForJobCompletion, deleteJob, streamJobLogs } from '../k8s/client.js';
+import { createJob, waitForJobCompletion, deleteJob, streamJobLogs, followJobLogs } from '../k8s/client.js';
 import { createEphemeralSecret, deleteSecret } from '../k8s/secrets.js';
 import { buildEgressAllowlistPolicy, applyNetworkPolicy } from '../k8s/network-policy.js';
 import { getKubeDnsClusterIp } from '../k8s/kind.js';
@@ -16,6 +15,10 @@ export interface ExecuteStepInput {
   /** Overrides the runner image. Phase 5 builds the real one; until then this is
    *  how an integration test dispatches a genuine Job with a stand-in image. */
   image?: string;
+  /** Called once per structured event, as it arrives — not after the Job
+   *  finishes. This is what makes live output possible; node-actor-manager.ts
+   *  uses it to append to the DB and publish to the event bus in real time. */
+  onEvent?: (event: StructuredEvent) => void;
 }
 
 export interface ExecuteStepResult {
@@ -31,13 +34,14 @@ export interface ExecuteStepDeps {
   createJob: typeof createJob;
   waitForJobCompletion: typeof waitForJobCompletion;
   deleteJob: typeof deleteJob;
+  followJobLogs: typeof followJobLogs;
   streamJobLogs: typeof streamJobLogs;
   getKubeDnsClusterIp: typeof getKubeDnsClusterIp;
 }
 
 const defaultDeps: ExecuteStepDeps = {
-  createEphemeralSecret, deleteSecret, applyNetworkPolicy,
-  createJob, waitForJobCompletion, deleteJob, streamJobLogs, getKubeDnsClusterIp,
+  createEphemeralSecret, deleteSecret, applyNetworkPolicy, createJob,
+  waitForJobCompletion, deleteJob, followJobLogs, streamJobLogs, getKubeDnsClusterIp,
 };
 
 // Local tag, not a registry reference: no GHCR account is needed to use this
@@ -89,13 +93,37 @@ export async function executeStep(
 
     const jobName = await d.createJob(job);
     try {
-      const jobResult = await d.waitForJobCompletion(jobName, input.namespace);
-      const rawLogs = await d.streamJobLogs(jobName, input.namespace);
-      const events = rawLogs
-        ? await input.adapter.parseEventStream(Readable.from([rawLogs]))
-        : [];
+      const collected: StructuredEvent[] = [];
+      // Counts every raw line, parseable or not, so the post-completion backfill
+      // can resume at the right offset.
+      let linesSeen = 0;
+      const consume = (line: string) => {
+        linesSeen++;
+        const event = input.adapter.parseLine(line);
+        if (!event) return;
+        collected.push(event);
+        input.onEvent?.(event);
+      };
 
-      return { succeeded: jobResult.succeeded, message: jobResult.message, events };
+      const stopFollowing = await d.followJobLogs(jobName, input.namespace, consume);
+      const jobResult = await d.waitForJobCompletion(jobName, input.namespace);
+      stopFollowing();
+
+      // The follow stream replays the log from the container's first byte before
+      // it starts following, so whatever it delivers is always a *prefix* of the
+      // full log — attaching late loses nothing. What it can lose is the tail:
+      // the API server closes a followed log stream early (a known upstream
+      // quirk). One historical fetch before the Job is deleted backfills from
+      // exactly where the live stream stopped, so `events` is the complete
+      // record even when the live view was not.
+      const rawLogs = await d.streamJobLogs(jobName, input.namespace).catch(() => '');
+      const allLines = rawLogs ? rawLogs.split('\n') : [];
+      if (allLines.length > 0 && allLines[allLines.length - 1] === '') allLines.pop();
+      if (allLines.length > linesSeen) {
+        for (const line of allLines.slice(linesSeen)) consume(line);
+      }
+
+      return { succeeded: jobResult.succeeded, message: jobResult.message, events: collected };
     } finally {
       await d.deleteJob(jobName, input.namespace);
     }
