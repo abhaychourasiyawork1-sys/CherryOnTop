@@ -21,16 +21,21 @@ export const eventsRouter = router({
         ? subscribeToNode(input.nodeId, (e) => { queue.push(e); notify?.(); })
         : subscribeAll((e) => { queue.push(e); notify?.(); });
 
+      // One abort listener for the whole subscription, not one per event: the
+      // { once: true } variant only unregisters if it actually fires, so
+      // re-adding it each loop would pile up a listener per delivered event.
+      const wake = () => notify?.();
+      signal?.addEventListener('abort', wake, { once: true });
+
       try {
         while (!signal?.aborted) {
           while (queue.length > 0) yield queue.shift()!;
-          await new Promise<void>((resolve) => {
-            notify = resolve;
-            signal?.addEventListener('abort', () => resolve(), { once: true });
-          });
+          if (signal?.aborted) break;
+          await new Promise<void>((resolve) => { notify = resolve; });
           notify = null;
         }
       } finally {
+        signal?.removeEventListener('abort', wake);
         unsubscribe();
       }
     }),

@@ -50,6 +50,15 @@ export function useNodeStream(nodeId: string): RenderedLine[] {
       },
     );
 
+    const drainBuffer = () => {
+      replayed = true;
+      for (const e of buffered) {
+        if (e.id !== undefined && e.id <= highestReplayedId) continue;
+        apply(e.type, e.payload);
+      }
+      buffered.length = 0;
+    };
+
     tuiClient().events.listForNode.query({ nodeId })
       .then((historical) => {
         if (!alive) return;
@@ -57,14 +66,11 @@ export function useNodeStream(nodeId: string): RenderedLine[] {
           highestReplayedId = Math.max(highestReplayedId, e.id);
           apply(e.type, e.payload);
         }
-        replayed = true;
-        for (const e of buffered) {
-          if (e.id !== undefined && e.id <= highestReplayedId) continue;
-          apply(e.type, e.payload);
-        }
-        buffered.length = 0;
+        drainBuffer();
       })
-      .catch(() => { replayed = true; });
+      // Losing history is a gap at the top of the log; silently losing what
+      // arrived live while we waited for it would be a gap with no cause.
+      .catch(() => { if (alive) drainBuffer(); });
 
     return () => { alive = false; subscription.unsubscribe(); };
   }, [nodeId]);

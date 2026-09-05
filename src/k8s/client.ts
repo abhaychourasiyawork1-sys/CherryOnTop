@@ -103,7 +103,14 @@ export async function followJobLogs(
   const rl = createInterface({ input: passthrough, crlfDelay: Infinity });
   rl.on('line', onLine);
 
-  const controller = await new k8s.Log(kc).log(namespace, podName, 'runner', passthrough, { follow: true });
+  let controller: AbortController;
+  try {
+    controller = await new k8s.Log(kc).log(namespace, podName, 'runner', passthrough, { follow: true });
+  } catch (err) {
+    rl.close();
+    passthrough.destroy();
+    throw err;
+  }
 
   return () => {
     controller.abort();

@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { Box, Text, useInput } from 'ink';
 import { tuiClient } from '../client.js';
-import { useTextEntry } from '../input-mode.js';
+import { useTextEntry, useEscapeOwner } from '../input-mode.js';
 import type { BusEvent } from '../../events/bus.js';
 
 interface NodeRow { id: string; state: string; goal: string; parentId: string | null }
@@ -45,6 +45,7 @@ export function TreeScreen({ onOpenNode, onNewRun }: { onOpenNode: (nodeId: stri
   const [filter, setFilter] = useState('');
   const [filtering, setFiltering] = useState(false);
   const setTextEntry = useTextEntry();
+  const setEscapeOwner = useEscapeOwner();
 
   useEffect(() => {
     let alive = true;
@@ -71,6 +72,8 @@ export function TreeScreen({ onOpenNode, onNewRun }: { onOpenNode: (nodeId: stri
     return () => { alive = false; subscription.unsubscribe(); };
   }, []);
 
+  useEffect(() => () => { setTextEntry(false); setEscapeOwner(false); }, [setTextEntry, setEscapeOwner]);
+
   const matches = (n: NodeRow) => !filter
     || n.goal.toLowerCase().includes(filter.toLowerCase())
     || n.state.toLowerCase().includes(filter.toLowerCase());
@@ -79,12 +82,12 @@ export function TreeScreen({ onOpenNode, onNewRun }: { onOpenNode: (nodeId: stri
 
   useInput((input, key) => {
     if (filtering) {
-      if (key.return || key.escape) { setFiltering(false); setTextEntry(false); }
+      if (key.return || key.escape) { setFiltering(false); setTextEntry(false); setEscapeOwner(false); }
       else if (key.backspace || key.delete) setFilter((f) => f.slice(0, -1));
       else if (input) setFilter((f) => f + input);
       return;
     }
-    if (input === '/') { setFiltering(true); setTextEntry(true); return; }
+    if (input === '/') { setFiltering(true); setTextEntry(true); setEscapeOwner(true); return; }
     if (input === 'n') { onNewRun(); return; }
     if (key.upArrow || input === 'k') setSelected(Math.max(0, cursor - 1));
     if (key.downArrow || input === 'j') setSelected(Math.min(visible.length - 1, cursor + 1));

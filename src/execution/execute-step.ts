@@ -105,9 +105,21 @@ export async function executeStep(
         input.onEvent?.(event);
       };
 
-      const stopFollowing = await d.followJobLogs(jobName, input.namespace, consume);
-      const jobResult = await d.waitForJobCompletion(jobName, input.namespace);
-      stopFollowing();
+      // A log stream that cannot be attached is a degraded live view, not a
+      // failed step: the post-completion backfill below still recovers every
+      // event, so never let it take the whole dispatch down with it.
+      const stopFollowing = await d.followJobLogs(jobName, input.namespace, consume)
+        .catch((err) => {
+          console.error(`Live log streaming unavailable for ${jobName}:`, err);
+          return () => {};
+        });
+
+      let jobResult;
+      try {
+        jobResult = await d.waitForJobCompletion(jobName, input.namespace);
+      } finally {
+        stopFollowing();
+      }
 
       // The follow stream replays the log from the container's first byte before
       // it starts following, so whatever it delivers is always a *prefix* of the

@@ -1,7 +1,7 @@
 import React, { useCallback, useState } from 'react';
 import { Box, Text, useApp, useInput } from 'ink';
 import { pushScreen, popScreen, breadcrumb, type Screen } from './navigation.js';
-import { TextEntryContext } from './input-mode.js';
+import { TextEntryContext, EscapeOwnerContext } from './input-mode.js';
 import { tuiClient } from './client.js';
 import { HomeScreen } from './screens/home.js';
 import { TreeScreen } from './screens/tree.js';
@@ -14,6 +14,7 @@ export function App() {
   const { exit } = useApp();
   const [stack, setStack] = useState<Screen[]>([{ name: 'home' }]);
   const [textEntry, setTextEntry] = useState(false);
+  const [escapeHandled, setEscapeHandled] = useState(false);
   const current = stack[stack.length - 1];
 
   const push = useCallback((screen: Screen) => setStack((s) => pushScreen(s, screen)), []);
@@ -22,8 +23,15 @@ export function App() {
   // would make [esc] walk back into a spent form.
   const replace = useCallback((screen: Screen) => setStack((s) => pushScreen(popScreen(s), screen)), []);
 
+  // Escape is handled unconditionally: a screen that has taken over the
+  // keyboard (a text field, the tree's filter prompt) must still be leavable.
+  // Screens that want to consume Escape themselves set escapeHandled.
+  useInput((_input, key) => {
+    if (key.escape && !escapeHandled) pop();
+  });
+
   useInput((input, key) => {
-    if (key.escape) { pop(); return; }
+    if (key.escape) return; // owned by the handler above
     if (input === 'q') { exit(); return; }
     if (input === 'a') {
       tuiClient().node.listPendingApprovals.query()
@@ -34,6 +42,7 @@ export function App() {
 
   return (
     <TextEntryContext.Provider value={setTextEntry}>
+      <EscapeOwnerContext.Provider value={setEscapeHandled}>
       <Box flexDirection="column" paddingX={1}>
         <Text dimColor>org › {breadcrumb(stack)}</Text>
         <Box marginTop={1} flexDirection="column">
@@ -55,6 +64,7 @@ export function App() {
           {current.name === 'new-run' && <NewRunScreen onCreated={(nodeId) => replace({ name: 'node', nodeId })} />}
         </Box>
       </Box>
+      </EscapeOwnerContext.Provider>
     </TextEntryContext.Provider>
   );
 }
