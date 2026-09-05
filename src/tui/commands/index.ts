@@ -44,6 +44,7 @@ export function orderAsTree(rows: TreeRow[]): { node: TreeRow; depth: number }[]
  *  8-character prefixes, so that is what people type back — but an ambiguous
  *  prefix must be refused, not guessed at, when the action is "cancel this". */
 export function resolveNodeId(partial: string, ids: string[]): string {
+  if (!partial) throw new Error('Which node? Pass an id — press ⇥ to see the options.');
   const exact = ids.find((id) => id === partial);
   if (exact) return exact;
   const matches = ids.filter((id) => id.startsWith(partial));

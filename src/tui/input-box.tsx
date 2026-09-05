@@ -1,4 +1,4 @@
-import React, { useCallback, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Box, Text, useInput, usePaste, useWindowSize } from 'ink';
 import { Spinner } from '@inkjs/ui';
 import { matchCommands, COMMANDS } from './commands/index.js';
@@ -23,6 +23,18 @@ function menuPrefix(value: string): string | null {
   return /\s/.test(rest) ? null : rest;
 }
 
+/** The command and the argument being typed, once the user is past the command
+ *  name. This is what lets `/approve ⇥` offer the ids actually waiting, instead
+ *  of making someone copy one off the transcript by eye. */
+function argContext(value: string): { command: Command; partial: string } | null {
+  if (!value.startsWith('/')) return null;
+  const match = /^\/(\S+)\s(.*)$/.exec(value);
+  if (!match) return null;
+  const command = COMMANDS.find((c) => c.name === match[1].toLowerCase());
+  if (!command?.completeArg) return null;
+  return { command, partial: match[2] };
+}
+
 export function InputBox({ onSubmit, onInterrupt, onQuit, busy = false }: Props) {
   const [value, setValue] = useState('');
   const [selected, setSelected] = useState(0);
@@ -36,10 +48,28 @@ export function InputBox({ onSubmit, onInterrupt, onQuit, busy = false }: Props)
   const draft = useRef('');
   const lastCtrlC = useRef(0);
 
+  const [argOptions, setArgOptions] = useState<string[]>([]);
+
   const prefix = menuPrefix(value);
   const menu: Command[] = prefix === null ? [] : matchCommands(prefix);
   const menuOpen = menu.length > 0;
   const cursor = Math.min(selected, Math.max(0, menu.length - 1));
+
+  const argCtx = argContext(value);
+  const argMenuOpen = argOptions.length > 0 && argCtx !== null;
+  const argCursor = Math.min(selected, Math.max(0, argOptions.length - 1));
+
+  // Argument completions come from the daemon, so they are fetched rather than
+  // computed. Stale responses are discarded — typing fast otherwise leaves an
+  // earlier query's ids on screen under a later prefix.
+  useEffect(() => {
+    if (!argCtx) { setArgOptions([]); return; }
+    let current = true;
+    argCtx.command.completeArg!(argCtx.partial)
+      .then((options) => { if (current) setArgOptions(options); })
+      .catch(() => { if (current) setArgOptions([]); });
+    return () => { current = false; };
+  }, [value]);
 
   const complete = useCallback((command: Command) => {
     setValue(`/${command.name} `);
@@ -82,6 +112,11 @@ export function InputBox({ onSubmit, onInterrupt, onQuit, busy = false }: Props)
     }
 
     if (key.tab && menuOpen && menu[cursor]) { complete(menu[cursor]); return; }
+    if (key.tab && argMenuOpen) {
+      setValue(`/${argCtx!.command.name} ${argOptions[argCursor]} `.trimEnd() + ' ');
+      setSelected(0);
+      return;
+    }
 
     if (key.return) {
       // Enter on an open menu completes rather than submitting a half-typed
@@ -96,6 +131,7 @@ export function InputBox({ onSubmit, onInterrupt, onQuit, busy = false }: Props)
 
     if (key.upArrow) {
       if (menuOpen) { setSelected(Math.max(0, cursor - 1)); return; }
+      if (argMenuOpen) { setSelected(Math.max(0, argCursor - 1)); return; }
       if (history.length === 0) return;
       const next = historyIndex === null ? history.length - 1 : Math.max(0, historyIndex - 1);
       if (historyIndex === null) draft.current = value;
@@ -106,6 +142,7 @@ export function InputBox({ onSubmit, onInterrupt, onQuit, busy = false }: Props)
 
     if (key.downArrow) {
       if (menuOpen) { setSelected(Math.min(menu.length - 1, cursor + 1)); return; }
+      if (argMenuOpen) { setSelected(Math.min(argOptions.length - 1, argCursor + 1)); return; }
       if (historyIndex === null) return;
       const next = historyIndex + 1;
       if (next >= history.length) { setHistoryIndex(null); setValue(draft.current); return; }
@@ -144,7 +181,16 @@ export function InputBox({ onSubmit, onInterrupt, onQuit, busy = false }: Props)
         </Box>
       )}
 
-      {!menuOpen && (
+      {!menuOpen && argMenuOpen && (
+        <Box flexDirection="column" paddingX={2}>
+          {argOptions.slice(0, MENU_ROWS).map((option, i) => (
+            <Text key={option} inverse={i === argCursor} wrap="truncate-end">{option}</Text>
+          ))}
+          <Text dimColor>  ⇥ complete · ↑↓ choose</Text>
+        </Box>
+      )}
+
+      {!menuOpen && !argMenuOpen && (
         <Box paddingX={2}>
           <Text dimColor wrap="truncate-end">
             {quitHint
