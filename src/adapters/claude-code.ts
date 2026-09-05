@@ -6,7 +6,14 @@ export const claudeCodeAdapter: RuntimeAdapter = {
   name: 'claude-code',
 
   buildCommand(goal: string): string[] {
-    return ['claude', '--print', '--output-format', 'stream-json', goal];
+    // --verbose: the real binary refuses `--print --output-format stream-json`
+    //   without it ("requires --verbose").
+    // --dangerously-skip-permissions: nothing can answer a permission prompt in
+    //   a headless Job, so every edit would be auto-denied. The container is the
+    //   sandbox — non-root, egress-restricted, and seeing only the one mounted
+    //   repository — which is exactly the isolation this flag assumes.
+    return ['claude', '--print', '--output-format', 'stream-json', '--verbose',
+      '--dangerously-skip-permissions', goal];
   },
 
   // readline splits JSON lines; a dedicated ndjson dependency buys nothing over it.

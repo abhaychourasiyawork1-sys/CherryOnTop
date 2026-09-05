@@ -3,9 +3,15 @@ import { Readable } from 'node:stream';
 import { claudeCodeAdapter } from './claude-code.js';
 
 describe('claudeCodeAdapter', () => {
+  // Regression: the real binary rejects `--print --output-format stream-json`
+  // without --verbose, and auto-denies every edit without a permission mode, so
+  // both flags are load-bearing, not cosmetic.
   it('builds the headless streaming command for a goal', () => {
     const command = claudeCodeAdapter.buildCommand('implement OAuth login');
-    expect(command).toEqual(['claude', '--print', '--output-format', 'stream-json', 'implement OAuth login']);
+    expect(command).toEqual([
+      'claude', '--print', '--output-format', 'stream-json', '--verbose',
+      '--dangerously-skip-permissions', 'implement OAuth login',
+    ]);
   });
 
   it('parses a stream of ndjson events into structured events', async () => {
