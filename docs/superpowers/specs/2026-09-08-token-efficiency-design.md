@@ -3,7 +3,8 @@
 **Date:** 2026-09-08
 **Status:** Approved for implementation planning
 **Scope:** Reduce tokens consumed per run (primary metric) and run latency (secondary),
-without measurable loss of execution output quality.
+without measurable loss of execution output quality — and, via role-based system prompts
+per lifecycle stage, aim to improve output quality at the same time.
 
 ---
 
@@ -33,6 +34,12 @@ kinds, all routed through `executeStep`:
 4. **Synthesis loads a full sandbox** for a task needing no repo and no tools.
 5. **Plans are never cached.** The same goal against an unchanged repo re-runs the whole
    planning sandbox.
+6. **No system prompt for any stage.** The adapter runs `claude --print <goal>` with no
+   `--append-system-prompt`. The executor — the most expensive dispatch — receives a bare
+   goal string; the mandate, the tool grant, and the definition of done are never framed
+   for it. `withConstraints` prepends the standing constraints to the goal instead of
+   treating them as what they are (a system-level operating frame), and re-pays that
+   prefix on every retry.
 
 ### Auth constraint
 
@@ -53,9 +60,14 @@ plan. Consequences:
 
 ## Approach
 
-**Approach B, delivered in two phases.** Phase 1 is cheap levers with no execution-quality
-risk and establishes the measurement baseline. Phase 2 is the repo-map handoff, gated by a
-benchmark. The caching proxy (Approach C) is deferred per the auth constraint above.
+**Approach B, delivered in phases.** Phase 1 is cheap levers with no execution-quality risk
+and establishes the measurement baseline. Phase 2 is the repo-map handoff, gated by a
+benchmark. Phase 3 is role-based system prompts per lifecycle stage, also benchmark-gated
+(reusing the Phase 2 harness). The caching proxy (Approach C) is deferred per the auth
+constraint above.
+
+Phases 2 and 3 are independent and may land in either order; Phase 1a (token accounting) is
+a prerequisite for both.
 
 Every optimization must degrade to current behaviour on any failure. No optimization may
 fail a run.
@@ -83,7 +95,7 @@ fail a run.
   - Grand totals.
   - With no `caseId`: aggregate across all runs.
 
-This command is the before/after measurement for 1b–1d and Phase 2.
+This command is the before/after measurement for 1b–1d, Phase 2, and Phase 3.
 
 ### 1b. Configurable model tiering
 
@@ -183,12 +195,82 @@ Invalidation is automatic: a new commit changes `repoHead` and misses. No manual
 
 ### Benchmark gate
 
-- Harness in `bench/repo-map/`: ~5 real goals against this repo, each run with and without
-  the map.
+- Harness in `bench/` (a shared runner both Phase 2 and Phase 3 use): ~5 real goals
+  against this repo, each run with and without the map.
 - Records tokens (from 1a) and a pass/fail rubric on the output per goal.
-- `npm run bench:repo-map` prints a comparison table.
+- `npm run bench` prints a comparison table (mode flag selects repo-map or role-prompt
+  comparison).
 - **Ship criterion:** total tokens strictly lower **and** no rubric regression. Otherwise
   Phase 2 does not merge.
+
+---
+
+## Phase 3 — Role-based system prompts per lifecycle stage
+
+*Gated by a benchmark. Ships only if quality improves (or holds) and tokens do not rise
+net of retries.*
+
+### Motivation
+
+Other harnesses give every agent a distinct operating frame — CrewAI's required
+`role` / `goal` / `backstory`, OpenHands' per-agent prompt-plus-action-set, the
+`AGENTS.md` / `CLAUDE.md` convention injected into the system prompt. CherryOnTop gives
+its dispatches none. A well-scoped role frame is reported to cut wasted exploratory turns
+and reduce retries; if first-pass success improves, the added prompt tokens are paid back
+(and the frame is cached within a session anyway).
+
+### Delivery
+
+- **`--append-system-prompt` only.** Claude Code's built-in coding-agent scaffolding stays;
+  our framing is appended. No `--system-prompt` full-replace path (dropped to avoid losing
+  tool-use scaffolding).
+- **`ExecuteStepInput`** gains `systemPrompt?: string`.
+- **`RuntimeAdapter.buildCommand` opts** gains `systemPrompt?: string`:
+  - `claude-code`: appends `--append-system-prompt <text>` when set.
+  - `codex`: maps to its instructions mechanism if one exists, else ignores.
+  - `stopgap`: ignores.
+- `node-actor-manager` builds the role's system prompt and passes it to the matching
+  `executeStep` call.
+
+### New module `src/prompts/roles.ts`
+
+- **`HARNESS_CONSTITUTION`** — the shared preamble (the "backstory"), carrying CherryOnTop's
+  nature: work strictly inside the declared mandate; produce evidence, not just a result;
+  state plainly when blocked or uncertain rather than working around it; stay in scope.
+- **`buildRolePrompt(role, params)`** — returns `HARNESS_CONSTITUTION` + the role stanza.
+  Each stanza is kept tight (target ≤ ~400 tokens):
+
+  | Role | Stanza content |
+  |------|----------------|
+  | `plan` | Planner for one node. Split the goal into independent, non-overlapping, self-contained subgoals **only if it genuinely divides**. Inspect read-only; do not implement. Prefer fewer children. Output contract: JSON array of strings. |
+  | `execute` | Implementer closing one commitment under a mandate. Tools permitted: `{grant}`. Standing constraints (told, not enforced): `{constraints}`. Definition of done: `{dod}`. Work to the DoD and stop. Final report must state what changed, what was verified, and what is unchecked — it becomes the evidence that closes the commitment. If a constraint blocks the direct path, say so rather than working around it. |
+  | `synthesize` | Lead combining the team's reports into the one answer owed to the requester. Merge overlapping findings. Preserve every `file:line`, number, and code detail. Order by importance. Flag unfinished pieces explicitly. Output only the answer. |
+  | `verify` | Verifier. For each definition-of-done criterion, return `MET` / `NOT MET` / `INSUFFICIENT EVIDENCE` against the evidence produced. Do not fix anything. Structured verdict. |
+
+- The `verify` stanza is **written now but not wired** — `VERIFY` has no model call today
+  ([node-machine.ts](../../../src/lifecycle/node-machine.ts) `VERIFY` state). It is
+  connected when DoD-checking becomes a real dispatch in a later phase.
+
+### Consequent changes
+
+- **`withConstraints` is removed from the goal path.** Constraints move into the `execute`
+  role prompt via `{constraints}`. The goal string passed to the executor is just the goal.
+  Removes the per-retry re-payment of the constraints prefix.
+- **`buildPlanPrompt` / `buildSynthesisPrompt` are slimmed.** Role and rules move to the
+  system prompt; the user prompt keeps only the task specifics (the goal, the child
+  reports, the exact output format). Net user-prompt tokens drop; the moved text is
+  cached.
+- Role-prompt text lives in config (`efficiency.rolePrompts`, see below) so it is tunable
+  without a release; the module holds the defaults.
+
+### Benchmark gate
+
+- Reuses the shared `bench/` goal set and harness in role-prompt comparison mode.
+- Compares **with role prompts vs without**: tokens (from 1a), retry count, and the
+  pass/fail output rubric.
+- **Ship criterion:** rubric improves or holds, retry count does not rise, and total
+  tokens (prompt + retries) do not rise. Otherwise Phase 3 does not merge, or merges with
+  only the stanzas that individually pass.
 
 ---
 
@@ -208,6 +290,12 @@ efficiency:
     synthesize: 1
   planCacheTtlHours: 24
   repoMapTokenBudget: 6000        # Phase 2
+  rolePrompts:                     # Phase 3
+    enabled: true
+    plan:       null               # null = use the built-in default stanza
+    execute:    null
+    synthesize: null
+    verify:     null               # defined, not yet wired
 ```
 
 Documented in USAGE.md as part of each phase.
@@ -224,7 +312,9 @@ Documented in USAGE.md as part of each phase.
 | corrupt / expired plan-cache row | treat as miss |
 | `git rev-parse` fails (no git, shallow) | skip plan cache, skip repo-map reuse key; plan and explore normally |
 | repo-map build throws or over budget hard-fails | empty prefix; children explore as today |
-| bench shows no win | Phase 2 does not merge |
+| `efficiency.rolePrompts.enabled: false` or a stanza is `null`-and-no-default | dispatch runs with no `--append-system-prompt` (or the built-in default), exactly as pre-Phase-3 |
+| `--append-system-prompt` unsupported by the runtime | adapter omits it; goal-only dispatch as today |
+| bench shows no win | that phase does not merge (Phase 3 may merge a subset of stanzas) |
 
 No optimization can fail a run.
 
@@ -241,15 +331,24 @@ No optimization can fail a run.
 - fallback-on-model-error: error-text regex matches known phrasings; retry path unsets
   `model`; `model_tier_unavailable` row written.
 - `withRepoMap`: empty map is a no-op; non-empty map is prefixed once.
+- `buildRolePrompt`: each role returns constitution + its stanza; `execute` interpolates
+  `{grant}` / `{constraints}` / `{dod}`; empty constraints/DoD render cleanly (no dangling
+  labels); a config override replaces the default stanza; `enabled: false` yields no prompt.
+- `claude-code` adapter: `systemPrompt` opt → `--append-system-prompt <text>` present and
+  correctly quoted; absent opt → flag omitted.
 
 **Integration**
 
 - one test asserting a `plan` dispatch carries `--model <configured>`, a read-only
-  `--allowedTools` set, and `--max-turns 15`.
+  `--allowedTools` set, `--max-turns 15`, and (Phase 3) `--append-system-prompt` with the
+  planner stanza.
+- one test asserting an `execute` dispatch's goal string no longer contains the constraints
+  prefix and the constraints appear in the appended system prompt instead.
 
 **Benchmark (not unit)**
 
-- `bench/repo-map/` for Phase 2 map quality and token delta.
+- `bench/` shared harness: Phase 2 map quality and token delta; Phase 3 role-prompt
+  quality, retry-count, and token delta.
 
 ---
 
@@ -260,7 +359,10 @@ No optimization can fail a run.
 - Plan cache removes repeat planning sandboxes entirely for unchanged repos.
 - Repo-map removes the per-sibling repo re-exploration that dominates `execute` token
   cost on fan-out runs.
-- All four reduce latency as well as tokens.
+- Role prompts aim to raise first-pass success, cutting retries (each retry is a full
+  cold dispatch); they also move duplicated user-prompt text into the cached system
+  prompt.
+- All of these reduce latency as well as tokens.
 
 Actual numbers come from `org tokens` before and after each phase — no change ships on an
 estimate.
@@ -277,3 +379,8 @@ estimate.
   the "small, if measured" bar set for this work.
 - Routing low-complexity `execute` dispatches to Haiku — possible via the `models.execute`
   config knob, but not a default and not benchmarked here.
+- `--system-prompt` full-replace per role — dropped to keep Claude Code's tool-use
+  scaffolding; only `--append-system-prompt` is used.
+- Rewriting Claude Code's / Codex's built-in system prompts, or a repo-level `AGENTS.md`
+  generator — out of scope; the constitution is the runtime's frame, `CLAUDE.md` already
+  covers repo conventions.
