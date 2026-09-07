@@ -7,6 +7,8 @@ export interface NodeMachineContext {
   nodeId: string;
   goal: string;
   complexity?: 'low' | 'medium' | 'high';
+  worthSplitting?: boolean;
+  signals?: Record<string, number>;
   gateAttempts?: number;
   executionAttempts?: number;
   lastDecision?: DecideExecutionResult;
@@ -25,6 +27,10 @@ export type NodeMachineEvent =
   | { type: 'REJECTED' }
   | { type: 'CANCEL' };
 
+function money(value: number | undefined): string {
+  return value === undefined ? '?' : value.toFixed(2);
+}
+
 const MAX_GATE_ATTEMPTS = 3;
 const MAX_EXECUTION_ATTEMPTS = 3;
 
@@ -41,7 +47,12 @@ export const nodeMachine = setup({
     assessUncertainty: fromPromise<IntelligenceBundle, { goal: string }>(async () => {
       throw new Error('assessUncertainty actor not provided');
     }),
-    decideExecution: fromPromise<DecideExecutionResult, { goal: string; complexity: NodeMachineContext['complexity'] }>(async () => {
+    decideExecution: fromPromise<DecideExecutionResult, {
+      goal: string;
+      complexity: NodeMachineContext['complexity'];
+      worthSplitting?: boolean;
+      signals?: Record<string, number>;
+    }>(async () => {
       throw new Error('decideExecution actor not provided');
     }),
     delegateToChild: fromPromise<ExecuteStepResult, { nodeId: string; goal: string; approvedBudgetUsd?: number }>(async () => {
@@ -72,7 +83,11 @@ export const nodeMachine = setup({
           {
             target: 'EXECUTION_DECISION',
             guard: ({ event }) => event.output.sufficientContext,
-            actions: assign({ complexity: ({ event }) => event.output.complexity }),
+            actions: assign({
+              complexity: ({ event }) => event.output.complexity,
+              worthSplitting: ({ event }) => event.output.worthSplitting,
+              signals: ({ event }) => event.output.signals,
+            }),
           },
           // Re-planning for more context is bounded: PLAN -> GATE -> PLAN with a
           // coordinator that keeps reporting "not enough" is an infinite tight
@@ -84,17 +99,31 @@ export const nodeMachine = setup({
             guard: ({ context }) => (context.gateAttempts ?? 0) < MAX_GATE_ATTEMPTS,
             actions: assign({
               complexity: ({ event }) => event.output.complexity,
+              worthSplitting: ({ event }) => event.output.worthSplitting,
+              signals: ({ event }) => event.output.signals,
               gateAttempts: ({ context }) => (context.gateAttempts ?? 0) + 1,
             }),
           },
-          { target: 'EXECUTION_DECISION', actions: assign({ complexity: ({ event }) => event.output.complexity }) },
+          {
+            target: 'EXECUTION_DECISION',
+            actions: assign({
+              complexity: ({ event }) => event.output.complexity,
+              worthSplitting: ({ event }) => event.output.worthSplitting,
+              signals: ({ event }) => event.output.signals,
+            }),
+          },
         ],
       },
     },
     EXECUTION_DECISION: {
       invoke: {
         src: 'decideExecution',
-        input: ({ context }) => ({ goal: context.goal, complexity: context.complexity }),
+        input: ({ context }) => ({
+          goal: context.goal,
+          complexity: context.complexity,
+          worthSplitting: context.worthSplitting,
+          signals: context.signals,
+        }),
         onDone: [
           { target: 'SELF_EXECUTE', guard: ({ event }) => event.output.outcome === 'SELF_EXECUTE', actions: assign({ lastDecision: ({ event }) => event.output }) },
           { target: 'DELEGATE', guard: ({ event }) => event.output.outcome === 'DELEGATE', actions: assign({ lastDecision: ({ event }) => event.output }) },
@@ -121,7 +150,18 @@ export const nodeMachine = setup({
         input: ({ context }) => ({
           nodeId: context.nodeId, goal: context.goal, approvedBudgetUsd: context.approvedBudgetUsd,
         }),
-        onDone: { target: 'VERIFY', actions: assign({ lastResult: ({ event }) => event.output }) },
+        onDone: [
+          // A goal that does not split is not a failed delegation, it is a goal
+          // to do yourself. Sending it to VERIFY instead made it a failure the
+          // machine retried — re-planning, reaching the same answer, three times
+          // over, and paying for a sandbox on each pass.
+          {
+            target: 'SELF_EXECUTE',
+            guard: ({ event }) => event.output.notDelegatable === true,
+            actions: assign({ lastResult: ({ event }) => event.output }),
+          },
+          { target: 'VERIFY', actions: assign({ lastResult: ({ event }) => event.output }) },
+        ],
         onError: {
           target: 'VERIFY',
           actions: assign({ lastResult: ({ event }) => ({ succeeded: false, message: String(event.error), events: [] }) }),
@@ -133,9 +173,12 @@ export const nodeMachine = setup({
         src: 'escalate',
         input: ({ context }) => ({
           nodeId: context.nodeId,
+          // Read by a person, in a desktop notification and an approval queue —
+          // so it says what is being asked for, not which enum the machine was
+          // in when it asked.
           reason: context.lastDecision
-            ? `${context.lastDecision.outcome}: needs ${context.lastDecision.breakdown.requiredBudget ?? '?'} USD, has ${context.lastDecision.breakdown.availableBudget ?? '?'}`
-            : 'authority boundary reached',
+            ? `Needs $${money(context.lastDecision.breakdown.requiredBudget)} to delegate this, authorized for $${money(context.lastDecision.breakdown.availableBudget)}`
+            : 'Reached the edge of its authority',
         }),
         onDone: 'WAIT_APPROVAL',
       },

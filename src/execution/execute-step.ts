@@ -3,7 +3,10 @@ import { createJob, waitForJobCompletion, deleteJob, streamJobLogs, followJobLog
 import { createEphemeralSecret, deleteSecret } from '../k8s/secrets.js';
 import { buildEgressAllowlistPolicy, applyNetworkPolicy } from '../k8s/network-policy.js';
 import { getKubeDnsClusterIp } from '../k8s/kind.js';
-import type { RuntimeAdapter, StructuredEvent } from '../adapters/adapter.js';
+import type { RuntimeAdapter, StructuredEvent, ToolGrant } from '../adapters/adapter.js';
+import { toolNamesFromEvent } from './tool-calls.js';
+import { isToolAllowed } from '../engines/enforce-tools.js';
+import { rateLimitFromEvents, describeRateLimit } from './rate-limit.js';
 
 export interface ExecuteStepInput {
   nodeId: string;
@@ -15,6 +18,17 @@ export interface ExecuteStepInput {
   /** Overrides the runner image. Phase 5 builds the real one; until then this is
    *  how an integration test dispatches a genuine Job with a stand-in image. */
   image?: string;
+  /** How long to wait for the Job. The default suits real work; planning passes
+   *  a much shorter bound, since a planner still thinking after a few minutes is
+   *  costing more than the delegation it is deciding on could save. */
+  timeoutMs?: number;
+  /** What this node's contract permits. Passed to the adapter so the runtime
+   *  refuses a forbidden call itself, and checked against the event stream here
+   *  so a runtime that does not honour it is still caught. */
+  grant?: ToolGrant;
+  /** Called with any tool the stream shows being used outside the grant. The
+   *  caller records it; this function does not decide what a violation means. */
+  onViolation?: (tool: string) => void;
   /** Called once per structured event, as it arrives — not after the Job
    *  finishes. This is what makes live output possible; node-actor-manager.ts
    *  uses it to append to the DB and publish to the event bus in real time. */
@@ -25,6 +39,11 @@ export interface ExecuteStepResult {
   succeeded: boolean;
   message: string;
   events: StructuredEvent[];
+  /** Set by delegation when the goal turned out not to split into independent
+   *  pieces. Distinct from a failure: nothing went wrong, delegation was simply
+   *  the wrong call, and the node should do the work itself instead of retrying
+   *  the same decision. */
+  notDelegatable?: boolean;
 }
 
 export interface ExecuteStepDeps {
@@ -65,6 +84,25 @@ const DEFAULT_EGRESS_ALLOWLIST = [
   },
 ];
 
+/** The runtime's own account of why it failed. A refused request outranks the
+ *  generic result text: the runtime reports an exhausted quota as "Request timed
+ *  out", which is both wrong and the kind of wrong that sends you to debug the
+ *  network. */
+function runtimeError(events: StructuredEvent[]): string | null {
+  const limited = rateLimitFromEvents(events);
+  if (limited) return describeRateLimit(limited);
+
+  for (let index = events.length - 1; index >= 0; index--) {
+    const event = events[index];
+    if (event.type !== 'result') continue;
+    const payload = event.payload as { is_error?: boolean; result?: unknown; subtype?: unknown } | null;
+    if (!payload?.is_error) return null;
+    const text = typeof payload.result === 'string' ? payload.result : String(payload.subtype ?? '');
+    return text.trim() ? text.trim() : null;
+  }
+  return null;
+}
+
 export async function executeStep(
   input: ExecuteStepInput,
   deps: Partial<ExecuteStepDeps> = {},
@@ -85,7 +123,7 @@ export async function executeStep(
       nodeId: input.nodeId,
       namespace: input.namespace,
       image: input.image ?? RUNNER_IMAGE,
-      command: input.adapter.buildCommand(input.goal),
+      command: input.adapter.buildCommand(input.goal, input.grant),
       worktreePath: input.worktreePath,
       secretName,
       includeOauthCredentials: 'CLAUDE_CREDENTIALS_JSON' in input.credentials,
@@ -97,11 +135,21 @@ export async function executeStep(
       // Counts every raw line, parseable or not, so the post-completion backfill
       // can resume at the right offset.
       let linesSeen = 0;
+      // Reported once per tool, not once per call: a node that loops on a
+      // forbidden tool would otherwise write a thousand identical rows.
+      const reported = new Set<string>();
       const consume = (line: string) => {
         linesSeen++;
         const event = input.adapter.parseLine(line);
         if (!event) return;
         collected.push(event);
+        if (input.grant?.allowedTools) {
+          for (const tool of toolNamesFromEvent(event)) {
+            if (isToolAllowed({ tools: input.grant.allowedTools }, tool) || reported.has(tool)) continue;
+            reported.add(tool);
+            input.onViolation?.(tool);
+          }
+        }
         input.onEvent?.(event);
       };
 
@@ -116,7 +164,7 @@ export async function executeStep(
 
       let jobResult;
       try {
-        jobResult = await d.waitForJobCompletion(jobName, input.namespace);
+        jobResult = await d.waitForJobCompletion(jobName, input.namespace, input.timeoutMs);
       } finally {
         stopFollowing();
       }
@@ -135,7 +183,15 @@ export async function executeStep(
         for (const line of allLines.slice(linesSeen)) consume(line);
       }
 
-      return { succeeded: jobResult.succeeded, message: jobResult.message, events: collected };
+      // "Job failed — see pod logs" is true and useless. The runtime's own final
+      // `result` event carries what actually went wrong ("Request timed out",
+      // a rate limit, an auth error); preferring it is the difference between a
+      // reader knowing the cause and going to dig through kubectl.
+      return {
+        succeeded: jobResult.succeeded,
+        message: jobResult.succeeded ? jobResult.message : (runtimeError(collected) ?? jobResult.message),
+        events: collected,
+      };
     } finally {
       await d.deleteJob(jobName, input.namespace);
     }

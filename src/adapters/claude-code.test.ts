@@ -57,3 +57,21 @@ describe('claudeCodeAdapter', () => {
     expect(events[0].type).toBe('result');
   });
 });
+
+describe('the tool grant reaches the runtime', () => {
+  it('passes the allowlist to Claude Code, so a forbidden call is refused before it happens', () => {
+    const command = claudeCodeAdapter.buildCommand('do it', { allowedTools: ['Read', 'Grep'], readOnly: true });
+    expect(command).toContain('--allowedTools');
+    expect(command[command.indexOf('--allowedTools') + 1]).toBe('Read,Grep');
+  });
+
+  it('adds no allowlist when the mandate sets no tool boundary', () => {
+    expect(claudeCodeAdapter.buildCommand('do it', { allowedTools: null, readOnly: false }))
+      .not.toContain('--allowedTools');
+    expect(claudeCodeAdapter.buildCommand('do it')).not.toContain('--allowedTools');
+  });
+
+  it('keeps the goal last, whatever the grant', () => {
+    expect(claudeCodeAdapter.buildCommand('do it', { allowedTools: ['Read'], readOnly: true }).at(-1)).toBe('do it');
+  });
+});

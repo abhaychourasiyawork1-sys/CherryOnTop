@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { decideExecution, CHILD_BUDGET_USD } from './decide-execution.js';
+import { decideExecution, MIN_AGENT_BUDGET_USD } from './decide-execution.js';
 import type { Authority } from '../schemas/node-contract.js';
 
 const cannotSpawn: Authority = { tools: [], spawn_children: false, max_child_count: 0, budget_usd: 5 };
@@ -15,7 +15,7 @@ describe('decideExecution', () => {
   it('escalates when spawning is allowed but the budget cannot cover a child', () => {
     const result = decideExecution({ goal: 'anything', authority: canSpawnPoorBudget, complexity: 'high' });
     expect(result.outcome).toBe('ESCALATE');
-    expect(canSpawnPoorBudget.budget_usd).toBeLessThan(CHILD_BUDGET_USD);
+    expect(canSpawnPoorBudget.budget_usd).toBeLessThan(MIN_AGENT_BUDGET_USD);
   });
 
   it('delegates a high-complexity goal when spawning and budget both allow it', () => {

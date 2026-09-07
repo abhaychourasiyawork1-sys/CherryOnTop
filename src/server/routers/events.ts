@@ -1,12 +1,29 @@
 import { z } from 'zod';
 import { router, publicProcedure } from '../trpc.js';
-import { listEventsForNode, listRecentEvents } from '../../db/queries/events.js';
+import { listEventsForNode, listRecentEvents, listEventsForNodes } from '../../db/queries/events.js';
+import { subtreeNodeIds } from '../../db/queries/nodes.js';
 import { subscribeAll, subscribeToNode, type BusEvent } from '../../events/bus.js';
 
 export const eventsRouter = router({
   listForNode: publicProcedure
     .input(z.object({ nodeId: z.string() }))
     .query(({ input, ctx }) => listEventsForNode(ctx.db, input.nodeId)),
+
+  /** Every event under one case, oldest first.
+   *
+   *  The transcript used to render from `recent` — the newest N events across
+   *  the whole daemon — so a case's conversation was whatever of it happened to
+   *  still be in that window. Open a case from yesterday, or any case at all
+   *  after a busy hour, and the transcript was simply empty. A conversation has
+   *  to be able to load its own history. */
+  forCase: publicProcedure
+    .input(z.object({ id: z.string(), limit: z.number().min(1).max(20000).default(6000) }))
+    .query(({ input, ctx }) => {
+      const events = listEventsForNodes(ctx.db, subtreeNodeIds(ctx.db, input.id));
+      // Oldest-first, but keep the *newest* when a very large case overflows:
+      // the end of a run is what a reader is looking at.
+      return events.length > input.limit ? events.slice(events.length - input.limit) : events;
+    }),
 
   recent: publicProcedure
     .input(z.object({ limit: z.number().min(1).max(1000).default(200), before: z.number().optional() }))

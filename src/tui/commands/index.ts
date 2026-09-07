@@ -177,13 +177,39 @@ export const COMMANDS: Command[] = [
   },
   {
     name: 'stop',
-    summary: 'cancel a running node and tear down its sandbox',
-    usage: '/stop <id>',
+    summary: 'cancel one agent, or the whole task with --task',
+    usage: '/stop [--task] <id>',
     completeArg: async (partial) => prefixed(await nodeIds((r) => !TERMINAL_STATES.includes(r.state)), partial),
     async run(args) {
-      const id = resolveNodeId(args.trim(), await nodeIds());
-      await tuiClient().node.cancel.mutate({ nodeId: id });
-      return output(`/stop ${args}`, [`cancelled ${short(id)}`]);
+      // Stopping agents one at a time does not stop an organization: a parent
+      // whose child is cancelled re-plans and dispatches a replacement. --task
+      // ends the whole thing at once, which is usually what someone typing
+      // /stop in a hurry actually means.
+      const wholeTask = /(^|\s)--task(\s|$)/.test(args);
+      const rest = args.replace(/(^|\s)--task(\s|$)/, ' ').trim();
+      const rows = await tuiClient().node.tree.query();
+      const id = resolveNodeId(rest, rows.map((row) => row.id));
+
+      if (!wholeTask) {
+        await tuiClient().node.cancel.mutate({ nodeId: id });
+        return output(`/stop ${args}`, [`cancelled ${short(id)}`]);
+      }
+
+      // Any agent in the task identifies the task, so /stop --task on the one
+      // you happen to be reading about does what you meant.
+      const byId = new Map(rows.map((row) => [row.id, row]));
+      let root = byId.get(id);
+      const seen = new Set<string>();
+      while (root?.parentId && !seen.has(root.id)) {
+        seen.add(root.id);
+        root = byId.get(root.parentId) ?? root;
+      }
+      const result = await tuiClient().node.cancelCase.mutate({ id: root?.id ?? id });
+      return output(`/stop ${args}`, [
+        result.stopped.length === 0
+          ? 'nothing was still running in that task'
+          : `stopped ${result.stopped.length} agent(s) in task ${short(root?.id ?? id)}`,
+      ]);
     },
   },
   {

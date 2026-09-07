@@ -1,18 +1,26 @@
 import { createInterface } from 'node:readline';
-import type { RuntimeAdapter, StructuredEvent } from './adapter.js';
+import type { RuntimeAdapter, StructuredEvent, ToolGrant } from './adapter.js';
 
 export const claudeCodeAdapter: RuntimeAdapter = {
   name: 'claude-code',
 
-  buildCommand(goal: string): string[] {
+  buildCommand(goal: string, grant?: ToolGrant): string[] {
     // --verbose: the real binary refuses `--print --output-format stream-json`
     //   without it ("requires --verbose").
     // --dangerously-skip-permissions: nothing can answer a permission prompt in
     //   a headless Job, so every edit would be auto-denied. The container is the
     //   sandbox — non-root, egress-restricted, and seeing only the one mounted
     //   repository — which is exactly the isolation this flag assumes.
+    // --allowedTools is the runtime's own allowlist, and it is the difference
+    //   between a tool boundary that is enforced and one that is merely
+    //   declared. It is prevention; execute-step also *detects* a violation
+    //   from the event stream, because a boundary worth having is worth
+    //   checking from a side the runtime does not control.
+    const permission = grant?.allowedTools
+      ? ['--allowedTools', grant.allowedTools.join(',')]
+      : [];
     return ['claude', '--print', '--output-format', 'stream-json', '--verbose',
-      '--dangerously-skip-permissions', goal];
+      ...permission, '--dangerously-skip-permissions', goal];
   },
 
   // Gap G8 fix: real Claude Code lines carry no `payload` field — they ARE the

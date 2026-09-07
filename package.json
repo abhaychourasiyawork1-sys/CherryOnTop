@@ -6,7 +6,11 @@
     "build": "tsc -p tsconfig.build.json && node scripts/copy-migrations.mjs",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "dev:cli": "tsx src/cli/index.ts"
+    "dev:cli": "tsx src/cli/index.ts",
+    "gui": "npm --prefix gui run dev",
+    "gui:build": "npm --prefix gui install && npm --prefix gui run build",
+    "test:gui": "npm --prefix gui run test",
+    "seed:demo": "tsx scripts/seed-demo.mts"
   },
   "keywords": [],
   "author": "",

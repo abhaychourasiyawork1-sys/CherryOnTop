@@ -1,4 +1,4 @@
-import { and, eq } from 'drizzle-orm';
+import { and, eq, inArray } from 'drizzle-orm';
 import type { Db } from '../client.js';
 import { approvals } from '../schema.js';
 
@@ -29,4 +29,13 @@ export function resolveApproval(db: Db, id: string, status: 'approved' | 'reject
 
 export function listPendingApprovals(db: Db): ApprovalRecord[] {
   return db.select().from(approvals).where(eq(approvals.status, 'pending')).all() as ApprovalRecord[];
+}
+
+/** Every approval ever raised under a set of nodes, resolved ones included. The
+ *  inbox wants what is pending; a receipt wants the whole history, because "a
+ *  person rejected this" is as much a part of the record as "a person allowed
+ *  it". */
+export function approvalsForNodes(db: Db, nodeIds: string[]): ApprovalRecord[] {
+  if (nodeIds.length === 0) return [];
+  return db.select().from(approvals).where(inArray(approvals.nodeId, nodeIds)).all() as ApprovalRecord[];
 }

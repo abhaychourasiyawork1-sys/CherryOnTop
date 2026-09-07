@@ -1,7 +1,7 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { existsSync, unlinkSync } from 'node:fs';
 import { createDb } from '../client.js';
-import { insertNode, getNode, updateNodeState, listNodes } from './nodes.js';
+import { insertNode, getNode, updateNodeState, listNodes, subtreeNodeIds } from './nodes.js';
 
 const TEST_DB = './test-nodes.db';
 
@@ -66,5 +66,22 @@ describe('node queries', () => {
   it('returns undefined for a missing node', () => {
     const db = createDb(TEST_DB);
     expect(getNode(db, 'missing')).toBeUndefined();
+  });
+
+  it('collects a node and everything delegated beneath it', () => {
+    const db = createDb(TEST_DB);
+    const now = 't0';
+    const add = (id: string, parentId: string | null) =>
+      insertNode(db, { id, parentId, goal: id, contract: CONTRACT, state: 'CREATED', createdAt: now, updatedAt: now });
+    add('root', null);
+    add('a', 'root');
+    add('b', 'root');
+    add('a1', 'a');
+    add('other', null);
+
+    expect(subtreeNodeIds(db, 'root').sort()).toEqual(['a', 'a1', 'b', 'root']);
+    expect(subtreeNodeIds(db, 'a').sort()).toEqual(['a', 'a1']);
+    // A leaf is its own subtree, and an unknown id yields just itself.
+    expect(subtreeNodeIds(db, 'a1')).toEqual(['a1']);
   });
 });

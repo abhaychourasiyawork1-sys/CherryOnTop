@@ -4,7 +4,7 @@ import { createDb } from '../client.js';
 import { insertNode } from './nodes.js';
 import { appendEvent } from './events.js';
 import { insertApproval } from './approvals.js';
-import { getOrgStats } from './stats.js';
+import { getOrgStats, getCostForNodes, getSubtreeCosts, budgetHealth } from './stats.js';
 
 const TEST_DB = './test-stats.db';
 afterEach(() => {
@@ -45,5 +45,44 @@ describe('getOrgStats', () => {
     // Only the still-pending one counts — the status line reports what is
     // blocked on the user right now, not everything ever escalated.
     expect(stats.pendingApprovals).toBe(1);
+  });
+});
+
+describe('per-node cost', () => {
+  const budget = (usd: number) => ({ ...CONTRACT, authority: { ...CONTRACT.authority, budget_usd: usd } });
+  const add = (db: ReturnType<typeof createDb>, id: string, parentId: string | null, budgetUsd = 0) =>
+    insertNode(db, { id, parentId, goal: id, contract: budget(budgetUsd), state: 'COMPLETE', repoPath: null, createdAt: 't0', updatedAt: 't0' });
+
+  it('sums only result events, only for the nodes asked about', () => {
+    const db = createDb(TEST_DB);
+    add(db, 'n1', null);
+    appendEvent(db, { nodeId: 'n1', type: 'exec.result', payload: { total_cost_usd: 0.05 }, createdAt: 't0' });
+    appendEvent(db, { nodeId: 'n1', type: 'exec.result', payload: { total_cost_usd: 0.01 }, createdAt: 't0' });
+    appendEvent(db, { nodeId: 'n1', type: 'exec.assistant', payload: { total_cost_usd: 99 }, createdAt: 't0' });
+    appendEvent(db, { nodeId: 'n2', type: 'exec.result', payload: { total_cost_usd: 5 }, createdAt: 't0' });
+
+    expect(getCostForNodes(db, ['n1'])).toBeCloseTo(0.06, 5);
+    expect(getCostForNodes(db, [])).toBe(0);
+  });
+
+  it('rolls a child’s spend up into every ancestor', () => {
+    const db = createDb(TEST_DB);
+    add(db, 'root', null, 5);
+    add(db, 'a', 'root', 1);
+    add(db, 'a1', 'a', 1);
+    appendEvent(db, { nodeId: 'a1', type: 'exec.result', payload: { total_cost_usd: 0.4 }, createdAt: 't0' });
+    appendEvent(db, { nodeId: 'root', type: 'exec.result', payload: { total_cost_usd: 0.1 }, createdAt: 't0' });
+
+    const costs = getSubtreeCosts(db);
+    expect(costs.get('a1')).toBeCloseTo(0.4, 5);
+    expect(costs.get('a')).toBeCloseTo(0.4, 5);
+    // A parent that delegated is still accountable for what its subtree spent.
+    expect(costs.get('root')).toBeCloseTo(0.5, 5);
+  });
+
+  it('reports budget health, including overspend, and never divides by zero', () => {
+    expect(budgetHealth(0.5, 2)).toBeCloseTo(0.25, 5);
+    expect(budgetHealth(3, 2)).toBeCloseTo(1.5, 5);
+    expect(budgetHealth(1, 0)).toBe(0);
   });
 });

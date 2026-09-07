@@ -1,16 +1,21 @@
 import { describe, it, expect, vi } from 'vitest';
-import { createActor, fromPromise } from 'xstate';
+import { createActor, fromPromise, waitFor } from 'xstate';
 import { nodeMachine } from './node-machine.js';
 import type { ExecuteStepResult } from '../execution/execute-step.js';
+import type { IntelligenceBundle } from '../intelligence/coordinator.js';
+import type { DecideExecutionResult } from '../engines/decide-execution.js';
 
 function machineWithMocks(overrides: {
-  assessUncertainty?: { sufficientContext: boolean; complexity: 'low' | 'medium' | 'high' };
+  assessUncertainty?: Partial<IntelligenceBundle> & { sufficientContext: boolean; complexity: 'low' | 'medium' | 'high' };
   decideExecution?: { outcome: 'SELF_EXECUTE' | 'DELEGATE' | 'ESCALATE'; breakdown: Record<string, number> };
   executeStep?: { succeeded: boolean };
 } = {}) {
   return nodeMachine.provide({
     actors: {
-      assessUncertainty: fromPromise(async () => overrides.assessUncertainty ?? { sufficientContext: true, complexity: 'low' as const }),
+      assessUncertainty: fromPromise(async (): Promise<IntelligenceBundle> => ({
+        worthSplitting: true, signals: {},
+        ...(overrides.assessUncertainty ?? { sufficientContext: true, complexity: 'low' as const }),
+      })),
       decideExecution: fromPromise(async () => overrides.decideExecution ?? { outcome: 'SELF_EXECUTE' as const, breakdown: {} }),
       executeStep: fromPromise(async (): Promise<ExecuteStepResult> => ({ message: 'ok', events: [], ...(overrides.executeStep ?? { succeeded: true }) })),
       delegateToChild: fromPromise(async (): Promise<ExecuteStepResult> => ({ succeeded: true, message: 'ok', events: [] })),
@@ -126,5 +131,34 @@ describe('nodeMachine', () => {
     await vi.waitFor(() => expect(actor.getSnapshot().value).toBe('COMPLETE'));
     actor.send({ type: 'CANCEL' });
     expect(actor.getSnapshot().value).toBe('COMPLETE');
+  });
+
+  it('does the work itself when the goal turns out not to be delegatable', async () => {
+    // Not a failure to retry: re-deciding reaches the same answer and pays for
+    // another planning run each time.
+    const executed: string[] = [];
+    const machine = nodeMachine.provide({
+      actors: {
+        assessUncertainty: fromPromise(async (): Promise<IntelligenceBundle> => ({ sufficientContext: true, complexity: 'high', worthSplitting: true, signals: {} })),
+        decideExecution: fromPromise(async (): Promise<DecideExecutionResult> => ({ outcome: 'DELEGATE', breakdown: {} })),
+        delegateToChild: fromPromise(async (): Promise<ExecuteStepResult> => ({
+          succeeded: false, notDelegatable: true, message: 'did not split', events: [],
+        })),
+        executeStep: fromPromise(async (): Promise<ExecuteStepResult> => {
+          executed.push('self');
+          return { succeeded: true, message: 'ok', events: [] };
+        }),
+        escalate: fromPromise(async () => 'approval-1'),
+      },
+    });
+
+    const actor = createActor(machine, { input: { nodeId: 'n1', goal: 'g' } });
+    actor.start();
+    actor.send({ type: 'START' });
+    const snapshot = await waitFor(actor, (s) => s.status === 'done', { timeout: 5000 });
+
+    expect(snapshot.value).toBe('COMPLETE');
+    // Exactly once — not once per retry.
+    expect(executed).toEqual(['self']);
   });
 });

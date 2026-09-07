@@ -32,4 +32,24 @@ describe('scoreDelegation', () => {
     const result = scoreDelegation(input);
     expect(result.breakdown).toEqual(input);
   });
+
+  it('delegates when the score lands exactly on the threshold in floating point', () => {
+    // The real defaults for a medium-complexity goal. On paper this is exactly
+    // 0.7 - 0.4 = 0.3, the threshold; in IEEE 754 it is 0.29999999999999993,
+    // so a plain >= refused, and every medium goal silently did the work itself
+    // instead of delegating.
+    const result = scoreDelegation({
+      estimatedValue: 0.7, modelCost: 0.1, latencyCost: 0.05,
+      coordinationCost: 0.15, verificationCost: 0.1, riskPenalty: 0, threshold: 0.3,
+    });
+    expect(result.delegate).toBe(true);
+  });
+
+  it('still refuses a score that is genuinely below the threshold', () => {
+    const result = scoreDelegation({
+      estimatedValue: 0.699, modelCost: 0.1, latencyCost: 0.05,
+      coordinationCost: 0.15, verificationCost: 0.1, riskPenalty: 0, threshold: 0.3,
+    });
+    expect(result.delegate).toBe(false);
+  });
 });

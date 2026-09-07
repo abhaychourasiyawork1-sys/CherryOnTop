@@ -13,10 +13,16 @@ afterEach(() => {
   }
 });
 
-// Deliberately an escalating contract: spawn-authorized, budget too small for a
-// child, and a long enough goal to read as high complexity. Every other outcome
-// would dispatch a real Kubernetes Job from what is meant to be a unit test.
-const GOAL = 'a deliberately long goal string that reads as high complexity to the coordinator, '.repeat(3);
+// Deliberately an escalating contract: spawn-authorized, budget too small to
+// fund a child, and a goal that genuinely reads as several pieces of work.
+// Every other outcome would dispatch a real Kubernetes Job from what is meant
+// to be a unit test.
+//
+// The goal used to be one long sentence repeated three times, back when
+// complexity was measured in characters. It now has to actually look
+// decomposable — breadth across many things, and more than one kind of work —
+// because that is what the coordinator reads (see intelligence/decompose.ts).
+const GOAL = 'Review every module across the entire codebase for bugs, and also add tests for each service';
 const CONTRACT = {
   goal: GOAL, definition_of_done: ['done'],
   authority: { tools: [], spawn_children: true, max_child_count: 2, budget_usd: 0.01 }, constraints: [],

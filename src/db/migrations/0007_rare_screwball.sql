@@ -1,0 +1,1 @@
+ALTER TABLE `nodes` ADD `replay_of` text;

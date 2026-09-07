@@ -26,3 +26,11 @@ export function listCommitmentsForNode(db: Db, owner: string): Commitment[] {
   return db.select().from(commitments).where(eq(commitments.owner, owner)).all()
     .map((r) => ({ ...r.data, status: r.status as Commitment['status'] }));
 }
+
+/** Evidence lives inside the JSON blob (unlike status, nothing queries on it),
+ *  so this reads-modifies-writes the blob rather than adding a column. */
+export function setCommitmentEvidence(db: Db, id: string, evidence: string[], updatedAt: string): void {
+  const row = db.select().from(commitments).where(eq(commitments.id, id)).get();
+  if (!row) return;
+  db.update(commitments).set({ data: { ...row.data, evidence }, updatedAt }).where(eq(commitments.id, id)).run();
+}

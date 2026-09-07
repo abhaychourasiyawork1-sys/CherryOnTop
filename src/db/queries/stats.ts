@@ -1,6 +1,7 @@
-import { eq } from 'drizzle-orm';
+import { and, eq, inArray } from 'drizzle-orm';
 import type { Db } from '../client.js';
 import { nodes, events, approvals } from '../schema.js';
+import { subtreeNodeIds } from './nodes.js';
 
 export interface OrgStats {
   active: number;
@@ -34,4 +35,38 @@ export function getOrgStats(db: Db): OrgStats {
   const pendingApprovals = db.select().from(approvals).where(eq(approvals.status, 'pending')).all().length;
 
   return { active, complete, failed, cancelled, totalCostUsd, pendingApprovals };
+}
+
+/** What a set of nodes actually spent. Same source as getOrgStats' total — only
+ *  a `result` event from a real run carries what the run cost — scoped instead
+ *  of global, so a node's budget meter and the org total can never disagree. */
+export function getCostForNodes(db: Db, nodeIds: string[]): number {
+  if (nodeIds.length === 0) return 0;
+  const rows = db.select().from(events)
+    .where(and(eq(events.type, 'exec.result'), inArray(events.nodeId, nodeIds)))
+    .all();
+  return rows.reduce((sum, e) => sum + ((e.payload as { total_cost_usd?: number } | null)?.total_cost_usd ?? 0), 0);
+}
+
+/** Spend rolled up per node id, including everything delegated beneath it. A
+ *  parent that delegated all its work spends nothing directly but is still
+ *  accountable for its children's spend against its own budget. */
+export function getSubtreeCosts(db: Db): Map<string, number> {
+  const direct = new Map<string, number>();
+  for (const event of db.select().from(events).where(eq(events.type, 'exec.result')).all()) {
+    const cost = (event.payload as { total_cost_usd?: number } | null)?.total_cost_usd ?? 0;
+    direct.set(event.nodeId, (direct.get(event.nodeId) ?? 0) + cost);
+  }
+  const rolled = new Map<string, number>();
+  for (const node of db.select().from(nodes).all()) {
+    const total = subtreeNodeIds(db, node.id).reduce((sum, id) => sum + (direct.get(id) ?? 0), 0);
+    rolled.set(node.id, total);
+  }
+  return rolled;
+}
+
+/** Fraction of a node's authorized budget its subtree has consumed. Over 1 means
+ *  the organization spent past what it authorized — visible, not hidden. */
+export function budgetHealth(spentUsd: number, budgetUsd: number): number {
+  return budgetUsd > 0 ? spentUsd / budgetUsd : 0;
 }

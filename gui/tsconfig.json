@@ -1,0 +1,24 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "resolveJsonModule": true,
+    "jsx": "react-jsx",
+    "jsxImportSource": "react",
+    "types": ["vite/client"]
+  },
+  // ../src is included for types only — the renderer imports `AppRouter` from
+  // the runtime's tRPC router so the GUI cannot drift from the daemon's API.
+  "include": [
+    "src",
+    "../src/server/root-router.ts",
+    "../src/intelligence/ask.ts",
+    "../src/tui/stream-renderer.ts"
+  ]
+}

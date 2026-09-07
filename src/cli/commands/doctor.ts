@@ -4,7 +4,7 @@ import * as clack from '@clack/prompts';
 import { runChecks, type DoctorCheck } from '../../doctor/checks.js';
 import { isClusterReachable, ensureLocalCluster } from '../../k8s/kind.js';
 import os from 'node:os';
-import { hasOauthCredentials } from '../../execution/credentials.js';
+import { hasOauthCredentials, checkCredentials } from '../../execution/credentials.js';
 
 // Probe args are per-binary on purpose: kubectl rejects `--version` (it wants
 // `version --client`), so a shared flag would report an installed kubectl as
@@ -93,23 +93,39 @@ export const CHECKS: DoctorCheck[] = [
   {
     name: 'Runner image',
     run: async () => {
+      // `2>/dev/null | grep -c ... || true` used to swallow a docker permission
+      // error into a count of zero, so a machine whose user is not in the
+      // `docker` group was told the image was missing when it was loaded — and
+      // rebuilding it never helped. Let the error surface and say which problem
+      // it actually is.
       try {
-        const { stdout } = await execa('sh', [
-          '-c',
-          'docker exec org-local-control-plane crictl images 2>/dev/null | grep -c cherryontop-runner || true',
+        const { stdout } = await execa('docker', [
+          'exec', 'org-local-control-plane', 'crictl', 'images',
         ]);
-        return stdout.trim() !== '0' && stdout.trim() !== ''
+        return stdout.includes('cherryontop-runner')
           ? { ok: true, message: 'loaded into the cluster' }
           : { ok: false, message: 'not loaded — run ./scripts/build-runner-image.sh' };
       } catch (err) {
-        return { ok: false, message: `could not check — run ./scripts/build-runner-image.sh (${firstLine(err)})` };
+        // execa puts the process's stderr on the error object; the message alone
+        // is just "Command failed", which is what made this indistinguishable
+        // from a genuinely missing image.
+        const stderr = String((err as { stderr?: unknown } | null)?.stderr ?? '');
+        const detail = [firstLine(err), stderr.split('\n')[0]].filter(Boolean).join(' — ');
+        return /permission denied|docker\.sock/i.test(detail)
+          ? { ok: false, message: `cannot check without Docker access — re-run as \`sg docker -c "org doctor"\`, or add yourself to the docker group (${detail})` }
+          : { ok: false, message: `could not check — run ./scripts/build-runner-image.sh (${detail})` };
       }
     },
   },
   {
     name: 'Claude authentication',
     run: async () => {
-      if (hasOauthCredentials(os.homedir())) return { ok: true, message: 'using your Claude subscription (logged in via `claude login`)' };
+      if (hasOauthCredentials(os.homedir())) {
+        const status = checkCredentials(os.homedir(), process.env.ANTHROPIC_API_KEY);
+        return status.ok
+          ? { ok: true, message: 'using your Claude subscription (logged in via `claude login`)' }
+          : { ok: false, message: status.reason ?? 'your Claude login is not usable' };
+      }
       if (process.env.ANTHROPIC_API_KEY) return { ok: true, message: 'using ANTHROPIC_API_KEY' };
       return { ok: false, message: 'no Claude auth found — run `claude login` to use your subscription, or export ANTHROPIC_API_KEY (get one at https://console.anthropic.com/settings/keys)' };
     },

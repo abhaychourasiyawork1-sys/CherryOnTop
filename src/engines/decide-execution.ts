@@ -6,6 +6,12 @@ export interface DecideExecutionInput {
   goal: string;
   authority: Authority;
   complexity: 'low' | 'medium' | 'high';
+  /** Whether the goal looks like several pieces of work. Absent means "no
+   *  opinion", which keeps every existing caller and test behaving as before. */
+  worthSplitting?: boolean;
+  /** Named signals behind that call, merged into the breakdown so a reader can
+   *  see exactly why it did or did not split. */
+  signals?: Record<string, number>;
 }
 
 export interface DecideExecutionResult {
@@ -25,7 +31,12 @@ export interface DecideExecutionResult {
 // child costs about the same whatever it was asked to do.
 const VALUE_BY_COMPLEXITY: Record<DecideExecutionInput['complexity'], number> = { low: 0.2, medium: 0.7, high: 1.2 };
 const THRESHOLD = 0.3;
-export const CHILD_BUDGET_USD = 1;
+
+/** The least a single agent needs to be worth dispatching at all — below this a
+ *  sandbox costs more to start than the work it could do inside it. Was
+ *  CHILD_BUDGET_USD, a flat amount every child was *given*; now a floor every
+ *  child's derived share must clear. */
+export const MIN_AGENT_BUDGET_USD = 0.5;
 
 function defaultEconomicsInput(complexity: DecideExecutionInput['complexity']): EconomicsInput {
   return {
@@ -45,20 +56,42 @@ export function decideExecution(input: DecideExecutionInput): DecideExecutionRes
     return { outcome: 'SELF_EXECUTE', breakdown: { score: 0, reason_no_spawn_authority: 1 } };
   }
 
-  const economics = scoreDelegation(defaultEconomicsInput(input.complexity));
-  if (!economics.delegate) {
-    return { outcome: 'SELF_EXECUTE', breakdown: { ...economics.breakdown, score: economics.score } };
+  const signals = input.signals ?? {};
+
+  // Asked and answered before any money is spent: a goal that is plainly one
+  // job is done directly. Delegating it would buy a planning sandbox whose only
+  // possible useful answer is "this does not split".
+  if (input.worthSplitting === false) {
+    return {
+      outcome: 'SELF_EXECUTE',
+      breakdown: { ...signals, score: 0, reason_single_unit_of_work: 1 },
+    };
   }
 
-  if (input.authority.budget_usd < CHILD_BUDGET_USD) {
+  const economics = scoreDelegation(defaultEconomicsInput(input.complexity));
+  if (!economics.delegate) {
+    return { outcome: 'SELF_EXECUTE', breakdown: { ...signals, ...economics.breakdown, score: economics.score } };
+  }
+
+  // Splitting means funding at least one child *and* this node's own planning
+  // and synthesis runs — so the question is whether two shares can clear the
+  // floor, not one.
+  const requiredBudget = MIN_AGENT_BUDGET_USD * 2;
+  if (input.authority.budget_usd < requiredBudget) {
     return {
       outcome: 'ESCALATE',
       breakdown: {
-        ...economics.breakdown, score: economics.score,
-        requiredBudget: CHILD_BUDGET_USD, availableBudget: input.authority.budget_usd,
+        ...signals, ...economics.breakdown, score: economics.score,
+        requiredBudget, availableBudget: input.authority.budget_usd,
       },
     };
   }
 
-  return { outcome: 'DELEGATE', breakdown: { ...economics.breakdown, score: economics.score } };
+  // Nothing to split into. An allowance of zero agents is a node that may not
+  // grow an organization however good the economics look.
+  if (input.authority.max_child_count < 1) {
+    return { outcome: 'SELF_EXECUTE', breakdown: { ...signals, ...economics.breakdown, score: economics.score, reason_no_agent_allowance: 1 } };
+  }
+
+  return { outcome: 'DELEGATE', breakdown: { ...signals, ...economics.breakdown, score: economics.score } };
 }
