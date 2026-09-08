@@ -159,12 +159,20 @@ function costFromEvents(events: { type: string; payload: unknown }[]): number {
     .reduce((s, e) => s + Number((e.payload as { total_cost_usd?: number } | null)?.total_cost_usd ?? 0), 0);
 }
 
-/** One fact the organization learned, written straight to memory. */
+/** One fact the organization learned, written straight to memory. Total, for the
+ *  same reason recordUsage is: it is called from inside the executeStep actor,
+ *  which has no try of its own, and a busy database must not be able to fail a
+ *  run — least of all here, where it would also discard the fallback dispatch
+ *  this row is only a note about. */
 function insertMemoryRow(db: Db, kind: string, key: string, value: unknown, nodeId: string): void {
-  db.insert(memory).values({
-    id: randomUUID(), kind, key, value, confidence: null, nodeId,
-    createdAt: new Date().toISOString(),
-  }).run();
+  try {
+    db.insert(memory).values({
+      id: randomUUID(), kind, key, value, confidence: null, nodeId,
+      createdAt: new Date().toISOString(),
+    }).run();
+  } catch (err) {
+    console.error(`Failed to record ${kind} for node ${nodeId}:`, err);
+  }
 }
 
 /** Accounting, and only accounting. A dispatch that ran and produced an answer
@@ -321,8 +329,11 @@ async function planSubgoals(db: Db, nodeId: string, goal: string, maxChildren: n
   // clean tree with a readable HEAD is keyable — repoDirty says true when it
   // cannot tell, so an unknowable tree plans afresh rather than reusing a plan
   // that may no longer describe the code.
+  // A TTL of 0 turns the cache off. Then there is nothing to read and no point
+  // writing, so do not fork two git subprocesses per plan to key a cache nobody
+  // will look at.
   const ttl = planCacheTtlHours();
-  const head = repoHead(worktreePath);
+  const head = ttl > 0 ? repoHead(worktreePath) : null;
   const cacheKey = head && !repoDirty(worktreePath) ? planCacheKey(goal, head) : null;
   if (cacheKey) {
     try {
@@ -332,7 +343,11 @@ async function planSubgoals(db: Db, nodeId: string, goal: string, maxChildren: n
         recordUsage(db, {
           nodeId, role: 'plan:cache-hit', model: null, usage: { ...ZERO_USAGE }, costUsd: 0,
         });
-        return cached;
+        // The key is goal + HEAD, not the contract — so a plan cached under a
+        // wider max_child_count would otherwise spawn more children than this
+        // node's authority allows. On the cold path parseSubgoals is what
+        // clamps; nothing downstream re-checks. This is that clamp.
+        return cached.slice(0, maxChildren);
       }
     } catch {
       // A cache that misbehaves costs a sandbox, not a run.
