@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { buildSynthesisPrompt, hasReports, MAX_REPORT_CHARS } from './synthesize.js';
+import { buildRolePrompt } from '../prompts/roles.js';
 
 const child = (over: Partial<Parameters<typeof buildSynthesisPrompt>[1][0]> = {}) => ({
   goal: 'Review auth.js', succeeded: true, report: 'Found an off-by-one at auth.js:4', ...over,
@@ -45,9 +46,11 @@ describe('buildSynthesisPrompt', () => {
   });
 
   it('asks for a merged answer, not a description of the process', () => {
-    const prompt = buildSynthesisPrompt('g', [child()]);
-    expect(prompt).toContain('Merge overlapping findings');
-    expect(prompt).toContain('Do not describe the process');
-    expect(prompt).toContain('Markdown');
+    // The merge requirements moved into the cached `synthesize` system stanza;
+    // the format reminder stays on the user prompt.
+    expect(buildSynthesisPrompt('g', [child()])).toContain('Markdown');
+    const role = buildRolePrompt('synthesize');
+    expect(role).toContain('Merge overlapping findings');
+    expect(role).toContain('Output only the answer');
   });
 });

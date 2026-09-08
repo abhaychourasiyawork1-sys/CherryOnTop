@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { buildPlanPrompt, parseSubgoals } from './plan.js';
+import { buildRolePrompt } from '../prompts/roles.js';
 
 describe('buildPlanPrompt', () => {
   it('carries the goal and the number of agents available', () => {
@@ -9,7 +10,9 @@ describe('buildPlanPrompt', () => {
   });
 
   it('forbids doing the work during planning', () => {
-    expect(buildPlanPrompt('x', 3)).toContain('Do NOT make any changes');
+    // The prohibition moved into the cached `plan` system stanza; the user
+    // prompt no longer repeats it, but the planner is still told.
+    expect(buildRolePrompt('plan')).toContain('Do not make any changes');
   });
 
   it('never asks for more agents than the runtime will run', () => {

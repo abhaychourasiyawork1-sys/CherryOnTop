@@ -28,16 +28,16 @@ import { recordRunOutcome, getRuntimeStats } from '../db/queries/memory.js';
 import { getCostForNodes } from '../db/queries/stats.js';
 import { resolveCredentials, checkCredentials } from '../execution/credentials.js';
 import { sandboxLimiter, maxConcurrentFromEnv } from '../execution/dispatch-limit.js';
-import { withConstraints } from '../execution/prompt.js';
+import { buildRolePrompt } from '../prompts/roles.js';
 import os from 'node:os';
 import { deleteNodeNetworkPolicy, deleteNodeJobs } from '../k8s/cleanup.js';
 import { subtreeNodeIds } from '../db/queries/nodes.js';
 import { allowedTools, isReadOnly } from '../engines/enforce-tools.js';
 import type { Authority } from '../schemas/node-contract.js';
-import type { ToolGrant } from '../adapters/adapter.js';
+import type { ToolGrant, RuntimeAdapter } from '../adapters/adapter.js';
 import { setNodeSnapshot, clearNodeSnapshot } from '../db/queries/nodes.js';
 import { insertDodItems, listDodForNode, setDodState } from '../db/queries/dod.js';
-import { dispatchOptionsFor, planCacheTtlHours, repoMapTokenBudget } from '../config/efficiency.js';
+import { dispatchOptionsFor, planCacheTtlHours, repoMapTokenBudget, rolePromptsEnabled } from '../config/efficiency.js';
 import { repoHead, repoDirty } from '../execution/git-state.js';
 import { planCacheKey, getCachedPlan, putCachedPlan } from '../db/queries/plan-cache.js';
 import { buildRepoMap, withRepoMap } from '../intelligence/repo-map.js';
@@ -151,6 +151,21 @@ function chooseAdapter(db: Db, nodeId: string) {
  *  disagree about what was granted. */
 function grantOf(authority: Authority): ToolGrant {
   return { allowedTools: allowedTools(authority), readOnly: isReadOnly(authority) };
+}
+
+/** Whether this runtime actually delivers a system prompt. Codex exec has no
+ *  `--append-system-prompt` flag and drops it on the floor, so a role stanza
+ *  sent there reaches nobody — and the standing constraints it carries have to
+ *  go inline on the goal instead. Asked of the adapter rather than hardcoded by
+ *  name, so a new runtime answers for itself. Total: called from inside the
+ *  executeStep actor, which has no try of its own. */
+export function honoursSystemPrompt(adapter: RuntimeAdapter): boolean {
+  const probe = '__system_prompt_probe__';
+  try {
+    return adapter.buildCommand('goal', undefined, { systemPrompt: probe }).includes(probe);
+  } catch {
+    return false;
+  }
 }
 
 /** What a dispatch cost, off the runtime's own final result event — the same
@@ -308,6 +323,7 @@ async function synthesizeChildren(db: Db, nodeId: string, goal: string): Promise
     const result = await dispatch(db, nodeId, () => executeStep({
       nodeId,
       goal: buildSynthesisPrompt(goal, children),
+      systemPrompt: rolePromptsEnabled() ? buildRolePrompt('synthesize') : undefined,
       namespace: NAMESPACE,
       worktreePath,
       credentials: resolveCredentials(os.homedir(), process.env.ANTHROPIC_API_KEY),
@@ -409,6 +425,7 @@ async function planSubgoals(db: Db, nodeId: string, goal: string, maxChildren: n
     const result = await dispatch(db, nodeId, () => executeStep({
       nodeId,
       goal: buildPlanPrompt(goal, maxChildren),
+      systemPrompt: rolePromptsEnabled() ? buildRolePrompt('plan') : undefined,
       namespace: NAMESPACE,
       worktreePath,
       credentials: resolveCredentials(os.homedir(), process.env.ANTHROPIC_API_KEY),
@@ -567,11 +584,29 @@ function productionMachine(db: Db, nodeId: string) {
         // avoid. No map (disabled, not a repo, build failed) → the bare goal.
         const repoMap = repoMapFor(db, worktreePath);
         const goalForDispatch = repoMap ? withRepoMap(input.goal, repoMap) : input.goal;
+
+        // Constraints are instructions, not boundaries — the interface says so
+        // wherever it shows them — so they must reach the agent either way.
+        // With role prompts on and a runtime that delivers them they ride the
+        // cached `execute` system stanza; otherwise there is no stanza to ride,
+        // so they go inline on the goal instead. Computed out here, like the
+        // repo map, so the fallback retry below cannot prepend them twice.
+        const constraints = node?.contract.constraints ?? [];
+        const roleSystemPrompt = rolePromptsEnabled() && honoursSystemPrompt(adapter)
+          ? buildRolePrompt('execute', {
+              allowedTools: node ? grantOf(node.contract.authority).allowedTools : undefined,
+              constraints,
+              definitionOfDone: node?.contract.definition_of_done ?? [],
+            })
+          : undefined;
+        const goalWithConstraints = (!roleSystemPrompt && constraints.length > 0)
+          ? `Standing instructions (follow even where they conflict with the most direct path):\n${constraints.map((c) => `  - ${c}`).join('\n')}\n\n${goalForDispatch}`
+          : goalForDispatch;
+
         const runOnce = (model: string | undefined) => dispatch(db, nodeId, () => executeStep({
           nodeId,
-          // Constraints ride with the goal. They are instructions, not
-          // boundaries — the interface says so wherever it shows them.
-          goal: withConstraints(goalForDispatch, node?.contract.constraints ?? []),
+          goal: goalWithConstraints,
+          systemPrompt: roleSystemPrompt,
           namespace: NAMESPACE,
           worktreePath,
           // Subscription (via `claude login`) is preferred over an API key —

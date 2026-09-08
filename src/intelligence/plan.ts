@@ -9,24 +9,18 @@ export const MAX_SUBGOALS = 5;
 
 export function buildPlanPrompt(goal: string, maxChildren: number): string {
   const limit = Math.max(1, Math.min(maxChildren, MAX_SUBGOALS));
-  // Asks for the plan only. The planning run shares a sandbox with the
-  // repository mounted, so it can look before it splits — but it must not start
-  // doing the work, or the plan costs as much as the execution.
+  // Task-specific content only. The role itself — plan, do not implement,
+  // output a JSON array — is in the `plan` system stanza (src/prompts/roles.ts),
+  // which is cached rather than resent with every turn.
   return [
-    `You are planning how to split one goal across up to ${limit} independent agents.`,
+    `Split this goal across up to ${limit} independent agents.`,
     '',
     `GOAL: ${goal}`,
     '',
-    'Inspect the repository enough to split the goal sensibly. Do NOT make any changes.',
-    'Then reply with ONLY a JSON array of strings — no prose, no code fence.',
-    'Each string is one self-contained subgoal for one agent, written so that an',
-    'agent who cannot see this conversation could carry it out. Subgoals must not',
-    'depend on each other and must not overlap.',
-    `Use fewer than ${limit} if the goal does not genuinely split that far.`,
-    'If the goal is already a single unit of work, reply with exactly [].',
-    '',
-    'Example: ["Audit src/auth for unhandled promise rejections and report them",',
-    '"Add unit tests covering the cart discount edge cases"]',
+    `Reply with ONLY a JSON array of up to ${limit} strings — one self-contained subgoal each,`,
+    'written for an agent who cannot see this conversation. No subgoal may depend on or overlap another.',
+    'Reply with exactly [] if the goal is already a single unit of work.',
+    'Example: ["Audit src/auth for unhandled promise rejections", "Add tests for the cart discount edge cases"]',
   ].join('\n');
 }
 

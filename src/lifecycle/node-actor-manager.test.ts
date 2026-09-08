@@ -8,7 +8,9 @@ import { getNode, insertNode } from '../db/queries/nodes.js';
 import { listEventsForNode } from '../db/queries/events.js';
 import { getRepoMap } from '../db/queries/repo-map-cache.js';
 import { repoHead } from '../execution/git-state.js';
-import { startNodeActor, sendToNode, repoMapFor } from './node-actor-manager.js';
+import { startNodeActor, sendToNode, repoMapFor, honoursSystemPrompt } from './node-actor-manager.js';
+import { claudeCodeAdapter } from '../adapters/claude-code.js';
+import { codexAdapter } from '../adapters/codex.js';
 
 const TEST_DB = './test-actor.db';
 
@@ -100,5 +102,23 @@ describe('repoMapFor', () => {
     expect(small!.length).toBeLessThanOrEqual(20 * 4);
     // ...and the smaller map replaces it, so the next reader gets it too.
     expect(getRepoMap(db, repoHead(dir)!)).toBe(small);
+  });
+});
+
+describe('retired prompt module', () => {
+  it('is gone — constraints now ride the execute role system prompt', () => {
+    // A dynamic import would not typecheck against a deleted module, so this
+    // checks the file itself.
+    expect(existsSync(join(import.meta.dirname, '../execution/prompt.ts'))).toBe(false);
+  });
+});
+
+describe('honoursSystemPrompt', () => {
+  it('is true for a runtime that passes the prompt through, false for one that drops it', () => {
+    // Codex exec has no --append-system-prompt: a role stanza sent there — and
+    // the standing constraints it carries — would reach nobody, so the execute
+    // dispatch falls back to putting them inline on the goal.
+    expect(honoursSystemPrompt(claudeCodeAdapter)).toBe(true);
+    expect(honoursSystemPrompt(codexAdapter)).toBe(false);
   });
 });

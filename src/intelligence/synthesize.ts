@@ -38,11 +38,9 @@ export function buildSynthesisPrompt(goal: string, children: ChildReport[]): str
     child.report.trim() ? clip(child.report) : '_This agent produced no report._',
   ].join('\n'));
 
+  // The lead framing and the requirements list live in the `synthesize` system
+  // stanza (src/prompts/roles.ts); only the material to combine is sent here.
   return [
-    'You are the lead of a team that has just finished. Each agent below worked on',
-    'one part of the same goal and reported back. Write the single combined answer',
-    'for whoever asked.',
-    '',
     `THE ORIGINAL GOAL: ${goal}`,
     '',
     '---',
@@ -51,14 +49,6 @@ export function buildSynthesisPrompt(goal: string, children: ChildReport[]): str
     '',
     '---',
     '',
-    'Write the answer now. Requirements:',
-    '- Answer the original goal directly. Do not describe the process or the team.',
-    '- Merge overlapping findings; report a repeated pattern once, not once per agent.',
-    '- Keep every concrete detail that matters — file:line references, code, numbers.',
-    '- Order by importance, most serious first.',
-    '- Say plainly if an agent did not finish and what is therefore unchecked.',
-    '- Use GitHub-flavoured Markdown. Tables and mermaid diagrams are welcome where',
-    '  they genuinely make the answer clearer; do not add them for decoration.',
-    '- Output only the answer itself. No preamble, no sign-off.',
+    'Write the single combined answer now, in GitHub-flavoured Markdown.',
   ].join('\n');
 }
