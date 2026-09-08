@@ -1,10 +1,10 @@
 import { createInterface } from 'node:readline';
-import type { RuntimeAdapter, StructuredEvent, ToolGrant } from './adapter.js';
+import type { RuntimeAdapter, StructuredEvent, ToolGrant, BuildCommandOptions } from './adapter.js';
 
 export const claudeCodeAdapter: RuntimeAdapter = {
   name: 'claude-code',
 
-  buildCommand(goal: string, grant?: ToolGrant): string[] {
+  buildCommand(goal: string, grant?: ToolGrant, opts: BuildCommandOptions = {}): string[] {
     // --verbose: the real binary refuses `--print --output-format stream-json`
     //   without it ("requires --verbose").
     // --dangerously-skip-permissions: nothing can answer a permission prompt in
@@ -19,8 +19,12 @@ export const claudeCodeAdapter: RuntimeAdapter = {
     const permission = grant?.allowedTools
       ? ['--allowedTools', grant.allowedTools.join(',')]
       : [];
+    const model = opts.model ? ['--model', opts.model] : [];
+    const maxTurns = opts.maxTurns ? ['--max-turns', String(opts.maxTurns)] : [];
+    const systemPrompt = opts.systemPrompt ? ['--append-system-prompt', opts.systemPrompt] : [];
     return ['claude', '--print', '--output-format', 'stream-json', '--verbose',
-      ...permission, '--dangerously-skip-permissions', goal];
+      ...permission, ...model, ...maxTurns, ...systemPrompt,
+      '--dangerously-skip-permissions', goal];
   },
 
   // Gap G8 fix: real Claude Code lines carry no `payload` field — they ARE the

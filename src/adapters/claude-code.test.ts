@@ -75,3 +75,28 @@ describe('the tool grant reaches the runtime', () => {
     expect(claudeCodeAdapter.buildCommand('do it', { allowedTools: ['Read'], readOnly: true }).at(-1)).toBe('do it');
   });
 });
+
+describe('dispatch options', () => {
+  it('adds --model when opts.model is set, before the goal', () => {
+    const cmd = claudeCodeAdapter.buildCommand('do it', undefined, { model: 'haiku' });
+    expect(cmd).toContain('--model');
+    expect(cmd[cmd.indexOf('--model') + 1]).toBe('haiku');
+    expect(cmd.at(-1)).toBe('do it');
+  });
+
+  it('adds --max-turns when opts.maxTurns is set', () => {
+    const cmd = claudeCodeAdapter.buildCommand('do it', undefined, { maxTurns: 15 });
+    expect(cmd[cmd.indexOf('--max-turns') + 1]).toBe('15');
+  });
+
+  it('adds neither flag when opts is empty or omitted', () => {
+    expect(claudeCodeAdapter.buildCommand('do it', undefined, {})).not.toContain('--model');
+    expect(claudeCodeAdapter.buildCommand('do it')).not.toContain('--max-turns');
+  });
+
+  it('still puts the grant allowlist and the goal in the right places alongside opts', () => {
+    const cmd = claudeCodeAdapter.buildCommand('do it', { allowedTools: ['Read'], readOnly: true }, { model: 'haiku' });
+    expect(cmd[cmd.indexOf('--allowedTools') + 1]).toBe('Read');
+    expect(cmd.at(-1)).toBe('do it');
+  });
+});
