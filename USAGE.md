@@ -185,6 +185,44 @@ The scriptable commands still work standalone if you prefer them or need them in
 
 If you're logged in via `claude login`, that's it — no daemon-restart gotchas, since the subscription's credentials are read fresh from disk on every single run. The API-key path is different: the daemon only captures `ANTHROPIC_API_KEY` when it starts, so if you export it after the daemon is already running, `org run` notices and restarts the daemon for you — you don't have to. With neither available, `org run` refuses rather than dispatching work that would fail authentication several minutes later.
 
+## Token efficiency
+
+The runtime tiers models by role, caps how long planning and synthesis can run, and caches
+plans — all to spend fewer tokens without changing what a run produces. Every knob below is
+an `ORG_*` environment variable with a baked-in default; there is no config file. **The
+daemon captures its environment once at start**, so changing one of these takes effect on
+the next `org daemon` restart — the same contract as `ORG_RUNNER_IMAGE`.
+
+| Variable | Default | What it does |
+|---|---|---|
+| `ORG_MODEL_PLAN` | `haiku` | Model used for planning dispatches |
+| `ORG_MODEL_EXECUTE` | *(none — runtime default)* | Model used for execution dispatches |
+| `ORG_MODEL_SYNTHESIZE` | `haiku` | Model used for synthesis dispatches |
+| `ORG_MAX_TURNS_PLAN` | `15` | Turn cap for planning dispatches |
+| `ORG_MAX_TURNS_SYNTHESIZE` | `1` | Turn cap for synthesis dispatches |
+| `ORG_PLAN_CACHE_TTL_HOURS` | `24` | How long a cached plan stays valid; `0` disables the plan cache |
+
+An empty value, or `none`/`default`/`off`, on any `ORG_MODEL_*` variable means "pass no
+`--model` flag" — the runtime's own default model is used instead.
+
+Two more variables exist for work that isn't wired up yet: `ORG_REPO_MAP_TOKENS` (default
+`6000`, `0` disables) is read but the repo-map handoff itself is a later phase, and
+`ORG_ROLE_PROMPTS` (default on; `off`/`0`/`false`/`no` disable) is read but role-scoped
+system prompts are not yet built. Setting either has no effect today.
+
+If a role's tiered-down model (Haiku, by default) isn't callable under your plan, a
+dispatch for that role silently falls back to a one-shot retry without `--model`, which
+costs an extra rejected request every time. `org doctor` now has a **callable models** row
+that probes both Haiku and Sonnet with your current auth and tells you up front which one
+(if either) will hit this fallback.
+
+### `org tokens [caseId]`
+
+Prints per-role, per-model token usage: number of dispatches, input/output/cache-read
+tokens and cost, with a total row and how many dispatches were served from the plan cache
+instead of a fresh model call. Pass a case id to scope it to one case; omit it for
+everything recorded.
+
 ## What it actually does
 
 Each node plans, decides for itself whether to do the work directly or delegate it to a child node (based on a transparent scoring formula you can inspect via `org decision`), and executes inside an isolated, network-restricted Kubernetes sandbox — not directly on your machine. Only the repository you point it at is visible inside that sandbox.
