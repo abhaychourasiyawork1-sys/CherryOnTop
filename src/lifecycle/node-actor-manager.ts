@@ -37,9 +37,11 @@ import type { Authority } from '../schemas/node-contract.js';
 import type { ToolGrant } from '../adapters/adapter.js';
 import { setNodeSnapshot, clearNodeSnapshot } from '../db/queries/nodes.js';
 import { insertDodItems, listDodForNode, setDodState } from '../db/queries/dod.js';
-import { dispatchOptionsFor, planCacheTtlHours } from '../config/efficiency.js';
+import { dispatchOptionsFor, planCacheTtlHours, repoMapTokenBudget } from '../config/efficiency.js';
 import { repoHead, repoDirty } from '../execution/git-state.js';
 import { planCacheKey, getCachedPlan, putCachedPlan } from '../db/queries/plan-cache.js';
+import { buildRepoMap, withRepoMap } from '../intelligence/repo-map.js';
+import { getRepoMap, putRepoMap } from '../db/queries/repo-map-cache.js';
 import { recordDispatchUsage } from '../db/queries/tokens.js';
 import { shouldRetryWithoutModel } from '../execution/tokens.js';
 import { readOnlyPlanningGrant } from './dispatch-helpers.js';
@@ -172,6 +174,42 @@ function insertMemoryRow(db: Db, kind: string, key: string, value: unknown, node
     }).run();
   } catch (err) {
     console.error(`Failed to record ${kind} for node ${nodeId}:`, err);
+  }
+}
+
+/** The repository map for this worktree's committed HEAD, built once and then
+ *  shared by every node sitting on the same commit — so a child navigates the
+ *  repository instead of grepping it out from zero.
+ *
+ *  Keyed by HEAD only, deliberately unlike the plan cache: a stale plan changes
+ *  what work happens, a slightly stale map only changes where an agent looks
+ *  first, and it still reads the real files. Refusing a dirty tree would mean no
+ *  map at all for most runs, since an agent dirties its own worktree as it works.
+ *
+ *  Total, like recordUsage and insertMemoryRow above and for the same reason: it
+ *  is called from inside the executeStep actor, which has no try of its own. Git,
+ *  the database or the build failing must cost the dispatch its map, never the
+ *  run. */
+function repoMapFor(db: Db, worktreePath: string): string | null {
+  try {
+    // Read the budget before touching git: when the map is switched off there is
+    // nothing to look up and nothing to build, so do not fork a subprocess to
+    // key a cache nobody will read.
+    const budget = repoMapTokenBudget();
+    if (budget <= 0) return null;
+    const head = repoHead(worktreePath);
+    if (!head) return null;
+
+    const cached = getRepoMap(db, head);
+    if (cached) return cached;
+
+    const map = buildRepoMap(worktreePath, budget);
+    if (!map) return null;
+    putRepoMap(db, head, map, new Date().toISOString());
+    return map;
+  } catch (err) {
+    console.error(`Failed to build a repo map for ${worktreePath}:`, err);
+    return null;
   }
 }
 
@@ -457,6 +495,11 @@ function productionMachine(db: Db, nodeId: string) {
             // narrate — and each one appears immediately below as a named agent
             // anyway.
             publishProgress(db, nodeId, `Splitting the work ${subgoals.length} ways`);
+            // Warm the map here, once, before the children start: they all sit
+            // on this same commit, so otherwise N children starting together
+            // each build an identical map and store an identical row.
+            const mapPath = node?.repoPath ?? process.env.ORG_WORKTREE_PATH;
+            if (mapPath) repoMapFor(db, mapPath);
           }
           const result = await delegateToChildren({
             parentId: nodeId, goal: input.goal, subgoals,
@@ -509,11 +552,17 @@ function productionMachine(db: Db, nodeId: string) {
         const adapter = chooseAdapter(db, nodeId);
         publishProgress(db, nodeId, `Starting a sandbox on ${adapter.name} against ${worktreePath}`);
         const execOpts = dispatchOptionsFor('execute');
+        // Prefixed once, out here rather than inside runOnce: the fallback
+        // retry below calls runOnce a second time with the same goal, and a
+        // goal carrying two copies of the map is the thing this is meant to
+        // avoid. No map (disabled, not a repo, build failed) → the bare goal.
+        const repoMap = repoMapFor(db, worktreePath);
+        const goalForDispatch = repoMap ? withRepoMap(input.goal, repoMap) : input.goal;
         const runOnce = (model: string | undefined) => dispatch(db, nodeId, () => executeStep({
           nodeId,
           // Constraints ride with the goal. They are instructions, not
           // boundaries — the interface says so wherever it shows them.
-          goal: withConstraints(input.goal, node?.contract.constraints ?? []),
+          goal: withConstraints(goalForDispatch, node?.contract.constraints ?? []),
           namespace: NAMESPACE,
           worktreePath,
           // Subscription (via `claude login`) is preferred over an API key —
