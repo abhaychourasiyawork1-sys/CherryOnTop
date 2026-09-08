@@ -1,7 +1,7 @@
 import type { Command } from 'commander';
 import { execa } from 'execa';
 import * as clack from '@clack/prompts';
-import { runChecks, type DoctorCheck } from '../../doctor/checks.js';
+import { runChecks, probeModels, type DoctorCheck } from '../../doctor/checks.js';
 import { isClusterReachable, ensureLocalCluster } from '../../k8s/kind.js';
 import os from 'node:os';
 import { hasOauthCredentials, checkCredentials } from '../../execution/credentials.js';
@@ -128,6 +128,15 @@ export const CHECKS: DoctorCheck[] = [
       }
       if (process.env.ANTHROPIC_API_KEY) return { ok: true, message: 'using ANTHROPIC_API_KEY' };
       return { ok: false, message: 'no Claude auth found — run `claude login` to use your subscription, or export ANTHROPIC_API_KEY (get one at https://console.anthropic.com/settings/keys)' };
+    },
+  },
+  {
+    name: 'callable models',
+    run: async () => {
+      const m = probeModels();
+      if (m.haiku && m.sonnet) return { ok: true, message: 'haiku and sonnet both callable' };
+      if (!m.haiku && !m.sonnet) return { ok: false, message: 'neither haiku nor sonnet callable — check auth' };
+      return { ok: true, message: `${m.haiku ? 'haiku' : 'sonnet'} callable; ${m.haiku ? 'sonnet' : 'haiku'} is not — model tiering will fall back` };
     },
   },
 ];
