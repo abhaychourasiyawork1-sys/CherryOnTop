@@ -1,9 +1,14 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
-import { existsSync, unlinkSync } from 'node:fs';
+import { existsSync, unlinkSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { createDb } from '../db/client.js';
 import { getNode, insertNode } from '../db/queries/nodes.js';
 import { listEventsForNode } from '../db/queries/events.js';
-import { startNodeActor, sendToNode } from './node-actor-manager.js';
+import { getRepoMap } from '../db/queries/repo-map-cache.js';
+import { repoHead } from '../execution/git-state.js';
+import { startNodeActor, sendToNode, repoMapFor } from './node-actor-manager.js';
 
 const TEST_DB = './test-actor.db';
 
@@ -52,5 +57,48 @@ describe('node-actor-manager', () => {
 
   it('throws when sending to a node with no active actor', () => {
     expect(() => sendToNode('missing', { type: 'APPROVED' })).toThrow();
+  });
+});
+
+describe('repoMapFor', () => {
+  function tmpRepo(files: number): string {
+    const dir = mkdtempSync(join(tmpdir(), 'repomap-'));
+    execFileSync('git', ['init', '-q'], { cwd: dir });
+    execFileSync('git', ['config', 'user.email', 't@t'], { cwd: dir });
+    execFileSync('git', ['config', 'user.name', 't'], { cwd: dir });
+    for (let i = 0; i < files; i++) writeFileSync(join(dir, `file-${i}.txt`), 'x');
+    execFileSync('git', ['add', '.'], { cwd: dir });
+    execFileSync('git', ['commit', '-q', '-m', 'init'], { cwd: dir });
+    return dir;
+  }
+
+  afterEach(() => { delete process.env.ORG_REPO_MAP_TOKENS; });
+
+  it('is off when the budget is 0, and returns nothing for a path that is not a repo', () => {
+    const db = createDb(TEST_DB);
+    process.env.ORG_REPO_MAP_TOKENS = '0';
+    expect(repoMapFor(db, tmpRepo(3))).toBeNull();
+    process.env.ORG_REPO_MAP_TOKENS = '6000';
+    expect(repoMapFor(db, mkdtempSync(join(tmpdir(), 'plain-')))).toBeNull();
+  });
+
+  it('builds once, reuses the stored map, and rebuilds it when the budget is turned down', () => {
+    const db = createDb(TEST_DB);
+    const dir = tmpRepo(40);
+
+    process.env.ORG_REPO_MAP_TOKENS = '6000';
+    const big = repoMapFor(db, dir);
+    expect(big).toContain('file-0.txt');
+    // Second call is a cache hit: same map, and nothing new written.
+    expect(repoMapFor(db, dir)).toBe(big);
+    expect(getRepoMap(db, repoHead(dir)!)).toBe(big);
+
+    // The knob has to bite on the next dispatch, not the next commit.
+    process.env.ORG_REPO_MAP_TOKENS = '20';
+    const small = repoMapFor(db, dir);
+    expect(small).not.toBe(big);
+    expect(small!.length).toBeLessThanOrEqual(20 * 4);
+    // ...and the smaller map replaces it, so the next reader gets it too.
+    expect(getRepoMap(db, repoHead(dir)!)).toBe(small);
   });
 });

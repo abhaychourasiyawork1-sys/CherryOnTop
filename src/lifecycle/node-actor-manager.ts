@@ -177,6 +177,10 @@ function insertMemoryRow(db: Db, kind: string, key: string, value: unknown, node
   }
 }
 
+/** The same rough conversion buildRepoMap sizes itself with (repo-map.ts). Kept
+ *  local: it is a shared approximation, not a shared constant worth exporting. */
+const MAP_CHARS_PER_TOKEN = 4;
+
 /** The repository map for this worktree's committed HEAD, built once and then
  *  shared by every node sitting on the same commit — so a child navigates the
  *  repository instead of grepping it out from zero.
@@ -190,7 +194,7 @@ function insertMemoryRow(db: Db, kind: string, key: string, value: unknown, node
  *  is called from inside the executeStep actor, which has no try of its own. Git,
  *  the database or the build failing must cost the dispatch its map, never the
  *  run. */
-function repoMapFor(db: Db, worktreePath: string): string | null {
+export function repoMapFor(db: Db, worktreePath: string): string | null {
   try {
     // Read the budget before touching git: when the map is switched off there is
     // nothing to look up and nothing to build, so do not fork a subprocess to
@@ -200,8 +204,13 @@ function repoMapFor(db: Db, worktreePath: string): string | null {
     const head = repoHead(worktreePath);
     if (!head) return null;
 
+    // A cached map was built under whatever budget was set at the time. Turning
+    // ORG_REPO_MAP_TOKENS down has to take effect on the next dispatch, not on
+    // the next commit — a knob that exists to cut token spend and visibly does
+    // not is worse than no knob. Too big for the current budget: rebuild and
+    // replace it, which is what a plain miss does anyway.
     const cached = getRepoMap(db, head);
-    if (cached) return cached;
+    if (cached && cached.length <= budget * MAP_CHARS_PER_TOKEN) return cached;
 
     const map = buildRepoMap(worktreePath, budget);
     if (!map) return null;
