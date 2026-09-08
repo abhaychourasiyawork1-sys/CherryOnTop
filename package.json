@@ -10,7 +10,8 @@
     "gui": "npm --prefix gui run dev",
     "gui:build": "npm --prefix gui install && npm --prefix gui run build",
     "test:gui": "npm --prefix gui run test",
-    "seed:demo": "tsx scripts/seed-demo.mts"
+    "seed:demo": "tsx scripts/seed-demo.mts",
+    "bench": "node bench/run.mjs"
   },
   "keywords": [],
   "author": "",

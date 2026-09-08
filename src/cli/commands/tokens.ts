@@ -5,9 +5,14 @@ export function registerTokensCommand(program: Command): void {
   program
     .command('tokens [caseId]')
     .description('Show token usage by dispatch role and model')
-    .action(async (caseId?: string) => {
+    .option('--json', 'print machine-readable JSON instead of a table', false)
+    .action(async (caseId: string | undefined, options: { json: boolean }) => {
       const client = createDaemonClient();
       const { rows, planCacheHits } = await client.memory.tokens.query(caseId ? { caseId } : undefined);
+      if (options.json) {
+        console.log(JSON.stringify({ rows, planCacheHits }));
+        return;
+      }
       if (rows.length === 0) {
         console.log('No dispatch usage recorded yet.');
         return;

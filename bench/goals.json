@@ -1,0 +1,10 @@
+{
+  "repo": ".",
+  "goals": [
+    { "id": "typo-fix", "goal": "Fix any typos in README.md", "rubric": "README typos corrected, no code changed" },
+    { "id": "small-bug", "goal": "Find and fix off-by-one errors in src/, if any", "rubric": "a real off-by-one is fixed or a clear 'none found' with evidence" },
+    { "id": "add-test", "goal": "Add a unit test for src/engines/economics.ts scoreDelegation tolerance behaviour", "rubric": "a passing test that exercises the 1e-9 tolerance path" },
+    { "id": "audit", "goal": "Audit every query module in src/db/queries for missing error handling", "rubric": "each module named with a concrete finding or 'clean'" },
+    { "id": "doc", "goal": "Document the node lifecycle states in a new docs/lifecycle.md", "rubric": "each state from node-machine.ts described accurately" }
+  ]
+}
