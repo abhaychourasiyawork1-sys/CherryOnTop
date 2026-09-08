@@ -7,6 +7,7 @@ import type { RuntimeAdapter, StructuredEvent, ToolGrant } from '../adapters/ada
 import { toolNamesFromEvent } from './tool-calls.js';
 import { isToolAllowed } from '../engines/enforce-tools.js';
 import { rateLimitFromEvents, describeRateLimit } from './rate-limit.js';
+import { usageFromEvents } from './tokens.js';
 
 export interface ExecuteStepInput {
   nodeId: string;
@@ -33,6 +34,12 @@ export interface ExecuteStepInput {
    *  finishes. This is what makes live output possible; node-actor-manager.ts
    *  uses it to append to the DB and publish to the event bus in real time. */
   onEvent?: (event: StructuredEvent) => void;
+  /** Per-dispatch model override (role-tiered by the caller). Omitted → runtime default. */
+  model?: string;
+  /** Hard turn cap for this dispatch. */
+  maxTurns?: number;
+  /** Appended to the runtime's system prompt. */
+  systemPrompt?: string;
 }
 
 export interface ExecuteStepResult {
@@ -44,6 +51,9 @@ export interface ExecuteStepResult {
    *  the wrong call, and the node should do the work itself instead of retrying
    *  the same decision. */
   notDelegatable?: boolean;
+  /** Token counts for this dispatch, read from the runtime's final result
+   *  event. All zeros when the runtime reported none. */
+  usage: import('./tokens.js').DispatchUsage;
 }
 
 export interface ExecuteStepDeps {
@@ -123,7 +133,11 @@ export async function executeStep(
       nodeId: input.nodeId,
       namespace: input.namespace,
       image: input.image ?? RUNNER_IMAGE,
-      command: input.adapter.buildCommand(input.goal, input.grant),
+      command: input.adapter.buildCommand(input.goal, input.grant, {
+        model: input.model,
+        maxTurns: input.maxTurns,
+        systemPrompt: input.systemPrompt,
+      }),
       worktreePath: input.worktreePath,
       secretName,
       includeOauthCredentials: 'CLAUDE_CREDENTIALS_JSON' in input.credentials,
@@ -191,6 +205,7 @@ export async function executeStep(
         succeeded: jobResult.succeeded,
         message: jobResult.succeeded ? jobResult.message : (runtimeError(collected) ?? jobResult.message),
         events: collected,
+        usage: usageFromEvents(collected),
       };
     } finally {
       await d.deleteJob(jobName, input.namespace);

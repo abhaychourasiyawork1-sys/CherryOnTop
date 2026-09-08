@@ -6,6 +6,7 @@ import { updateNodeState, getNode, insertNode, listNodes, setNodeRuntime } from 
 import { appendEvent } from '../db/queries/events.js';
 import { publish } from '../events/bus.js';
 import { executeStep } from '../execution/execute-step.js';
+import { ZERO_USAGE } from '../execution/tokens.js';
 import { claudeCodeAdapter } from '../adapters/claude-code.js';
 import { stopgapAdapter } from '../adapters/stopgap.js';
 import { assessUncertainty } from '../intelligence/coordinator.js';
@@ -394,6 +395,7 @@ function productionMachine(db: Db, nodeId: string) {
             succeeded: false,
             message: 'No repository is attached to this run, so there is nothing for the agent to work on. Start it from the repository you want worked on.',
             events: [],
+            usage: { ...ZERO_USAGE },
           };
           publishStepOutcome(db, nodeId, result);
           return result;
@@ -405,7 +407,7 @@ function productionMachine(db: Db, nodeId: string) {
         // on a 401 minutes later.
         const credentials = checkCredentials(os.homedir(), process.env.ANTHROPIC_API_KEY);
         if (!credentials.ok) {
-          const result = { succeeded: false, message: credentials.reason ?? 'Claude credentials are unusable.', events: [] };
+          const result = { succeeded: false, message: credentials.reason ?? 'Claude credentials are unusable.', events: [], usage: { ...ZERO_USAGE } };
           publishStepOutcome(db, nodeId, result);
           return result;
         }

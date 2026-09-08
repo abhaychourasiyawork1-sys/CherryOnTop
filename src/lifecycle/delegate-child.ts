@@ -1,4 +1,5 @@
 import type { ExecuteStepResult } from '../execution/execute-step.js';
+import { ZERO_USAGE } from '../execution/tokens.js';
 import type { Authority } from '../schemas/node-contract.js';
 import { effectiveAuthority } from '../engines/authority.js';
 import { MIN_AGENT_BUDGET_USD } from '../engines/decide-execution.js';
@@ -110,6 +111,7 @@ export async function delegateToChildren(
       notDelegatable: true,
       message: `This work was already split across ${input.existingChildren} agents. Finishing it directly rather than splitting it a second time.`,
       events: [],
+      usage: { ...ZERO_USAGE },
     };
   }
 
@@ -123,6 +125,7 @@ export async function delegateToChildren(
       notDelegatable: true,
       message: 'This goal did not split into independent pieces, so the agent is doing it directly.',
       events: [],
+      usage: { ...ZERO_USAGE },
     };
   }
 
@@ -146,5 +149,6 @@ export async function delegateToChildren(
       ? `All ${results.length} delegated pieces completed`
       : `${failed.length} of ${results.length} delegated pieces did not succeed: ${failed.map((f) => f.goal).join('; ')}`,
     events: [],
+    usage: { ...ZERO_USAGE },
   };
 }
