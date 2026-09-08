@@ -6,7 +6,7 @@ import { updateNodeState, getNode, insertNode, listNodes, setNodeRuntime } from 
 import { appendEvent } from '../db/queries/events.js';
 import { publish } from '../events/bus.js';
 import { executeStep } from '../execution/execute-step.js';
-import { ZERO_USAGE } from '../execution/tokens.js';
+import { ZERO_USAGE, type DispatchUsage } from '../execution/tokens.js';
 import { claudeCodeAdapter } from '../adapters/claude-code.js';
 import { stopgapAdapter } from '../adapters/stopgap.js';
 import { assessUncertainty } from '../intelligence/coordinator.js';
@@ -37,6 +37,13 @@ import type { Authority } from '../schemas/node-contract.js';
 import type { ToolGrant } from '../adapters/adapter.js';
 import { setNodeSnapshot, clearNodeSnapshot } from '../db/queries/nodes.js';
 import { insertDodItems, listDodForNode, setDodState } from '../db/queries/dod.js';
+import { dispatchOptionsFor, planCacheTtlHours } from '../config/efficiency.js';
+import { repoHead, repoDirty } from '../execution/git-state.js';
+import { planCacheKey, getCachedPlan, putCachedPlan } from '../db/queries/plan-cache.js';
+import { recordDispatchUsage } from '../db/queries/tokens.js';
+import { shouldRetryWithoutModel } from '../execution/tokens.js';
+import { readOnlyPlanningGrant } from './dispatch-helpers.js';
+import { memory } from '../db/schema.js';
 
 // In-process actor registry. It is lost on a daemon restart, which is why every
 // transition persists the actor to `nodes.snapshot` — see rehydrate.ts, which
@@ -144,6 +151,37 @@ function grantOf(authority: Authority): ToolGrant {
   return { allowedTools: allowedTools(authority), readOnly: isReadOnly(authority) };
 }
 
+/** What a dispatch cost, off the runtime's own final result event — the same
+ *  number the cost views already read, recorded alongside the token counts. */
+function costFromEvents(events: { type: string; payload: unknown }[]): number {
+  return events
+    .filter((e) => e.type === 'result')
+    .reduce((s, e) => s + Number((e.payload as { total_cost_usd?: number } | null)?.total_cost_usd ?? 0), 0);
+}
+
+/** One fact the organization learned, written straight to memory. */
+function insertMemoryRow(db: Db, kind: string, key: string, value: unknown, nodeId: string): void {
+  db.insert(memory).values({
+    id: randomUUID(), kind, key, value, confidence: null, nodeId,
+    createdAt: new Date().toISOString(),
+  }).run();
+}
+
+/** Accounting, and only accounting. A dispatch that ran and produced an answer
+ *  must not be thrown away because writing down what it cost failed — every
+ *  caller here is inside a try that would turn that into "no plan" or "no
+ *  answer", which is a far worse outcome than a missing row in `org tokens`. */
+function recordUsage(
+  db: Db,
+  r: { nodeId: string; role: string; model: string | null; usage: DispatchUsage; costUsd: number },
+): void {
+  try {
+    recordDispatchUsage(db, { ...r, createdAt: new Date().toISOString() });
+  } catch (err) {
+    console.error(`Failed to record ${r.role} token usage for node ${r.nodeId}:`, err);
+  }
+}
+
 /** Records a tool used outside the node's grant. This is the event the Proof
  *  view and the Receipt render, and the reason the authority boundary is a fact
  *  about the run rather than a claim on a form. */
@@ -221,6 +259,7 @@ async function synthesizeChildren(db: Db, nodeId: string, goal: string): Promise
       adapter: chooseAdapter(db, nodeId),
       image: runnerImageOverride(),
       timeoutMs: PLAN_TIMEOUT_MS,
+      ...dispatchOptionsFor('synthesize'),
       onEvent: (event) => {
         // `synth.` keeps the combining run out of the work transcript — it is a
         // third kind of run, and reading it as more work is confusing.
@@ -230,6 +269,11 @@ async function synthesizeChildren(db: Db, nodeId: string, goal: string): Promise
         publish({ id, nodeId, type, payload: event.payload, createdAt: now });
       },
     }));
+
+    recordUsage(db, {
+      nodeId, role: 'synthesize', model: dispatchOptionsFor('synthesize').model ?? null,
+      usage: result.usage, costUsd: costFromEvents(result.events),
+    });
 
     const text = result.events
       .filter((event) => event.type === 'result')
@@ -273,6 +317,28 @@ async function planSubgoals(db: Db, nodeId: string, goal: string, maxChildren: n
   // sandbox run to be told what we already know.
   if (!worktreePath || maxChildren < 2) return [];
 
+  // The same goal against the same committed tree splits the same way. Only a
+  // clean tree with a readable HEAD is keyable — repoDirty says true when it
+  // cannot tell, so an unknowable tree plans afresh rather than reusing a plan
+  // that may no longer describe the code.
+  const ttl = planCacheTtlHours();
+  const head = repoHead(worktreePath);
+  const cacheKey = head && !repoDirty(worktreePath) ? planCacheKey(goal, head) : null;
+  if (cacheKey) {
+    try {
+      const cached = getCachedPlan(db, cacheKey, ttl);
+      if (cached) {
+        publishProgress(db, nodeId, 'Reusing a plan computed earlier for this goal and repo state');
+        recordUsage(db, {
+          nodeId, role: 'plan:cache-hit', model: null, usage: { ...ZERO_USAGE }, costUsd: 0,
+        });
+        return cached;
+      }
+    } catch {
+      // A cache that misbehaves costs a sandbox, not a run.
+    }
+  }
+
   const credentials = checkCredentials(os.homedir(), process.env.ANTHROPIC_API_KEY);
   if (!credentials.ok) return [];
 
@@ -287,6 +353,10 @@ async function planSubgoals(db: Db, nodeId: string, goal: string, maxChildren: n
       adapter: chooseAdapter(db, nodeId),
       image: runnerImageOverride(),
       timeoutMs: PLAN_TIMEOUT_MS,
+      ...dispatchOptionsFor('plan'),
+      // Planning looks, it does not work. A node whose row we cannot read gets
+      // the plain read-only set, which is narrower than anything it could hold.
+      grant: readOnlyPlanningGrant(node ? grantOf(node.contract.authority) : undefined),
       onEvent: (event) => {
         // `plan.` rather than `exec.`, so a reader can tell "deciding how to
         // split this" from the work itself — they are two different sandbox
@@ -304,6 +374,15 @@ async function planSubgoals(db: Db, nodeId: string, goal: string, maxChildren: n
       .map((event) => String((event.payload as { result?: unknown } | null)?.result ?? ''))
       .join('\n');
     const subgoals = parseSubgoals(text, maxChildren);
+    recordUsage(db, {
+      nodeId, role: 'plan', model: dispatchOptionsFor('plan').model ?? null,
+      usage: result.usage, costUsd: costFromEvents(result.events),
+    });
+    // Only a real split is worth pinning: an empty list means "does not split",
+    // which is cheap to recompute and wrong to hold for a day.
+    if (cacheKey && subgoals.length >= 2) {
+      putCachedPlan(db, cacheKey, subgoals, head!, new Date().toISOString());
+    }
     if (subgoals.length === 0) {
       publishProgress(db, nodeId, 'This goal does not split into independent pieces — doing it directly');
     }
@@ -414,7 +493,8 @@ function productionMachine(db: Db, nodeId: string) {
 
         const adapter = chooseAdapter(db, nodeId);
         publishProgress(db, nodeId, `Starting a sandbox on ${adapter.name} against ${worktreePath}`);
-        const result = await dispatch(db, nodeId, () => executeStep({
+        const execOpts = dispatchOptionsFor('execute');
+        const runOnce = (model: string | undefined) => dispatch(db, nodeId, () => executeStep({
           nodeId,
           // Constraints ride with the goal. They are instructions, not
           // boundaries — the interface says so wherever it shows them.
@@ -428,6 +508,8 @@ function productionMachine(db: Db, nodeId: string) {
           adapter,
           image: runnerImageOverride(),
           grant: grantOf(node!.contract.authority),
+          model,
+          maxTurns: execOpts.maxTurns,
           onViolation: (tool) => publishDenial(db, nodeId, tool, node!.contract.authority),
           // The runner's structured output is the point of the whole dispatch.
           // Was: a loop over result.events run once, after the whole Job
@@ -445,6 +527,23 @@ function productionMachine(db: Db, nodeId: string) {
             }
           },
         }));
+
+        // One shot at the tiered model. If the runtime says it cannot have it,
+        // the run continues on the default rather than failing over a knob.
+        let usedModel = execOpts.model;
+        let result = await runOnce(execOpts.model);
+        if (execOpts.model && shouldRetryWithoutModel(result.events)) {
+          publishProgress(db, nodeId, `Model "${execOpts.model}" is unavailable on this plan — retrying on the default model`);
+          insertMemoryRow(db, 'model_tier_unavailable', 'execute', { model: execOpts.model }, nodeId);
+          usedModel = undefined;
+          result = await runOnce(undefined);
+        }
+        // Exactly one row per logical dispatch, naming the model whose tokens
+        // and cost this row actually carries — see the retry above.
+        recordUsage(db, {
+          nodeId, role: 'execute', model: usedModel ?? null,
+          usage: result.usage, costUsd: costFromEvents(result.events),
+        });
         publishStepOutcome(db, nodeId, result);
         // No answer event here: a node that did the work itself already said its
         // answer, and it is in the transcript. Publishing it again rendered the
