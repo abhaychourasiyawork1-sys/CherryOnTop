@@ -220,15 +220,22 @@ lifecycle stages — `plan`, `execute`, `synthesize` — get a system prompt (th
 "harness constitution" plus a stage-specific stanza, defined in `src/prompts/roles.ts`)
 delivered via the runtime's `--append-system-prompt`, instead of that framing being
 repeated in the user prompt on every turn. A fourth role, `verify`, has a stanza defined
-but is not wired to any dispatch. Turning it off (`off`/`0`/`false`/`no`) drops back to
-the old behaviour of folding that framing into the prompt text itself — for all three
-stages, so the framing always reaches the agent by one route or the other.
+but is not wired to any dispatch. Turning it off (`off`/`0`/`false`/`no`) folds that
+framing back into the prompt text instead — with one gap, described next.
 
-The same is true of a runtime that has no `--append-system-prompt` at all (Codex exec is
-the current example, and silently drops appended system prompts): the stage's framing —
-and, on an execute dispatch, the standing constraints from the node's mandate — go inline
-on the goal instead. This is decided per dispatch by `honoursSystemPrompt()` probing the
-adapter, not by hardcoding runtime names, and either way the framing appears exactly once.
+The same applies on a runtime that has no `--append-system-prompt` at all (Codex exec is
+the current example, and silently drops appended system prompts). Which route is used is
+decided per dispatch by `honoursSystemPrompt()` probing the adapter, rather than by
+hardcoding runtime names, and the framing appears exactly once either way. What goes
+inline differs by stage:
+
+- `plan` and `synthesize` fold in their **whole** stanza, so nothing is lost.
+- `execute` folds in only the **standing constraints** from the node's mandate. Its stanza
+  — the harness constitution, the allowed-tools sentence, and the definition of done —
+  rides the system prompt only, and is not delivered when role prompts are off or when the
+  run lands on a system-prompt-less runtime. Constraints always arrive; the rest of the
+  execute framing does not. If you depend on the definition of done reaching the agent,
+  leave `ORG_ROLE_PROMPTS` on and check `org tree` for which runtime a node selected.
 
 A tiered-down model is only sent to a runtime that can actually serve it: the adapter is
 asked first (`modelFor()`), so a Claude alias like Haiku is never sent to Codex, which
