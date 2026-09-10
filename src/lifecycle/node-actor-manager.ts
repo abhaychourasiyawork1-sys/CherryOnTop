@@ -168,6 +168,28 @@ export function honoursSystemPrompt(adapter: RuntimeAdapter): boolean {
   }
 }
 
+/** The model to actually send this runtime, which is `undefined` — the
+ *  runtime's own default — whenever it cannot serve the one the role asked for.
+ *
+ *  Two ways it cannot: the runtime has no model flag at all (the sentinel does
+ *  not survive into argv, the same probe shape honoursSystemPrompt uses), or it
+ *  has one and rejects this name (adapter.servesModel). Both are asked of the
+ *  adapter rather than hardcoded by runtime name. Sending a model a runtime
+ *  cannot serve fails the whole dispatch — which for `plan` means no delegation
+ *  and for `synthesize` means no answer.
+ *
+ *  Total, and failing towards "no model": called from inside the executeStep
+ *  actor, which has no try of its own. */
+export function modelFor(adapter: RuntimeAdapter, model: string | undefined): string | undefined {
+  if (!model) return undefined;
+  try {
+    if (adapter.servesModel?.(model) === false) return undefined;
+    return adapter.buildCommand('goal', undefined, { model }).includes(model) ? model : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /** What a dispatch cost, off the runtime's own final result event — the same
  *  number the cost views already read, recorded alongside the token counts. */
 function costFromEvents(events: { type: string; payload: unknown }[]): number {
@@ -320,17 +342,35 @@ async function synthesizeChildren(db: Db, nodeId: string, goal: string): Promise
 
   publishProgress(db, nodeId, `Combining what ${children.length} agents reported into one answer`);
   try {
-    const result = await dispatch(db, nodeId, () => executeStep({
+    // Inside the try, like everything else here: chooseAdapter writes a decision
+    // row and publishes an event, and a database that refuses that must cost the
+    // combined answer, not the whole delegating node.
+    const adapter = chooseAdapter(db, nodeId);
+    const opts = dispatchOptionsFor('synthesize');
+    // Same shape as the execute dispatch: the stanza only carries the role when
+    // the runtime will actually deliver it. buildSynthesisPrompt no longer states
+    // the lead's job — merge overlaps, keep file:line detail, order by importance,
+    // no preamble — so when there is no stanza it has to go inline on the goal, or
+    // it reaches nobody at all.
+    const roleSystemPrompt = rolePromptsEnabled() && honoursSystemPrompt(adapter)
+      ? buildRolePrompt('synthesize')
+      : undefined;
+    const synthesisGoal = roleSystemPrompt
+      ? buildSynthesisPrompt(goal, children)
+      : `${buildSynthesisPrompt(goal, children)}\n\n${buildRolePrompt('synthesize')}`;
+
+    const runOnce = (model: string | undefined) => dispatch(db, nodeId, () => executeStep({
       nodeId,
-      goal: buildSynthesisPrompt(goal, children),
-      systemPrompt: rolePromptsEnabled() ? buildRolePrompt('synthesize') : undefined,
+      goal: synthesisGoal,
+      systemPrompt: roleSystemPrompt,
       namespace: NAMESPACE,
       worktreePath,
       credentials: resolveCredentials(os.homedir(), process.env.ANTHROPIC_API_KEY),
-      adapter: chooseAdapter(db, nodeId),
+      adapter,
       image: runnerImageOverride(),
       timeoutMs: PLAN_TIMEOUT_MS,
-      ...dispatchOptionsFor('synthesize'),
+      model,
+      maxTurns: opts.maxTurns,
       onEvent: (event) => {
         // `synth.` keeps the combining run out of the work transcript — it is a
         // third kind of run, and reading it as more work is confusing.
@@ -341,16 +381,37 @@ async function synthesizeChildren(db: Db, nodeId: string, goal: string): Promise
       },
     }));
 
+    // One shot at the tiered model, exactly as the execute dispatch does it:
+    // a role that defaults to Haiku must not lose the whole answer on a plan
+    // that cannot call Haiku.
+    let usedModel = modelFor(adapter, opts.model);
+    let result = await runOnce(usedModel);
+    if (usedModel && shouldRetryWithoutModel(result.events)) {
+      publishProgress(db, nodeId, `Model "${usedModel}" is unavailable on this plan — retrying on the default model`);
+      insertMemoryRow(db, 'model_tier_unavailable', 'synthesize', { model: usedModel }, nodeId);
+      usedModel = undefined;
+      result = await runOnce(undefined);
+    }
+    // Exactly one row per logical dispatch, naming the model that actually ran.
     recordUsage(db, {
-      nodeId, role: 'synthesize', model: dispatchOptionsFor('synthesize').model ?? null,
+      nodeId, role: 'synthesize', model: usedModel ?? null,
       usage: result.usage, costUsd: costFromEvents(result.events),
     });
 
+    // An errored `result` is the runtime's complaint, not an answer — and the
+    // caller publishes whatever comes back here as the node's answer. With
+    // ORG_MAX_TURNS_SYNTHESIZE at 1, one verifying tool call is enough to turn
+    // the whole synthesis into "error: max turns exceeded", which would then be
+    // published as what the organization concluded.
     const text = result.events
       .filter((event) => event.type === 'result')
+      .filter((event) => (event.payload as { is_error?: unknown } | null)?.is_error !== true)
       .map((event) => String((event.payload as { result?: unknown } | null)?.result ?? ''))
       .join('\n')
       .trim();
+    // Nothing usable came back. Saying so beats a silent fall-through to the
+    // "all 3 pieces completed" tally, which is what the caller does with ''.
+    if (!text) publishProgress(db, nodeId, "Could not combine the agents' reports — their individual reports stand");
     return text;
   } catch (err) {
     publishProgress(db, nodeId, `Could not combine the agents' reports (${err instanceof Error ? err.message : String(err)})`);
@@ -422,17 +483,34 @@ async function planSubgoals(db: Db, nodeId: string, goal: string, maxChildren: n
 
   publishProgress(db, nodeId, 'Working out how to split this across agents');
   try {
-    const result = await dispatch(db, nodeId, () => executeStep({
+    // Inside the try, like everything else here: chooseAdapter writes a decision
+    // row and publishes an event, and any failure in planning has to mean "do
+    // not delegate" rather than taking the node down with it.
+    const adapter = chooseAdapter(db, nodeId);
+    const opts = dispatchOptionsFor('plan');
+    // Same shape as the execute dispatch: the stanza only carries the role when
+    // the runtime will actually deliver it. buildPlanPrompt no longer states the
+    // planner's job or its output contract, so when there is no stanza it has to
+    // go inline on the goal.
+    const roleSystemPrompt = rolePromptsEnabled() && honoursSystemPrompt(adapter)
+      ? buildRolePrompt('plan')
+      : undefined;
+    const planGoal = roleSystemPrompt
+      ? buildPlanPrompt(goal, maxChildren)
+      : `${buildPlanPrompt(goal, maxChildren)}\n\n${buildRolePrompt('plan')}`;
+
+    const runOnce = (model: string | undefined) => dispatch(db, nodeId, () => executeStep({
       nodeId,
-      goal: buildPlanPrompt(goal, maxChildren),
-      systemPrompt: rolePromptsEnabled() ? buildRolePrompt('plan') : undefined,
+      goal: planGoal,
+      systemPrompt: roleSystemPrompt,
       namespace: NAMESPACE,
       worktreePath,
       credentials: resolveCredentials(os.homedir(), process.env.ANTHROPIC_API_KEY),
-      adapter: chooseAdapter(db, nodeId),
+      adapter,
       image: runnerImageOverride(),
       timeoutMs: PLAN_TIMEOUT_MS,
-      ...dispatchOptionsFor('plan'),
+      model,
+      maxTurns: opts.maxTurns,
       // Planning looks, it does not work. A node whose row we cannot read gets
       // the plain read-only set, which is narrower than anything it could hold.
       grant: readOnlyPlanningGrant(node ? grantOf(node.contract.authority) : undefined),
@@ -447,20 +525,41 @@ async function planSubgoals(db: Db, nodeId: string, goal: string, maxChildren: n
       },
     }));
 
+    // One shot at the tiered model, exactly as the execute dispatch does it.
+    // `plan` is the role that actually defaults to a tiered model, so without
+    // this a plan that cannot call Haiku loses delegation entirely.
+    let usedModel = modelFor(adapter, opts.model);
+    let result = await runOnce(usedModel);
+    if (usedModel && shouldRetryWithoutModel(result.events)) {
+      publishProgress(db, nodeId, `Model "${usedModel}" is unavailable on this plan — retrying on the default model`);
+      insertMemoryRow(db, 'model_tier_unavailable', 'plan', { model: usedModel }, nodeId);
+      usedModel = undefined;
+      result = await runOnce(undefined);
+    }
+
     // Claude Code's final `result` event carries the answer text.
     const text = result.events
       .filter((event) => event.type === 'result')
       .map((event) => String((event.payload as { result?: unknown } | null)?.result ?? ''))
       .join('\n');
     const subgoals = parseSubgoals(text, maxChildren);
+    // Exactly one row per logical dispatch, naming the model that actually ran.
     recordUsage(db, {
-      nodeId, role: 'plan', model: dispatchOptionsFor('plan').model ?? null,
+      nodeId, role: 'plan', model: usedModel ?? null,
       usage: result.usage, costUsd: costFromEvents(result.events),
     });
     // Only a real split is worth pinning: an empty list means "does not split",
     // which is cheap to recompute and wrong to hold for a day.
+    // Guarded for the same reason recordUsage is, and more sharply: a busy
+    // database throwing here lands in the catch below, which returns "no
+    // plan" — so a write-behind cache would have thrown away a plan that was
+    // already computed and paid for, and the node would self-execute instead.
     if (cacheKey && subgoals.length >= 2) {
-      putCachedPlan(db, cacheKey, subgoals, head!, new Date().toISOString());
+      try {
+        putCachedPlan(db, cacheKey, subgoals, head!, new Date().toISOString());
+      } catch (err) {
+        console.error(`Failed to cache the plan for node ${nodeId}:`, err);
+      }
     }
     if (subgoals.length === 0) {
       publishProgress(db, nodeId, 'This goal does not split into independent pieces — doing it directly');
@@ -578,12 +677,11 @@ function productionMachine(db: Db, nodeId: string) {
         const adapter = chooseAdapter(db, nodeId);
         publishProgress(db, nodeId, `Starting a sandbox on ${adapter.name} against ${worktreePath}`);
         const execOpts = dispatchOptionsFor('execute');
-        // Prefixed once, out here rather than inside runOnce: the fallback
-        // retry below calls runOnce a second time with the same goal, and a
-        // goal carrying two copies of the map is the thing this is meant to
-        // avoid. No map (disabled, not a repo, build failed) → the bare goal.
+        // Built once, out here rather than inside runOnce: the fallback retry
+        // below calls runOnce a second time with the same goal, and a goal
+        // carrying two copies of the map is the thing this is meant to avoid.
+        // No map (disabled, not a repo, build failed) → the bare goal.
         const repoMap = repoMapFor(db, worktreePath);
-        const goalForDispatch = repoMap ? withRepoMap(input.goal, repoMap) : input.goal;
 
         // Constraints are instructions, not boundaries — the interface says so
         // wherever it shows them — so they must reach the agent either way.
@@ -603,12 +701,17 @@ function productionMachine(db: Db, nodeId: string) {
             })
           : undefined;
         const goalWithConstraints = (!roleSystemPrompt && constraints.length > 0)
-          ? `Standing instructions (follow even where they conflict with the most direct path, and say so if one blocks you):\n${constraints.map((c) => `  - ${c}`).join('\n')}\n\n${goalForDispatch}`
-          : goalForDispatch;
+          ? `Standing instructions (follow even where they conflict with the most direct path, and say so if one blocks you):\n${constraints.map((c) => `  - ${c}`).join('\n')}\n\n${input.goal}`
+          : input.goal;
+        // The map goes on last, so it wraps the whole instruction block instead
+        // of landing between the standing instructions and the goal they govern
+        // — twenty-odd kilobytes of file listing separating an instruction from
+        // its task is a worse prompt than either change intended on its own.
+        const goalForDispatch = repoMap ? withRepoMap(goalWithConstraints, repoMap) : goalWithConstraints;
 
         const runOnce = (model: string | undefined) => dispatch(db, nodeId, () => executeStep({
           nodeId,
-          goal: goalWithConstraints,
+          goal: goalForDispatch,
           systemPrompt: roleSystemPrompt,
           namespace: NAMESPACE,
           worktreePath,
@@ -639,13 +742,14 @@ function productionMachine(db: Db, nodeId: string) {
           },
         }));
 
-        // One shot at the tiered model. If the runtime says it cannot have it,
-        // the run continues on the default rather than failing over a knob.
-        let usedModel = execOpts.model;
-        let result = await runOnce(execOpts.model);
-        if (execOpts.model && shouldRetryWithoutModel(result.events)) {
-          publishProgress(db, nodeId, `Model "${execOpts.model}" is unavailable on this plan — retrying on the default model`);
-          insertMemoryRow(db, 'model_tier_unavailable', 'execute', { model: execOpts.model }, nodeId);
+        // One shot at the tiered model — and only a model this runtime can
+        // actually serve. If the runtime then says it cannot have it, the run
+        // continues on the default rather than failing over a knob.
+        let usedModel = modelFor(adapter, execOpts.model);
+        let result = await runOnce(usedModel);
+        if (usedModel && shouldRetryWithoutModel(result.events)) {
+          publishProgress(db, nodeId, `Model "${usedModel}" is unavailable on this plan — retrying on the default model`);
+          insertMemoryRow(db, 'model_tier_unavailable', 'execute', { model: usedModel }, nodeId);
           usedModel = undefined;
           result = await runOnce(undefined);
         }

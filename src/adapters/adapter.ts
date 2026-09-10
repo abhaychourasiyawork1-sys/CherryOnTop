@@ -33,6 +33,11 @@ export interface RuntimeAdapter {
    *  flags, so a forbidden call is refused before it happens rather than
    *  reported after. */
   buildCommand(goal: string, grant?: ToolGrant, opts?: BuildCommandOptions): string[];
+  /** Whether this runtime can actually serve a model *name*. Optional: absent
+   *  means "any name the caller passes". It exists because the flag surviving
+   *  into argv is not the same question as the runtime accepting the value —
+   *  see codex.ts, which takes `--model` and then rejects a Claude alias. */
+  servesModel?(model: string): boolean;
   /** Wraps one raw output line as a StructuredEvent, or null if it is not a
    *  recognizable event (blank, malformed JSON, or missing a `type` field). */
   parseLine(line: string): StructuredEvent | null;

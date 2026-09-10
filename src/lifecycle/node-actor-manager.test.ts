@@ -8,7 +8,8 @@ import { getNode, insertNode } from '../db/queries/nodes.js';
 import { listEventsForNode } from '../db/queries/events.js';
 import { getRepoMap } from '../db/queries/repo-map-cache.js';
 import { repoHead } from '../execution/git-state.js';
-import { startNodeActor, sendToNode, repoMapFor, honoursSystemPrompt } from './node-actor-manager.js';
+import { startNodeActor, sendToNode, repoMapFor, honoursSystemPrompt, modelFor } from './node-actor-manager.js';
+import { stopgapAdapter } from '../adapters/stopgap.js';
 import { claudeCodeAdapter } from '../adapters/claude-code.js';
 import { codexAdapter } from '../adapters/codex.js';
 
@@ -110,6 +111,21 @@ describe('retired prompt module', () => {
     // A dynamic import would not typecheck against a deleted module, so this
     // checks the file itself.
     expect(existsSync(join(import.meta.dirname, '../execution/prompt.ts'))).toBe(false);
+  });
+});
+
+describe('modelFor', () => {
+  it('drops a model the runtime cannot serve, and keeps one it can', () => {
+    // `plan` and `synthesize` default to haiku. Codex takes --model, so the flag
+    // survives into argv — but the model does not exist there, and the run dies
+    // before it can emit the result event the no-model fallback reads. Sending
+    // it costs delegation and synthesis entirely, so it is refused up front.
+    expect(modelFor(claudeCodeAdapter, 'haiku')).toBe('haiku');
+    expect(modelFor(codexAdapter, 'haiku')).toBeUndefined();
+    expect(modelFor(codexAdapter, 'gpt-5-codex')).toBe('gpt-5-codex');
+    // No model flag at all: the sentinel never reaches argv.
+    expect(modelFor(stopgapAdapter, 'haiku')).toBeUndefined();
+    expect(modelFor(claudeCodeAdapter, undefined)).toBeUndefined();
   });
 });
 

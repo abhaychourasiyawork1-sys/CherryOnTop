@@ -209,9 +209,11 @@ An empty value, or `none`/`default`/`off`, on any `ORG_MODEL_*` variable means "
 
 **Repo map.** On the first dispatch against a given worktree HEAD, the runtime builds a
 map of the repo (file list plus symbols, bounded by `ORG_REPO_MAP_TOKENS`) and caches it;
-later dispatches against the same HEAD reuse it, and it is re-checked against the current
-token budget rather than rebuilt from scratch. The map is prefixed onto the goal for
-execute dispatches only. Set `ORG_REPO_MAP_TOKENS=0` to turn it off.
+later dispatches against the same HEAD reuse it — but only after re-checking it against the
+current token budget, so turning `ORG_REPO_MAP_TOKENS` down rebuilds the map from scratch on
+the next dispatch rather than waiting for the next commit. The map is prefixed onto the goal
+for execute dispatches only, wrapping the standing instructions and the goal together rather
+than coming between them. Set `ORG_REPO_MAP_TOKENS=0` to turn it off.
 
 **Role-scoped system prompts.** With `ORG_ROLE_PROMPTS` on, three of the runtime's four
 lifecycle stages — `plan`, `execute`, `synthesize` — get a system prompt (the shared
@@ -219,20 +221,24 @@ lifecycle stages — `plan`, `execute`, `synthesize` — get a system prompt (th
 delivered via the runtime's `--append-system-prompt`, instead of that framing being
 repeated in the user prompt on every turn. A fourth role, `verify`, has a stanza defined
 but is not wired to any dispatch. Turning it off (`off`/`0`/`false`/`no`) drops back to
-the old behaviour of folding that framing into the prompt text itself.
+the old behaviour of folding that framing into the prompt text itself — for all three
+stages, so the framing always reaches the agent by one route or the other.
 
-Standing constraints on an execute dispatch (from the node's mandate) always reach the
-agent, on or off: with role prompts on **and** a runtime that actually honours
-`--append-system-prompt`, they ride the cached `execute` stanza; otherwise (role prompts
-off, or a runtime — Codex exec is the current example — that silently drops appended
-system prompts) they're prepended inline on the goal instead. This is decided per dispatch
-by `honoursSystemPrompt()` probing the adapter, not by hardcoding runtime names.
+The same is true of a runtime that has no `--append-system-prompt` at all (Codex exec is
+the current example, and silently drops appended system prompts): the stage's framing —
+and, on an execute dispatch, the standing constraints from the node's mandate — go inline
+on the goal instead. This is decided per dispatch by `honoursSystemPrompt()` probing the
+adapter, not by hardcoding runtime names, and either way the framing appears exactly once.
 
-If a role's tiered-down model (Haiku, by default) isn't callable under your plan, a
-dispatch for that role silently falls back to a one-shot retry without `--model`, which
-costs an extra rejected request every time. `org doctor` now has a **callable models** row
-that probes both Haiku and Sonnet with your current auth and tells you up front which one
-(if either) will hit this fallback.
+A tiered-down model is only sent to a runtime that can actually serve it: the adapter is
+asked first (`modelFor()`), so a Claude alias like Haiku is never sent to Codex, which
+would fail the whole dispatch — no plan, or no combined answer. If the model is one the
+runtime accepts but your plan cannot call, all three roles fall back to a one-shot retry
+without `--model`, which costs an extra rejected request every time. `org doctor` now has a
+**callable models** row that probes both Haiku and Sonnet with your current auth and tells
+you up front which one (if either) will hit this fallback. That probe **makes two real,
+billable model calls and can take up to ~40 seconds**, so unlike the rest of `org doctor`
+it spends a little of your quota each time you run it.
 
 ### `org tokens [caseId]`
 

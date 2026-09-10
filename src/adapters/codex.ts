@@ -25,6 +25,14 @@ export const codexAdapter: RuntimeAdapter = {
     return ['codex', 'exec', '--json', '--skip-git-repo-check', ...sandbox, ...model, goal];
   },
 
+  // The role model tiers default to Claude aliases (haiku, sonnet, opus). Codex
+  // exec takes --model, so the flag itself survives an argv probe — but the
+  // model it names does not exist here, and the CLI dies before it emits the
+  // final `result` event the one-shot no-model fallback reads. So the refusal
+  // has to happen before dispatch, and the adapter is the only thing that knows
+  // its own runtime's models.
+  servesModel: (model: string) => !/^(haiku|sonnet|opus|claude)/i.test(model.trim()),
+
   // Codex's lines carry their discriminator as `type` at the top level, exactly
   // as Claude Code's do, so the same wrap-the-raw-object-as-payload rule holds.
   // Anything that is not an object with a string `type` is noise, not a reason
