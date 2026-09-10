@@ -22,7 +22,8 @@ import { artifactsFromEvent } from '../execution/artifacts.js';
 import { codexAdapter } from '../adapters/codex.js';
 import { selectRuntime } from '../intelligence/select-runtime.js';
 import { buildPlanPrompt, parseSubgoals } from '../intelligence/plan.js';
-import { buildSynthesisPrompt, hasReports, type ChildReport } from '../intelligence/synthesize.js';
+import { buildSynthesisPrompt, type ChildReport } from '../intelligence/synthesize.js';
+import { decideIntegration } from '../intelligence/integrate-results.js';
 import { answerOf } from '../db/queries/answers.js';
 import { recordRunOutcome, getRuntimeStats } from '../db/queries/memory.js';
 import { getCostForNodes } from '../db/queries/stats.js';
@@ -343,12 +344,23 @@ async function synthesizeChildren(db: Db, nodeId: string, goal: string): Promise
       report: answerOf(db, child.id),
     }));
 
-  if (!hasReports(children)) return '';
+  // Most of combining reports is mechanical, and mechanical work does not need
+  // a sandbox. Only a judgement call — overlapping edits, a child that half
+  // finished, prose nothing can parse — is worth one.
+  const decision = decideIntegration(children);
+  if (decision.kind === 'nothing') return '';
+  if (decision.kind === 'return_child' || decision.kind === 'merge') {
+    ledger.recordAvoided(nodeId, 'synthesize');
+    publishProgress(db, nodeId, decision.kind === 'merge'
+      ? `Combined ${children.length} agents' results directly — no extra model call was needed`
+      : "One agent answered this; returning its answer rather than paying to reword it");
+    return decision.text;
+  }
 
   const credentials = checkCredentials(os.homedir(), process.env.ANTHROPIC_API_KEY);
   if (!credentials.ok) return '';
 
-  publishProgress(db, nodeId, `Combining what ${children.length} agents reported into one answer`);
+  publishProgress(db, nodeId, `Combining what ${children.length} agents reported into one answer (${decision.reason})`);
   try {
     // Inside the try, like everything else here: chooseAdapter writes a decision
     // row and publishes an event, and a database that refuses that must cost the
@@ -364,8 +376,8 @@ async function synthesizeChildren(db: Db, nodeId: string, goal: string): Promise
       ? buildRolePrompt('synthesize')
       : undefined;
     const synthesisGoal = roleSystemPrompt
-      ? buildSynthesisPrompt(goal, children)
-      : `${buildSynthesisPrompt(goal, children)}\n\n${buildRolePrompt('synthesize')}`;
+      ? buildSynthesisPrompt(goal, decision.children)
+      : `${buildSynthesisPrompt(goal, decision.children)}\n\n${buildRolePrompt('synthesize')}`;
 
     const runOnce = (model: string | undefined) => dispatch(db, nodeId, () => executeStep({
       nodeId,

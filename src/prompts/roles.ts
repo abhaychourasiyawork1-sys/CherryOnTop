@@ -1,3 +1,4 @@
+import { ENVELOPE_INSTRUCTION } from '../intelligence/result-envelope.js';
 export type PromptRole = 'plan' | 'execute' | 'synthesize' | 'verify';
 
 export interface RolePromptParams {
@@ -38,6 +39,10 @@ function stanza(role: PromptRole, p: RolePromptParams): string {
         'Work to the definition of done and then stop — do not gold-plate.',
         'Your final message is the evidence that closes this commitment: state what you changed, what you verified, and what remains unchecked.',
         'If a standing constraint blocks the most direct path, follow the constraint and say which one and where.',
+        // What lets a delegating parent combine this result without paying a
+        // model to read it. Best-effort: a run that ignores it degrades to the
+        // prose merge that was the only option before.
+        ENVELOPE_INSTRUCTION,
         list('Standing constraints (told, not enforced)', p.constraints),
         list('Definition of done', p.definitionOfDone),
       ].join('\n');

@@ -29,9 +29,9 @@ inside the agent's own loop.
 - [x] **T2 — DispatchContext.** `src/context/dispatch-context.ts`. Goal-aware selection over structural candidates, budget as a hard ceiling, receipt of what was kept and dropped.
 - [x] **T3 — Goal-aware repo maps.** `repo-map.ts` selects task-relevant structure instead of filling a fixed 6000-token budget for every child.
 - [x] **T4 — DispatchContextCache.** Reuse an identical selection across Jobs, keyed by repo HEAD + goal + budget.
-- [ ] **T5 — Structured child-result envelopes.** `src/intelligence/result-envelope.ts`. Children report structure; synthesis stops eating 12k-char transcripts.
+- [x] **T5 — Structured child-result envelopes.** `src/intelligence/result-envelope.ts`. Children report structure; synthesis stops eating 12k-char transcripts.
 - [ ] **T6 — Planning fast path.** Judge trivial/simple goals into direct execution before paying for a planning sandbox.
-- [ ] **T7 — Conditional synthesis.** `src/intelligence/integrate-results.ts`. Return a single complete child or merge deterministically instead of dispatching a synthesis sandbox.
+- [x] **T7 — Conditional synthesis.** `src/intelligence/integrate-results.ts`. Return a single complete child or merge deterministically instead of dispatching a synthesis sandbox.
 - [ ] **T8 — Model routing.** `src/intelligence/model-router.ts`. Complexity/role/budget → tier, feeding the existing per-role model selection.
 - [ ] **T9 — Objective & experiment evaluation.** `src/efficiency/objective.ts`, `experiment.ts`. Scoring and hard quality/success gates as pure functions.
 - [ ] **T10 — Rollout modes & docs.** `disabled | shadow | enabled`, README/USAGE.

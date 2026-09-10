@@ -1,21 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import { buildSynthesisPrompt, hasReports, MAX_REPORT_CHARS } from './synthesize.js';
+import { buildSynthesisPrompt, MAX_REPORT_CHARS } from './synthesize.js';
 import { buildRolePrompt } from '../prompts/roles.js';
 
 const child = (over: Partial<Parameters<typeof buildSynthesisPrompt>[1][0]> = {}) => ({
   goal: 'Review auth.js', succeeded: true, report: 'Found an off-by-one at auth.js:4', ...over,
-});
-
-describe('hasReports', () => {
-  it('is true when any child came back with something', () => {
-    expect(hasReports([child({ report: '' }), child()])).toBe(true);
-  });
-
-  it('is false when every child came back empty', () => {
-    // Nothing to combine — asking anyway spends a sandbox to be told so.
-    expect(hasReports([child({ report: '' }), child({ report: '   ' })])).toBe(false);
-    expect(hasReports([])).toBe(false);
-  });
 });
 
 describe('buildSynthesisPrompt', () => {

@@ -23,13 +23,6 @@ function clip(text: string): string {
     : `${trimmed.slice(0, MAX_REPORT_CHARS)}\n\n[report truncated]`;
 }
 
-/** True when there is actually something to combine. A root whose children all
- *  came back empty has nothing to synthesize, and asking anyway spends a sandbox
- *  to be told so. */
-export function hasReports(children: ChildReport[]): boolean {
-  return children.some((child) => child.report.trim().length > 0);
-}
-
 export function buildSynthesisPrompt(goal: string, children: ChildReport[]): string {
   const sections = children.map((child, index) => [
     `### Agent ${index + 1}${child.succeeded ? '' : ' (did not finish)'}`,
