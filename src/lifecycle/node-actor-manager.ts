@@ -28,6 +28,8 @@ import { recordRunOutcome, getRuntimeStats } from '../db/queries/memory.js';
 import { getCostForNodes } from '../db/queries/stats.js';
 import { resolveCredentials, checkCredentials } from '../execution/credentials.js';
 import { sandboxLimiter, maxConcurrentFromEnv } from '../execution/dispatch-limit.js';
+import { efficiencyLedger, type LedgerRole } from '../efficiency/ledger.js';
+import type { EfficiencyOutcome } from '../efficiency/metrics.js';
 import { buildRolePrompt } from '../prompts/roles.js';
 import os from 'node:os';
 import { deleteNodeNetworkPolicy, deleteNodeJobs } from '../k8s/cleanup.js';
@@ -272,6 +274,36 @@ function recordUsage(
   } catch (err) {
     console.error(`Failed to record ${r.role} token usage for node ${r.nodeId}:`, err);
   }
+  // The same fact, told to the in-memory ledger that rolls a whole task up into
+  // one record. Separate from the row above on purpose: the row is per dispatch
+  // and outlives the daemon, the ledger is per task and does not.
+  // 'plan:cache-hit' is not a dispatch — it is the dispatch that did not happen,
+  // which is the number this whole phase exists to move.
+  if (r.role === 'plan:cache-hit') { ledger.recordAvoided(r.nodeId, 'plan'); return; }
+  const timing = drainTiming(r.nodeId);
+  ledger.recordDispatch(r.nodeId, {
+    role: r.role as LedgerRole,
+    usage: r.usage,
+    costUsd: r.costUsd,
+    ms: timing.dispatchMs,
+    queuedMs: timing.queuedMs,
+  });
+}
+
+/** The tokens of an attempt that was thrown away — the one the model-fallback
+ *  retry replaced. Nothing else records these: `recordUsage` deliberately writes
+ *  one row per *logical* dispatch, naming the model that actually ran, so
+ *  without this the cost of a wrong model tier is invisible. */
+function recordSupersededAttempt(
+  nodeId: string,
+  role: LedgerRole,
+  result: { usage: DispatchUsage; events: { type: string; payload: unknown }[] },
+): void {
+  const timing = drainTiming(nodeId);
+  ledger.recordDispatch(nodeId, {
+    role, usage: result.usage, costUsd: costFromEvents(result.events),
+    ms: timing.dispatchMs, queuedMs: timing.queuedMs, superseded: true,
+  });
 }
 
 /** Records a tool used outside the node's grant. This is the event the Proof
@@ -389,6 +421,7 @@ async function synthesizeChildren(db: Db, nodeId: string, goal: string): Promise
     if (usedModel && shouldRetryWithoutModel(result.events)) {
       publishProgress(db, nodeId, `Model "${usedModel}" is unavailable on this plan — retrying on the default model`);
       insertMemoryRow(db, 'model_tier_unavailable', 'synthesize', { model: usedModel }, nodeId);
+      recordSupersededAttempt(nodeId, 'synthesize', result);
       usedModel = undefined;
       result = await runOnce(undefined);
     }
@@ -432,13 +465,39 @@ const PLAN_TIMEOUT_MS = 240_000;
 // per-node, so every sandbox in every task queues through the same gate.
 const sandboxes = sandboxLimiter();
 
+// One ledger for the whole daemon, for the same reason: what it measures is the
+// organization's spend, not any single node's.
+const ledger = efficiencyLedger();
+
 /** Runs a sandbox when a slot is free, and says so while it waits. A node
  *  sitting in a queue looks identical to one that has hung unless it tells you. */
 async function dispatch<T>(db: Db, nodeId: string, task: () => Promise<T>): Promise<T> {
   if (sandboxes.active() >= maxConcurrentFromEnv()) {
     publishProgress(db, nodeId, `Waiting for a free sandbox — ${sandboxes.queued() + 1} ahead in the queue`);
   }
-  return sandboxes.run(task);
+  // This is the only place that can tell waiting from working — two halves of
+  // latency with entirely different fixes. Stashed rather than returned because
+  // the caller's return type is the dispatch result, and threading a second
+  // value through three call sites to reach `recordUsage` — which runs
+  // immediately after — buys nothing.
+  const queuedAt = Date.now();
+  let startedAt = queuedAt;
+  try {
+    return await sandboxes.run(() => { startedAt = Date.now(); return task(); });
+  } finally {
+    pendingTiming.set(nodeId, { queuedMs: startedAt - queuedAt, dispatchMs: Date.now() - startedAt });
+  }
+}
+
+/** How long the last dispatch for a node waited and ran, between `dispatch`
+ *  measuring it and `recordUsage` claiming it. Cleared on read, so a dispatch
+ *  that threw before recording cannot lend its timing to the next one. */
+const pendingTiming = new Map<string, { queuedMs: number; dispatchMs: number }>();
+
+function drainTiming(nodeId: string): { queuedMs: number; dispatchMs: number } {
+  const timing = pendingTiming.get(nodeId) ?? { queuedMs: 0, dispatchMs: 0 };
+  pendingTiming.delete(nodeId);
+  return timing;
 }
 
 async function planSubgoals(db: Db, nodeId: string, goal: string, maxChildren: number): Promise<string[]> {
@@ -533,6 +592,7 @@ async function planSubgoals(db: Db, nodeId: string, goal: string, maxChildren: n
     if (usedModel && shouldRetryWithoutModel(result.events)) {
       publishProgress(db, nodeId, `Model "${usedModel}" is unavailable on this plan — retrying on the default model`);
       insertMemoryRow(db, 'model_tier_unavailable', 'plan', { model: usedModel }, nodeId);
+      recordSupersededAttempt(nodeId, 'plan', result);
       usedModel = undefined;
       result = await runOnce(undefined);
     }
@@ -750,6 +810,7 @@ function productionMachine(db: Db, nodeId: string) {
         if (usedModel && shouldRetryWithoutModel(result.events)) {
           publishProgress(db, nodeId, `Model "${usedModel}" is unavailable on this plan — retrying on the default model`);
           insertMemoryRow(db, 'model_tier_unavailable', 'execute', { model: usedModel }, nodeId);
+          recordSupersededAttempt(nodeId, 'execute', result);
           usedModel = undefined;
           result = await runOnce(undefined);
         }
@@ -818,6 +879,22 @@ function recordOutcomeInMemory(db: Db, nodeId: string, succeeded: boolean, now: 
   });
 }
 
+/** Closes the task's ledger entry and pins the result where a later comparison
+ *  can read it. The ledger only lives as long as the daemon, and a benchmark
+ *  that has to keep the daemon alive to read its own results is not one anybody
+ *  will run — so the record goes to `memory` alongside the per-dispatch rows.
+ *
+ *  Total, like every other recorder here: this runs on the terminal transition,
+ *  and a node must not be left un-finalized because measuring it failed. */
+function recordEfficiency(db: Db, nodeId: string, outcome: EfficiencyOutcome): void {
+  try {
+    const record = ledger.finishTask(nodeId, outcome);
+    insertMemoryRow(db, 'efficiency_record', nodeId, record, nodeId);
+  } catch (err) {
+    console.error(`Failed to record the efficiency of node ${nodeId}:`, err);
+  }
+}
+
 export function startNodeActor(db: Db, nodeId: string, goal: string): void {
   createAndRun(db, nodeId, goal, undefined);
 }
@@ -835,6 +912,9 @@ function createAndRun(db: Db, nodeId: string, goal: string, persisted: unknown):
     // `input` is still required by the type even when a snapshot supersedes it;
     // xstate uses the snapshot's own context, so this value is never read.
     : createActor(productionMachine(db, nodeId), { input: { nodeId, goal }, snapshot: persisted as never });
+  // A restored node's earlier dispatches are gone with the daemon that made
+  // them; the ledger picks it up from here rather than reporting nothing.
+  ledger.startTask(nodeId);
   actor.subscribe((snapshot) => {
     const now = new Date().toISOString();
     updateNodeState(db, nodeId, String(snapshot.value), now);
@@ -858,6 +938,12 @@ function createAndRun(db: Db, nodeId: string, goal: string, persisted: unknown):
       // on. Recording it here, at the one point that knows the verdict, is what
       // makes `evidence` more than a field that was always empty.
       recordOutcomeInMemory(db, nodeId, snapshot.value === 'COMPLETE', now);
+      // One efficiency record per task, at the one point that knows the verdict.
+      // CANCELLED is 'partial', not a failure: the work stopped because someone
+      // stopped it, and counting that against the success rate would make every
+      // change look worse the more often people intervened.
+      recordEfficiency(db, nodeId, snapshot.value === 'COMPLETE' ? 'success'
+        : snapshot.value === 'CANCELLED' ? 'partial' : 'failure');
       closeDefinitionOfDone(db, nodeId, String(snapshot.value), now);
       const evidence = listArtifactsForNode(db, nodeId).map((a) => a.id);
       for (const commitment of listCommitmentsForNode(db, nodeId)) {
