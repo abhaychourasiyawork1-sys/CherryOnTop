@@ -591,7 +591,10 @@ function productionMachine(db: Db, nodeId: string) {
         // cached `execute` system stanza; otherwise there is no stanza to ride,
         // so they go inline on the goal instead. Computed out here, like the
         // repo map, so the fallback retry below cannot prepend them twice.
-        const constraints = node?.contract.constraints ?? [];
+        // Trimmed here, the same way roles.ts's list() trims, so a contract
+        // carrying a blank constraint cannot produce a header with an empty
+        // bullet under it — what the retired withConstraints also did.
+        const constraints = (node?.contract.constraints ?? []).map((c) => c.trim()).filter(Boolean);
         const roleSystemPrompt = rolePromptsEnabled() && honoursSystemPrompt(adapter)
           ? buildRolePrompt('execute', {
               allowedTools: node ? grantOf(node.contract.authority).allowedTools : undefined,
@@ -600,7 +603,7 @@ function productionMachine(db: Db, nodeId: string) {
             })
           : undefined;
         const goalWithConstraints = (!roleSystemPrompt && constraints.length > 0)
-          ? `Standing instructions (follow even where they conflict with the most direct path):\n${constraints.map((c) => `  - ${c}`).join('\n')}\n\n${goalForDispatch}`
+          ? `Standing instructions (follow even where they conflict with the most direct path, and say so if one blocks you):\n${constraints.map((c) => `  - ${c}`).join('\n')}\n\n${goalForDispatch}`
           : goalForDispatch;
 
         const runOnce = (model: string | undefined) => dispatch(db, nodeId, () => executeStep({

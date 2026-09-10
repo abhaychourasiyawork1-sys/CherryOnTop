@@ -9,15 +9,17 @@ describe('buildPlanPrompt', () => {
     expect(prompt).toContain('up to 3 independent agents');
   });
 
+  it('never asks for more agents than the runtime will run', () => {
+    expect(buildPlanPrompt('x', 99)).toContain('up to 5 independent agents');
+    expect(buildPlanPrompt('x', 0)).toContain('up to 1 independent agents');
+  });
+});
+
+describe('buildRolePrompt(\'plan\')', () => {
   it('forbids doing the work during planning', () => {
     // The prohibition moved into the cached `plan` system stanza; the user
     // prompt no longer repeats it, but the planner is still told.
     expect(buildRolePrompt('plan')).toContain('Do not make any changes');
-  });
-
-  it('never asks for more agents than the runtime will run', () => {
-    expect(buildPlanPrompt('x', 99)).toContain('up to 5 independent agents');
-    expect(buildPlanPrompt('x', 0)).toContain('up to 1 independent agents');
   });
 });
 
