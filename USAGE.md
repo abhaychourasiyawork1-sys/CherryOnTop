@@ -201,14 +201,32 @@ the next `org daemon` restart — the same contract as `ORG_RUNNER_IMAGE`.
 | `ORG_MAX_TURNS_PLAN` | `15` | Turn cap for planning dispatches |
 | `ORG_MAX_TURNS_SYNTHESIZE` | `1` | Turn cap for synthesis dispatches |
 | `ORG_PLAN_CACHE_TTL_HOURS` | `24` | How long a cached plan stays valid; `0` disables the plan cache |
+| `ORG_REPO_MAP_TOKENS` | `6000` | Token budget for the repo map prefixed onto execute dispatches; `0` disables it |
+| `ORG_ROLE_PROMPTS` | on | Role-scoped system prompts (below); `off`/`0`/`false`/`no` disable |
 
 An empty value, or `none`/`default`/`off`, on any `ORG_MODEL_*` variable means "pass no
 `--model` flag" — the runtime's own default model is used instead.
 
-Two more variables exist for work that isn't wired up yet: `ORG_REPO_MAP_TOKENS` (default
-`6000`, `0` disables) is read but the repo-map handoff itself is a later phase, and
-`ORG_ROLE_PROMPTS` (default on; `off`/`0`/`false`/`no` disable) is read but role-scoped
-system prompts are not yet built. Setting either has no effect today.
+**Repo map.** On the first dispatch against a given worktree HEAD, the runtime builds a
+map of the repo (file list plus symbols, bounded by `ORG_REPO_MAP_TOKENS`) and caches it;
+later dispatches against the same HEAD reuse it, and it is re-checked against the current
+token budget rather than rebuilt from scratch. The map is prefixed onto the goal for
+execute dispatches only. Set `ORG_REPO_MAP_TOKENS=0` to turn it off.
+
+**Role-scoped system prompts.** With `ORG_ROLE_PROMPTS` on, three of the runtime's four
+lifecycle stages — `plan`, `execute`, `synthesize` — get a system prompt (the shared
+"harness constitution" plus a stage-specific stanza, defined in `src/prompts/roles.ts`)
+delivered via the runtime's `--append-system-prompt`, instead of that framing being
+repeated in the user prompt on every turn. A fourth role, `verify`, has a stanza defined
+but is not wired to any dispatch. Turning it off (`off`/`0`/`false`/`no`) drops back to
+the old behaviour of folding that framing into the prompt text itself.
+
+Standing constraints on an execute dispatch (from the node's mandate) always reach the
+agent, on or off: with role prompts on **and** a runtime that actually honours
+`--append-system-prompt`, they ride the cached `execute` stanza; otherwise (role prompts
+off, or a runtime — Codex exec is the current example — that silently drops appended
+system prompts) they're prepended inline on the goal instead. This is decided per dispatch
+by `honoursSystemPrompt()` probing the adapter, not by hardcoding runtime names.
 
 If a role's tiered-down model (Haiku, by default) isn't callable under your plan, a
 dispatch for that role silently falls back to a one-shot retry without `--model`, which
