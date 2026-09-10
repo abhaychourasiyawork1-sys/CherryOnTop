@@ -132,4 +132,18 @@ describe('the planning dispatch', () => {
     expect(second.filter((input) => input.goal.includes('Split this goal'))).toHaveLength(0);
     expect(listNodes(db).length).toBeGreaterThan(before);
   });
+
+  it('routes each role on its own merits, not on one shared setting', async () => {
+    const calls = await runDelegating(createDb(TEST_DB), tmpRepo(), '[]');
+
+    // Planning is a narrow job — emit a JSON array — and runs on the fast tier.
+    expect(calls[0].goal).toContain('Split this goal');
+    expect(calls[0].model).toBe('haiku');
+
+    // The work itself is not. This goal scores high complexity, so it stays on
+    // the runtime's own default: no --model flag at all.
+    const work = calls.find((call) => !call.goal.includes('Split this goal'));
+    expect(work).toBeDefined();
+    expect(work!.model).toBeUndefined();
+  });
 });

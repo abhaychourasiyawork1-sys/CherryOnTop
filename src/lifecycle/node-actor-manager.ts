@@ -41,7 +41,9 @@ import type { Authority } from '../schemas/node-contract.js';
 import type { ToolGrant, RuntimeAdapter } from '../adapters/adapter.js';
 import { setNodeSnapshot, clearNodeSnapshot } from '../db/queries/nodes.js';
 import { insertDodItems, listDodForNode, setDodState } from '../db/queries/dod.js';
-import { dispatchOptionsFor, planCacheTtlHours, repoMapTokenBudget, rolePromptsEnabled } from '../config/efficiency.js';
+import { dispatchOptionsFor, planCacheTtlHours, repoMapTokenBudget, rolePromptsEnabled, efficiencyMode, type DispatchRole } from '../config/efficiency.js';
+import { routeModel } from '../intelligence/model-router.js';
+import { assessDecomposition } from '../intelligence/decompose.js';
 import { repoHead, repoDirty } from '../execution/git-state.js';
 import { planCacheKey, getCachedPlan, putCachedPlan } from '../db/queries/plan-cache.js';
 import { withRepoContext } from '../intelligence/repo-map.js';
@@ -267,6 +269,35 @@ function recordUsage(
   });
 }
 
+/** The model this dispatch should run on.
+ *
+ *  `disabled` is the fixed per-role choice this branch shipped with. `shadow`
+ *  decides and records but dispatches as `disabled` would, so a deployment can
+ *  see what routing *would* have done before letting it. `enabled` acts on it.
+ *
+ *  Total, like every other decision made from inside the executeStep actor:
+ *  anything going wrong here falls back to the fixed choice, never to no
+ *  dispatch. */
+function modelChoiceFor(db: Db, nodeId: string, role: DispatchRole, goal: string): string | undefined {
+  const configured = dispatchOptionsFor(role).model;
+  const mode = efficiencyMode();
+  if (mode === 'disabled') return configured;
+  try {
+    const node = getNode(db, nodeId);
+    const route = routeModel({
+      role,
+      complexity: assessDecomposition(goal).complexity,
+      budgetUsd: node?.contract.authority.budget_usd ?? 0,
+      spentUsd: getCostForNodes(db, [nodeId]),
+    });
+    insertMemoryRow(db, 'model_route', role, { ...route, mode }, nodeId);
+    return mode === 'shadow' ? configured : route.model;
+  } catch (err) {
+    console.error(`Failed to route a model for node ${nodeId}:`, err);
+    return configured;
+  }
+}
+
 /** The tokens of an attempt that was thrown away — the one the model-fallback
  *  retry replaced. Nothing else records these: `recordUsage` deliberately writes
  *  one row per *logical* dispatch, naming the model that actually ran, so
@@ -404,7 +435,7 @@ async function synthesizeChildren(db: Db, nodeId: string, goal: string): Promise
     // One shot at the tiered model, exactly as the execute dispatch does it:
     // a role that defaults to Haiku must not lose the whole answer on a plan
     // that cannot call Haiku.
-    let usedModel = modelFor(adapter, opts.model);
+    let usedModel = modelFor(adapter, modelChoiceFor(db, nodeId, 'synthesize', goal));
     let result = await runOnce(usedModel);
     if (usedModel && shouldRetryWithoutModel(result.events)) {
       publishProgress(db, nodeId, `Model "${usedModel}" is unavailable on this plan — retrying on the default model`);
@@ -584,7 +615,7 @@ async function planSubgoals(db: Db, nodeId: string, goal: string, maxChildren: n
     // One shot at the tiered model, exactly as the execute dispatch does it.
     // `plan` is the role that actually defaults to a tiered model, so without
     // this a plan that cannot call Haiku loses delegation entirely.
-    let usedModel = modelFor(adapter, opts.model);
+    let usedModel = modelFor(adapter, modelChoiceFor(db, nodeId, 'plan', goal));
     let result = await runOnce(usedModel);
     if (usedModel && shouldRetryWithoutModel(result.events)) {
       publishProgress(db, nodeId, `Model "${usedModel}" is unavailable on this plan — retrying on the default model`);
@@ -807,7 +838,7 @@ function productionMachine(db: Db, nodeId: string) {
         // One shot at the tiered model — and only a model this runtime can
         // actually serve. If the runtime then says it cannot have it, the run
         // continues on the default rather than failing over a knob.
-        let usedModel = modelFor(adapter, execOpts.model);
+        let usedModel = modelFor(adapter, modelChoiceFor(db, nodeId, 'execute', input.goal));
         let result = await runOnce(usedModel);
         if (usedModel && shouldRetryWithoutModel(result.events)) {
           publishProgress(db, nodeId, `Model "${usedModel}" is unavailable on this plan — retrying on the default model`);

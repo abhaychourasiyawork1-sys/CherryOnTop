@@ -65,3 +65,42 @@ export function rolePromptsEnabled(): boolean {
   const v = (process.env.ORG_ROLE_PROMPTS ?? '').trim().toLowerCase();
   return !['off', '0', 'false', 'no'].includes(v);
 }
+
+export type EfficiencyMode = 'disabled' | 'shadow' | 'enabled';
+
+/** How much of the efficiency work is live.
+ *
+ *  `disabled` is this branch's behaviour before adaptive routing: fixed
+ *  per-role models, nothing decided from complexity. `shadow` decides and
+ *  records but dispatches as `disabled` would, so a deployment can measure the
+ *  change before taking it. `enabled` acts on the decisions.
+ *
+ *  Defaults to `enabled`: the components it gates all degrade to the previous
+ *  behaviour on any failure, and a flag nobody turns on measures nothing. */
+export function efficiencyMode(): EfficiencyMode {
+  return parseEfficiencyMode(process.env.ORG_EFFICIENCY_MODE);
+}
+
+export function parseEfficiencyMode(value: string | undefined): EfficiencyMode {
+  const v = (value ?? '').trim().toLowerCase();
+  if (v === 'disabled' || v === 'off' || v === '0' || v === 'false') return 'disabled';
+  if (v === 'shadow') return 'shadow';
+  return 'enabled';
+}
+
+/** The model name for a tier, or undefined to let the runtime use its own
+ *  default. `fast` is the only tier with a baked-in value: tiering *down* can
+ *  only save, while tiering up is a cost increase nobody asked for, so `deep`
+ *  stays opt-in until an operator names a model for it. */
+export function modelForTier(tier: 'fast' | 'standard' | 'deep'): string | undefined {
+  if (tier === 'fast') return envModel('ORG_MODEL_FAST', 'haiku');
+  if (tier === 'deep') return envModel('ORG_MODEL_DEEP', undefined);
+  return envModel('ORG_MODEL_STANDARD', undefined);
+}
+
+/** True when the operator named a model for this role explicitly. An explicit
+ *  choice outranks anything routing would decide — that is what makes it an
+ *  override rather than a suggestion. */
+export function hasExplicitModel(role: DispatchRole): boolean {
+  return process.env[MODEL_KEY[role]] !== undefined;
+}
