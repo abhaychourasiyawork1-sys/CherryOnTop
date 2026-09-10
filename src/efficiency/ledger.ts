@@ -7,6 +7,8 @@
  *  returns the record. A run must never fail because measuring it did. */
 import type { DispatchUsage } from '../execution/tokens.js';
 import { publish, type BusEvent } from '../events/bus.js';
+import { listMemory } from '../db/queries/memory.js';
+import type { Db } from '../db/client.js';
 import {
   buildEfficiencyRecord, EMPTY_TOTALS,
   type EfficiencyOutcome, type EfficiencyRecord,
@@ -134,4 +136,17 @@ let shared: EfficiencyLedger | null = null;
 export function efficiencyLedger(): EfficiencyLedger {
   shared ??= createEfficiencyLedger();
   return shared;
+}
+
+/** Every task record this database holds, newest last.
+ *
+ *  The ledger itself only lives as long as the daemon; these rows are what a
+ *  before/after comparison actually reads. Malformed rows are skipped rather
+ *  than thrown on — a comparison that dies on one bad row is a comparison
+ *  nobody runs twice. */
+export function loadEfficiencyRecords(db: Db): EfficiencyRecord[] {
+  return listMemory(db, 'efficiency_record')
+    .map((row) => row.value as EfficiencyRecord | null)
+    .filter((record): record is EfficiencyRecord =>
+      typeof record?.taskId === 'string' && typeof record.totalTokens === 'number');
 }

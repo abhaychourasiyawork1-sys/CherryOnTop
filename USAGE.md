@@ -201,19 +201,88 @@ the next `org daemon` restart — the same contract as `ORG_RUNNER_IMAGE`.
 | `ORG_MAX_TURNS_PLAN` | `15` | Turn cap for planning dispatches |
 | `ORG_MAX_TURNS_SYNTHESIZE` | `1` | Turn cap for synthesis dispatches |
 | `ORG_PLAN_CACHE_TTL_HOURS` | `24` | How long a cached plan stays valid; `0` disables the plan cache |
-| `ORG_REPO_MAP_TOKENS` | `6000` | Token budget for the repo map prefixed onto execute dispatches; `0` disables it |
+| `ORG_REPO_MAP_TOKENS` | `6000` | **Ceiling** — not a target — on the repository context prefixed onto a dispatch; `0` disables it |
 | `ORG_ROLE_PROMPTS` | on | Role-scoped system prompts (below); `off`/`0`/`false`/`no` disable |
+| `ORG_EFFICIENCY_MODE` | `enabled` | `enabled` \| `shadow` \| `disabled` — see **Rollout** below |
+| `ORG_MODEL_FAST` | `haiku` | Model for the fast tier |
+| `ORG_MODEL_STANDARD` | *(none — runtime default)* | Model for the standard tier |
+| `ORG_MODEL_DEEP` | *(none — off)* | Model for the deep tier. Unset means routing never tiers **up** |
 
 An empty value, or `none`/`default`/`off`, on any `ORG_MODEL_*` variable means "pass no
 `--model` flag" — the runtime's own default model is used instead.
 
-**Repo map.** On the first dispatch against a given worktree HEAD, the runtime builds a
-map of the repo (file list plus symbols, bounded by `ORG_REPO_MAP_TOKENS`) and caches it;
-later dispatches against the same HEAD reuse it — but only after re-checking it against the
-current token budget, so turning `ORG_REPO_MAP_TOKENS` down rebuilds the map from scratch on
-the next dispatch rather than waiting for the next commit. The map is prefixed onto the goal
-for execute dispatches only, wrapping the standing instructions and the goal together rather
-than coming between them. Set `ORG_REPO_MAP_TOKENS=0` to turn it off.
+**Repository context.** On the first dispatch against a given worktree HEAD the runtime
+scans the repo once — every tracked file plus its top-level symbols — and caches that scan
+by HEAD. What is cached is the *unbudgeted* scan, so every node sitting on the commit shares
+one `git ls-files` and one pass over the sources, while each still gets a different view of
+it. Turning `ORG_REPO_MAP_TOKENS` down therefore bites on the next dispatch rather than the
+next commit, by construction.
+
+Each dispatch then selects from that scan the part its **goal** is about: goal terms are
+matched against path segments and camelCase-split symbol names, and files nothing ties to
+the goal are dropped rather than used to top the budget up. `ORG_REPO_MAP_TOKENS` is a
+ceiling, not a target — a one-file fix should and does come in far under it. Both planning
+and execute dispatches get context; planning previously had none and spent its turns
+rediscovering the repository.
+
+Two things keep this from being lossy in the harmful direction. A directory skeleton is
+always included (capped at a share of the budget), so a goal that matches nothing still
+leaves the agent knowing the repo's shape. And the wrapper states plainly that the listing
+is partial and that other files exist — an agent told "here is a map of the repository"
+would reasonably read an absent file as a missing one.
+
+Each dispatch publishes a `context.receipt` event recording the budget, how many files were
+selected and dropped, whether anything relevant was truncated, and whether the selection was
+actually applied. Since a dispatch is an `argv` array with nowhere to attach metadata, the
+event log is that channel. If selection ever throws, it degrades **upward** — to the whole
+inventory rendered to the same ceiling, which is what every dispatch received before.
+
+Set `ORG_REPO_MAP_TOKENS=0` to turn context off entirely.
+
+**Model routing.** Beyond the fixed per-role choice, execution dispatches pick a tier from
+the goal's assessed complexity: low-complexity work runs on the fast tier, and so does any
+node that has spent more than 80% of its budget. Routing is deliberately asymmetric — it
+tiers **down** freely, and tiers **up** only to a model you have named in `ORG_MODEL_DEEP`.
+A downgrade that goes wrong is caught by the model-rejection fallback below; an upgrade that
+goes wrong is a bill nobody asked for. An explicit `ORG_MODEL_PLAN`/`_EXECUTE`/`_SYNTHESIZE`
+overrides routing outright. Every routing decision is written to memory as a `model_route`
+row with its reason.
+
+**Conditional synthesis.** A delegating node used to buy a synthesis sandbox whenever any
+child had said anything. Children now close their report with a small JSON envelope (status,
+summary, findings, changed files, uncertainties, confidence) alongside their prose, which
+lets the parent see what they said without paying a model to read it. The parent then routes:
+one reporter returns its own answer; compatible, self-declared-complete results merge
+deterministically at zero tokens; and a model is kept for what genuinely turns on judgement
+— two children that edited the same file, a child that half finished or is unsure of itself,
+or prose nothing can parse. The rule for reaching the model is deliberately generous: a merge
+that guesses is far worse than a synthesis call that was not strictly necessary. A child that
+ignores the envelope request, or emits something malformed, degrades to exactly the old prose
+merge.
+
+**Rollout.** `ORG_EFFICIENCY_MODE` is one switch over context selection, conditional
+synthesis and model routing together:
+
+- `disabled` — the behaviour before this work: the full repository map on every dispatch,
+  unconditional synthesis, fixed per-role models.
+- `shadow` — every decision is computed and recorded (`context.receipt` events with
+  `applied: false`, `model_route` and `integration_decision` memory rows) but **not acted
+  on**, so the run stays byte-comparable to a `disabled` one. This is how you see what the
+  change would do before taking it.
+- `enabled` (default) — the decisions are acted on.
+
+Because it is a single switch, it is also the A/B knob: `node bench/run.mjs efficiency`
+runs the fixed goal set with it `enabled` and `disabled`. **That dispatches real, paid model
+calls.**
+
+**Measuring it.** Every task writes one `efficiency_record` to memory when it reaches a
+terminal state: tokens split into input/output/cached, the coordination and recovery
+*shares* of them, dispatch counts, the dispatches that were avoided, queue time separated
+from dispatch time, and end-to-end wall clock. `src/efficiency/objective.ts` turns a set of
+those into a verdict — tokens per **successful** task, p50/p95 latency over every task, and
+a normalized objective `J` — behind two hard gates that no weighting can trade away: quality
+must not regress, and success rate must not fall by more than epsilon. An optimized run that
+was never quality-scored fails the gate rather than passing it by silence.
 
 **Role-scoped system prompts.** With `ORG_ROLE_PROMPTS` on, three of the runtime's four
 lifecycle stages — `plan`, `execute`, `synthesize` — get a system prompt (the shared

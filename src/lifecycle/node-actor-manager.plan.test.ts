@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { createDb } from '../db/client.js';
 import { getNode, insertNode, listNodes } from '../db/queries/nodes.js';
+import { listEventsForNode } from '../db/queries/events.js';
 import { startNodeActor } from './node-actor-manager.js';
 import type { ExecuteStepInput, ExecuteStepResult } from '../execution/execute-step.js';
 import { ZERO_USAGE } from '../execution/tokens.js';
@@ -82,6 +83,7 @@ afterEach(() => {
   }
   delete process.env.ANTHROPIC_API_KEY;
   delete process.env.ORG_REPO_MAP_TOKENS;
+  delete process.env.ORG_EFFICIENCY_MODE;
   vi.clearAllMocks();
 });
 
@@ -145,5 +147,27 @@ describe('the planning dispatch', () => {
     const work = calls.find((call) => !call.goal.includes('Split this goal'));
     expect(work).toBeDefined();
     expect(work!.model).toBeUndefined();
+  });
+
+  it('gives the planner the whole map again when efficiency is switched off', async () => {
+    // `disabled` has to be this branch's prior behaviour exactly, or the
+    // before/after comparison is measuring two different things.
+    process.env.ORG_EFFICIENCY_MODE = 'disabled';
+    const calls = await runDelegating(createDb(TEST_DB), tmpRepo(), '[]');
+    expect(calls[0].goal).toContain('Repository files:');
+    expect(calls[0].goal).toContain('unrelated.ts');
+  });
+
+  it('computes the selection but does not use it in shadow mode', async () => {
+    process.env.ORG_EFFICIENCY_MODE = 'shadow';
+    const db = createDb(TEST_DB);
+    const calls = await runDelegating(db, tmpRepo(), '[]');
+    // Dispatched like a baseline run...
+    expect(calls[0].goal).toContain('unrelated.ts');
+    // ...but the receipt records what selection would have done.
+    const root = listNodes(db).find((node) => node.parentId === null)!;
+    const receipts = listEventsForNode(db, root.id).filter((event) => event.type === 'context.receipt');
+    expect(receipts.length).toBeGreaterThan(0);
+    expect((receipts[0].payload as { applied: boolean }).applied).toBe(false);
   });
 });

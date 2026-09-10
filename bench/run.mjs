@@ -7,6 +7,7 @@
 // Usage:
 //   node bench/run.mjs repo-map      # ORG_REPO_MAP_TOKENS=6000 vs =0
 //   node bench/run.mjs role-prompts  # ORG_ROLE_PROMPTS=on vs off   (Phase 3)
+//   node bench/run.mjs efficiency    # ORG_EFFICIENCY_MODE=enabled vs disabled (Phase 4)
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 
@@ -14,6 +15,10 @@ const mode = process.argv[2];
 const MATRIX = {
   'repo-map': [['on', { ORG_REPO_MAP_TOKENS: '6000' }], ['off', { ORG_REPO_MAP_TOKENS: '0' }]],
   'role-prompts': [['on', { ORG_ROLE_PROMPTS: 'on' }], ['off', { ORG_ROLE_PROMPTS: 'off' }]],
+  // One switch over goal-aware context selection, conditional synthesis and
+  // complexity-based model routing together — which is what makes it a single
+  // comparable A/B rather than three interacting ones.
+  efficiency: [['on', { ORG_EFFICIENCY_MODE: 'enabled' }], ['off', { ORG_EFFICIENCY_MODE: 'disabled' }]],
 };
 if (!MATRIX[mode]) {
   console.error('mode must be one of: ' + Object.keys(MATRIX).join(', '));

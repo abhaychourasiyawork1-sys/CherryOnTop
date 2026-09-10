@@ -57,6 +57,10 @@ export interface DispatchReceipt {
    *  down instead. Degrading means a *larger* bounded context, never a smaller
    *  one — a selector that fails must not quietly starve the agent. */
   degraded?: boolean;
+  /** False when this selection was computed but not used — shadow mode. The
+   *  receipt still records what it *would* have dropped, which is the whole
+   *  point of running a shadow: seeing the change before taking it. */
+  applied?: boolean;
 }
 
 export interface DispatchContext {

@@ -1,5 +1,9 @@
-import { describe, it, expect, vi } from 'vitest';
-import { createEfficiencyLedger, EFFICIENCY_EVENT } from './ledger.js';
+import { describe, it, expect, vi, afterEach } from 'vitest';
+import { existsSync, unlinkSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
+import { createDb } from '../db/client.js';
+import { memory } from '../db/schema.js';
+import { createEfficiencyLedger, loadEfficiencyRecords, EFFICIENCY_EVENT } from './ledger.js';
 import { subscribeAll } from '../events/bus.js';
 import { ZERO_USAGE } from '../execution/tokens.js';
 
@@ -133,5 +137,30 @@ describe('efficiency ledger', () => {
     } finally {
       spy.mockRestore();
     }
+  });
+});
+
+describe('loadEfficiencyRecords', () => {
+  const DB = './test-efficiency-records.db';
+  afterEach(() => {
+    for (const suffix of ['', '-journal', '-wal', '-shm']) {
+      if (existsSync(DB + suffix)) unlinkSync(DB + suffix);
+    }
+  });
+
+  it('reads back the records a run stored, and skips rows it cannot read', () => {
+    const db = createDb(DB);
+    const record = createEfficiencyLedger(fakeClock().now).finishTask('n1', 'success');
+    // `value` is NOT NULL in the schema, so a null row cannot exist — a row
+    // whose shape we do not recognise is the realistic bad case.
+    for (const value of [record, { rubbish: true }]) {
+      db.insert(memory).values({
+        id: randomUUID(), kind: 'efficiency_record', key: 'n1', value,
+        confidence: null, nodeId: 'n1', createdAt: new Date().toISOString(),
+      }).run();
+    }
+    const loaded = loadEfficiencyRecords(db);
+    expect(loaded).toHaveLength(1);
+    expect(loaded[0].taskId).toBe('n1');
   });
 });

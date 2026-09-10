@@ -14,7 +14,7 @@ import type { Db } from '../db/client.js';
 import { getRepoInventory, putRepoInventory } from '../db/queries/repo-map-cache.js';
 import { buildRepoInventory, renderRepoMap, type RepoEntry } from '../intelligence/repo-map.js';
 import { repoHead } from '../execution/git-state.js';
-import { repoMapTokenBudget } from '../config/efficiency.js';
+import { repoMapTokenBudget, efficiencyMode } from '../config/efficiency.js';
 import { selectDispatchContext, estimateTokens, type DispatchContext } from './dispatch-context.js';
 
 /** The inventory for this worktree's committed HEAD, built once and reused.
@@ -67,7 +67,21 @@ export function dispatchContextFor(db: Db, worktreePath: string, goal: string): 
 
   try {
     const context = selectDispatchContext({ goal, entries, tokenBudget });
-    return context.content ? context : null;
+    // `disabled` is the behaviour this branch shipped with: the whole inventory
+    // rendered to the ceiling, on every dispatch. `shadow` runs selection and
+    // publishes its receipt — so a deployment can see what it would have
+    // dropped — but still dispatches the full map, which is what makes a shadow
+    // run comparable to a baseline one.
+    if (efficiencyMode() === 'enabled') {
+      return context.content ? { ...context, receipt: { ...context.receipt, applied: true } } : null;
+    }
+    const full = renderRepoMap(entries, tokenBudget);
+    if (!full) return null;
+    return {
+      content: full,
+      estimatedTokens: estimateTokens(full),
+      receipt: { ...context.receipt, applied: false },
+    };
   } catch (err) {
     // Degrade upwards, never downwards: the whole inventory rendered to the
     // same ceiling is what every dispatch received before selection existed, so
@@ -85,6 +99,7 @@ export function dispatchContextFor(db: Db, worktreePath: string, goal: string): 
         dropped: [],
         truncated: false,
         degraded: true,
+        applied: false,
       },
     };
   }

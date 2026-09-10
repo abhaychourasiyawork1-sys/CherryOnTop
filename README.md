@@ -111,10 +111,12 @@ src/
   adapters/       runtime adapters (Claude Code, Codex) that actually execute work
   approvals/      human-in-the-loop approval flow
   cli/            `org` CLI commands (run, tree, doctor, approve, gui, verify, ...)
+  context/        goal-aware selection of the repository context a dispatch is given
   daemon/         background process that supervises runs across sessions
   db/             SQLite schema, migrations, and queries (Drizzle ORM)
   doctor/         environment/health checks
   engines/        the scoring engines behind delegate-vs-execute and runtime-choice decisions
+  efficiency/     per-task token/latency ledger and the objective that gates changes to it
   events/         the hash-chained event log
   execution/      step execution and credential handling inside sandboxes
   intelligence/   coordinates planning and decision-making for a node
@@ -127,6 +129,16 @@ gui/              Mission Control — the Electron desktop app
 scripts/          setup and dev scripts (runner image build, demo seeding, migrations)
 test/             integration tests
 ```
+
+## Token efficiency
+
+Each dispatch is given only the part of the repository its goal is about, planning and
+synthesis are skipped whenever their answer is already known or already mechanical, and the
+model tier follows the work's complexity. One switch, `ORG_EFFICIENCY_MODE`
+(`enabled` | `shadow` | `disabled`), covers all of it — `shadow` computes every decision and
+records it without acting, so you can see the change before taking it. Every task writes an
+`efficiency_record` when it finishes, and `org tokens` reports what was spent. See
+[USAGE.md](USAGE.md#token-efficiency) for the knobs and the failure behaviour.
 
 ## Development
 

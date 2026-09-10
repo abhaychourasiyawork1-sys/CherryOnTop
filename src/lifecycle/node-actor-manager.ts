@@ -235,6 +235,7 @@ function publishContextReceipt(db: Db, nodeId: string, receipt: DispatchReceipt)
     dropped: receipt.dropped.length,
     truncated: receipt.truncated,
     degraded: receipt.degraded ?? false,
+    applied: receipt.applied ?? false,
   };
   const id = appendEvent(db, { nodeId, type: 'context.receipt', payload, createdAt: now });
   publish({ id, nodeId, type: 'context.receipt', payload, createdAt: now });
@@ -380,18 +381,33 @@ async function synthesizeChildren(db: Db, nodeId: string, goal: string): Promise
   // finished, prose nothing can parse — is worth one.
   const decision = decideIntegration(children);
   if (decision.kind === 'nothing') return '';
-  if (decision.kind === 'return_child' || decision.kind === 'merge') {
+
+  // `disabled` synthesizes unconditionally, as this branch always did. `shadow`
+  // records what the decision would have been and then synthesizes anyway, so
+  // the run stays comparable to a baseline one.
+  const mode = efficiencyMode();
+  if (mode !== 'disabled') {
+    insertMemoryRow(db, 'integration_decision', decision.kind, {
+      kind: decision.kind,
+      reason: decision.kind === 'synthesize' ? decision.reason : null,
+      applied: mode === 'enabled',
+    }, nodeId);
+  }
+  if (mode === 'enabled' && (decision.kind === 'return_child' || decision.kind === 'merge')) {
     ledger.recordAvoided(nodeId, 'synthesize');
     publishProgress(db, nodeId, decision.kind === 'merge'
       ? `Combined ${children.length} agents' results directly — no extra model call was needed`
       : "One agent answered this; returning its answer rather than paying to reword it");
     return decision.text;
   }
+  // Stripping the envelopes is part of the change, so only an enabled run does
+  // it. A shadow run sends the reports exactly as a baseline run would.
+  const synthesisChildren = mode === 'enabled' && decision.kind === 'synthesize' ? decision.children : children;
 
   const credentials = checkCredentials(os.homedir(), process.env.ANTHROPIC_API_KEY);
   if (!credentials.ok) return '';
 
-  publishProgress(db, nodeId, `Combining what ${children.length} agents reported into one answer (${decision.reason})`);
+  publishProgress(db, nodeId, `Combining what ${children.length} agents reported into one answer${decision.kind === 'synthesize' ? ` (${decision.reason})` : ''}`);
   try {
     // Inside the try, like everything else here: chooseAdapter writes a decision
     // row and publishes an event, and a database that refuses that must cost the
@@ -407,8 +423,8 @@ async function synthesizeChildren(db: Db, nodeId: string, goal: string): Promise
       ? buildRolePrompt('synthesize')
       : undefined;
     const synthesisGoal = roleSystemPrompt
-      ? buildSynthesisPrompt(goal, decision.children)
-      : `${buildSynthesisPrompt(goal, decision.children)}\n\n${buildRolePrompt('synthesize')}`;
+      ? buildSynthesisPrompt(goal, synthesisChildren)
+      : `${buildSynthesisPrompt(goal, synthesisChildren)}\n\n${buildRolePrompt('synthesize')}`;
 
     const runOnce = (model: string | undefined) => dispatch(db, nodeId, () => executeStep({
       nodeId,
