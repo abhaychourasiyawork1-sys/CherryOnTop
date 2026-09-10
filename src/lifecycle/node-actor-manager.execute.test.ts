@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, beforeEach, vi, type Mock } from 'vitest';
-import { existsSync, unlinkSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { existsSync, unlinkSync, mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -11,7 +11,7 @@ import { startNodeActor } from './node-actor-manager.js';
 import type { ExecuteStepInput, ExecuteStepResult } from '../execution/execute-step.js';
 import { ZERO_USAGE } from '../execution/tokens.js';
 
-// The one place the three optimizations meet — repo map, role system prompt and
+// The one place the three optimizations meet — repo context, role system prompt and
 // the tiered-model fallback — is the executeStep actor closure, and it dispatches
 // a real Kubernetes Job. Stubbing the module is what makes the prompt it builds
 // observable at all; everything else here is the real machine.
@@ -35,7 +35,11 @@ function tmpRepo(): string {
   execFileSync('git', ['init', '-q'], { cwd: dir });
   execFileSync('git', ['config', 'user.email', 't@t'], { cwd: dir });
   execFileSync('git', ['config', 'user.name', 't'], { cwd: dir });
-  for (let i = 0; i < 5; i++) writeFileSync(join(dir, `file-${i}.ts`), 'export const x = 1;\n');
+  // One file the goal points at and several it does not: selection has to pick
+  // the first and leave the rest out.
+  mkdirSync(join(dir, 'src', 'cart'), { recursive: true });
+  writeFileSync(join(dir, 'src', 'cart', 'checkout.ts'), 'export function checkout() {}\n');
+  for (let i = 0; i < 5; i++) writeFileSync(join(dir, `unrelated-${i}.ts`), 'export const x = 1;\n');
   execFileSync('git', ['add', '.'], { cwd: dir });
   execFileSync('git', ['commit', '-q', '-m', 'init'], { cwd: dir });
   return dir;
@@ -115,7 +119,7 @@ async function runSelfExecute(codex: boolean): Promise<ExecuteStepInput[]> {
   return calls;
 }
 
-describe('the executeStep dispatch, where the repo map, the role prompt and the model fallback meet', () => {
+describe('the executeStep dispatch, where the repo context, the role prompt and the model fallback meet', () => {
   // The three configurations that route the standing constraints differently.
   // Every one of them has to deliver them exactly once, and has to survive the
   // fallback retry without rewriting the prompt underneath it.
@@ -126,7 +130,7 @@ describe('the executeStep dispatch, where the repo map, the role prompt and the 
   ];
 
   for (const config of configurations) {
-    it(`prefixes the map once, states the constraints once, and retries byte-identically — ${config.name}`, async () => {
+    it(`prefixes the context once, states the constraints once, and retries byte-identically — ${config.name}`, async () => {
       process.env.ORG_ROLE_PROMPTS = config.rolePrompts;
       // execute has no tiered model by default, so the fallback it owns is
       // otherwise unreachable. Name one this runtime can actually serve.
@@ -138,18 +142,21 @@ describe('the executeStep dispatch, where the repo map, the role prompt and the 
       expect(calls).toHaveLength(2);
       expect(calls[0].model).toBe(config.model);
       expect(calls[1].model).toBeUndefined();
-      // Byte-identical: the repo map and the constraints are assembled once,
+      // Byte-identical: the repo context and the constraints are assembled once,
       // outside the retry, so a second attempt cannot double either.
       expect(calls[1].goal).toBe(calls[0].goal);
       expect(calls[1].systemPrompt).toBe(calls[0].systemPrompt);
 
       for (const call of calls) {
         // (a) Prefixed exactly once.
-        expect(occurrences(call.goal, 'Repository files:')).toBe(1);
-        expect(occurrences(call.goal, 'file-0.ts')).toBe(1);
-        // The map wraps the instruction block rather than sitting between the
-        // standing instructions and the goal they govern.
-        expect(call.goal.indexOf('Repository files:')).toBeLessThan(call.goal.indexOf(GOAL));
+        expect(occurrences(call.goal, 'Repository shape:')).toBe(1);
+        // Selected because the goal names the cart module — and the files it
+        // does not name are left out, which is the whole point of selecting.
+        expect(occurrences(call.goal, 'src/cart/checkout.ts')).toBe(1);
+        expect(call.goal).not.toContain('unrelated-0.ts');
+        // The context wraps the instruction block rather than sitting between
+        // the standing instructions and the goal they govern.
+        expect(call.goal.indexOf('Repository shape:')).toBeLessThan(call.goal.indexOf(GOAL));
 
         // (b) The constraints reach the agent exactly once, by whichever route
         // this configuration has available.
@@ -161,8 +168,8 @@ describe('the executeStep dispatch, where the repo map, the role prompt and the 
         } else {
           expect(call.systemPrompt).toBeUndefined();
           expect(call.goal).toContain(CONSTRAINT);
-          // Adjacent to the goal, not separated from it by the map.
-          expect(call.goal.indexOf(CONSTRAINT)).toBeGreaterThan(call.goal.indexOf('Repository files:'));
+          // Adjacent to the goal, not separated from it by the context.
+          expect(call.goal.indexOf(CONSTRAINT)).toBeGreaterThan(call.goal.indexOf('Repository shape:'));
         }
       }
     });

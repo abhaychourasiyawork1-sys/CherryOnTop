@@ -26,9 +26,9 @@ inside the agent's own loop.
 ## Progress
 
 - [x] **T1 — Efficiency telemetry.** `src/efficiency/metrics.ts`, `ledger.ts`. Per-node token/latency ledger, one terminal record on the bus.
-- [ ] **T2 — DispatchContext.** `src/context/dispatch-context.ts`. Goal-aware selection over structural candidates, budget as a hard ceiling, receipt of what was kept and dropped.
-- [ ] **T3 — Goal-aware repo maps.** `repo-map.ts` selects task-relevant structure instead of filling a fixed 6000-token budget for every child.
-- [ ] **T4 — DispatchContextCache.** Reuse an identical selection across Jobs, keyed by repo HEAD + goal + budget.
+- [x] **T2 — DispatchContext.** `src/context/dispatch-context.ts`. Goal-aware selection over structural candidates, budget as a hard ceiling, receipt of what was kept and dropped.
+- [x] **T3 — Goal-aware repo maps.** `repo-map.ts` selects task-relevant structure instead of filling a fixed 6000-token budget for every child.
+- [x] **T4 — DispatchContextCache.** Reuse an identical selection across Jobs, keyed by repo HEAD + goal + budget.
 - [ ] **T5 — Structured child-result envelopes.** `src/intelligence/result-envelope.ts`. Children report structure; synthesis stops eating 12k-char transcripts.
 - [ ] **T6 — Planning fast path.** Judge trivial/simple goals into direct execution before paying for a planning sandbox.
 - [ ] **T7 — Conditional synthesis.** `src/intelligence/integrate-results.ts`. Return a single complete child or merge deterministically instead of dispatching a synthesis sandbox.

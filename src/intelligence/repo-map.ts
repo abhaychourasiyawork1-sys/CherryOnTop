@@ -34,13 +34,44 @@ function symbolsOf(worktreePath: string, file: string): string[] {
   }
 }
 
+/** One tracked file and the top-level symbols in it. The expensive half of a
+ *  repository map — a `git ls-files` plus a read of every source file — kept
+ *  separate from rendering it, because the same scan now answers two questions:
+ *  "show me the repository" and "show me the part of it this goal is about". */
+export interface RepoEntry {
+  path: string;
+  symbols: string[];
+}
+
+/** Every tracked file with its symbols, unbudgeted. Empty on any failure, the
+ *  same way `buildRepoMap` returns '' — the caller then dispatches the bare
+ *  goal, exactly as before. */
+export function buildRepoInventory(worktreePath: string): RepoEntry[] {
+  const files = tracked(worktreePath);
+  if (!files) return [];
+  return files.map((path) => ({
+    path,
+    symbols: SOURCE_EXT.test(path) ? symbolsOf(worktreePath, path) : [],
+  }));
+}
+
 /** A compact, size-bounded view of the repository handed to a child so it can
  *  navigate instead of grepping from zero. Empty string on any failure — the
  *  caller then dispatches with the bare goal, exactly as before. */
 export function buildRepoMap(worktreePath: string, tokenBudget: number): string {
   if (tokenBudget <= 0) return '';
-  const files = tracked(worktreePath);
-  if (!files) return '';
+  const entries = buildRepoInventory(worktreePath);
+  if (entries.length === 0) return '';
+  return renderRepoMap(entries, tokenBudget);
+}
+
+/** The whole inventory, rendered down to a budget. Still the fallback whenever
+ *  goal-aware selection cannot run: a larger bounded context, never a bare
+ *  goal. */
+export function renderRepoMap(entries: RepoEntry[], tokenBudget: number): string {
+  if (tokenBudget <= 0) return '';
+  const files = entries.map((entry) => entry.path);
+  const symbolsFor = new Map(entries.map((entry) => [entry.path, entry.symbols]));
 
   const budgetChars = tokenBudget * CHARS_PER_TOKEN;
   const HEADER = 'Repository files:';
@@ -77,8 +108,7 @@ export function buildRepoMap(worktreePath: string, tokenBudget: number): string 
   const symbolLines: string[] = [];
   let used = treeBlock.length;
   for (const f of files) {
-    if (!SOURCE_EXT.test(f)) continue;
-    const names = symbolsOf(worktreePath, f);
+    const names = symbolsFor.get(f) ?? [];
     if (names.length === 0) continue;
     const line = `  ${f}: ${names.join(', ')}`;
     const overhead = symbolLines.length === 0 ? SYMBOLS_HEADER.length : 1; // join('\n')
@@ -91,13 +121,21 @@ export function buildRepoMap(worktreePath: string, tokenBudget: number): string 
     : treeBlock;
 }
 
-export function withRepoMap(goal: string, map: string): string {
-  if (!map.trim()) return goal;
+/** Wraps a goal in whatever repository context was selected for it.
+ *
+ *  The wording matters more than it looks. What follows is now a *selection* —
+ *  the files this goal points at, not an inventory — and an agent told "here is
+ *  a map of the repository" would reasonably conclude that a file missing from
+ *  it does not exist. Saying plainly that the rest of the repository is still
+ *  there is what keeps a lossy projection from becoming a wrong answer. */
+export function withRepoContext(goal: string, context: string): string {
+  if (!context.trim()) return goal;
   return [
-    'Here is a map of the repository you are working in. Use it to navigate;',
-    'do not re-derive it.',
+    'Repository context, selected for this task. Use it to navigate instead of',
+    're-deriving it. It is a starting point, not a complete listing — other files',
+    'exist, and you can read anything you need.',
     '',
-    map,
+    context,
     '',
     '---',
     '',

@@ -30,6 +30,7 @@ import { resolveCredentials, checkCredentials } from '../execution/credentials.j
 import { sandboxLimiter, maxConcurrentFromEnv } from '../execution/dispatch-limit.js';
 import { efficiencyLedger, type LedgerRole } from '../efficiency/ledger.js';
 import type { EfficiencyOutcome } from '../efficiency/metrics.js';
+import type { DispatchReceipt } from '../context/dispatch-context.js';
 import { buildRolePrompt } from '../prompts/roles.js';
 import os from 'node:os';
 import { deleteNodeNetworkPolicy, deleteNodeJobs } from '../k8s/cleanup.js';
@@ -42,8 +43,8 @@ import { insertDodItems, listDodForNode, setDodState } from '../db/queries/dod.j
 import { dispatchOptionsFor, planCacheTtlHours, repoMapTokenBudget, rolePromptsEnabled } from '../config/efficiency.js';
 import { repoHead, repoDirty } from '../execution/git-state.js';
 import { planCacheKey, getCachedPlan, putCachedPlan } from '../db/queries/plan-cache.js';
-import { buildRepoMap, withRepoMap } from '../intelligence/repo-map.js';
-import { getRepoMap, putRepoMap } from '../db/queries/repo-map-cache.js';
+import { withRepoContext } from '../intelligence/repo-map.js';
+import { dispatchContextFor, warmRepoInventory } from '../context/dispatch-context-cache.js';
 import { recordDispatchUsage } from '../db/queries/tokens.js';
 import { shouldRetryWithoutModel } from '../execution/tokens.js';
 import { readOnlyPlanningGrant } from './dispatch-helpers.js';
@@ -216,49 +217,24 @@ function insertMemoryRow(db: Db, kind: string, key: string, value: unknown, node
   }
 }
 
-/** The same rough conversion buildRepoMap sizes itself with (repo-map.ts). Kept
- *  local: it is a shared approximation, not a shared constant worth exporting. */
-const MAP_CHARS_PER_TOKEN = 4;
-
-/** The repository map for this worktree's committed HEAD, built once and then
- *  shared by every node sitting on the same commit — so a child navigates the
- *  repository instead of grepping it out from zero.
+/** Publishes what context this dispatch was given and what it left out.
  *
- *  Keyed by HEAD only, deliberately unlike the plan cache: a stale plan changes
- *  what work happens, a slightly stale map only changes where an agent looks
- *  first, and it still reads the real files. Refusing a dirty tree would mean no
- *  map at all for most runs, since an agent dirties its own worktree as it works.
- *
- *  Total, like recordUsage and insertMemoryRow above and for the same reason: it
- *  is called from inside the executeStep actor, which has no try of its own. Git,
- *  the database or the build failing must cost the dispatch its map, never the
- *  run. */
-export function repoMapFor(db: Db, worktreePath: string): string | null {
-  try {
-    // Read the budget before touching git: when the map is switched off there is
-    // nothing to look up and nothing to build, so do not fork a subprocess to
-    // key a cache nobody will read.
-    const budget = repoMapTokenBudget();
-    if (budget <= 0) return null;
-    const head = repoHead(worktreePath);
-    if (!head) return null;
-
-    // A cached map was built under whatever budget was set at the time. Turning
-    // ORG_REPO_MAP_TOKENS down has to take effect on the next dispatch, not on
-    // the next commit — a knob that exists to cut token spend and visibly does
-    // not is worse than no knob. Too big for the current budget: rebuild and
-    // replace it, which is what a plain miss does anyway.
-    const cached = getRepoMap(db, head);
-    if (cached && cached.length <= budget * MAP_CHARS_PER_TOKEN) return cached;
-
-    const map = buildRepoMap(worktreePath, budget);
-    if (!map) return null;
-    putRepoMap(db, head, map, new Date().toISOString());
-    return map;
-  } catch (err) {
-    console.error(`Failed to build a repo map for ${worktreePath}:`, err);
-    return null;
-  }
+ *  The receipt is the answer to "why did the agent not know about that file?".
+ *  Selection is lossy by design, so it has to be inspectable, and in this
+ *  runtime the only channel to a dispatch is its argv — there is nowhere to
+ *  attach metadata to the request itself. The event log is that channel. */
+function publishContextReceipt(db: Db, nodeId: string, receipt: DispatchReceipt): void {
+  const now = new Date().toISOString();
+  const payload = {
+    budget: receipt.budget,
+    tokens: receipt.selectedTokens,
+    selected: receipt.selected.length,
+    dropped: receipt.dropped.length,
+    truncated: receipt.truncated,
+    degraded: receipt.degraded ?? false,
+  };
+  const id = appendEvent(db, { nodeId, type: 'context.receipt', payload, createdAt: now });
+  publish({ id, nodeId, type: 'context.receipt', payload, createdAt: now });
 }
 
 /** Accounting, and only accounting. A dispatch that ran and produced an answer
@@ -684,7 +660,7 @@ function productionMachine(db: Db, nodeId: string) {
             // on this same commit, so otherwise N children starting together
             // each build an identical map and store an identical row.
             const mapPath = node?.repoPath ?? process.env.ORG_WORKTREE_PATH;
-            if (mapPath) repoMapFor(db, mapPath);
+            if (mapPath) warmRepoInventory(db, mapPath);
           }
           const result = await delegateToChildren({
             parentId: nodeId, goal: input.goal, subgoals,
@@ -739,9 +715,10 @@ function productionMachine(db: Db, nodeId: string) {
         const execOpts = dispatchOptionsFor('execute');
         // Built once, out here rather than inside runOnce: the fallback retry
         // below calls runOnce a second time with the same goal, and a goal
-        // carrying two copies of the map is the thing this is meant to avoid.
-        // No map (disabled, not a repo, build failed) → the bare goal.
-        const repoMap = repoMapFor(db, worktreePath);
+        // carrying two copies of the context is the thing this is meant to
+        // avoid. No context (disabled, not a repo, scan failed) → the bare goal.
+        const repoContext = dispatchContextFor(db, worktreePath, input.goal);
+        if (repoContext) publishContextReceipt(db, nodeId, repoContext.receipt);
 
         // Constraints are instructions, not boundaries — the interface says so
         // wherever it shows them — so they must reach the agent either way.
@@ -763,11 +740,13 @@ function productionMachine(db: Db, nodeId: string) {
         const goalWithConstraints = (!roleSystemPrompt && constraints.length > 0)
           ? `Standing instructions (follow even where they conflict with the most direct path, and say so if one blocks you):\n${constraints.map((c) => `  - ${c}`).join('\n')}\n\n${input.goal}`
           : input.goal;
-        // The map goes on last, so it wraps the whole instruction block instead
-        // of landing between the standing instructions and the goal they govern
-        // — twenty-odd kilobytes of file listing separating an instruction from
-        // its task is a worse prompt than either change intended on its own.
-        const goalForDispatch = repoMap ? withRepoMap(goalWithConstraints, repoMap) : goalWithConstraints;
+        // The context goes on last, so it wraps the whole instruction block
+        // instead of landing between the standing instructions and the goal they
+        // govern — a file listing separating an instruction from its task is a
+        // worse prompt than either change intended on its own.
+        const goalForDispatch = repoContext
+          ? withRepoContext(goalWithConstraints, repoContext.content)
+          : goalWithConstraints;
 
         const runOnce = (model: string | undefined) => dispatch(db, nodeId, () => executeStep({
           nodeId,

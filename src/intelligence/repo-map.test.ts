@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { buildRepoMap, withRepoMap } from './repo-map.js';
+import { buildRepoMap, withRepoContext } from './repo-map.js';
 
 const dirs: string[] = [];
 
@@ -69,11 +69,16 @@ describe('buildRepoMap', () => {
   });
 });
 
-describe('withRepoMap', () => {
-  it('prefixes the goal with the map, and is a no-op for an empty map', () => {
-    expect(withRepoMap('do the thing', '')).toBe('do the thing');
-    const out = withRepoMap('do the thing', 'MAP');
+describe('withRepoContext', () => {
+  it('prefixes the goal with the context, and is a no-op for empty context', () => {
+    expect(withRepoContext('do the thing', '')).toBe('do the thing');
+    const out = withRepoContext('do the thing', 'MAP');
     expect(out).toContain('MAP');
     expect(out.trimEnd().endsWith('do the thing')).toBe(true);
+  });
+
+  it('tells the agent the listing is partial, so an absent file is not read as a missing one', () => {
+    const out = withRepoContext('do the thing', 'MAP');
+    expect(out).toContain('not a complete listing');
   });
 });
