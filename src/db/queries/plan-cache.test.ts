@@ -49,3 +49,13 @@ describe('plan cache', () => {
     expect(getCachedPlan(db, 'never-stored', 24)).toBeNull();
   });
 });
+
+it('round-trips "this goal does not split", which costs a whole sandbox to recompute', () => {
+  const db = createDb(DB);
+  const key = planCacheKey('fix the typo in README', 'headN');
+  putCachedPlan(db, key, [], 'headN', new Date().toISOString());
+  // Distinguishable from a miss: null means "never asked", [] means "asked, and
+  // the answer was no". Collapsing the two is what made the answer un-cacheable.
+  expect(getCachedPlan(db, key, 24)).toEqual([]);
+  expect(getCachedPlan(db, planCacheKey('something else', 'headN'), 24)).toBeNull();
+});

@@ -30,7 +30,7 @@ inside the agent's own loop.
 - [x] **T3 — Goal-aware repo maps.** `repo-map.ts` selects task-relevant structure instead of filling a fixed 6000-token budget for every child.
 - [x] **T4 — DispatchContextCache.** Reuse an identical selection across Jobs, keyed by repo HEAD + goal + budget.
 - [x] **T5 — Structured child-result envelopes.** `src/intelligence/result-envelope.ts`. Children report structure; synthesis stops eating 12k-char transcripts.
-- [ ] **T6 — Planning fast path.** Judge trivial/simple goals into direct execution before paying for a planning sandbox.
+- [x] **T6 — Planning fast path.** The judge itself already existed: `decide-execution.ts` short-circuits to SELF_EXECUTE on `worthSplitting === false` before any spend, so a second one would have been duplication. The two real gaps were closed instead — the planner now receives the same goal-selected context a child does rather than exploring from zero for up to 15 turns, and "this goal does not split" is cached like any other answer instead of buying a fresh sandbox to be told again.
 - [x] **T7 — Conditional synthesis.** `src/intelligence/integrate-results.ts`. Return a single complete child or merge deterministically instead of dispatching a synthesis sandbox.
 - [ ] **T8 — Model routing.** `src/intelligence/model-router.ts`. Complexity/role/budget → tier, feeding the existing per-role model selection.
 - [ ] **T9 — Objective & experiment evaluation.** `src/efficiency/objective.ts`, `experiment.ts`. Scoring and hard quality/success gates as pure functions.

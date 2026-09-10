@@ -510,7 +510,9 @@ async function planSubgoals(db: Db, nodeId: string, goal: string, maxChildren: n
     try {
       const cached = getCachedPlan(db, cacheKey, ttl);
       if (cached) {
-        publishProgress(db, nodeId, 'Reusing a plan computed earlier for this goal and repo state');
+        publishProgress(db, nodeId, cached.length === 0
+          ? 'This goal was already found not to split on this repo state — doing it directly'
+          : 'Reusing a plan computed earlier for this goal and repo state');
         recordUsage(db, {
           nodeId, role: 'plan:cache-hit', model: null, usage: { ...ZERO_USAGE }, costUsd: 0,
         });
@@ -542,9 +544,16 @@ async function planSubgoals(db: Db, nodeId: string, goal: string, maxChildren: n
     const roleSystemPrompt = rolePromptsEnabled() && honoursSystemPrompt(adapter)
       ? buildRolePrompt('plan')
       : undefined;
-    const planGoal = roleSystemPrompt
+    const planPrompt = roleSystemPrompt
       ? buildPlanPrompt(goal, maxChildren)
       : `${buildPlanPrompt(goal, maxChildren)}\n\n${buildRolePrompt('plan')}`;
+    // The planner used to start from nothing and spend its turns discovering
+    // the repository — the single most expensive coordination dispatch there
+    // is, and it re-derives what the scan already knows. It splits the goal, so
+    // it gets the same goal-selected context a child would.
+    const planContext = dispatchContextFor(db, worktreePath, goal);
+    if (planContext) publishContextReceipt(db, nodeId, planContext.receipt);
+    const planGoal = planContext ? withRepoContext(planPrompt, planContext.content) : planPrompt;
 
     const runOnce = (model: string | undefined) => dispatch(db, nodeId, () => executeStep({
       nodeId,
@@ -596,13 +605,15 @@ async function planSubgoals(db: Db, nodeId: string, goal: string, maxChildren: n
       nodeId, role: 'plan', model: usedModel ?? null,
       usage: result.usage, costUsd: costFromEvents(result.events),
     });
-    // Only a real split is worth pinning: an empty list means "does not split",
-    // which is cheap to recompute and wrong to hold for a day.
+    // Both answers are worth pinning, including "does not split". That one used
+    // to be dropped as "cheap to recompute", which it is not: recomputing it
+    // buys another whole planning sandbox to be told the same thing, and it is
+    // exactly as stable as a split under the same goal and HEAD.
     // Guarded for the same reason recordUsage is, and more sharply: a busy
     // database throwing here lands in the catch below, which returns "no
     // plan" — so a write-behind cache would have thrown away a plan that was
     // already computed and paid for, and the node would self-execute instead.
-    if (cacheKey && subgoals.length >= 2) {
+    if (cacheKey) {
       try {
         putCachedPlan(db, cacheKey, subgoals, head!, new Date().toISOString());
       } catch (err) {
