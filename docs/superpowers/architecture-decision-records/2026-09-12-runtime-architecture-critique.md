@@ -217,7 +217,74 @@ code, not assumed from a filename.
 | 33 | Rollout modes + regression gates | **done** | pre-existing three modes, plus a knob per new feature (`ORG_MAX_TURNS_EXECUTE`, `ORG_RESULT_CACHE_TTL_HOURS`) |
 | 34 | End-to-end production validation | **partial** | typecheck, build and 600/601 tests green; the live-cluster arm needs Claude credentials this environment does not have, and fails identically on the commit before this work |
 
-**19 done, 2 partial, 13 rejected with a named trigger that would reverse each.**
+**Revised after a third pass: the remaining tasks were built end to end on the
+user's explicit instruction.** The completion record above is superseded by the
+table below, which is the final state. Where a task was rejected on evidence and
+then built anyway, both the evidence and the outcome are recorded — building it
+did not make the evidence wrong, and the honest position is that some of these
+subsystems are sound, tested and wired, and cannot be shown to reduce tokens in
+this architecture.
+
+| # | Source task | Final state | Where |
+|---|---|---|---|
+| 0 | Archaeology + critique | **done** | this ADR, `implementation-map.md` |
+| 1 | Efficiency ledger | **done** | `src/efficiency/*`, extended with avoided work, tokens avoided, startup and overhead ratio |
+| 2 | Context objects / store | **done** | `src/context/{types,store}.ts` — content-addressed, scope in the hash, provably derived |
+| 3 | Dependency fingerprints | **done** | `src/context/dependencies.ts` — from the run's own tool stream |
+| 4 | Context graph + RPC | **done** | `src/context/{graph,rpc}.ts` — scope filters before ranking; `subscribe` is an async iterable |
+| 5 | Scoring / broker | **done** | pre-existing `selectDispatchContext` |
+| 6 | Representations + frontier | **done** | `src/context/{representations,frontier}.ts` — cheapest-first, refuses rather than fabricates |
+| 7 | Receipts / provenance | **done** | `DispatchReceipt` + `context.receipt`, plus `decision.receipt` |
+| 8 | Lazy expansion + deltas | **done** | `src/context/{expansion,delta}.ts` — six named operations, four-bucket delta |
+| 9 | Dynamic repo context | **done** | pre-existing, HEAD-keyed inventory cache |
+| 10 | Observation engine | **done** | `src/execution/{observation,observation-reducer}.ts` — raw never destroyed |
+| 11 | Tool projection registry | **done** | `src/execution/tool-projections/*` — six reducers, explicit generic fallback |
+| 12 | Evidence planner | **done** | `src/execution/evidence-planner.ts` — gain over cost, and a floor to stop at |
+| 13 | AgentEnvelope | **done** | `src/intelligence/agent-envelope.ts`, wired through `delegate-child` |
+| 14 | Result envelope + conflict | **done** | statuses extended; conflict stays a parent-side observation |
+| 15 | Conditional synthesis | **done** | pre-existing `decideIntegration` |
+| 16 | Execution graph | **done** | `src/execution/graph.ts` — a query over nodes and events, not a second store |
+| 17 | Decision engine | **done** | `src/decision/engine.ts` — one order of operations over the existing arithmetic |
+| 18 | Task judge + templates | **done** | `src/intelligence/{task-judge,execution-templates}.ts` |
+| 19 | Critical-path scheduler | **done** | `CRITICAL_PATH` in the sandbox limiter |
+| 20 | Cache manifests | **done** | the dependency fingerprint is the manifest |
+| 21 | Cache integration | **done** | plan, inventory and result caches; unrelated-commit survival is a test |
+| 22 | Profile / snapshot contracts | **done** | `src/execution/{profile,snapshots}.ts` — security inside the fingerprint |
+| 23 | Overhead telemetry | **done** | `startupMs`, `executionOverheadRatio` |
+| 24 | Workspace forks | **done** | `src/execution/workspace-fork.ts` — git worktrees, isolation proved by test |
+| 25 | Warm-pool hooks | **done, disabled** | `src/execution/warm-pool.ts` — policy only, flag off |
+| 26 | Model routing | **done** | pre-existing `routeModel` |
+| 27 | Provider routing | **done** | `src/intelligence/provider-router.ts`, wired into `chooseAdapter` |
+| 28 | Safe model-result cache | **done** | read-only result reuse with dependency validity |
+| 29 | Context utility memory | **done** | `src/learning/context-utility.ts`, scored on every dispatch |
+| 30 | Shadow evaluation | **done** | `ORG_EFFICIENCY_MODE=shadow` plus `src/learning/shadow.ts` |
+| 31 | Replay + counterfactual | **done** | `src/efficiency/replay.ts`, `org decision --replay` |
+| 32 | Benchmark suite | **done** | `objective.ts` gates, `bench/run.mjs`, `bench/deterministic.mjs` |
+| 33 | Rollout modes | **done** | three modes plus a knob per feature |
+| 34 | End-to-end validation | **partial** | everything verifiable without credentials is green; the live-cluster arm is not |
+
+**33 done, 1 partial.**
+
+## What building the rejected tasks did and did not change
+
+The measurement in Finding 2 stands: the argv CherryOnTop controls was 22–46
+tokens against 1.7M spent inside the Job. Nothing built in the third pass
+changes that, and it would be dishonest to present these subsystems as token
+savings they cannot deliver here.
+
+What they *are*, measured by `bench/deterministic.mjs`:
+
+- **Tool projections** remove 39–99.9% of an observation's tokens. That saving
+  is real for everything downstream of the event log — what a parent reads, what
+  a projection assembles, what the store holds — and **zero** for the child's own
+  context window, because the agent read the raw output in-sandbox before the log
+  line existed.
+- **The context graph, RPC, representations and expansion** are the machinery an
+  adapter would need to drive an agent turn by turn. They are correct and tested;
+  they become *economically* live the day an adapter exists that assembles each
+  turn instead of shelling out to `claude -p`.
+- **Warm pools** remain disabled, and `executionOverheadRatio` is now measured
+  rather than asserted — which is the condition the plan set for enabling them.
 
 ## Architecture Review Gate (plan Part XV)
 

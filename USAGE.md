@@ -255,6 +255,14 @@ goes wrong is a bill nobody asked for. An explicit `ORG_MODEL_PLAN`/`_EXECUTE`/`
 overrides routing outright. Every routing decision is written to memory as a `model_route`
 row with its reason.
 
+**Deciding.** Every choice goes through one contract in the same order: hard gates
+(approval, budget) before anything, because a boundary a good enough score can buy is not
+a boundary; then free things, because scoring something already held is a cost paid to
+discover there was no cost; then economics, always against a named alternative. Each
+choice publishes a `decision.receipt` event naming what it chose, what it nearly chose,
+and what each would have cost. The arithmetic is unchanged — it still comes from
+`decideExecution`, `routeModel` and `decideIntegration`.
+
 **Turn budget.** A dispatch's cost does not grow with its turn count, it grows *faster*
 than its turn count: the conversation prefix is re-read on every turn, so a measured 42-turn
 run spent 1.77M cache-read tokens against a 19-turn one's 652k. Work dispatches were left
@@ -292,6 +300,26 @@ dispatch may run 60 turns and blocks only itself. Coordination dispatches theref
 freed slot ahead of queued work dispatches. Ordering only — the concurrency ceiling
 (`ORG_MAX_CONCURRENT_SANDBOXES`) is untouched, so the worst this degrades to is the
 first-in-first-out behaviour it replaced.
+
+**The context graph.** Every dispatch indexes its own tool calls as versioned,
+content-addressed context objects — pointing at the event rows that already hold their
+output rather than copying them. Small output is inlined so an expansion can always be
+served; large output is referenced. Each observation also gets a reduced view stored
+beside it, so choosing a representation does not re-run every reducer. Security scope is
+part of the content hash, which makes "an answer produced under a wider grant must not be
+served to a narrower agent" a property of identity rather than a check somebody has to
+remember. `node.executionGraph` reports what is ready, what is blocked and on what, and
+how much finished work was reused rather than repeated.
+
+**Tool projections.** Observation output is reduced deterministically — no model in the
+critical path — by whichever reducer understands it: git, search, test runners,
+compilers, filesystem, container and package-manager logs, with an explicit generic
+fallback that collapses repetition and names the gap it leaves. Measured on representative
+fixtures by `npm run bench:deterministic`: 99.9% off a 2001-test log, 81% off a 200-file
+diff, 94% off an unrecognised log. Every reduced view keeps a ref to the full output.
+**Scope note:** in this runtime the agent reads its own tool output inside the sandbox
+before the log line exists, so this shrinks what the parent, the projection and the store
+pay — not the child's own prompt.
 
 **Replaying a decision.** `org decision <nodeId> --replay` re-runs each recorded decision
 through the same arithmetic that produced it and reports whether today's code still agrees,
