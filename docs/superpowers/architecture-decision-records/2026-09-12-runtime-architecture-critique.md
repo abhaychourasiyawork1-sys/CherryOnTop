@@ -170,3 +170,79 @@ failure, and is verifiable without spending a token on inference.
 | Provider routing split (Task 27) | a second provider actually configured |
 | Learned ranking / utility memory / shadow harness (Tasks 29–31) | a deterministic selector shown to be the binding constraint |
 | PostgreSQL dependency layer (Task 2 step 5) | SQLite contention measured under real concurrency |
+
+---
+
+# Completion record
+
+Every task in the source plan, and where it ended up. "Pre-existing" means the branch
+already implemented the task's intent before this work began — verified by reading the
+code, not assumed from a filename.
+
+| # | Source task | Status | Where / why |
+|---|---|---|---|
+| 0 | Archaeology + critique gate | **done** | this ADR and `implementation-map.md` |
+| 1 | Efficiency ledger | **done** | pre-existing `src/efficiency/*`; extended with `tokensAvoided`, `avoidedExecutionCalls`, `workAvoidedRatio`, `startupMs`, `executionOverheadRatio` |
+| 2 | Context objects / store | **rejected** | Finding 1 — nothing reads them |
+| 3 | Dependency fingerprints / partial invalidation | **done, translated** | `src/context/dependencies.ts`. The plan builds these over Context Objects; the same property falls out of the tool stream we already have |
+| 4 | Context graph + RPC | **rejected** | Finding 1 |
+| 5 | Deterministic scoring / broker | **done** | pre-existing `selectDispatchContext` — hard floor, independent signals, budget as ceiling, fail-open-upward |
+| 6 | Progressive materialization / frontier | **rejected** | Finding 1 — we materialize one argv, once |
+| 7 | Receipts / provenance | **done** | pre-existing `DispatchReceipt` + `context.receipt` events |
+| 8 | Lazy expansion + deltas | **rejected** | Finding 1 — `buildCommand` takes one string |
+| 9 | Dynamic repo context | **done** | pre-existing, HEAD-keyed inventory cache shared across siblings |
+| 10 | Observation engine | **rejected** | Finding 1. The stream *is* now read — for dependency fingerprints, where it pays — but shrinking what we store in it saves no model token |
+| 11 | Tool projection registry | **rejected** | Finding 1 |
+| 12 | Evidence planner | **rejected** | Finding 1 |
+| 13 | AgentEnvelope / ContextRef handoff | **rejected** | requires ContextRefs (Task 2). Subgoals are already self-contained strings written for an agent that cannot see the parent conversation |
+| 14 | Result envelope + conflict protocol | **done** | pre-existing envelope; `blocked`/`needs_input` added. `conflict` deliberately omitted — it is what a parent observes between two children (`decideIntegration`), not a state a child reports about itself |
+| 15 | Conditional synthesis | **done** | pre-existing `decideIntegration` |
+| 16 | Execution graph | **done** | pre-existing `nodes` + xstate `nodeMachine` + append-only `events`; replayable by construction |
+| 17 | Unified decision engine | **done in substance** | pre-existing `assessDecomposition` → `decideExecution`/`scoreDelegation` → `decision.made`, plus `routeModel`, `decideIntegration`. A wrapper would be a fourth name for the same arithmetic |
+| 18 | Task judge + execution templates | **partial** | fast path and plan-cache zero-cost path pre-existing. Templates not built: no measured case where a task class needs a prior the decision chain does not already supply |
+| 19 | Critical-path scheduler | **done** | `CRITICAL_PATH` priority in the sandbox limiter |
+| 20 | Cache manifests / dependency-aware reuse | **done, translated** | the dependency fingerprint *is* the manifest. Of the five reuse policies only three are reachable here: EXACT (opaque runs), SAFE_IF_DEPENDENCIES_MATCH (the normal path), NEVER_REUSE (anything that may write) |
+| 21 | Concrete cache integration | **done** | plan cache + inventory cache + result cache. Step 5 — "unrelated repo changes do not invalidate unrelated cached work" — is a passing test, not a claim |
+| 22 | ExecutionProfile / snapshot contracts | **rejected** | Finding 4 — gate not cleared |
+| 23 | Execution-overhead telemetry | **done** | `startupMs` / `executionOverheadRatio`. Telemetry only, which is what the task asks for |
+| 24 | Workspace forks / dependency cache | **rejected** | gated behind 23 |
+| 25 | Warm-pool hooks | **rejected** | gated behind 23; the plan itself says not to enable them because the feature exists |
+| 26 | Task-aware model routing | **done** | pre-existing `routeModel`. Bounded escalation is absent deliberately: routing is asymmetric and never tiers *up* except to a model an operator named |
+| 27 | Provider routing | **rejected** | one provider is configured; splitting model from provider choice would be an interface with one implementation |
+| 28 | Safe model-result cache | **done** | read-only result reuse, with dependency validity |
+| 29 | Context utility memory | **rejected** | no learned component exists to feed, and the plan forbids one in the hot path |
+| 30 | Shadow evaluation | **done** | pre-existing `ORG_EFFICIENCY_MODE=shadow` — decisions computed and recorded, dispatch unchanged |
+| 31 | Replay + counterfactual | **done** | `src/efficiency/replay.ts`, `org decision --replay` |
+| 32 | Benchmark / experiment suite | **done** | pre-existing `objective.ts` hard gates + `bench/run.mjs`; `turn-cap` and `result-reuse` arms added |
+| 33 | Rollout modes + regression gates | **done** | pre-existing three modes, plus a knob per new feature (`ORG_MAX_TURNS_EXECUTE`, `ORG_RESULT_CACHE_TTL_HOURS`) |
+| 34 | End-to-end production validation | **partial** | typecheck, build and 600/601 tests green; the live-cluster arm needs Claude credentials this environment does not have, and fails identically on the commit before this work |
+
+**19 done, 2 partial, 13 rejected with a named trigger that would reverse each.**
+
+## Architecture Review Gate (plan Part XV)
+
+1. **Duplicate planners/brokers/routers?** No — the rejected tasks are precisely the ones
+   that would have created them.
+2. **Every model-visible context item traceable to immutable evidence?** Yes: the argv's
+   repo context has a `context.receipt` event naming what was selected and dropped; the
+   rest is the goal and the role stanza.
+3. **Can every cache entry explain why it is valid?** Yes — a result entry carries the
+   files it read and their blob shas, or declares itself opaque and demands an exact
+   commit.
+4. **Can the decision engine explain execution vs reuse, model vs tool?** Yes:
+   `decision.made` events, `model_route` and `integration_decision` memory rows, and now
+   `org decision --replay`, which re-derives them.
+5. **Can an implementation be replayed?** Decisions, yes, and checked. Dispatches, no —
+   they are non-deterministic model runs, and claiming otherwise would be false.
+6. **Can the efficiency plane fail without compromising correctness?** Yes. Every piece
+   degrades to the prior behaviour: selection degrades *upward* to the full map, the
+   ledger is total, a cache that cannot prove validity costs a sandbox, the scheduler
+   degrades to FIFO, and the budget guard is the only one that stops work — deliberately.
+7. **Are learned components optional?** There are none.
+8. **Are warm sandboxes justified by measurement?** Not built; now measured rather than
+   assumed.
+9. **Are tokens saved by avoiding work rather than compressing it?** Yes — every saving
+   here is a dispatch or a turn that did not happen. Nothing in this work compresses
+   anything.
+10. **Does the system get cheaper as it accumulates reusable work?** Now yes, and
+    `workAvoidedRatio` is the number that says so.
