@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { executeStep } from './execute-step.js';
 import type { RuntimeAdapter } from '../adapters/adapter.js';
+import type { ExecuteStepDeps } from './execute-step.js';
 
 const fakeAdapter: RuntimeAdapter = {
   name: 'fake',
@@ -136,5 +137,99 @@ describe('executeStep', () => {
 
     expect(result.events.map((e) => e.type)).toEqual(['a', 'b', 'c']);
     expect(onEvent).toHaveBeenCalledTimes(3);
+  });
+});
+
+// Minimal deps that get executeStep through the whole flow without a real
+// cluster: every hook is a no-op, and the Job "completes" immediately.
+function fakeDepsThatCompleteImmediately(): Partial<ExecuteStepDeps> {
+  return {
+    createEphemeralSecret: vi.fn(async () => 'secret-1'),
+    deleteSecret: vi.fn(async () => {}),
+    applyNetworkPolicy: vi.fn(async () => {}),
+    getKubeDnsClusterIp: vi.fn(async () => '10.96.0.10'),
+    createJob: vi.fn(async () => 'job-1'),
+    followJobLogs: vi.fn(async () => () => {}),
+    waitForJobCompletion: vi.fn(async () => ({ succeeded: true, message: 'ok' })),
+    streamJobLogs: vi.fn(async () => ''),
+    deleteJob: vi.fn(async () => {}),
+  };
+}
+
+function fakeAdapterEmittingResultWithUsage(): RuntimeAdapter {
+  return {
+    name: 'fake',
+    buildCommand: () => ['fake-cli'],
+    parseLine: (line) => { try { return JSON.parse(line) as { type: string; payload: unknown }; } catch { return null; } },
+    parseEventStream: async () => [],
+  };
+}
+
+describe('executeStep dispatch options', () => {
+  it('passes model / maxTurns / systemPrompt into adapter.buildCommand', async () => {
+    let seenOpts: unknown;
+    const adapter: RuntimeAdapter = {
+      name: 'fake',
+      buildCommand: (goal: string, _grant, opts) => { seenOpts = opts; return ['x']; },
+      parseLine: () => null,
+      parseEventStream: async () => [],
+    };
+    await executeStep(
+      {
+        nodeId: 'n', goal: 'g', namespace: 'ns', worktreePath: '/tmp', credentials: {},
+        adapter, image: 'img',
+        model: 'haiku', maxTurns: 3, systemPrompt: 'be brief',
+      },
+      fakeDepsThatCompleteImmediately(),
+    );
+    expect(seenOpts).toEqual({ model: 'haiku', maxTurns: 3, systemPrompt: 'be brief' });
+  });
+
+  it('populates result.usage from the collected events', async () => {
+    const deps = {
+      ...fakeDepsThatCompleteImmediately(),
+      followJobLogs: vi.fn(async (_j: string, _n: string, onLine: (line: string) => void) => {
+        onLine('{"type":"result","payload":{"usage":{"input_tokens":10}}}');
+        return () => {};
+      }),
+    };
+    const result = await executeStep(
+      { nodeId: 'n', goal: 'g', namespace: 'ns', worktreePath: '/tmp', credentials: {}, adapter: fakeAdapterEmittingResultWithUsage(), image: 'img' },
+      deps,
+    );
+    expect(result.usage.inputTokens).toBeGreaterThan(0);
+  });
+
+  // Telemetry only. Whether warm pools or snapshots are worth their complexity
+  // is a question about how much of a dispatch is spent getting ready to work,
+  // and until now nothing measured it — the argument was being had from
+  // architecture enthusiasm rather than from a number.
+  it('reports how long it took to get from asking for a Job to the first event', async () => {
+    const deps = {
+      ...fakeDepsThatCompleteImmediately(),
+      followJobLogs: vi.fn(async (_j: string, _n: string, onLine: (line: string) => void) => {
+        onLine('{"type":"result","payload":{"usage":{"input_tokens":10}}}');
+        return () => {};
+      }),
+    };
+    const result = await executeStep(
+      { nodeId: 'n', goal: 'g', namespace: 'ns', worktreePath: '/tmp', credentials: {}, adapter: fakeAdapterEmittingResultWithUsage(), image: 'img' },
+      deps,
+    );
+    expect(result.startupMs).toBeGreaterThanOrEqual(0);
+    expect(Number.isFinite(result.startupMs)).toBe(true);
+  });
+
+  it('reports startup as the whole dispatch when no event ever arrived', async () => {
+    // A Job that produced nothing spent all of its time getting nowhere, and
+    // recording 0 there would flatter the overhead ratio precisely in the case
+    // that is worst.
+    const deps = { ...fakeDepsThatCompleteImmediately(), followJobLogs: vi.fn(async () => () => {}) };
+    const result = await executeStep(
+      { nodeId: 'n', goal: 'g', namespace: 'ns', worktreePath: '/tmp', credentials: {}, adapter: fakeAdapterEmittingResultWithUsage(), image: 'img' },
+      deps,
+    );
+    expect(result.events).toHaveLength(0);
+    expect(result.startupMs).toBeGreaterThanOrEqual(0);
   });
 });

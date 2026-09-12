@@ -5,12 +5,19 @@
   "scripts": {
     "build": "tsc -p tsconfig.build.json && node scripts/copy-migrations.mjs",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run",
+    "test": "npm run test:unit",
+    "test:unit": "VITEST_SUITE=unit vitest run",
+    "test:integration": "VITEST_SUITE=integration vitest run",
+    "test:e2e": "npm run build && VITEST_SUITE=e2e vitest run",
+    "test:k8s": "VITEST_SUITE=k8s vitest run",
+    "test:coverage": "VITEST_SUITE=unit vitest run --coverage",
     "dev:cli": "tsx src/cli/index.ts",
     "gui": "npm --prefix gui run dev",
     "gui:build": "npm --prefix gui install && npm --prefix gui run build",
-    "test:gui": "npm --prefix gui run test",
-    "seed:demo": "tsx scripts/seed-demo.mts"
+    "test:gui": "npm --prefix gui ci && npm --prefix gui run test",
+    "seed:demo": "tsx scripts/seed-demo.mts",
+    "bench": "node bench/run.mjs",
+    "bench:deterministic": "npm run build && node bench/deterministic.mjs"
   },
   "keywords": [],
   "author": "",

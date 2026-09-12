@@ -3,9 +3,10 @@ import { createActor, fromPromise, waitFor, type Actor } from 'xstate';
 import { nodeMachine, type NodeMachineEvent } from './node-machine.js';
 import type { Db } from '../db/client.js';
 import { updateNodeState, getNode, insertNode, listNodes, setNodeRuntime } from '../db/queries/nodes.js';
-import { appendEvent } from '../db/queries/events.js';
+import { appendEvent, listEventsForNode } from '../db/queries/events.js';
 import { publish } from '../events/bus.js';
 import { executeStep } from '../execution/execute-step.js';
+import { ZERO_USAGE, type DispatchUsage } from '../execution/tokens.js';
 import { claudeCodeAdapter } from '../adapters/claude-code.js';
 import { stopgapAdapter } from '../adapters/stopgap.js';
 import { assessUncertainty } from '../intelligence/coordinator.js';
@@ -19,23 +20,48 @@ import { insertCommitment, updateCommitmentStatus, setCommitmentEvidence, listCo
 import { insertArtifact, listArtifactsForNode } from '../db/queries/artifacts.js';
 import { artifactsFromEvent } from '../execution/artifacts.js';
 import { codexAdapter } from '../adapters/codex.js';
-import { selectRuntime } from '../intelligence/select-runtime.js';
+import { routeProvider, type ProviderCapability } from '../intelligence/provider-router.js';
 import { buildPlanPrompt, parseSubgoals } from '../intelligence/plan.js';
-import { buildSynthesisPrompt, hasReports, type ChildReport } from '../intelligence/synthesize.js';
+import { buildSynthesisPrompt, type ChildReport } from '../intelligence/synthesize.js';
+import { decideIntegration } from '../intelligence/integrate-results.js';
 import { answerOf } from '../db/queries/answers.js';
 import { recordRunOutcome, getRuntimeStats } from '../db/queries/memory.js';
 import { getCostForNodes } from '../db/queries/stats.js';
 import { resolveCredentials, checkCredentials } from '../execution/credentials.js';
-import { sandboxLimiter, maxConcurrentFromEnv } from '../execution/dispatch-limit.js';
-import { withConstraints } from '../execution/prompt.js';
+import { sandboxLimiter, maxConcurrentFromEnv, CRITICAL_PATH } from '../execution/dispatch-limit.js';
+import { efficiencyLedger, type LedgerRole } from '../efficiency/ledger.js';
+import type { EfficiencyOutcome } from '../efficiency/metrics.js';
+import type { DispatchReceipt } from '../context/dispatch-context.js';
+import { buildRolePrompt } from '../prompts/roles.js';
 import os from 'node:os';
 import { deleteNodeNetworkPolicy, deleteNodeJobs } from '../k8s/cleanup.js';
 import { subtreeNodeIds } from '../db/queries/nodes.js';
 import { allowedTools, isReadOnly } from '../engines/enforce-tools.js';
 import type { Authority } from '../schemas/node-contract.js';
-import type { ToolGrant } from '../adapters/adapter.js';
+import type { ToolGrant, RuntimeAdapter } from '../adapters/adapter.js';
 import { setNodeSnapshot, clearNodeSnapshot } from '../db/queries/nodes.js';
 import { insertDodItems, listDodForNode, setDodState } from '../db/queries/dod.js';
+import { dispatchOptionsFor, planCacheTtlHours, repoMapTokenBudget, rolePromptsEnabled, efficiencyMode, resultCacheTtlHours, type DispatchRole } from '../config/efficiency.js';
+import { routeModel } from '../intelligence/model-router.js';
+import { assessDecomposition } from '../intelligence/decompose.js';
+import { repoHead, repoDirty } from '../execution/git-state.js';
+import { planCacheKey, getCachedPlan, putCachedPlan } from '../db/queries/plan-cache.js';
+import { resultCacheKey, getCachedResult, putCachedResult } from '../db/queries/result-cache.js';
+import { dependenciesFromEvents, buildDependencyFingerprint, dependenciesValid } from '../context/dependencies.js';
+import { indexRunObservations, scoreProjection } from './run-index.js';
+import { buildAgentEnvelope, renderEnvelope, EnvelopeError } from '../intelligence/agent-envelope.js';
+import { putAgentEnvelope, getAgentEnvelope } from '../db/queries/envelopes.js';
+import { scopeOf } from '../context/types.js';
+import { judgeTask } from '../intelligence/task-judge.js';
+import { templateFor, pruneTemplate } from '../intelligence/execution-templates.js';
+import type { TaskClass } from '../intelligence/task-judge.js';
+import { decideExecutionPath, type DecisionReceipt } from '../decision/engine.js';
+import { withRepoContext } from '../intelligence/repo-map.js';
+import { dispatchContextFor, warmRepoInventory } from '../context/dispatch-context-cache.js';
+import { recordDispatchUsage } from '../db/queries/tokens.js';
+import { shouldRetryWithoutModel } from '../execution/tokens.js';
+import { readOnlyPlanningGrant } from './dispatch-helpers.js';
+import { memory } from '../db/schema.js';
 
 // In-process actor registry. It is lost on a daemon restart, which is why every
 // transition persists the actor to `nodes.snapshot` — see rehydrate.ts, which
@@ -101,6 +127,33 @@ function realDelegateDeps(db: Db): DelegateChildDeps {
       // work the root did itself, which is usually none of it.
       insertDodItems(db, childId, [goal], now, () => randomUUID());
     },
+    recordEnvelope: (childId, goal, approvedBudgetUsd) => {
+      const child = getNode(db, childId);
+      if (!child) return;
+      try {
+        const grant = grantOf(child.contract.authority);
+        putAgentEnvelope(db, childId, buildAgentEnvelope({
+          goal,
+          // The parent's standing constraints are the child's too: a mandate
+          // does not stop applying because the work was handed on.
+          constraints: child.contract.constraints ?? [],
+          budget: {
+            usd: approvedBudgetUsd || child.contract.authority.budget_usd,
+            maxTurns: dispatchOptionsFor('execute').maxTurns,
+          },
+          capabilities: grant.allowedTools ?? [],
+          scope: scopeOf(grant.allowedTools, grant.readOnly),
+        }));
+      } catch (err) {
+        // An envelope that cannot be built costs the child its handoff, never
+        // its dispatch — including EnvelopeError, which is a refusal to hand
+        // over something unsafe and must not become a failed delegation.
+        console.error(
+          `Failed to build the envelope for node ${childId}:`,
+          err instanceof EnvelopeError ? err.message : err,
+        );
+      }
+    },
     startChild: (childId, goal) => startNodeActor(db, childId, goal),
     waitForChild: (childId) => waitForNodeCompletion(childId),
   };
@@ -108,28 +161,44 @@ function realDelegateDeps(db: Db): DelegateChildDeps {
 
 const ADAPTERS = { 'claude-code': claudeCodeAdapter, codex: codexAdapter };
 
-/** Which runtime runs this node, decided from what the organization has learned
- *  rather than from a constant. The choice is persisted as a Decision and
- *  published as an event, so it is inspectable in the same place delegation is.
+/** Which provider serves this node, decided from what the organization has
+ *  learned rather than from a constant. The choice is persisted as a Decision
+ *  and published as an event, so it is inspectable in the same place delegation
+ *  is.
+ *
+ *  Asked *after* the model is chosen and never allowed to revise it: a provider
+ *  that cannot serve the model is ruled out rather than substituted, because an
+ *  outage silently becoming a weaker model is a quality decision nobody took.
  *
  *  ORG_RUNNER_IMAGE still short-circuits the whole thing: it means "dispatch a
  *  stand-in image", and no real harness runs inside it to choose between. */
-function chooseAdapter(db: Db, nodeId: string) {
+function chooseAdapter(db: Db, nodeId: string, model?: string) {
   if (runnerImageOverride()) return stopgapAdapter;
 
-  const selection = selectRuntime({
-    available: Object.keys(ADAPTERS),
-    stats: getRuntimeStats(db),
-  });
-  const adapter = ADAPTERS[selection.runtime as keyof typeof ADAPTERS] ?? claudeCodeAdapter;
+  // Capability is asked of the adapter rather than hardcoded by name, the same
+  // way `modelFor` does — a new runtime answers for itself. Health is optimistic
+  // until this runtime learns to observe it; the interface exists so that
+  // learning does not require a rewrite.
+  const candidates: ProviderCapability[] = Object.entries(ADAPTERS).map(([name, adapter]) => ({
+    provider: name,
+    models: model !== undefined && adapter.servesModel?.(model) === false ? [] : null,
+    health: 'healthy',
+  }));
+
+  const route = routeProvider({ model, candidates, stats: getRuntimeStats(db) });
+  const adapter = ADAPTERS[(route.provider ?? '') as keyof typeof ADAPTERS] ?? claudeCodeAdapter;
   const now = new Date().toISOString();
 
+  const breakdown = route.breakdown ?? { score: 0, reason_fast_path: 1 };
   setNodeRuntime(db, nodeId, adapter.name, now);
   insertDecision(db, {
     id: randomUUID(), nodeId, type: 'runtime_selection',
-    outcome: adapter.name, breakdown: selection.breakdown, createdAt: now,
+    outcome: adapter.name, breakdown, createdAt: now,
   });
-  const payload = { outcome: adapter.name, breakdown: selection.breakdown, type: 'runtime_selection' };
+  const payload = {
+    outcome: adapter.name, breakdown, type: 'runtime_selection',
+    reason: route.reason, rejected: route.rejected,
+  };
   const eventId = appendEvent(db, { nodeId, type: 'decision.made', payload, createdAt: now });
   publish({ id: eventId, nodeId, type: 'decision.made', payload, createdAt: now });
 
@@ -141,6 +210,239 @@ function chooseAdapter(db: Db, nodeId: string) {
  *  disagree about what was granted. */
 function grantOf(authority: Authority): ToolGrant {
   return { allowedTools: allowedTools(authority), readOnly: isReadOnly(authority) };
+}
+
+/** Whether this runtime actually delivers a system prompt. Codex exec has no
+ *  `--append-system-prompt` flag and drops it on the floor, so a role stanza
+ *  sent there reaches nobody — and the standing constraints it carries have to
+ *  go inline on the goal instead. Asked of the adapter rather than hardcoded by
+ *  name, so a new runtime answers for itself. Total: called from inside the
+ *  executeStep actor, which has no try of its own. */
+export function honoursSystemPrompt(adapter: RuntimeAdapter): boolean {
+  const probe = '__system_prompt_probe__';
+  try {
+    return adapter.buildCommand('goal', undefined, { systemPrompt: probe }).includes(probe);
+  } catch {
+    return false;
+  }
+}
+
+/** The model to actually send this runtime, which is `undefined` — the
+ *  runtime's own default — whenever it cannot serve the one the role asked for.
+ *
+ *  Two ways it cannot: the runtime has no model flag at all (the sentinel does
+ *  not survive into argv, the same probe shape honoursSystemPrompt uses), or it
+ *  has one and rejects this name (adapter.servesModel). Both are asked of the
+ *  adapter rather than hardcoded by runtime name. Sending a model a runtime
+ *  cannot serve fails the whole dispatch — which for `plan` means no delegation
+ *  and for `synthesize` means no answer.
+ *
+ *  Total, and failing towards "no model": called from inside the executeStep
+ *  actor, which has no try of its own. */
+export function modelFor(adapter: RuntimeAdapter, model: string | undefined): string | undefined {
+  if (!model) return undefined;
+  try {
+    if (adapter.servesModel?.(model) === false) return undefined;
+    return adapter.buildCommand('goal', undefined, { model }).includes(model) ? model : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** What a dispatch cost, off the runtime's own final result event — the same
+ *  number the cost views already read, recorded alongside the token counts. */
+function costFromEvents(events: { type: string; payload: unknown }[]): number {
+  return events
+    .filter((e) => e.type === 'result')
+    .reduce((s, e) => s + Number((e.payload as { total_cost_usd?: number } | null)?.total_cost_usd ?? 0), 0);
+}
+
+/** One fact the organization learned, written straight to memory. Total, for the
+ *  same reason recordUsage is: it is called from inside the executeStep actor,
+ *  which has no try of its own, and a busy database must not be able to fail a
+ *  run — least of all here, where it would also discard the fallback dispatch
+ *  this row is only a note about. */
+function insertMemoryRow(db: Db, kind: string, key: string, value: unknown, nodeId: string): void {
+  try {
+    db.insert(memory).values({
+      id: randomUUID(), kind, key, value, confidence: null, nodeId,
+      createdAt: new Date().toISOString(),
+    }).run();
+  } catch (err) {
+    console.error(`Failed to record ${kind} for node ${nodeId}:`, err);
+  }
+}
+
+/** Publishes the receipt for a decision the engine took.
+ *
+ *  The decisions table holds the delegation score and nothing else; this is the
+ *  channel for every other choice — reuse over a fresh run, a tool over a model,
+ *  stopping rather than gathering. Same reasoning as `context.receipt`: a
+ *  dispatch's only channel is its argv, so the event log is where the
+ *  explanation has to live. */
+function publishDecisionReceipt(db: Db, nodeId: string, decision: DecisionReceipt): void {
+  const now = new Date().toISOString();
+  const payload = {
+    chosen: decision.chosen,
+    reason: decision.reason,
+    confidence: decision.confidence,
+    estimate: decision.estimate,
+    alternatives: decision.alternatives,
+    gate: decision.gate ?? null,
+    fastPath: decision.fastPath,
+  };
+  try {
+    const id = appendEvent(db, { nodeId, type: 'decision.receipt', payload, createdAt: now });
+    publish({ id, nodeId, type: 'decision.receipt', payload, createdAt: now });
+  } catch (err) {
+    // Explaining a decision must never cost the decision.
+    console.error(`Failed to publish a decision receipt for node ${nodeId}:`, err);
+  }
+}
+
+/** What the runtime already holds the product of, for pruning a template.
+ *
+ *  Deliberately coarse: a repository projection was built, so `repo_structure`
+ *  is known. Anything finer would be claiming knowledge of a step's product
+ *  from the fact that something adjacent to it happened. */
+function indexedKnowledge(db: Db, nodeId: string): Set<string> {
+  const known = new Set<string>();
+  try {
+    for (const event of listEventsForNode(db, nodeId)) {
+      if (event.type === 'context.receipt') known.add('repo_structure');
+      if (event.type === 'exec.result') known.add('edit');
+    }
+  } catch {
+    // A template that cannot be pruned is the full template, which is correct
+    // and merely less efficient.
+  }
+  return known;
+}
+
+/** Publishes the execution template for this task class and what was pruned
+ *  from it. Instrumentation, not instruction — the agent is never handed a step
+ *  list, because that would cost tokens on every dispatch to say something the
+ *  runtime is already deciding. */
+function publishExecutionPlan(db: Db, nodeId: string, taskClass: TaskClass, known: Set<string>): void {
+  try {
+    const pruned = pruneTemplate(templateFor(taskClass), known);
+    const payload = {
+      taskClass,
+      steps: pruned.steps.map((step) => ({ name: step.name, intent: step.intent, optional: step.optional })),
+      removed: pruned.removed.map((entry) => ({ name: entry.step.name, reason: entry.reason })),
+    };
+    const id = appendEvent(db, { nodeId, type: 'execution.plan', payload, createdAt: new Date().toISOString() });
+    publish({ id, nodeId, type: 'execution.plan', payload, createdAt: new Date().toISOString() });
+  } catch (err) {
+    console.error(`Failed to publish an execution plan for node ${nodeId}:`, err);
+  }
+}
+
+/** Publishes what context this dispatch was given and what it left out.
+ *
+ *  The receipt is the answer to "why did the agent not know about that file?".
+ *  Selection is lossy by design, so it has to be inspectable, and in this
+ *  runtime the only channel to a dispatch is its argv — there is nowhere to
+ *  attach metadata to the request itself. The event log is that channel. */
+function publishContextReceipt(db: Db, nodeId: string, receipt: DispatchReceipt): void {
+  const now = new Date().toISOString();
+  const payload = {
+    budget: receipt.budget,
+    tokens: receipt.selectedTokens,
+    selected: receipt.selected.length,
+    dropped: receipt.dropped.length,
+    truncated: receipt.truncated,
+    degraded: receipt.degraded ?? false,
+    applied: receipt.applied ?? false,
+  };
+  const id = appendEvent(db, { nodeId, type: 'context.receipt', payload, createdAt: now });
+  publish({ id, nodeId, type: 'context.receipt', payload, createdAt: now });
+}
+
+/** Accounting, and only accounting. A dispatch that ran and produced an answer
+ *  must not be thrown away because writing down what it cost failed — every
+ *  caller here is inside a try that would turn that into "no plan" or "no
+ *  answer", which is a far worse outcome than a missing row in `org tokens`. */
+function recordUsage(
+  db: Db,
+  r: {
+    nodeId: string; role: string; model: string | null; usage: DispatchUsage;
+    costUsd: number; tokensAvoided?: number;
+    /** Time inside the dispatch spent before the runtime said anything. */
+    startupMs?: number;
+  },
+): void {
+  try {
+    recordDispatchUsage(db, { ...r, createdAt: new Date().toISOString() });
+  } catch (err) {
+    console.error(`Failed to record ${r.role} token usage for node ${r.nodeId}:`, err);
+  }
+  // The same fact, told to the in-memory ledger that rolls a whole task up into
+  // one record. Separate from the row above on purpose: the row is per dispatch
+  // and outlives the daemon, the ledger is per task and does not.
+  // 'plan:cache-hit' is not a dispatch — it is the dispatch that did not happen,
+  // which is the number this whole phase exists to move.
+  if (r.role === 'plan:cache-hit') { ledger.recordAvoided(r.nodeId, 'plan'); return; }
+  // The expensive one. `tokensAvoided` is what the reused dispatch cost the
+  // last time it was actually paid for, so a hit reports a measurement rather
+  // than an estimate of what it saved.
+  if (r.role === 'execute:cache-hit') { ledger.recordAvoided(r.nodeId, 'execute', r.tokensAvoided ?? 0); return; }
+  const timing = drainTiming(r.nodeId);
+  ledger.recordDispatch(r.nodeId, {
+    role: r.role as LedgerRole,
+    usage: r.usage,
+    costUsd: r.costUsd,
+    ms: timing.dispatchMs,
+    queuedMs: timing.queuedMs,
+    startupMs: r.startupMs,
+  });
+}
+
+/** The model this dispatch should run on.
+ *
+ *  `disabled` is the fixed per-role choice this branch shipped with. `shadow`
+ *  decides and records but dispatches as `disabled` would, so a deployment can
+ *  see what routing *would* have done before letting it. `enabled` acts on it.
+ *
+ *  Total, like every other decision made from inside the executeStep actor:
+ *  anything going wrong here falls back to the fixed choice, never to no
+ *  dispatch. */
+function modelChoiceFor(db: Db, nodeId: string, role: DispatchRole, goal: string): string | undefined {
+  const configured = dispatchOptionsFor(role).model;
+  const mode = efficiencyMode();
+  if (mode === 'disabled') return configured;
+  try {
+    const node = getNode(db, nodeId);
+    const assessment = assessDecomposition(goal);
+    const route = routeModel({
+      role,
+      complexity: assessment.complexity,
+      investigative: assessment.investigative,
+      budgetUsd: node?.contract.authority.budget_usd ?? 0,
+      spentUsd: getCostForNodes(db, [nodeId]),
+    });
+    insertMemoryRow(db, 'model_route', role, { ...route, mode }, nodeId);
+    return mode === 'shadow' ? configured : route.model;
+  } catch (err) {
+    console.error(`Failed to route a model for node ${nodeId}:`, err);
+    return configured;
+  }
+}
+
+/** The tokens of an attempt that was thrown away — the one the model-fallback
+ *  retry replaced. Nothing else records these: `recordUsage` deliberately writes
+ *  one row per *logical* dispatch, naming the model that actually ran, so
+ *  without this the cost of a wrong model tier is invisible. */
+function recordSupersededAttempt(
+  nodeId: string,
+  role: LedgerRole,
+  result: { usage: DispatchUsage; events: { type: string; payload: unknown }[]; startupMs?: number },
+): void {
+  const timing = drainTiming(nodeId);
+  ledger.recordDispatch(nodeId, {
+    role, usage: result.usage, costUsd: costFromEvents(result.events),
+    ms: timing.dispatchMs, queuedMs: timing.queuedMs, startupMs: result.startupMs, superseded: true,
+  });
 }
 
 /** Records a tool used outside the node's grant. This is the event the Proof
@@ -204,22 +506,68 @@ async function synthesizeChildren(db: Db, nodeId: string, goal: string): Promise
       report: answerOf(db, child.id),
     }));
 
-  if (!hasReports(children)) return '';
+  // Most of combining reports is mechanical, and mechanical work does not need
+  // a sandbox. Only a judgement call — overlapping edits, a child that half
+  // finished, prose nothing can parse — is worth one.
+  const decision = decideIntegration(children);
+  if (decision.kind === 'nothing') return '';
+
+  // `disabled` synthesizes unconditionally, as this branch always did. `shadow`
+  // records what the decision would have been and then synthesizes anyway, so
+  // the run stays comparable to a baseline one.
+  const mode = efficiencyMode();
+  if (mode !== 'disabled') {
+    insertMemoryRow(db, 'integration_decision', decision.kind, {
+      kind: decision.kind,
+      reason: decision.kind === 'synthesize' ? decision.reason : null,
+      applied: mode === 'enabled',
+    }, nodeId);
+  }
+  if (mode === 'enabled' && (decision.kind === 'return_child' || decision.kind === 'merge')) {
+    ledger.recordAvoided(nodeId, 'synthesize');
+    publishProgress(db, nodeId, decision.kind === 'merge'
+      ? `Combined ${children.length} agents' results directly — no extra model call was needed`
+      : "One agent answered this; returning its answer rather than paying to reword it");
+    return decision.text;
+  }
+  // Stripping the envelopes is part of the change, so only an enabled run does
+  // it. A shadow run sends the reports exactly as a baseline run would.
+  const synthesisChildren = mode === 'enabled' && decision.kind === 'synthesize' ? decision.children : children;
 
   const credentials = checkCredentials(os.homedir(), process.env.ANTHROPIC_API_KEY);
   if (!credentials.ok) return '';
 
-  publishProgress(db, nodeId, `Combining what ${children.length} agents reported into one answer`);
+  publishProgress(db, nodeId, `Combining what ${children.length} agents reported into one answer${decision.kind === 'synthesize' ? ` (${decision.reason})` : ''}`);
   try {
-    const result = await dispatch(db, nodeId, () => executeStep({
+    // Inside the try, like everything else here: chooseAdapter writes a decision
+    // row and publishes an event, and a database that refuses that must cost the
+    // combined answer, not the whole delegating node.
+    const adapter = chooseAdapter(db, nodeId);
+    const opts = dispatchOptionsFor('synthesize');
+    // Same shape as the execute dispatch: the stanza only carries the role when
+    // the runtime will actually deliver it. buildSynthesisPrompt no longer states
+    // the lead's job — merge overlaps, keep file:line detail, order by importance,
+    // no preamble — so when there is no stanza it has to go inline on the goal, or
+    // it reaches nobody at all.
+    const roleSystemPrompt = rolePromptsEnabled() && honoursSystemPrompt(adapter)
+      ? buildRolePrompt('synthesize')
+      : undefined;
+    const synthesisGoal = roleSystemPrompt
+      ? buildSynthesisPrompt(goal, synthesisChildren)
+      : `${buildSynthesisPrompt(goal, synthesisChildren)}\n\n${buildRolePrompt('synthesize')}`;
+
+    const runOnce = (model: string | undefined) => dispatch(db, nodeId, () => executeStep({
       nodeId,
-      goal: buildSynthesisPrompt(goal, children),
+      goal: synthesisGoal,
+      systemPrompt: roleSystemPrompt,
       namespace: NAMESPACE,
       worktreePath,
       credentials: resolveCredentials(os.homedir(), process.env.ANTHROPIC_API_KEY),
-      adapter: chooseAdapter(db, nodeId),
+      adapter,
       image: runnerImageOverride(),
       timeoutMs: PLAN_TIMEOUT_MS,
+      model,
+      maxTurns: opts.maxTurns,
       onEvent: (event) => {
         // `synth.` keeps the combining run out of the work transcript — it is a
         // third kind of run, and reading it as more work is confusing.
@@ -228,13 +576,41 @@ async function synthesizeChildren(db: Db, nodeId: string, goal: string): Promise
         const id = appendEvent(db, { nodeId, type, payload: event.payload, createdAt: now });
         publish({ id, nodeId, type, payload: event.payload, createdAt: now });
       },
-    }));
+    }), CRITICAL_PATH);
 
+    // One shot at the tiered model, exactly as the execute dispatch does it:
+    // a role that defaults to Haiku must not lose the whole answer on a plan
+    // that cannot call Haiku.
+    let usedModel = modelFor(adapter, modelChoiceFor(db, nodeId, 'synthesize', goal));
+    let result = await runOnce(usedModel);
+    if (usedModel && shouldRetryWithoutModel(result.events)) {
+      publishProgress(db, nodeId, `Model "${usedModel}" is unavailable on this plan — retrying on the default model`);
+      insertMemoryRow(db, 'model_tier_unavailable', 'synthesize', { model: usedModel }, nodeId);
+      recordSupersededAttempt(nodeId, 'synthesize', result);
+      usedModel = undefined;
+      result = await runOnce(undefined);
+    }
+    // Exactly one row per logical dispatch, naming the model that actually ran.
+    recordUsage(db, {
+      nodeId, role: 'synthesize', model: usedModel ?? null,
+      usage: result.usage, costUsd: costFromEvents(result.events),
+      startupMs: result.startupMs,
+    });
+
+    // An errored `result` is the runtime's complaint, not an answer — and the
+    // caller publishes whatever comes back here as the node's answer. With
+    // ORG_MAX_TURNS_SYNTHESIZE at 1, one verifying tool call is enough to turn
+    // the whole synthesis into "error: max turns exceeded", which would then be
+    // published as what the organization concluded.
     const text = result.events
       .filter((event) => event.type === 'result')
+      .filter((event) => (event.payload as { is_error?: unknown } | null)?.is_error !== true)
       .map((event) => String((event.payload as { result?: unknown } | null)?.result ?? ''))
       .join('\n')
       .trim();
+    // Nothing usable came back. Saying so beats a silent fall-through to the
+    // "all 3 pieces completed" tally, which is what the caller does with ''.
+    if (!text) publishProgress(db, nodeId, "Could not combine the agents' reports — their individual reports stand");
     return text;
   } catch (err) {
     publishProgress(db, nodeId, `Could not combine the agents' reports (${err instanceof Error ? err.message : String(err)})`);
@@ -255,13 +631,114 @@ const PLAN_TIMEOUT_MS = 240_000;
 // per-node, so every sandbox in every task queues through the same gate.
 const sandboxes = sandboxLimiter();
 
+// One ledger for the whole daemon, for the same reason: what it measures is the
+// organization's spend, not any single node's.
+const ledger = efficiencyLedger();
+
+/** The runtime's own final answer text, off its `result` events. The same
+ *  extraction the planning and synthesis paths do, and the same thing
+ *  `answerOf` reads back out of the event log. */
+function finalResultText(events: { type: string; payload: unknown }[]): string {
+  return events
+    .filter((event) => event.type === 'result')
+    .filter((event) => (event.payload as { is_error?: unknown } | null)?.is_error !== true)
+    .map((event) => String((event.payload as { result?: unknown } | null)?.result ?? ''))
+    .join('\n')
+    .trim();
+}
+
+/** The key this dispatch's answer may be stored under and served from, or null
+ *  when it may not be reused at all.
+ *
+ *  Two conditions, each of which is the whole argument on its own:
+ *
+ *   - **read-only.** Reusing the answer of a run that changed something would
+ *     skip the change and report it done. Read-only is what makes "we did not
+ *     re-run it" equivalent to "we re-ran it": there were no side effects to
+ *     lose.
+ *   - **same model and same grant.** A cheaper model's answer must not be
+ *     served to a request routed to a stronger one, and an answer produced
+ *     under a wider grant saw more of the repository than this node may.
+ *
+ *  The commit is deliberately not part of the key. What makes an answer still
+ *  true is whether the files it read still say what they said, which is checked
+ *  on read (context/dependencies.ts) — keying on HEAD instead would invalidate
+ *  every cached answer about every module on one commit to a README. */
+function resultReuseKey(goal: string, grant: ToolGrant, model: string | undefined): string | null {
+  if (!grant.readOnly || resultCacheTtlHours() <= 0) return null;
+  return resultCacheKey(goal, model ?? '(default)', grant.allowedTools);
+}
+
 /** Runs a sandbox when a slot is free, and says so while it waits. A node
- *  sitting in a queue looks identical to one that has hung unless it tells you. */
-async function dispatch<T>(db: Db, nodeId: string, task: () => Promise<T>): Promise<T> {
+ *  sitting in a queue looks identical to one that has hung unless it tells you.
+ *
+ *  `priority` orders the queue, never the ceiling: planning blocks the creation
+ *  of every child and synthesis is the last thing between a person and their
+ *  answer, while a work dispatch blocks only itself and may run sixty turns. */
+async function dispatch<T>(db: Db, nodeId: string, task: () => Promise<T>, priority = 0): Promise<T> {
   if (sandboxes.active() >= maxConcurrentFromEnv()) {
     publishProgress(db, nodeId, `Waiting for a free sandbox — ${sandboxes.queued() + 1} ahead in the queue`);
   }
-  return sandboxes.run(task);
+  // This is the only place that can tell waiting from working — two halves of
+  // latency with entirely different fixes. Stashed rather than returned because
+  // the caller's return type is the dispatch result, and threading a second
+  // value through three call sites to reach `recordUsage` — which runs
+  // immediately after — buys nothing.
+  const queuedAt = Date.now();
+  let startedAt = queuedAt;
+  try {
+    return await sandboxes.run(() => {
+      startedAt = Date.now();
+      // Checked here, after the slot is granted rather than before it is asked
+      // for: a queued dispatch can wait minutes, and the node it belongs to can
+      // be cancelled in that time. `deleteNodeJobs` cannot help — there is no
+      // Job to delete yet — so without this the limiter hands a freed slot to a
+      // dead node and opens a sandbox nobody is waiting for. One measured run
+      // spent 9 of its 26 percentage points of the five-hour window exactly
+      // this way, on a child that started two seconds *after* being cancelled
+      // and ran 42 turns past the answer the user had already been given.
+      const node = getNode(db, nodeId);
+      const state = node?.state;
+      if (state !== undefined && TERMINAL_STATES.has(state)) {
+        throw new Error(`Agent ${nodeId} was ${state.toLowerCase()} while waiting for a sandbox, so no sandbox was opened for it.`);
+      }
+      // The same moment, for the same reason: it is the last point before money
+      // is spent, and every role's sandbox passes through it. Until now
+      // `budget_usd` bounded what the organization would agree to *start* — the
+      // escalation floor in decide-execution.ts, the pressure threshold in
+      // model-router.ts — and nothing re-checked it once work was under way, so
+      // a task could run arbitrarily far past its own authority. Zero means
+      // "nobody costed this node", not "out of money", which is the convention
+      // model-router.ts already uses.
+      const budgetUsd = node?.contract.authority.budget_usd ?? 0;
+      if (budgetUsd > 0) {
+        const spentUsd = getCostForNodes(db, [nodeId]);
+        if (spentUsd >= budgetUsd) {
+          const message = `Budget spent — $${spentUsd.toFixed(2)} of $${budgetUsd.toFixed(2)}. No further sandbox was opened for this agent.`;
+          // Said out loud as well as thrown: the throw reaches VERIFY as a
+          // failed result, which is the machine's business, while a person
+          // watching the transcript needs to see that the run stopped on money
+          // rather than on an error.
+          publishProgress(db, nodeId, message);
+          throw new Error(message);
+        }
+      }
+      return task();
+    }, priority);
+  } finally {
+    pendingTiming.set(nodeId, { queuedMs: startedAt - queuedAt, dispatchMs: Date.now() - startedAt });
+  }
+}
+
+/** How long the last dispatch for a node waited and ran, between `dispatch`
+ *  measuring it and `recordUsage` claiming it. Cleared on read, so a dispatch
+ *  that threw before recording cannot lend its timing to the next one. */
+const pendingTiming = new Map<string, { queuedMs: number; dispatchMs: number }>();
+
+function drainTiming(nodeId: string): { queuedMs: number; dispatchMs: number } {
+  const timing = pendingTiming.get(nodeId) ?? { queuedMs: 0, dispatchMs: 0 };
+  pendingTiming.delete(nodeId);
+  return timing;
 }
 
 async function planSubgoals(db: Db, nodeId: string, goal: string, maxChildren: number): Promise<string[]> {
@@ -272,20 +749,89 @@ async function planSubgoals(db: Db, nodeId: string, goal: string, maxChildren: n
   // sandbox run to be told what we already know.
   if (!worktreePath || maxChildren < 2) return [];
 
+  // The same goal against the same committed tree splits the same way. Only a
+  // clean tree with a readable HEAD is keyable — repoDirty says true when it
+  // cannot tell, so an unknowable tree plans afresh rather than reusing a plan
+  // that may no longer describe the code.
+  // A TTL of 0 turns the cache off. Then there is nothing to read and no point
+  // writing, so do not fork two git subprocesses per plan to key a cache nobody
+  // will look at.
+  const ttl = planCacheTtlHours();
+  const head = ttl > 0 ? repoHead(worktreePath) : null;
+  const cacheKey = head && !repoDirty(worktreePath) ? planCacheKey(goal, head) : null;
+  if (cacheKey) {
+    try {
+      const cached = getCachedPlan(db, cacheKey, ttl);
+      if (cached) {
+        publishProgress(db, nodeId, cached.length === 0
+          ? 'This goal was already found not to split on this repo state — doing it directly'
+          : 'Reusing a plan computed earlier for this goal and repo state');
+        recordUsage(db, {
+          nodeId, role: 'plan:cache-hit', model: null, usage: { ...ZERO_USAGE }, costUsd: 0,
+        });
+        // The key is goal + HEAD, not the contract — so a plan cached under a
+        // wider max_child_count would otherwise spawn more children than this
+        // node's authority allows. On the cold path parseSubgoals is what
+        // clamps; nothing downstream re-checks. This is that clamp.
+        return cached.slice(0, maxChildren);
+      }
+    } catch {
+      // A cache that misbehaves costs a sandbox, not a run.
+    }
+  }
+
+  // Asked before a sandbox is opened, not after: planning's only possible
+  // product is a split, so on a goal with no seam it buys a dispatch to be told
+  // what the classification already knows.
+  const verdict = judgeTask(goal);
+  if (!verdict.worthPlanning) {
+    publishProgress(db, nodeId, `${verdict.reason} — doing it directly`);
+    return [];
+  }
+
   const credentials = checkCredentials(os.homedir(), process.env.ANTHROPIC_API_KEY);
   if (!credentials.ok) return [];
 
   publishProgress(db, nodeId, 'Working out how to split this across agents');
   try {
-    const result = await dispatch(db, nodeId, () => executeStep({
+    // Inside the try, like everything else here: chooseAdapter writes a decision
+    // row and publishes an event, and any failure in planning has to mean "do
+    // not delegate" rather than taking the node down with it.
+    const adapter = chooseAdapter(db, nodeId);
+    const opts = dispatchOptionsFor('plan');
+    // Same shape as the execute dispatch: the stanza only carries the role when
+    // the runtime will actually deliver it. buildPlanPrompt no longer states the
+    // planner's job or its output contract, so when there is no stanza it has to
+    // go inline on the goal.
+    const roleSystemPrompt = rolePromptsEnabled() && honoursSystemPrompt(adapter)
+      ? buildRolePrompt('plan')
+      : undefined;
+    const planPrompt = roleSystemPrompt
+      ? buildPlanPrompt(goal, maxChildren)
+      : `${buildPlanPrompt(goal, maxChildren)}\n\n${buildRolePrompt('plan')}`;
+    // The planner used to start from nothing and spend its turns discovering
+    // the repository — the single most expensive coordination dispatch there
+    // is, and it re-derives what the scan already knows. It splits the goal, so
+    // it gets the same goal-selected context a child would.
+    const planContext = dispatchContextFor(db, worktreePath, goal);
+    if (planContext) publishContextReceipt(db, nodeId, planContext.receipt);
+    const planGoal = planContext ? withRepoContext(planPrompt, planContext.content) : planPrompt;
+
+    const runOnce = (model: string | undefined) => dispatch(db, nodeId, () => executeStep({
       nodeId,
-      goal: buildPlanPrompt(goal, maxChildren),
+      goal: planGoal,
+      systemPrompt: roleSystemPrompt,
       namespace: NAMESPACE,
       worktreePath,
       credentials: resolveCredentials(os.homedir(), process.env.ANTHROPIC_API_KEY),
-      adapter: chooseAdapter(db, nodeId),
+      adapter,
       image: runnerImageOverride(),
       timeoutMs: PLAN_TIMEOUT_MS,
+      model,
+      maxTurns: opts.maxTurns,
+      // Planning looks, it does not work. A node whose row we cannot read gets
+      // the plain read-only set, which is narrower than anything it could hold.
+      grant: readOnlyPlanningGrant(node ? grantOf(node.contract.authority) : undefined),
       onEvent: (event) => {
         // `plan.` rather than `exec.`, so a reader can tell "deciding how to
         // split this" from the work itself — they are two different sandbox
@@ -295,7 +841,20 @@ async function planSubgoals(db: Db, nodeId: string, goal: string, maxChildren: n
         const id = appendEvent(db, { nodeId, type, payload: event.payload, createdAt: now });
         publish({ id, nodeId, type, payload: event.payload, createdAt: now });
       },
-    }));
+    }), CRITICAL_PATH);
+
+    // One shot at the tiered model, exactly as the execute dispatch does it.
+    // `plan` is the role that actually defaults to a tiered model, so without
+    // this a plan that cannot call Haiku loses delegation entirely.
+    let usedModel = modelFor(adapter, modelChoiceFor(db, nodeId, 'plan', goal));
+    let result = await runOnce(usedModel);
+    if (usedModel && shouldRetryWithoutModel(result.events)) {
+      publishProgress(db, nodeId, `Model "${usedModel}" is unavailable on this plan — retrying on the default model`);
+      insertMemoryRow(db, 'model_tier_unavailable', 'plan', { model: usedModel }, nodeId);
+      recordSupersededAttempt(nodeId, 'plan', result);
+      usedModel = undefined;
+      result = await runOnce(undefined);
+    }
 
     // Claude Code's final `result` event carries the answer text.
     const text = result.events
@@ -303,6 +862,27 @@ async function planSubgoals(db: Db, nodeId: string, goal: string, maxChildren: n
       .map((event) => String((event.payload as { result?: unknown } | null)?.result ?? ''))
       .join('\n');
     const subgoals = parseSubgoals(text, maxChildren);
+    // Exactly one row per logical dispatch, naming the model that actually ran.
+    recordUsage(db, {
+      nodeId, role: 'plan', model: usedModel ?? null,
+      usage: result.usage, costUsd: costFromEvents(result.events),
+      startupMs: result.startupMs,
+    });
+    // Both answers are worth pinning, including "does not split". That one used
+    // to be dropped as "cheap to recompute", which it is not: recomputing it
+    // buys another whole planning sandbox to be told the same thing, and it is
+    // exactly as stable as a split under the same goal and HEAD.
+    // Guarded for the same reason recordUsage is, and more sharply: a busy
+    // database throwing here lands in the catch below, which returns "no
+    // plan" — so a write-behind cache would have thrown away a plan that was
+    // already computed and paid for, and the node would self-execute instead.
+    if (cacheKey) {
+      try {
+        putCachedPlan(db, cacheKey, subgoals, head!, new Date().toISOString());
+      } catch (err) {
+        console.error(`Failed to cache the plan for node ${nodeId}:`, err);
+      }
+    }
     if (subgoals.length === 0) {
       publishProgress(db, nodeId, 'This goal does not split into independent pieces — doing it directly');
     }
@@ -362,6 +942,11 @@ function productionMachine(db: Db, nodeId: string) {
             // narrate — and each one appears immediately below as a named agent
             // anyway.
             publishProgress(db, nodeId, `Splitting the work ${subgoals.length} ways`);
+            // Warm the map here, once, before the children start: they all sit
+            // on this same commit, so otherwise N children starting together
+            // each build an identical map and store an identical row.
+            const mapPath = node?.repoPath ?? process.env.ORG_WORKTREE_PATH;
+            if (mapPath) warmRepoInventory(db, mapPath);
           }
           const result = await delegateToChildren({
             parentId: nodeId, goal: input.goal, subgoals,
@@ -394,6 +979,7 @@ function productionMachine(db: Db, nodeId: string) {
             succeeded: false,
             message: 'No repository is attached to this run, so there is nothing for the agent to work on. Start it from the repository you want worked on.',
             events: [],
+            usage: { ...ZERO_USAGE },
           };
           publishStepOutcome(db, nodeId, result);
           return result;
@@ -405,18 +991,134 @@ function productionMachine(db: Db, nodeId: string) {
         // on a 401 minutes later.
         const credentials = checkCredentials(os.homedir(), process.env.ANTHROPIC_API_KEY);
         if (!credentials.ok) {
-          const result = { succeeded: false, message: credentials.reason ?? 'Claude credentials are unusable.', events: [] };
+          const result = { succeeded: false, message: credentials.reason ?? 'Claude credentials are unusable.', events: [], usage: { ...ZERO_USAGE } };
           publishStepOutcome(db, nodeId, result);
           return result;
         }
 
         const adapter = chooseAdapter(db, nodeId);
+
+        // Asked before anything is built and before anything is said about
+        // starting a sandbox, because on a hit none of that happens. The model
+        // is resolved first only because it is part of what makes two runs the
+        // same run — a haiku answer must not be served to a sonnet request.
+        const grant = grantOf(node!.contract.authority);
+        let usedModel = modelFor(adapter, modelChoiceFor(db, nodeId, 'execute', input.goal));
+        const reuseKey = resultReuseKey(input.goal, grant, usedModel);
+        // Validity is asked of each candidate answer in turn, newest first:
+        // does the code it actually read still say what it said?
+        const cached = reuseKey
+          ? getCachedResult(db, reuseKey, resultCacheTtlHours(),
+              (value) => dependenciesValid(worktreePath, value.deps))
+          : null;
+
+        // Routed through the one decision contract rather than decided inline,
+        // so reusing and running fresh are explained the same way and by the
+        // same rules — the budget gate included. `judgeTask` is the cheap
+        // classification the template and the utility record both key on.
+        const verdict = judgeTask(input.goal);
+        const pathDecision = decideExecutionPath({
+          goal: input.goal,
+          authority: node!.contract.authority,
+          spentUsd: getCostForNodes(db, [nodeId]),
+          complexity: verdict.decomposition.complexity,
+          worthSplitting: verdict.decomposition.worthSplitting,
+          signals: verdict.decomposition.signals,
+          reusable: cached ? { tokens: cached.tokens, costUsd: cached.costUsd } : undefined,
+          // Priced from what this exact run cost the last time it was paid for.
+          // With no such measurement the estimate is honestly zero rather than
+          // an invented one — and the only branch that reads it is the one that
+          // has a measurement.
+          dispatch: { tokens: cached?.tokens ?? 0, latencyMs: 0, costUsd: cached?.costUsd ?? 0 },
+        });
+        publishDecisionReceipt(db, nodeId, pathDecision);
+        // The shape this kind of task usually takes, and the steps the runtime
+        // already holds the product of. Published rather than prompted: a step
+        // list in the argv would cost tokens on every dispatch to tell the agent
+        // something the runtime is deciding for it.
+        publishExecutionPlan(db, nodeId, verdict.taskClass, indexedKnowledge(db, nodeId));
+
+        if (cached && pathDecision.chosen === 'REUSE_COMPUTATION') {
+          publishProgress(db, nodeId, 'This exact question was already answered against this commit — reusing that answer instead of running again');
+          // The reused run left no transcript here, so the answer has to be
+          // published as one: `answerOf` reads `node.answer` before it looks
+          // for a report, and without this the node would finish having said
+          // nothing.
+          publishAnswer(db, nodeId, cached.text);
+          // Counted as work avoided, not work done.
+          recordUsage(db, {
+            nodeId, role: 'execute:cache-hit', model: usedModel ?? null,
+            usage: { ...ZERO_USAGE }, costUsd: 0, tokensAvoided: cached.tokens,
+          });
+          const result = { succeeded: true, message: cached.text, events: [], usage: { ...ZERO_USAGE } };
+          publishStepOutcome(db, nodeId, result);
+          scoreProjection(db, {
+            nodeId, taskClass: verdict.taskClass, read: [], outcome: 'success',
+            tokensAvoided: cached.tokens, executionAvoided: true,
+          });
+          return result;
+        }
+
         publishProgress(db, nodeId, `Starting a sandbox on ${adapter.name} against ${worktreePath}`);
-        const result = await dispatch(db, nodeId, () => executeStep({
+        const execOpts = dispatchOptionsFor('execute');
+        // Built once, out here rather than inside runOnce: the fallback retry
+        // below calls runOnce a second time with the same goal, and a goal
+        // carrying two copies of the context is the thing this is meant to
+        // avoid. No context (disabled, not a repo, scan failed) → the bare goal.
+        const repoContext = dispatchContextFor(db, worktreePath, input.goal);
+        if (repoContext) publishContextReceipt(db, nodeId, repoContext.receipt);
+
+        // Constraints are instructions, not boundaries — the interface says so
+        // wherever it shows them — so they must reach the agent either way.
+        // With role prompts on and a runtime that delivers them they ride the
+        // cached `execute` system stanza; otherwise there is no stanza to ride,
+        // so they go inline on the goal instead. Computed out here, like the
+        // repo map, so the fallback retry below cannot prepend them twice.
+        // Trimmed here, the same way roles.ts's list() trims, so a contract
+        // carrying a blank constraint cannot produce a header with an empty
+        // bullet under it — what the retired withConstraints also did.
+        const constraints = (node?.contract.constraints ?? []).map((c) => c.trim()).filter(Boolean);
+        const roleSystemPrompt = rolePromptsEnabled() && honoursSystemPrompt(adapter)
+          ? buildRolePrompt('execute', {
+              allowedTools: node ? grantOf(node.contract.authority).allowedTools : undefined,
+              constraints,
+              definitionOfDone: node?.contract.definition_of_done ?? [],
+              // The same cap that goes into argv below. A run told its budget
+              // summarises at the limit; one that is merely cut off at it
+              // reports "max turns exceeded" and loses what it found.
+              maxTurns: execOpts.maxTurns,
+            })
+          : undefined;
+        const goalWithConstraints = (!roleSystemPrompt && constraints.length > 0)
+          ? `Standing instructions (follow even where they conflict with the most direct path, and say so if one blocks you):\n${constraints.map((c) => `  - ${c}`).join('\n')}\n\n${input.goal}`
+          : input.goal;
+        // The context goes on last, so it wraps the whole instruction block
+        // instead of landing between the standing instructions and the goal they
+        // govern — a file listing separating an instruction from its task is a
+        // worse prompt than either change intended on its own.
+        // What the parent addressed to this child, if anything. Rendered into
+        // the argv rather than into the node's goal, because the goal is what a
+        // person reads in the tree — an envelope folded into it would turn a
+        // sentence into a paragraph of machine instructions wearing the goal's
+        // name.
+        const envelope = getAgentEnvelope(db, nodeId);
+        const envelopeText = envelope ? renderEnvelope(envelope) : '';
+        const goalWithHandoff = envelopeText
+          ? `${envelopeText}\n\n${goalWithConstraints}`
+          : goalWithConstraints;
+        const goalForDispatch = repoContext
+          ? withRepoContext(goalWithHandoff, repoContext.content)
+          : goalWithHandoff;
+
+        // Reset per attempt: the fallback retry below re-runs the dispatch, and
+        // its stream is the one whose rows the observations belong to.
+        let eventIds: number[] = [];
+        const runOnce = (model: string | undefined) => {
+          eventIds = [];
+          return dispatch(db, nodeId, () => executeStep({
           nodeId,
-          // Constraints ride with the goal. They are instructions, not
-          // boundaries — the interface says so wherever it shows them.
-          goal: withConstraints(input.goal, node?.contract.constraints ?? []),
+          goal: goalForDispatch,
+          systemPrompt: roleSystemPrompt,
           namespace: NAMESPACE,
           worktreePath,
           // Subscription (via `claude login`) is preferred over an API key —
@@ -425,7 +1127,9 @@ function productionMachine(db: Db, nodeId: string) {
           credentials: resolveCredentials(os.homedir(), process.env.ANTHROPIC_API_KEY),
           adapter,
           image: runnerImageOverride(),
-          grant: grantOf(node!.contract.authority),
+          grant,
+          model,
+          maxTurns: execOpts.maxTurns,
           onViolation: (tool) => publishDenial(db, nodeId, tool, node!.contract.authority),
           // The runner's structured output is the point of the whole dispatch.
           // Was: a loop over result.events run once, after the whole Job
@@ -436,6 +1140,11 @@ function productionMachine(db: Db, nodeId: string) {
             const type = `exec.${event.type}`;
             const id = appendEvent(db, { nodeId, type, payload: event.payload, createdAt: now });
             publish({ id, nodeId, type, payload: event.payload, createdAt: now });
+            // Recorded in arrival order, which is the order `result.events`
+            // comes back in — so an observation can point at the row that
+            // already holds its output instead of the context store keeping a
+            // second copy of it.
+            eventIds.push(id);
             // Artifacts are derived from the same stream, at the same moment —
             // no second capture pass over the event log afterwards.
             for (const artifact of artifactsFromEvent(event)) {
@@ -443,7 +1152,76 @@ function productionMachine(db: Db, nodeId: string) {
             }
           },
         }));
+        };
+
+        // One shot at the tiered model — and only a model this runtime can
+        // actually serve. If the runtime then says it cannot have it, the run
+        // continues on the default rather than failing over a knob.
+        let result = await runOnce(usedModel);
+        if (usedModel && shouldRetryWithoutModel(result.events)) {
+          publishProgress(db, nodeId, `Model "${usedModel}" is unavailable on this plan — retrying on the default model`);
+          insertMemoryRow(db, 'model_tier_unavailable', 'execute', { model: usedModel }, nodeId);
+          recordSupersededAttempt(nodeId, 'execute', result);
+          usedModel = undefined;
+          result = await runOnce(undefined);
+        }
+        // Exactly one row per logical dispatch, naming the model whose tokens
+        // and cost this row actually carries — see the retry above.
+        recordUsage(db, {
+          nodeId, role: 'execute', model: usedModel ?? null,
+          usage: result.usage, costUsd: costFromEvents(result.events),
+          startupMs: result.startupMs,
+        });
         publishStepOutcome(db, nodeId, result);
+
+        // The run's own account of what it touched, indexed into the context
+        // graph. Built from what actually ran rather than from a scan of what
+        // might matter, and pointing at the event rows that already hold the
+        // output rather than copying it.
+        const indexed = indexRunObservations(db, { nodeId, events: result.events, eventIds, grant });
+        // What the projection predicted, against what the run actually read.
+        // Free, because the run already told us both.
+        scoreProjection(db, {
+          nodeId,
+          taskClass: verdict.taskClass,
+          receipt: repoContext?.receipt,
+          read: indexed.read,
+          outcome: result.succeeded ? 'success' : 'failure',
+        });
+
+        // Stored only on success. The fingerprint is built from the run's own
+        // stream — the files it actually read — against the commit it was given,
+        // not the tree as it now stands: a read-only run should not have moved
+        // the tree, and if something else did, what the answer describes is
+        // still the commit it saw. Guarded for the same reason `recordUsage` is:
+        // an answer that was produced and paid for must not be thrown away
+        // because writing it down failed. The retry above can change which model
+        // ran, so the key is recomputed against the one that did.
+        const storeKey = usedModel === undefined ? resultReuseKey(input.goal, grant, undefined) : reuseKey;
+        if (storeKey && result.succeeded) {
+          const text = finalResultText(result.events);
+          if (text) {
+            try {
+              const observed = dependenciesFromEvents(result.events);
+              const head = repoHead(worktreePath);
+              const deps = head && !repoDirty(worktreePath)
+                ? buildDependencyFingerprint(worktreePath, observed.paths, observed.opaque, head)
+                : null;
+              // No fingerprint, no reuse. An answer we cannot say the validity
+              // of is not one we may serve again.
+              if (deps) {
+                putCachedResult(db, storeKey, {
+                  text,
+                  tokens: result.usage.inputTokens + result.usage.outputTokens,
+                  costUsd: costFromEvents(result.events),
+                  deps,
+                }, new Date().toISOString());
+              }
+            } catch (err) {
+              console.error(`Failed to cache the result for node ${nodeId}:`, err);
+            }
+          }
+        }
         // No answer event here: a node that did the work itself already said its
         // answer, and it is in the transcript. Publishing it again rendered the
         // whole report twice, once as speech and once as "the answer".
@@ -502,6 +1280,22 @@ function recordOutcomeInMemory(db: Db, nodeId: string, succeeded: boolean, now: 
   });
 }
 
+/** Closes the task's ledger entry and pins the result where a later comparison
+ *  can read it. The ledger only lives as long as the daemon, and a benchmark
+ *  that has to keep the daemon alive to read its own results is not one anybody
+ *  will run — so the record goes to `memory` alongside the per-dispatch rows.
+ *
+ *  Total, like every other recorder here: this runs on the terminal transition,
+ *  and a node must not be left un-finalized because measuring it failed. */
+function recordEfficiency(db: Db, nodeId: string, outcome: EfficiencyOutcome): void {
+  try {
+    const record = ledger.finishTask(nodeId, outcome);
+    insertMemoryRow(db, 'efficiency_record', nodeId, record, nodeId);
+  } catch (err) {
+    console.error(`Failed to record the efficiency of node ${nodeId}:`, err);
+  }
+}
+
 export function startNodeActor(db: Db, nodeId: string, goal: string): void {
   createAndRun(db, nodeId, goal, undefined);
 }
@@ -519,6 +1313,9 @@ function createAndRun(db: Db, nodeId: string, goal: string, persisted: unknown):
     // `input` is still required by the type even when a snapshot supersedes it;
     // xstate uses the snapshot's own context, so this value is never read.
     : createActor(productionMachine(db, nodeId), { input: { nodeId, goal }, snapshot: persisted as never });
+  // A restored node's earlier dispatches are gone with the daemon that made
+  // them; the ledger picks it up from here rather than reporting nothing.
+  ledger.startTask(nodeId);
   actor.subscribe((snapshot) => {
     const now = new Date().toISOString();
     updateNodeState(db, nodeId, String(snapshot.value), now);
@@ -542,6 +1339,12 @@ function createAndRun(db: Db, nodeId: string, goal: string, persisted: unknown):
       // on. Recording it here, at the one point that knows the verdict, is what
       // makes `evidence` more than a field that was always empty.
       recordOutcomeInMemory(db, nodeId, snapshot.value === 'COMPLETE', now);
+      // One efficiency record per task, at the one point that knows the verdict.
+      // CANCELLED is 'partial', not a failure: the work stopped because someone
+      // stopped it, and counting that against the success rate would make every
+      // change look worse the more often people intervened.
+      recordEfficiency(db, nodeId, snapshot.value === 'COMPLETE' ? 'success'
+        : snapshot.value === 'CANCELLED' ? 'partial' : 'failure');
       closeDefinitionOfDone(db, nodeId, String(snapshot.value), now);
       const evidence = listArtifactsForNode(db, nodeId).map((a) => a.id);
       for (const commitment of listCommitmentsForNode(db, nodeId)) {

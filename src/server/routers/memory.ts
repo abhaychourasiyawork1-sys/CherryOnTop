@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { router, publicProcedure } from '../trpc.js';
 import { getRuntimeStats, listMemory, setOutcomeVetoed, VETOED_KIND, type RunOutcome } from '../../db/queries/memory.js';
 import { getNode } from '../../db/queries/nodes.js';
+import { tokensByRole } from '../../db/queries/tokens.js';
 
 export const memoryRouter = router({
   /** What the organization has learned about each runtime it has actually used. */
@@ -51,4 +52,8 @@ export const memoryRouter = router({
         .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
         .slice(0, input.limit),
     ),
+
+  tokens: publicProcedure
+    .input(z.object({ caseId: z.string().optional() }).optional())
+    .query(({ input, ctx }) => tokensByRole(ctx.db, input?.caseId)),
 });

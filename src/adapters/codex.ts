@@ -1,5 +1,5 @@
 import { createInterface } from 'node:readline';
-import type { RuntimeAdapter, StructuredEvent, ToolGrant } from './adapter.js';
+import type { RuntimeAdapter, StructuredEvent, ToolGrant, BuildCommandOptions } from './adapter.js';
 
 /** The second real adapter. Its existence is the proof that RuntimeAdapter is an
  *  interface and not a description of Claude Code: everything above it —
@@ -8,7 +8,7 @@ import type { RuntimeAdapter, StructuredEvent, ToolGrant } from './adapter.js';
 export const codexAdapter: RuntimeAdapter = {
   name: 'codex',
 
-  buildCommand(goal: string, grant?: ToolGrant): string[] {
+  buildCommand(goal: string, grant?: ToolGrant, opts: BuildCommandOptions = {}): string[] {
     // `exec` is Codex's non-interactive mode; --json makes it emit one JSON
     // object per line, the same shape of stream claude-code.ts consumes.
     // --skip-git-repo-check: the sandbox mounts a plain directory, which is not
@@ -18,8 +18,20 @@ export const codexAdapter: RuntimeAdapter = {
     // Claude Code's allowlist, and honestly so — the per-tool half of the
     // contract is enforced by execute-step's stream check for this runtime.
     const sandbox = grant?.readOnly ? ['--sandbox', 'read-only'] : [];
-    return ['codex', 'exec', '--json', '--skip-git-repo-check', ...sandbox, goal];
+    // Codex exec takes --model; it has no turn cap or append-system-prompt flag,
+    // so maxTurns / systemPrompt are dropped here and (for the per-tool half)
+    // still enforced by execute-step's stream check.
+    const model = opts.model ? ['--model', opts.model] : [];
+    return ['codex', 'exec', '--json', '--skip-git-repo-check', ...sandbox, ...model, goal];
   },
+
+  // The role model tiers default to Claude aliases (haiku, sonnet, opus). Codex
+  // exec takes --model, so the flag itself survives an argv probe — but the
+  // model it names does not exist here, and the CLI dies before it emits the
+  // final `result` event the one-shot no-model fallback reads. So the refusal
+  // has to happen before dispatch, and the adapter is the only thing that knows
+  // its own runtime's models.
+  servesModel: (model: string) => !/^(haiku|sonnet|opus|claude)/i.test(model.trim()),
 
   // Codex's lines carry their discriminator as `type` at the top level, exactly
   // as Claude Code's do, so the same wrap-the-raw-object-as-payload rule holds.

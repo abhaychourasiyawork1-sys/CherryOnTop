@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterEach } from 'vitest';
 import { assessDecomposition } from './decompose.js';
 
 const of = (goal: string) => assessDecomposition(goal);
@@ -16,10 +16,53 @@ describe('deciding whether work needs splitting at all', () => {
     expect(wordy.complexity).toBe('low');
   });
 
-  it('splits work asked for across many things, however tersely', () => {
-    // Terse but genuinely parallel — the old rule called this "low".
-    expect(of('Audit every module for bugs').worthSplitting).toBe(true);
-    expect(of('Review all services across the codebase').complexity).toBe('high');
+  // A coherent global task is the case that cost a measured run 26% of a
+  // five-hour usage window: the word "codebase" alone scored 2, crossed the
+  // split threshold, and bought a planner plus five sonnet children to answer
+  // one question. Breadth makes a goal big, not divisible.
+  describe('coherent global tasks stay one execution', () => {
+    const cases = [
+      'Review the codebase and find bugs. Do not modify anything.',
+      'Audit the repository for security issues',
+      'Understand why the application is slow',
+      'Analyze the architecture and identify flaws',
+      'Investigate the root cause of this bug',
+      'Audit every module for bugs',
+      'Debug the failure across all services',
+    ];
+    for (const goal of cases) {
+      it(`does not split: ${goal}`, () => {
+        expect(of(goal).worthSplitting).toBe(false);
+      });
+    }
+
+    it('keeps them on the strong model even though they do not split', () => {
+      // The whole point of scoring difficulty separately: `modelChoiceFor`
+      // routes on this complexity, so collapsing a broad review to "low" would
+      // quietly demote a whole-codebase bug hunt to the fast tier.
+      expect(of('Review all services across the codebase').complexity).toBe('high');
+      expect(of('Review the codebase and find bugs. Do not modify anything.').complexity)
+        .not.toBe('low');
+    });
+  });
+
+  it('flags investigative work, so routing does not cheapen a diagnosis', () => {
+    expect(of('Investigate the root cause of this bug').investigative).toBe(true);
+    expect(of('Review the codebase and find bugs. Do not modify anything.').investigative).toBe(true);
+    expect(of('Understand why the application is slow').investigative).toBe(true);
+    expect(of('Rename the variable').investigative).toBe(false);
+  });
+
+  it('still splits genuinely independent workstreams', () => {
+    const multi = of('Fix authentication, optimize the DB query layer, update the frontend, and add API tests');
+    expect(multi.worthSplitting).toBe(true);
+    expect(multi.complexity).toBe('high');
+  });
+
+  it('obeys an explicit request to parallelise, whatever the scope reads like', () => {
+    // Scope inference must not overrule the user saying so in words.
+    expect(of('Review the codebase in parallel across several agents').worthSplitting).toBe(true);
+    expect(of('Split this across multiple agents: audit the repo').worthSplitting).toBe(true);
   });
 
   it('splits several distinct deliverables in one request', () => {
@@ -44,11 +87,32 @@ describe('deciding whether work needs splitting at all', () => {
     expect(Object.keys(result.signals)).toEqual([
       'breadth_terms', 'separate_items', 'distinct_work_types',
       'named_single_targets', 'decomposition_score',
+      // Why it did or did not split, separately from how hard it judged the
+      // work — the two were one number, and that was the bug.
+      'split_score', 'coherent_single_task', 'explicit_split_request',
     ]);
     expect(result.signals.breadth_terms).toBeGreaterThan(0);
   });
 
   it('handles an empty goal without throwing', () => {
     expect(of('').worthSplitting).toBe(false);
+  });
+});
+
+describe('the rollout switch', () => {
+  afterEach(() => { delete process.env.ORG_EFFICIENCY_MODE; });
+
+  it('keeps the old breadth-splits rule when efficiency is disabled', () => {
+    // The before arm of `bench/run.mjs efficiency` has to be the exact prior
+    // behaviour, or the comparison measures two different things.
+    process.env.ORG_EFFICIENCY_MODE = 'disabled';
+    expect(of('Review the codebase and find bugs. Do not modify anything.').worthSplitting).toBe(true);
+  });
+
+  it('records the new signals even in shadow mode, where it does not act on them', () => {
+    process.env.ORG_EFFICIENCY_MODE = 'shadow';
+    const shadow = of('Review the codebase and find bugs. Do not modify anything.');
+    expect(shadow.worthSplitting).toBe(true);
+    expect(shadow.signals.coherent_single_task).toBe(1);
   });
 });

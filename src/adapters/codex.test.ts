@@ -52,3 +52,24 @@ describe('the tool grant reaches the runtime', () => {
     expect(codexAdapter.buildCommand('do it')).toEqual(codexAdapter.buildCommand('do it', undefined));
   });
 });
+
+describe('codexAdapter dispatch options', () => {
+  it('maps opts.model to --model', () => {
+    const cmd = codexAdapter.buildCommand('do it', undefined, { model: 'gpt-5-mini' });
+    expect(cmd[cmd.indexOf('--model') + 1]).toBe('gpt-5-mini');
+    expect(cmd.at(-1)).toBe('do it');
+  });
+
+  it('ignores maxTurns and systemPrompt (Codex exec has no equivalent flag)', () => {
+    const cmd = codexAdapter.buildCommand('do it', undefined, { maxTurns: 3, systemPrompt: 'x' });
+    expect(cmd).not.toContain('--max-turns');
+    // Not a substring check on the joined command: 'codex' and 'exec' both
+    // contain the letter 'x', so `cmd.join(' ').includes('x')` is true even
+    // when systemPrompt is correctly dropped. Check for 'x' as its own token.
+    expect(cmd).not.toContain('x');
+  });
+
+  it('adds no --model when opts is omitted', () => {
+    expect(codexAdapter.buildCommand('do it')).not.toContain('--model');
+  });
+});

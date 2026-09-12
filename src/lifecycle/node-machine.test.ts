@@ -4,6 +4,7 @@ import { nodeMachine } from './node-machine.js';
 import type { ExecuteStepResult } from '../execution/execute-step.js';
 import type { IntelligenceBundle } from '../intelligence/coordinator.js';
 import type { DecideExecutionResult } from '../engines/decide-execution.js';
+import { ZERO_USAGE } from '../execution/tokens.js';
 
 function machineWithMocks(overrides: {
   assessUncertainty?: Partial<IntelligenceBundle> & { sufficientContext: boolean; complexity: 'low' | 'medium' | 'high' };
@@ -17,8 +18,8 @@ function machineWithMocks(overrides: {
         ...(overrides.assessUncertainty ?? { sufficientContext: true, complexity: 'low' as const }),
       })),
       decideExecution: fromPromise(async () => overrides.decideExecution ?? { outcome: 'SELF_EXECUTE' as const, breakdown: {} }),
-      executeStep: fromPromise(async (): Promise<ExecuteStepResult> => ({ message: 'ok', events: [], ...(overrides.executeStep ?? { succeeded: true }) })),
-      delegateToChild: fromPromise(async (): Promise<ExecuteStepResult> => ({ succeeded: true, message: 'ok', events: [] })),
+      executeStep: fromPromise(async (): Promise<ExecuteStepResult> => ({ message: 'ok', events: [], usage: { ...ZERO_USAGE }, ...(overrides.executeStep ?? { succeeded: true }) })),
+      delegateToChild: fromPromise(async (): Promise<ExecuteStepResult> => ({ succeeded: true, message: 'ok', events: [], usage: { ...ZERO_USAGE } })),
       escalate: fromPromise(async () => 'approval-1'),
     },
   });
@@ -142,11 +143,11 @@ describe('nodeMachine', () => {
         assessUncertainty: fromPromise(async (): Promise<IntelligenceBundle> => ({ sufficientContext: true, complexity: 'high', worthSplitting: true, signals: {} })),
         decideExecution: fromPromise(async (): Promise<DecideExecutionResult> => ({ outcome: 'DELEGATE', breakdown: {} })),
         delegateToChild: fromPromise(async (): Promise<ExecuteStepResult> => ({
-          succeeded: false, notDelegatable: true, message: 'did not split', events: [],
+          succeeded: false, notDelegatable: true, message: 'did not split', events: [], usage: { ...ZERO_USAGE },
         })),
         executeStep: fromPromise(async (): Promise<ExecuteStepResult> => {
           executed.push('self');
-          return { succeeded: true, message: 'ok', events: [] };
+          return { succeeded: true, message: 'ok', events: [], usage: { ...ZERO_USAGE } };
         }),
         escalate: fromPromise(async () => 'approval-1'),
       },

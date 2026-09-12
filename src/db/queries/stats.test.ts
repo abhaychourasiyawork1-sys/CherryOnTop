@@ -41,7 +41,8 @@ describe('getOrgStats', () => {
     // subtraction previously counted it as still working.
     expect(stats.cancelled).toBe(1);
     expect(stats.active).toBe(1);
-    expect(stats.totalCostUsd).toBeCloseTo(0.07, 5);
+    appendEvent(db, { nodeId: 'n1', type: 'plan.result', payload: { total_cost_usd: 0.01 }, createdAt: 't0' });
+    expect(getOrgStats(db).totalCostUsd).toBeCloseTo(0.08, 5);
     // Only the still-pending one counts — the status line reports what is
     // blocked on the user right now, not everything ever escalated.
     expect(stats.pendingApprovals).toBe(1);
@@ -60,8 +61,13 @@ describe('per-node cost', () => {
     appendEvent(db, { nodeId: 'n1', type: 'exec.result', payload: { total_cost_usd: 0.01 }, createdAt: 't0' });
     appendEvent(db, { nodeId: 'n1', type: 'exec.assistant', payload: { total_cost_usd: 99 }, createdAt: 't0' });
     appendEvent(db, { nodeId: 'n2', type: 'exec.result', payload: { total_cost_usd: 5 }, createdAt: 't0' });
+    // Planning and synthesis are real dispatches that spend real money — a
+    // measured run's planner and synthesis cost $0.077 between them. Counting
+    // only `exec.` under-reported what a node spent against its own budget.
+    appendEvent(db, { nodeId: 'n1', type: 'plan.result', payload: { total_cost_usd: 0.04 }, createdAt: 't0' });
+    appendEvent(db, { nodeId: 'n1', type: 'synth.result', payload: { total_cost_usd: 0.03 }, createdAt: 't0' });
 
-    expect(getCostForNodes(db, ['n1'])).toBeCloseTo(0.06, 5);
+    expect(getCostForNodes(db, ['n1'])).toBeCloseTo(0.13, 5);
     expect(getCostForNodes(db, [])).toBe(0);
   });
 

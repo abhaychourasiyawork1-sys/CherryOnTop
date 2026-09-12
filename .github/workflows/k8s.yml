@@ -1,0 +1,33 @@
+name: Kubernetes
+
+on:
+  pull_request:
+
+jobs:
+  kind:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - uses: helm/kind-action@v1
+        with:
+          cluster_name: cherryontop-ci
+      - run: npm ci
+      - run: npm run test:k8s -- --reporter=junit --outputFile=test-results/k8s.xml
+      - name: Collect cluster diagnostics
+        if: always()
+        run: |
+          mkdir -p test-results/k8s
+          kubectl get nodes,pods,jobs,events -A -o wide > test-results/k8s/cluster-state.txt || true
+          kubectl get events -A --sort-by=.lastTimestamp > test-results/k8s/events.txt || true
+          kubectl logs -n org-exec -l app=org-exec --all-containers --tail=-1 > test-results/k8s/pod-logs.txt || true
+      - name: Upload diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: k8s-test-results
+          path: test-results/
+          if-no-files-found: ignore

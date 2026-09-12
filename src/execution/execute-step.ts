@@ -7,6 +7,7 @@ import type { RuntimeAdapter, StructuredEvent, ToolGrant } from '../adapters/ada
 import { toolNamesFromEvent } from './tool-calls.js';
 import { isToolAllowed } from '../engines/enforce-tools.js';
 import { rateLimitFromEvents, describeRateLimit } from './rate-limit.js';
+import { usageFromEvents } from './tokens.js';
 
 export interface ExecuteStepInput {
   nodeId: string;
@@ -33,6 +34,12 @@ export interface ExecuteStepInput {
    *  finishes. This is what makes live output possible; node-actor-manager.ts
    *  uses it to append to the DB and publish to the event bus in real time. */
   onEvent?: (event: StructuredEvent) => void;
+  /** Per-dispatch model override (role-tiered by the caller). Omitted → runtime default. */
+  model?: string;
+  /** Hard turn cap for this dispatch. */
+  maxTurns?: number;
+  /** Appended to the runtime's system prompt. */
+  systemPrompt?: string;
 }
 
 export interface ExecuteStepResult {
@@ -44,6 +51,24 @@ export interface ExecuteStepResult {
    *  the wrong call, and the node should do the work itself instead of retrying
    *  the same decision. */
   notDelegatable?: boolean;
+  /** Token counts for this dispatch, read from the runtime's final result
+   *  event. All zeros when the runtime reported none. */
+  usage: import('./tokens.js').DispatchUsage;
+  /** Milliseconds from asking the cluster for a Job to the runtime's first
+   *  structured event: scheduling, image pull, container start and agent boot,
+   *  all of which is spent before any work happens.
+   *
+   *  Telemetry, and only telemetry. Whether warm pools, snapshots or workspace
+   *  forks are worth their complexity is a question about how large this is
+   *  relative to the dispatch it sits inside, and nothing measured it before —
+   *  so the argument was being had from architecture enthusiasm rather than
+   *  from a number. Measuring it enables nothing on its own, which is the
+   *  point.
+   *
+   *  Absent on a synthetic result — a delegation that never opened a sandbox has
+   *  no startup time, and reporting 0 there would flatter the ratio with runs
+   *  that never ran. */
+  startupMs?: number;
 }
 
 export interface ExecuteStepDeps {
@@ -123,7 +148,11 @@ export async function executeStep(
       nodeId: input.nodeId,
       namespace: input.namespace,
       image: input.image ?? RUNNER_IMAGE,
-      command: input.adapter.buildCommand(input.goal, input.grant),
+      command: input.adapter.buildCommand(input.goal, input.grant, {
+        model: input.model,
+        maxTurns: input.maxTurns,
+        systemPrompt: input.systemPrompt,
+      }),
       worktreePath: input.worktreePath,
       secretName,
       includeOauthCredentials: 'CLAUDE_CREDENTIALS_JSON' in input.credentials,
@@ -131,6 +160,11 @@ export async function executeStep(
 
     const jobName = await d.createJob(job);
     try {
+      const requestedAt = Date.now();
+      // The first event is the first evidence the agent is actually running.
+      // Null until then, so a Job that produced nothing is charged the whole
+      // dispatch rather than a flattering zero.
+      let firstEventAt: number | null = null;
       const collected: StructuredEvent[] = [];
       // Counts every raw line, parseable or not, so the post-completion backfill
       // can resume at the right offset.
@@ -142,6 +176,7 @@ export async function executeStep(
         linesSeen++;
         const event = input.adapter.parseLine(line);
         if (!event) return;
+        firstEventAt ??= Date.now();
         collected.push(event);
         if (input.grant?.allowedTools) {
           for (const tool of toolNamesFromEvent(event)) {
@@ -191,6 +226,8 @@ export async function executeStep(
         succeeded: jobResult.succeeded,
         message: jobResult.succeeded ? jobResult.message : (runtimeError(collected) ?? jobResult.message),
         events: collected,
+        usage: usageFromEvents(collected),
+        startupMs: Math.max(0, (firstEventAt ?? Date.now()) - requestedAt),
       };
     } finally {
       await d.deleteJob(jobName, input.namespace);

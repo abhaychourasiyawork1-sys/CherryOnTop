@@ -131,6 +131,10 @@ box before you press Start, so you always know the blast radius in advance.
 
 Two boundaries are enforced by the platform: the **budget**, and the **tools**. A tool a
 mandate does not grant is refused before the call happens, and the refusal is recorded.
+The budget is checked at the same place a tool call is: immediately before a sandbox
+opens. An agent that has already spent its share gets no further sandbox, and says so in
+its transcript rather than failing silently. A mandate with no budget set (`$0`) means
+nobody costed it, not that it is out of money, so it is not stopped on spend.
 **Instructions are not enforced** — they are told to the agent, and the window labels them
 that way everywhere it shows them.
 
@@ -184,6 +188,226 @@ The scriptable commands still work standalone if you prefer them or need them in
   cannot be, and nothing in the product claims otherwise.
 
 If you're logged in via `claude login`, that's it — no daemon-restart gotchas, since the subscription's credentials are read fresh from disk on every single run. The API-key path is different: the daemon only captures `ANTHROPIC_API_KEY` when it starts, so if you export it after the daemon is already running, `org run` notices and restarts the daemon for you — you don't have to. With neither available, `org run` refuses rather than dispatching work that would fail authentication several minutes later.
+
+## Token efficiency
+
+The runtime tiers models by role, caps how long planning and synthesis can run, and caches
+plans — all to spend fewer tokens without changing what a run produces. Every knob below is
+an `ORG_*` environment variable with a baked-in default; there is no config file. **The
+daemon captures its environment once at start**, so changing one of these takes effect on
+the next `org daemon` restart — the same contract as `ORG_RUNNER_IMAGE`.
+
+| Variable | Default | What it does |
+|---|---|---|
+| `ORG_MODEL_PLAN` | `haiku` | Model used for planning dispatches |
+| `ORG_MODEL_EXECUTE` | *(none — runtime default)* | Model used for execution dispatches |
+| `ORG_MODEL_SYNTHESIZE` | `haiku` | Model used for synthesis dispatches |
+| `ORG_MAX_TURNS_PLAN` | `2` | Turn cap for planning dispatches. Planning is look-then-answer: it is handed a goal-aware repository map and asked for a JSON array, not asked to explore |
+| `ORG_MAX_TURNS_SYNTHESIZE` | `1` | Turn cap for synthesis dispatches |
+| `ORG_MAX_TURNS_EXECUTE` | `60` | Circuit breaker on work dispatches. Cost inside a dispatch grows superlinearly in turns — the conversation prefix is re-read on every one — and this was the only unbounded term in the system. The agent is told the number so it summarises at the limit rather than being cut off at it. `0` removes the cap |
+| `ORG_PLAN_CACHE_TTL_HOURS` | `24` | How long a cached plan stays valid; `0` disables the plan cache |
+| `ORG_RESULT_CACHE_TTL_HOURS` | `24` | How long a finished **read-only** dispatch's answer may be served again, for the same goal against the same committed HEAD under the same model and grant; `0` disables result reuse |
+| `ORG_REPO_MAP_TOKENS` | `6000` | **Ceiling** — not a target — on the repository context prefixed onto a dispatch; `0` disables it |
+| `ORG_ROLE_PROMPTS` | on | Role-scoped system prompts (below); `off`/`0`/`false`/`no` disable |
+| `ORG_EFFICIENCY_MODE` | `enabled` | `enabled` \| `shadow` \| `disabled` — see **Rollout** below |
+| `ORG_MODEL_FAST` | `haiku` | Model for the fast tier |
+| `ORG_MODEL_STANDARD` | *(none — runtime default)* | Model for the standard tier |
+| `ORG_MODEL_DEEP` | *(none — off)* | Model for the deep tier. Unset means routing never tiers **up** |
+| `ORG_MAX_CHILD_JOBS` | `2` | Most children one node may fan out to. A node's own `max_child_count` authority can only lower this, never raise it |
+
+An empty value, or `none`/`default`/`off`, on any `ORG_MODEL_*` variable means "pass no
+`--model` flag" — the runtime's own default model is used instead.
+
+**Repository context.** On the first dispatch against a given worktree HEAD the runtime
+scans the repo once — every tracked file plus its top-level symbols — and caches that scan
+by HEAD. What is cached is the *unbudgeted* scan, so every node sitting on the commit shares
+one `git ls-files` and one pass over the sources, while each still gets a different view of
+it. Turning `ORG_REPO_MAP_TOKENS` down therefore bites on the next dispatch rather than the
+next commit, by construction.
+
+Each dispatch then selects from that scan the part its **goal** is about: goal terms are
+matched against path segments and camelCase-split symbol names, and files nothing ties to
+the goal are dropped rather than used to top the budget up. `ORG_REPO_MAP_TOKENS` is a
+ceiling, not a target — a one-file fix should and does come in far under it. Both planning
+and execute dispatches get context; planning previously had none and spent its turns
+rediscovering the repository.
+
+Two things keep this from being lossy in the harmful direction. A directory skeleton is
+always included (capped at a share of the budget), so a goal that matches nothing still
+leaves the agent knowing the repo's shape. And the wrapper states plainly that the listing
+is partial and that other files exist — an agent told "here is a map of the repository"
+would reasonably read an absent file as a missing one.
+
+Each dispatch publishes a `context.receipt` event recording the budget, how many files were
+selected and dropped, whether anything relevant was truncated, and whether the selection was
+actually applied. Since a dispatch is an `argv` array with nowhere to attach metadata, the
+event log is that channel. If selection ever throws, it degrades **upward** — to the whole
+inventory rendered to the same ceiling, which is what every dispatch received before.
+
+Set `ORG_REPO_MAP_TOKENS=0` to turn context off entirely.
+
+**Model routing.** Beyond the fixed per-role choice, execution dispatches pick a tier from
+the goal's assessed complexity: low-complexity work runs on the fast tier, and so does any
+node that has spent more than 80% of its budget. Routing is deliberately asymmetric — it
+tiers **down** freely, and tiers **up** only to a model you have named in `ORG_MODEL_DEEP`.
+A downgrade that goes wrong is caught by the model-rejection fallback below; an upgrade that
+goes wrong is a bill nobody asked for. An explicit `ORG_MODEL_PLAN`/`_EXECUTE`/`_SYNTHESIZE`
+overrides routing outright. Every routing decision is written to memory as a `model_route`
+row with its reason.
+
+**Deciding.** Every choice goes through one contract in the same order: hard gates
+(approval, budget) before anything, because a boundary a good enough score can buy is not
+a boundary; then free things, because scoring something already held is a cost paid to
+discover there was no cost; then economics, always against a named alternative. Each
+choice publishes a `decision.receipt` event naming what it chose, what it nearly chose,
+and what each would have cost. The arithmetic is unchanged — it still comes from
+`decideExecution`, `routeModel` and `decideIntegration`.
+
+**Turn budget.** A dispatch's cost does not grow with its turn count, it grows *faster*
+than its turn count: the conversation prefix is re-read on every turn, so a measured 42-turn
+run spent 1.77M cache-read tokens against a 19-turn one's 652k. Work dispatches were left
+uncapped on the reasoning that a whole-codebase investigation needs its turns — true, and it
+left the dominant term in the bill unbounded. `ORG_MAX_TURNS_EXECUTE` (default 60) is a
+circuit breaker sitting above every turn count measured here, so it costs nothing today and
+bounds the tail. The agent is *told* the number in its role prompt: a run cut off at a cap
+reports "max turns exceeded" and loses what it found, while one that knows its budget
+summarises inside it.
+
+**Result reuse.** The same read-only goal, under the same model and the same grant, gets the
+answer the last run produced instead of a second sandbox — applied where the money is: a
+cached plan skips a dispatch measured at $0.045, a cached read-only execution skips one
+measured at $0.95. Strictly read-only, because "we did not re-run it" is only equivalent to
+"we re-ran it" when there were no side effects to lose. A hit publishes the answer as a
+`node.answer` event (the reused run leaves no transcript of its own), counts as *work
+avoided* rather than a zero-token dispatch, and reports what that work cost the last time it
+was actually paid for. `org tokens` shows the hits; `ORG_RESULT_CACHE_TTL_HOURS=0` turns it
+off.
+
+What makes a reused answer still true is **not** the commit it was produced at. Keying on
+HEAD is correct and blunt: one commit to a README would invalidate every cached answer about
+every module, which in a repository anyone is working in is a cache that never hits. Validity
+is instead the files the run actually read — taken from its own event stream, so it is the
+run's evidence rather than a guess — checked against the current tree file by file. A
+directory it *searched* is checked as a set, so a module added to an audited package
+invalidates the audit rather than being silently omitted from it. Two things make it fall
+back to requiring the exact commit: a `Bash` call, which can read anything we cannot name,
+and a stream we learned nothing from. A dirty tree is never reusable at all.
+
+**Critical-path scheduling.** The sandbox queue holds two things that are not comparable. A
+planning dispatch is capped at 2 turns and nothing can start until it answers; a synthesis
+dispatch is capped at 1 turn and is the last thing between a person and their answer; a work
+dispatch may run 60 turns and blocks only itself. Coordination dispatches therefore take a
+freed slot ahead of queued work dispatches. Ordering only — the concurrency ceiling
+(`ORG_MAX_CONCURRENT_SANDBOXES`) is untouched, so the worst this degrades to is the
+first-in-first-out behaviour it replaced.
+
+**The context graph.** Every dispatch indexes its own tool calls as versioned,
+content-addressed context objects — pointing at the event rows that already hold their
+output rather than copying them. Small output is inlined so an expansion can always be
+served; large output is referenced. Each observation also gets a reduced view stored
+beside it, so choosing a representation does not re-run every reducer. Security scope is
+part of the content hash, which makes "an answer produced under a wider grant must not be
+served to a narrower agent" a property of identity rather than a check somebody has to
+remember. `node.executionGraph` reports what is ready, what is blocked and on what, and
+how much finished work was reused rather than repeated.
+
+**Tool projections.** Observation output is reduced deterministically — no model in the
+critical path — by whichever reducer understands it: git, search, test runners,
+compilers, filesystem, container and package-manager logs, with an explicit generic
+fallback that collapses repetition and names the gap it leaves. Measured on representative
+fixtures by `npm run bench:deterministic`: 99.9% off a 2001-test log, 81% off a 200-file
+diff, 94% off an unrecognised log. Every reduced view keeps a ref to the full output.
+**Scope note:** in this runtime the agent reads its own tool output inside the sandbox
+before the log line exists, so this shrinks what the parent, the projection and the store
+pay — not the child's own prompt.
+
+**Replaying a decision.** `org decision <nodeId> --replay` re-runs each recorded decision
+through the same arithmetic that produced it and reports whether today's code still agrees,
+naming the single term that would have flipped it. Free — the decisions were formulas, not
+model calls. A decision taken on a rule rather than a score is reported as *not replayable*
+rather than as reproduced: announcing an audit that never happened is worse than announcing
+none.
+
+**Conditional synthesis.** A delegating node used to buy a synthesis sandbox whenever any
+child had said anything. Children now close their report with a small JSON envelope (status,
+summary, findings, changed files, uncertainties, confidence) alongside their prose, which
+lets the parent see what they said without paying a model to read it. The parent then routes:
+one reporter returns its own answer; compatible, self-declared-complete results merge
+deterministically at zero tokens; and a model is kept for what genuinely turns on judgement
+— two children that edited the same file, a child that half finished or is unsure of itself,
+or prose nothing can parse. The rule for reaching the model is deliberately generous: a merge
+that guesses is far worse than a synthesis call that was not strictly necessary. A child that
+ignores the envelope request, or emits something malformed, degrades to exactly the old prose
+merge.
+
+**Rollout.** `ORG_EFFICIENCY_MODE` is one switch over context selection, conditional
+synthesis and model routing together:
+
+- `disabled` — the behaviour before this work: the full repository map on every dispatch,
+  unconditional synthesis, fixed per-role models.
+- `shadow` — every decision is computed and recorded (`context.receipt` events with
+  `applied: false`, `model_route` and `integration_decision` memory rows) but **not acted
+  on**, so the run stays byte-comparable to a `disabled` one. This is how you see what the
+  change would do before taking it.
+- `enabled` (default) — the decisions are acted on.
+
+Because it is a single switch, it is also the A/B knob: `node bench/run.mjs efficiency`
+runs the fixed goal set with it `enabled` and `disabled`. **That dispatches real, paid model
+calls.**
+
+**Measuring it.** Every task writes one `efficiency_record` to memory when it reaches a
+terminal state: tokens split into input/output/cached, the coordination and recovery
+*shares* of them, dispatch counts, time spent getting a container ready rather than working
+(`executionOverheadRatio` — the measurement that decides whether warm pools and snapshots
+would be machinery bought to save seconds on a path that costs minutes; it enables nothing on
+its own, which is the point), the dispatches that were avoided and what those avoided
+dispatches had cost when they were last actually paid for, queue time separated
+from dispatch time, and end-to-end wall clock. `workAvoidedRatio` — dispatches avoided over
+dispatches considered — is the direct answer to "is this organization getting cheaper as it
+accumulates reusable work?". `src/efficiency/objective.ts` turns a set of
+those into a verdict — tokens per **successful** task, p50/p95 latency over every task, and
+a normalized objective `J` — behind two hard gates that no weighting can trade away: quality
+must not regress, and success rate must not fall by more than epsilon. An optimized run that
+was never quality-scored fails the gate rather than passing it by silence.
+
+**Role-scoped system prompts.** With `ORG_ROLE_PROMPTS` on, three of the runtime's four
+lifecycle stages — `plan`, `execute`, `synthesize` — get a system prompt (the shared
+"harness constitution" plus a stage-specific stanza, defined in `src/prompts/roles.ts`)
+delivered via the runtime's `--append-system-prompt`, instead of that framing being
+repeated in the user prompt on every turn. A fourth role, `verify`, has a stanza defined
+but is not wired to any dispatch. Turning it off (`off`/`0`/`false`/`no`) folds that
+framing back into the prompt text instead — with one gap, described next.
+
+The same applies on a runtime that has no `--append-system-prompt` at all (Codex exec is
+the current example, and silently drops appended system prompts). Which route is used is
+decided per dispatch by `honoursSystemPrompt()` probing the adapter, rather than by
+hardcoding runtime names, and the framing appears exactly once either way. What goes
+inline differs by stage:
+
+- `plan` and `synthesize` fold in their **whole** stanza, so nothing is lost.
+- `execute` folds in only the **standing constraints** from the node's mandate. Its stanza
+  — the harness constitution, the allowed-tools sentence, and the definition of done —
+  rides the system prompt only, and is not delivered when role prompts are off or when the
+  run lands on a system-prompt-less runtime. Constraints always arrive; the rest of the
+  execute framing does not. If you depend on the definition of done reaching the agent,
+  leave `ORG_ROLE_PROMPTS` on and check `org tree` for which runtime a node selected.
+
+A tiered-down model is only sent to a runtime that can actually serve it: the adapter is
+asked first (`modelFor()`), so a Claude alias like Haiku is never sent to Codex, which
+would fail the whole dispatch — no plan, or no combined answer. If the model is one the
+runtime accepts but your plan cannot call, all three roles fall back to a one-shot retry
+without `--model`, which costs an extra rejected request every time. `org doctor` now has a
+**callable models** row that probes both Haiku and Sonnet with your current auth and tells
+you up front which one (if either) will hit this fallback. That probe **makes two real,
+billable model calls and can take up to ~40 seconds**, so unlike the rest of `org doctor`
+it spends a little of your quota each time you run it.
+
+### `org tokens [caseId]`
+
+Prints per-role, per-model token usage: number of dispatches, input/output/cache-read
+tokens and cost, with a total row and how many dispatches were served from the plan cache
+instead of a fresh model call. Pass a case id to scope it to one case; omit it for
+everything recorded.
 
 ## What it actually does
 

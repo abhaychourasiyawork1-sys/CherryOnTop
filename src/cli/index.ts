@@ -11,6 +11,7 @@ import { registerApprovalsCommand } from './commands/approvals.js';
 import { registerDashboardCommand } from './commands/dashboard.js';
 import { registerGuiCommand } from './commands/gui.js';
 import { registerVerifyCommand } from './commands/verify.js';
+import { registerTokensCommand } from './commands/tokens.js';
 
 const program = new Command();
 program.name('org').description('Accountable Agent Organization Runtime CLI');
@@ -26,5 +27,6 @@ registerApprovalsCommand(program);
 registerDashboardCommand(program);
 registerGuiCommand(program);
 registerVerifyCommand(program);
+registerTokensCommand(program);
 
 program.parseAsync(process.argv);

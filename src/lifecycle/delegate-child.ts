@@ -1,4 +1,5 @@
 import type { ExecuteStepResult } from '../execution/execute-step.js';
+import { ZERO_USAGE } from '../execution/tokens.js';
 import type { Authority } from '../schemas/node-contract.js';
 import { effectiveAuthority } from '../engines/authority.js';
 import { MIN_AGENT_BUDGET_USD } from '../engines/decide-execution.js';
@@ -7,6 +8,15 @@ export interface DelegateInput {
   parentId: string;
   goal: string;
   approvedBudgetUsd?: number;
+  /** What the parent knows that its children should be told: its standing
+   *  constraints, the turn budget they will run under, and the context its own
+   *  projection already found relevant. Absent means a child is dispatched
+   *  exactly as it was before envelopes existed. */
+  handoff?: {
+    constraints?: string[];
+    maxTurns?: number;
+    suggestedContext?: string[];
+  };
   /** The goals to hand out, one per child. Empty means the planner could not
    *  split the goal. */
   subgoals?: string[];
@@ -81,6 +91,9 @@ export function childAuthority(
 }
 
 export interface DelegateChildDeps {
+  /** Records what the parent addressed to this child. Optional: a deployment
+   *  with no envelope store dispatches children exactly as before. */
+  recordEnvelope?: (childId: string, goal: string, budgetUsd: number) => void;
   /** `siblingCount` rather than a budget: what a child may hold is derived from
    *  its parent and how many ways the work was split, so no caller is in a
    *  position to decide it. */
@@ -110,6 +123,7 @@ export async function delegateToChildren(
       notDelegatable: true,
       message: `This work was already split across ${input.existingChildren} agents. Finishing it directly rather than splitting it a second time.`,
       events: [],
+      usage: { ...ZERO_USAGE },
     };
   }
 
@@ -123,12 +137,16 @@ export async function delegateToChildren(
       notDelegatable: true,
       message: 'This goal did not split into independent pieces, so the agent is doing it directly.',
       events: [],
+      usage: { ...ZERO_USAGE },
     };
   }
 
   const children = subgoals.map((goal) => {
     const childId = deps.createChildNode(input.parentId, goal, subgoals.length, input.approvedBudgetUsd);
     deps.recordCommitment(childId, goal);
+    // Before the child starts, not after: the envelope is what its first
+    // dispatch reads, and a child that started first would read nothing.
+    deps.recordEnvelope?.(childId, goal, input.approvedBudgetUsd ?? 0);
     deps.startChild(childId, goal);
     return { childId, goal };
   });
@@ -146,5 +164,6 @@ export async function delegateToChildren(
       ? `All ${results.length} delegated pieces completed`
       : `${failed.length} of ${results.length} delegated pieces did not succeed: ${failed.map((f) => f.goal).join('; ')}`,
     events: [],
+    usage: { ...ZERO_USAGE },
   };
 }

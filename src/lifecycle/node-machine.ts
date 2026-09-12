@@ -1,5 +1,6 @@
 import { setup, fromPromise, assign } from 'xstate';
 import type { ExecuteStepResult } from '../execution/execute-step.js';
+import { ZERO_USAGE } from '../execution/tokens.js';
 import type { IntelligenceBundle } from '../intelligence/coordinator.js';
 import type { DecideExecutionResult } from '../engines/decide-execution.js';
 
@@ -140,7 +141,7 @@ export const nodeMachine = setup({
         // failed result and the loop can re-plan around it.
         onError: {
           target: 'VERIFY',
-          actions: assign({ lastResult: ({ event }) => ({ succeeded: false, message: String(event.error), events: [] }) }),
+          actions: assign({ lastResult: ({ event }) => ({ succeeded: false, message: String(event.error), events: [], usage: { ...ZERO_USAGE } }) }),
         },
       },
     },
@@ -164,7 +165,7 @@ export const nodeMachine = setup({
         ],
         onError: {
           target: 'VERIFY',
-          actions: assign({ lastResult: ({ event }) => ({ succeeded: false, message: String(event.error), events: [] }) }),
+          actions: assign({ lastResult: ({ event }) => ({ succeeded: false, message: String(event.error), events: [], usage: { ...ZERO_USAGE } }) }),
         },
       },
     },

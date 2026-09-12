@@ -1,8 +1,11 @@
 node_modules/
 dist/
+coverage/
+test-results/
 *.db
 *.db-journal
 *.db-wal
 *.db-shm
 .org/
+.worktrees/
 node_modules
