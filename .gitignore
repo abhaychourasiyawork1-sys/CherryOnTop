@@ -5,4 +5,5 @@ dist/
 *.db-wal
 *.db-shm
 .org/
+.worktrees/
 node_modules
