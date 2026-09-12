@@ -285,9 +285,11 @@ function modelChoiceFor(db: Db, nodeId: string, role: DispatchRole, goal: string
   if (mode === 'disabled') return configured;
   try {
     const node = getNode(db, nodeId);
+    const assessment = assessDecomposition(goal);
     const route = routeModel({
       role,
-      complexity: assessDecomposition(goal).complexity,
+      complexity: assessment.complexity,
+      investigative: assessment.investigative,
       budgetUsd: node?.contract.authority.budget_usd ?? 0,
       spentUsd: getCostForNodes(db, [nodeId]),
     });
@@ -518,7 +520,22 @@ async function dispatch<T>(db: Db, nodeId: string, task: () => Promise<T>): Prom
   const queuedAt = Date.now();
   let startedAt = queuedAt;
   try {
-    return await sandboxes.run(() => { startedAt = Date.now(); return task(); });
+    return await sandboxes.run(() => {
+      startedAt = Date.now();
+      // Checked here, after the slot is granted rather than before it is asked
+      // for: a queued dispatch can wait minutes, and the node it belongs to can
+      // be cancelled in that time. `deleteNodeJobs` cannot help — there is no
+      // Job to delete yet — so without this the limiter hands a freed slot to a
+      // dead node and opens a sandbox nobody is waiting for. One measured run
+      // spent 9 of its 26 percentage points of the five-hour window exactly
+      // this way, on a child that started two seconds *after* being cancelled
+      // and ran 42 turns past the answer the user had already been given.
+      const state = getNode(db, nodeId)?.state;
+      if (state !== undefined && TERMINAL_STATES.has(state)) {
+        throw new Error(`Agent ${nodeId} was ${state.toLowerCase()} while waiting for a sandbox, so no sandbox was opened for it.`);
+      }
+      return task();
+    });
   } finally {
     pendingTiming.set(nodeId, { queuedMs: startedAt - queuedAt, dispatchMs: Date.now() - startedAt });
   }

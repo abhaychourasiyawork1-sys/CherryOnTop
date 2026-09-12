@@ -1,17 +1,28 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterEach } from 'vitest';
 import { buildPlanPrompt, parseSubgoals } from './plan.js';
 import { buildRolePrompt } from '../prompts/roles.js';
 
+afterEach(() => { delete process.env.ORG_MAX_CHILD_JOBS; });
+
 describe('buildPlanPrompt', () => {
   it('carries the goal and the number of agents available', () => {
+    process.env.ORG_MAX_CHILD_JOBS = '5';
     const prompt = buildPlanPrompt('Review the cart module', 3);
     expect(prompt).toContain('Review the cart module');
     expect(prompt).toContain('up to 3 independent agents');
   });
 
-  it('never asks for more agents than the runtime will run', () => {
-    expect(buildPlanPrompt('x', 99)).toContain('up to 5 independent agents');
+  it('asks for at most two agents by default, however much authority there is', () => {
+    // A fan-out is capped at the default child count, not at the node's
+    // authority: five children on a broad goal mostly re-read the same
+    // repository and cost five times one execution to do it.
+    expect(buildPlanPrompt('x', 99)).toContain('up to 2 independent agents');
     expect(buildPlanPrompt('x', 0)).toContain('up to 1 independent agents');
+  });
+
+  it('lets a deployment raise the cap deliberately', () => {
+    process.env.ORG_MAX_CHILD_JOBS = '4';
+    expect(buildPlanPrompt('x', 99)).toContain('up to 4 independent agents');
   });
 });
 
@@ -35,8 +46,15 @@ describe('parseSubgoals', () => {
   });
 
   it('takes the answer, not the example the prompt showed', () => {
+    process.env.ORG_MAX_CHILD_JOBS = '3';
     const text = 'Example: ["a", "b"]\n\nMy plan: ["Audit auth", "Add cart tests", "Fix the README"]';
     expect(parseSubgoals(text, 3)).toEqual(['Audit auth', 'Add cart tests', 'Fix the README']);
+  });
+
+  it('clamps a longer plan to the default child cap', () => {
+    // The planner is asked for at most two, but nothing stops a model from
+    // returning more; the cap has to hold on the way back in as well.
+    expect(parseSubgoals('["a","b","c","d"]', 99)).toEqual(['a', 'b']);
   });
 
   it('caps the split at the agents actually available', () => {

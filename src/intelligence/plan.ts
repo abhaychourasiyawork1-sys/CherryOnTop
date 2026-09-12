@@ -5,10 +5,15 @@
  *  thing and spending budget to do it. Decomposition is what makes delegation
  *  mean something. */
 
-export const MAX_SUBGOALS = 5;
+import { maxChildJobs } from '../config/efficiency.js';
+
+/** The ceiling on a fan-out, over and above whatever authority a node holds.
+ *  Read per call rather than captured at import: the daemon sets the
+ *  environment, and a module-load-time constant is not overridable by it. */
+export const MAX_SUBGOALS = (): number => maxChildJobs();
 
 export function buildPlanPrompt(goal: string, maxChildren: number): string {
-  const limit = Math.max(1, Math.min(maxChildren, MAX_SUBGOALS));
+  const limit = Math.max(1, Math.min(maxChildren, MAX_SUBGOALS()));
   // Task-specific content only. The role itself — plan, do not implement,
   // output a JSON array — is in the `plan` system stanza (src/prompts/roles.ts),
   // which is cached rather than resent with every turn.
@@ -30,7 +35,7 @@ export function buildPlanPrompt(goal: string, maxChildren: number): string {
  *  delegation at all. */
 export function parseSubgoals(text: string, maxChildren: number): string[] {
   if (!text) return [];
-  const limit = Math.max(0, Math.min(maxChildren, MAX_SUBGOALS));
+  const limit = Math.max(0, Math.min(maxChildren, MAX_SUBGOALS()));
 
   // The last array in the text: a model that reasons first and answers last
   // would otherwise have its example or its scratch work parsed as the answer.

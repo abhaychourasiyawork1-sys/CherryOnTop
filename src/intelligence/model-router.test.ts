@@ -72,6 +72,25 @@ describe('routeModel', () => {
     expect(routeModel({ role: 'plan', complexity: 'low', ...healthy }).model).toBe('claude-haiku-4-5-20251001');
   });
 
+  it('does not tier an investigation down to the fast model on complexity alone', () => {
+    // "Investigate the root cause of this bug" names no breadth and no file
+    // list, so it scores low — and low was the fast-tier trigger. A diagnosis is
+    // the last work that should be cheapened: a wrong root cause does not look
+    // like a failure the way a broken edit does.
+    const route = routeModel({ role: 'execute', complexity: 'low', investigative: true, ...healthy });
+    expect(route.tier).toBe('standard');
+    expect(route.reason).toContain('investigating');
+  });
+
+  it('still tiers plain low-complexity work down', () => {
+    expect(routeModel({ role: 'execute', complexity: 'low', investigative: false, ...healthy }).tier).toBe('fast');
+  });
+
+  it('lets budget pressure override that: out of money is out of money', () => {
+    const route = routeModel({ role: 'execute', complexity: 'low', investigative: true, budgetUsd: 10, spentUsd: 9 });
+    expect(route.tier).toBe('fast');
+  });
+
   it('always explains itself', () => {
     for (const complexity of ['low', 'medium', 'high'] as const) {
       expect(routeModel({ role: 'execute', complexity, ...healthy }).reason.length).toBeGreaterThan(0);

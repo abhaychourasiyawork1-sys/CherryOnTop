@@ -10,10 +10,11 @@ afterEach(() => { for (const k of KEYS) delete process.env[k]; });
 
 describe('dispatchOptionsFor', () => {
   it('defaults plan and synthesize to haiku with turn caps, execute to no model', () => {
-    expect(dispatchOptionsFor('plan')).toEqual({ model: 'haiku', maxTurns: 15 });
+    expect(dispatchOptionsFor('plan')).toEqual({ model: 'haiku', maxTurns: 2 });
     expect(dispatchOptionsFor('synthesize')).toEqual({ model: 'haiku', maxTurns: 1 });
     expect(dispatchOptionsFor('execute')).toEqual({});
   });
+
 
   it('lets env vars override the model per role', () => {
     process.env.ORG_MODEL_PLAN = 'sonnet';

@@ -21,6 +21,11 @@ export interface ModelRouteInput {
    *  the same as "this node is out of money". */
   budgetUsd: number;
   spentUsd: number;
+  /** Reading and diagnosing rather than producing (src/intelligence/decompose.ts).
+   *  These score low on complexity — they name no breadth and no file list — and
+   *  low is the fast-tier trigger, so without this a root-cause investigation
+   *  and a variable rename are charged and answered identically. */
+  investigative?: boolean;
 }
 
 export interface ModelRouteDecision {
@@ -62,8 +67,18 @@ export function routeModel(input: ModelRouteInput): ModelRouteDecision {
     return fast('most of this node\'s budget is already spent');
   }
 
-  if (input.complexity === 'low') {
+  // Budget pressure above still wins: out of money is out of money. Short of
+  // that, a low score on an investigation means "this goal names nothing
+  // specific", which is a reason to think harder, not less.
+  if (input.complexity === 'low' && !input.investigative) {
     return fast('low-complexity work does not need the default model');
+  }
+  if (input.complexity === 'low') {
+    return {
+      tier: 'standard',
+      model: modelForTier('standard'),
+      reason: 'reviewing, diagnosing or investigating — not tiered down on complexity alone',
+    };
   }
 
   // Only reachable when an operator has named a deep model. Without one this

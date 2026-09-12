@@ -34,8 +34,13 @@ const MODEL_DEFAULT: Record<DispatchRole, string | undefined> = {
   synthesize: 'haiku',
 };
 
+// Planning answers one question — "does this goal come apart, and if so into
+// what?" — and answers it as a JSON array. It is not a coding agent with a
+// smaller budget. 15 was a coding agent's allowance: a measured planning run
+// used 5 turns exploring a repository it was already handed a goal-aware map of
+// (src/context/dispatch-context.ts). Two turns is look-then-answer.
 const MAX_TURNS_DEFAULT: Partial<Record<DispatchRole, number>> = {
-  plan: 15,
+  plan: 2,
   synthesize: 1,
 };
 
@@ -48,6 +53,18 @@ export function dispatchOptionsFor(role: DispatchRole): { model?: string; maxTur
   if (role === 'synthesize') opts.maxTurns = envInt('ORG_MAX_TURNS_SYNTHESIZE', MAX_TURNS_DEFAULT.synthesize!);
 
   return opts;
+}
+
+/** The most children one node may fan out to by default.
+ *
+ *  Was a flat 5. Each child is a whole sandbox with its own turn loop, and on a
+ *  broad goal they mostly re-read the same repository — five of them cost five
+ *  times one and answer a fifth of the question each. Two is enough to be a
+ *  real split and cheap enough to be wrong about; raise it deliberately, per
+ *  deployment, once a fan-out of that size is shown to pay for itself. A node's
+ *  own `max_child_count` authority still applies and can only lower this. */
+export function maxChildJobs(): number {
+  return Math.max(1, envInt('ORG_MAX_CHILD_JOBS', 2));
 }
 
 /** 0 disables the plan cache entirely. */
