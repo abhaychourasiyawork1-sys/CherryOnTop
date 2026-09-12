@@ -8,6 +8,8 @@
 //   node bench/run.mjs repo-map      # ORG_REPO_MAP_TOKENS=6000 vs =0
 //   node bench/run.mjs role-prompts  # ORG_ROLE_PROMPTS=on vs off   (Phase 3)
 //   node bench/run.mjs efficiency    # ORG_EFFICIENCY_MODE=enabled vs disabled (Phase 4)
+//   node bench/run.mjs turn-cap      # ORG_MAX_TURNS_EXECUTE=60 vs uncapped
+//   node bench/run.mjs result-reuse  # ORG_RESULT_CACHE_TTL_HOURS=24 vs 0
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 
@@ -15,10 +17,22 @@ const mode = process.argv[2];
 const MATRIX = {
   'repo-map': [['on', { ORG_REPO_MAP_TOKENS: '6000' }], ['off', { ORG_REPO_MAP_TOKENS: '0' }]],
   'role-prompts': [['on', { ORG_ROLE_PROMPTS: 'on' }], ['off', { ORG_ROLE_PROMPTS: 'off' }]],
-  // One switch over goal-aware context selection, conditional synthesis and
-  // complexity-based model routing together — which is what makes it a single
-  // comparable A/B rather than three interacting ones.
+  // One switch over goal-aware context selection, conditional synthesis,
+  // complexity-based model routing and the coherent-global-task split rule
+  // together — which is what makes it a single comparable A/B rather than four
+  // interacting ones. The two fixes that are *not* behind it are deliberate: the
+  // cancelled-while-queued dispatch guard is a bug fix (nobody wants the arm
+  // that pays for discarded work), and the planner turn cap and child cap have
+  // their own knobs — ORG_MAX_TURNS_PLAN and ORG_MAX_CHILD_JOBS.
   efficiency: [['on', { ORG_EFFICIENCY_MODE: 'enabled' }], ['off', { ORG_EFFICIENCY_MODE: 'disabled' }]],
+  // Their own knobs rather than rows of the `efficiency` switch, because what
+  // they bound is not a decision the switch changes. Neither is expected to
+  // separate on this goal set: 60 sits above every turn count ever measured
+  // here, and result reuse only pays on a repeat. They are wired so that the
+  // day a run does exceed the cap, or a goal is genuinely re-asked, the
+  // comparison is one command rather than a code change.
+  'turn-cap': [['on', { ORG_MAX_TURNS_EXECUTE: '60' }], ['off', { ORG_MAX_TURNS_EXECUTE: '0' }]],
+  'result-reuse': [['on', { ORG_RESULT_CACHE_TTL_HOURS: '24' }], ['off', { ORG_RESULT_CACHE_TTL_HOURS: '0' }]],
 };
 if (!MATRIX[mode]) {
   console.error('mode must be one of: ' + Object.keys(MATRIX).join(', '));

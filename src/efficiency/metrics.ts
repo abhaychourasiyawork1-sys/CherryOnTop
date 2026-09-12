@@ -33,6 +33,14 @@ export interface EfficiencyInput {
    *  than inferred from an absence. */
   avoidedPlanningCalls: number;
   avoidedSynthesisCalls: number;
+  /** Execute dispatches served from a previous identical run. The expensive
+   *  one: an execute dispatch is the sandbox that does the actual work, and
+   *  skipping one skips its whole turn loop rather than a single call. */
+  avoidedExecutionCalls: number;
+  /** What those avoided dispatches cost the last time they were paid for. A
+   *  counterfactual, never added to `totalTokens` — a cache hit that showed up
+   *  as spend would be a strange kind of saving. */
+  tokensAvoided: number;
   retries: number;
   /** Time spent waiting for a sandbox slot rather than doing anything. */
   queueMs: number;
@@ -52,6 +60,9 @@ export interface EfficiencyRecord extends EfficiencyInput {
   coordinationTokenShare: number;
   recoveryTokenShare: number;
   synthesisAvoidanceRatio: number;
+  /** Dispatches avoided over dispatches considered. The headline number for
+   *  "did this system get cheaper as it accumulated reusable work?". */
+  workAvoidedRatio: number;
   tokensPerModelCall: number;
   /** Null unless the task succeeded. The headline metric is cost *per success*:
    *  a change that halves tokens by failing twice as often is not an
@@ -64,7 +75,8 @@ export interface EfficiencyRecord extends EfficiencyInput {
 export const EMPTY_TOTALS = {
   inputTokens: 0, outputTokens: 0, cachedTokens: 0, coordinationTokens: 0,
   recoveryTokens: 0, planningCalls: 0, executionCalls: 0, synthesisCalls: 0,
-  avoidedPlanningCalls: 0, avoidedSynthesisCalls: 0, retries: 0,
+  avoidedPlanningCalls: 0, avoidedSynthesisCalls: 0, avoidedExecutionCalls: 0,
+  tokensAvoided: 0, retries: 0,
   queueMs: 0, dispatchMs: 0, endToEndMs: 0, costUsd: 0,
 } as const;
 
@@ -80,6 +92,7 @@ export function buildEfficiencyRecord(input: EfficiencyInput): EfficiencyRecord 
   // separate pools.
   const totalTokens = input.inputTokens + input.outputTokens;
   const modelCalls = input.planningCalls + input.executionCalls + input.synthesisCalls;
+  const avoidedCalls = input.avoidedPlanningCalls + input.avoidedSynthesisCalls + input.avoidedExecutionCalls;
 
   return {
     ...input,
@@ -92,6 +105,7 @@ export function buildEfficiencyRecord(input: EfficiencyInput): EfficiencyRecord 
       input.avoidedSynthesisCalls,
       input.avoidedSynthesisCalls + input.synthesisCalls,
     ),
+    workAvoidedRatio: share(avoidedCalls, avoidedCalls + modelCalls),
     tokensPerModelCall: share(totalTokens, modelCalls),
     tokensPerSuccessfulTask: input.outcome === 'success' ? totalTokens : null,
   };

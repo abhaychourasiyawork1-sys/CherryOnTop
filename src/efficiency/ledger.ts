@@ -37,8 +37,11 @@ export interface EfficiencyLedger {
   startTask(taskId: string): void;
   recordDispatch(taskId: string, dispatch: LedgerDispatch): void;
   /** A dispatch the efficiency work prevented: a plan-cache hit, a synthesis
-   *  made unnecessary by a single complete child. */
-  recordAvoided(taskId: string, role: 'plan' | 'synthesize'): void;
+   *  made unnecessary by a single complete child, an execution served from a
+   *  previous identical run. `tokensAvoided` is what that dispatch cost when it
+   *  was last actually paid for — known only for a reused result, which is the
+   *  only case where a real prior measurement exists to quote. */
+  recordAvoided(taskId: string, role: 'plan' | 'synthesize' | 'execute', tokensAvoided?: number): void;
   finishTask(taskId: string, outcome: EfficiencyOutcome, qualityScore?: number | null): EfficiencyRecord;
   /** How many tasks are still open. Exists so a leak is a failing test rather
    *  than a slow memory climb in a daemon that runs for weeks. */
@@ -94,10 +97,12 @@ export function createEfficiencyLedger(
       if (dispatch.superseded) { t.retries += 1; t.recoveryTokens += tokens; }
     },
 
-    recordAvoided(taskId, role) {
+    recordAvoided(taskId, role, tokensAvoided = 0) {
       const t = taskFor(taskId).totals as Record<string, number>;
       if (role === 'plan') t.avoidedPlanningCalls += 1;
+      else if (role === 'execute') t.avoidedExecutionCalls += 1;
       else t.avoidedSynthesisCalls += 1;
+      t.tokensAvoided += Math.max(0, tokensAvoided);
     },
 
     finishTask(taskId, outcome, qualityScore = null) {

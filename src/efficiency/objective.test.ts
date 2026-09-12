@@ -11,10 +11,20 @@ const suite = (over: Partial<ReturnType<typeof summarizeRun>> = {}) => ({
   tasks: 10, successRate: 0.95, qualityScore: 0.9,
   tokensPerSuccessfulTask: 10_000, p50LatencyMs: 50_000, p95LatencyMs: 100_000,
   cacheHitRatio: 0, coordinationTokenShare: 0.2, recoveryTokenShare: 0,
-  synthesisAvoidanceRatio: 0, concurrencyEfficiency: 1, ...over,
+  synthesisAvoidanceRatio: 0, concurrencyEfficiency: 1,
+  tokensAvoided: 0, workAvoidedRatio: 0, ...over,
 });
 
 describe('summarizeRun', () => {
+  it('sums avoided tokens across the run and averages the avoided-work share', () => {
+    const summary = summarizeRun([
+      record({ tokensAvoided: 1000, avoidedExecutionCalls: 1 }),
+      record({ tokensAvoided: 0, executionCalls: 1 }),
+    ]);
+    expect(summary.tokensAvoided).toBe(1000);
+    expect(summary.workAvoidedRatio).toBe(0.5);
+  });
+
   it('reports tokens per *successful* task, not per task', () => {
     // A change that halves tokens by failing twice as often is not an
     // improvement. Averaging failures in would hide exactly that.

@@ -14,6 +14,8 @@ const base = {
   synthesisCalls: 0,
   avoidedPlanningCalls: 0,
   avoidedSynthesisCalls: 1,
+  avoidedExecutionCalls: 0,
+  tokensAvoided: 0,
   retries: 0,
   queueMs: 50,
   dispatchMs: 2500,
@@ -23,6 +25,26 @@ const base = {
 };
 
 describe('buildEfficiencyRecord', () => {
+  // The point of the whole exercise is work that did not happen, and an absence
+  // is not measurable by looking at what did. A reused result is the only place
+  // the system can say "these tokens were not spent" with a number behind it.
+  it('reports the share of dispatches that never happened', () => {
+    expect(buildEfficiencyRecord(base).workAvoidedRatio).toBeCloseTo(1 / 3);
+    expect(buildEfficiencyRecord({ ...base, avoidedSynthesisCalls: 0 }).workAvoidedRatio).toBe(0);
+    expect(buildEfficiencyRecord({
+      ...base, planningCalls: 0, executionCalls: 0, synthesisCalls: 0,
+      avoidedSynthesisCalls: 0, avoidedPlanningCalls: 0, avoidedExecutionCalls: 0,
+    }).workAvoidedRatio).toBe(0);
+  });
+
+  it('carries avoided tokens without adding them to what was spent', () => {
+    const record = buildEfficiencyRecord({ ...base, tokensAvoided: 900_000 });
+    expect(record.tokensAvoided).toBe(900_000);
+    // Avoided tokens are a counterfactual, not a bill. Adding them to the total
+    // would make every cache hit look like a cost.
+    expect(record.totalTokens).toBe(1400);
+  });
+
   it('builds a successful-task record', () => {
     const record = buildEfficiencyRecord(base);
     expect(record.totalTokens).toBe(1400);

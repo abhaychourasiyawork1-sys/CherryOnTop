@@ -30,6 +30,16 @@ describe('buildRolePrompt', () => {
     expect(bare).toMatch(/any tool/i);                   // null allowlist phrased as unrestricted
   });
 
+  // A cap the agent is not told about truncates it mid-thought and the run
+  // reports "max turns exceeded" instead of what it found. Telling it the
+  // number is what turns a circuit breaker into a budget it can land inside.
+  it('execute states the turn budget when there is one, and says nothing when there is not', () => {
+    expect(buildRolePrompt('execute', { maxTurns: 60 })).toMatch(/60 turns/);
+    expect(buildRolePrompt('execute', { maxTurns: 60 })).toMatch(/summar/i);
+    expect(buildRolePrompt('execute')).not.toMatch(/turns/i);
+    expect(buildRolePrompt('execute', { maxTurns: 0 })).not.toMatch(/turns/i);
+  });
+
   it('is compact — under 500 words for any role', () => {
     for (const role of ['plan', 'execute', 'synthesize', 'verify'] as const) {
       expect(buildRolePrompt(role, { constraints: ['x'], definitionOfDone: ['y'], allowedTools: ['Read'] }).split(/\s+/).length).toBeLessThan(500);

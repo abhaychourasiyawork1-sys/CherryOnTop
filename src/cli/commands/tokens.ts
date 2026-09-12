@@ -8,9 +8,9 @@ export function registerTokensCommand(program: Command): void {
     .option('--json', 'print machine-readable JSON instead of a table', false)
     .action(async (caseId: string | undefined, options: { json: boolean }) => {
       const client = createDaemonClient();
-      const { rows, planCacheHits } = await client.memory.tokens.query(caseId ? { caseId } : undefined);
+      const { rows, planCacheHits, resultCacheHits } = await client.memory.tokens.query(caseId ? { caseId } : undefined);
       if (options.json) {
-        console.log(JSON.stringify({ rows, planCacheHits }));
+        console.log(JSON.stringify({ rows, planCacheHits, resultCacheHits }));
         return;
       }
       if (rows.length === 0) {
@@ -31,5 +31,6 @@ export function registerTokensCommand(program: Command): void {
       console.log('-'.repeat(76));
       console.log('total'.padEnd(36) + fmt(tin).padEnd(12) + fmt(tout).padEnd(10) + ''.padEnd(12) + tcost.toFixed(4));
       console.log(`plan-cache hits: ${planCacheHits}`);
+      console.log(`result-cache hits: ${resultCacheHits ?? 0}`);
     });
 }

@@ -71,6 +71,20 @@ describe('efficiency ledger', () => {
     expect(record.synthesisAvoidanceRatio).toBe(1);
   });
 
+  it('counts a reused execution and what it saved', () => {
+    const ledger = createEfficiencyLedger(fakeClock().now);
+    ledger.startTask('n1');
+    // The tokens the reused dispatch cost when it was first paid for. Recorded
+    // as avoided rather than spent: the whole sandbox did not run.
+    ledger.recordAvoided('n1', 'execute', 1_772_218);
+
+    const record = ledger.finishTask('n1', 'success');
+    expect(record.avoidedExecutionCalls).toBe(1);
+    expect(record.tokensAvoided).toBe(1_772_218);
+    expect(record.totalTokens).toBe(0);
+    expect(record.workAvoidedRatio).toBe(1);
+  });
+
   it('records queue time separately from dispatch time', () => {
     const ledger = createEfficiencyLedger(fakeClock().now);
     ledger.startTask('n1');

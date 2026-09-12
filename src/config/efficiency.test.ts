@@ -3,7 +3,7 @@ import { dispatchOptionsFor, planCacheTtlHours, repoMapTokenBudget, rolePromptsE
 
 const KEYS = [
   'ORG_MODEL_PLAN', 'ORG_MODEL_EXECUTE', 'ORG_MODEL_SYNTHESIZE',
-  'ORG_MAX_TURNS_PLAN', 'ORG_MAX_TURNS_SYNTHESIZE',
+  'ORG_MAX_TURNS_PLAN', 'ORG_MAX_TURNS_SYNTHESIZE', 'ORG_MAX_TURNS_EXECUTE',
   'ORG_PLAN_CACHE_TTL_HOURS', 'ORG_REPO_MAP_TOKENS', 'ORG_ROLE_PROMPTS',
 ];
 afterEach(() => { for (const k of KEYS) delete process.env[k]; });
@@ -12,9 +12,21 @@ describe('dispatchOptionsFor', () => {
   it('defaults plan and synthesize to haiku with turn caps, execute to no model', () => {
     expect(dispatchOptionsFor('plan')).toEqual({ model: 'haiku', maxTurns: 2 });
     expect(dispatchOptionsFor('synthesize')).toEqual({ model: 'haiku', maxTurns: 1 });
-    expect(dispatchOptionsFor('execute')).toEqual({});
+    expect(dispatchOptionsFor('execute')).toEqual({ maxTurns: 60 });
   });
 
+  // The one unbounded term in the system. A measured run spent 1.77M cache-read
+  // tokens over 42 turns in a single execute dispatch, because the conversation
+  // prefix is re-read every turn and nothing bounded the count. 60 is a circuit
+  // breaker, not a budget: the measured spread was 19-42, so it costs nothing
+  // today and bounds the tail.
+  it('gives execute a circuit-breaker turn cap that 0 removes', () => {
+    expect(dispatchOptionsFor('execute').maxTurns).toBe(60);
+    process.env.ORG_MAX_TURNS_EXECUTE = '120';
+    expect(dispatchOptionsFor('execute').maxTurns).toBe(120);
+    process.env.ORG_MAX_TURNS_EXECUTE = '0';
+    expect(dispatchOptionsFor('execute')).toEqual({});
+  });
 
   it('lets env vars override the model per role', () => {
     process.env.ORG_MODEL_PLAN = 'sonnet';

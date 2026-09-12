@@ -131,6 +131,10 @@ box before you press Start, so you always know the blast radius in advance.
 
 Two boundaries are enforced by the platform: the **budget**, and the **tools**. A tool a
 mandate does not grant is refused before the call happens, and the refusal is recorded.
+The budget is checked at the same place a tool call is: immediately before a sandbox
+opens. An agent that has already spent its share gets no further sandbox, and says so in
+its transcript rather than failing silently. A mandate with no budget set (`$0`) means
+nobody costed it, not that it is out of money, so it is not stopped on spend.
 **Instructions are not enforced** — they are told to the agent, and the window labels them
 that way everywhere it shows them.
 
@@ -198,15 +202,18 @@ the next `org daemon` restart — the same contract as `ORG_RUNNER_IMAGE`.
 | `ORG_MODEL_PLAN` | `haiku` | Model used for planning dispatches |
 | `ORG_MODEL_EXECUTE` | *(none — runtime default)* | Model used for execution dispatches |
 | `ORG_MODEL_SYNTHESIZE` | `haiku` | Model used for synthesis dispatches |
-| `ORG_MAX_TURNS_PLAN` | `15` | Turn cap for planning dispatches |
+| `ORG_MAX_TURNS_PLAN` | `2` | Turn cap for planning dispatches. Planning is look-then-answer: it is handed a goal-aware repository map and asked for a JSON array, not asked to explore |
 | `ORG_MAX_TURNS_SYNTHESIZE` | `1` | Turn cap for synthesis dispatches |
+| `ORG_MAX_TURNS_EXECUTE` | `60` | Circuit breaker on work dispatches. Cost inside a dispatch grows superlinearly in turns — the conversation prefix is re-read on every one — and this was the only unbounded term in the system. The agent is told the number so it summarises at the limit rather than being cut off at it. `0` removes the cap |
 | `ORG_PLAN_CACHE_TTL_HOURS` | `24` | How long a cached plan stays valid; `0` disables the plan cache |
+| `ORG_RESULT_CACHE_TTL_HOURS` | `24` | How long a finished **read-only** dispatch's answer may be served again, for the same goal against the same committed HEAD under the same model and grant; `0` disables result reuse |
 | `ORG_REPO_MAP_TOKENS` | `6000` | **Ceiling** — not a target — on the repository context prefixed onto a dispatch; `0` disables it |
 | `ORG_ROLE_PROMPTS` | on | Role-scoped system prompts (below); `off`/`0`/`false`/`no` disable |
 | `ORG_EFFICIENCY_MODE` | `enabled` | `enabled` \| `shadow` \| `disabled` — see **Rollout** below |
 | `ORG_MODEL_FAST` | `haiku` | Model for the fast tier |
 | `ORG_MODEL_STANDARD` | *(none — runtime default)* | Model for the standard tier |
 | `ORG_MODEL_DEEP` | *(none — off)* | Model for the deep tier. Unset means routing never tiers **up** |
+| `ORG_MAX_CHILD_JOBS` | `2` | Most children one node may fan out to. A node's own `max_child_count` authority can only lower this, never raise it |
 
 An empty value, or `none`/`default`/`off`, on any `ORG_MODEL_*` variable means "pass no
 `--model` flag" — the runtime's own default model is used instead.
@@ -248,6 +255,27 @@ goes wrong is a bill nobody asked for. An explicit `ORG_MODEL_PLAN`/`_EXECUTE`/`
 overrides routing outright. Every routing decision is written to memory as a `model_route`
 row with its reason.
 
+**Turn budget.** A dispatch's cost does not grow with its turn count, it grows *faster*
+than its turn count: the conversation prefix is re-read on every turn, so a measured 42-turn
+run spent 1.77M cache-read tokens against a 19-turn one's 652k. Work dispatches were left
+uncapped on the reasoning that a whole-codebase investigation needs its turns — true, and it
+left the dominant term in the bill unbounded. `ORG_MAX_TURNS_EXECUTE` (default 60) is a
+circuit breaker sitting above every turn count measured here, so it costs nothing today and
+bounds the tail. The agent is *told* the number in its role prompt: a run cut off at a cap
+reports "max turns exceeded" and loses what it found, while one that knows its budget
+summarises inside it.
+
+**Result reuse.** The same read-only goal, against the same committed HEAD, under the same
+model and the same grant, gets the answer the last run produced instead of a second sandbox.
+Same validity rule as the plan cache — a dirty or unreadable tree is never keyed — applied
+where the money is: a cached plan skips a dispatch measured at $0.045, a cached read-only
+execution skips one measured at $0.95. Strictly read-only, because "we did not re-run it" is
+only equivalent to "we re-ran it" when there were no side effects to lose. A hit publishes
+the answer as a `node.answer` event (the reused run leaves no transcript of its own), counts
+as *work avoided* rather than a zero-token dispatch, and reports what that work cost the last
+time it was actually paid for. `org tokens` shows the hits; `ORG_RESULT_CACHE_TTL_HOURS=0`
+turns it off.
+
 **Conditional synthesis.** A delegating node used to buy a synthesis sandbox whenever any
 child had said anything. Children now close their report with a small JSON envelope (status,
 summary, findings, changed files, uncertainties, confidence) alongside their prose, which
@@ -277,8 +305,11 @@ calls.**
 
 **Measuring it.** Every task writes one `efficiency_record` to memory when it reaches a
 terminal state: tokens split into input/output/cached, the coordination and recovery
-*shares* of them, dispatch counts, the dispatches that were avoided, queue time separated
-from dispatch time, and end-to-end wall clock. `src/efficiency/objective.ts` turns a set of
+*shares* of them, dispatch counts, the dispatches that were avoided and what those avoided
+dispatches had cost when they were last actually paid for, queue time separated
+from dispatch time, and end-to-end wall clock. `workAvoidedRatio` — dispatches avoided over
+dispatches considered — is the direct answer to "is this organization getting cheaper as it
+accumulates reusable work?". `src/efficiency/objective.ts` turns a set of
 those into a verdict — tokens per **successful** task, p50/p95 latency over every task, and
 a normalized objective `J` — behind two hard gates that no weighting can trade away: quality
 must not regress, and success rate must not fall by more than epsilon. An optimized run that

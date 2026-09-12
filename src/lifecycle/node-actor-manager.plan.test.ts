@@ -51,7 +51,7 @@ function tmpRepo(): string {
 
 /** Drives one delegating node to a terminal state and returns every dispatch it
  *  made. `planAnswer` is what the planning run replies with. */
-async function runDelegating(db: ReturnType<typeof createDb>, repoPath: string, planAnswer: string): Promise<ExecuteStepInput[]> {
+async function runDelegating(db: ReturnType<typeof createDb>, repoPath: string, planAnswer: string, goal = GOAL): Promise<ExecuteStepInput[]> {
   const calls: ExecuteStepInput[] = [];
   stub.mockImplementation(async (input: ExecuteStepInput) => {
     calls.push(input);
@@ -60,16 +60,16 @@ async function runDelegating(db: ReturnType<typeof createDb>, repoPath: string, 
 
   const id = randomUUID();
   insertNode(db, {
-    id, parentId: null, goal: GOAL, repoPath, state: 'CREATED',
+    id, parentId: null, goal, repoPath, state: 'CREATED',
     createdAt: 't0', updatedAt: 't0',
     contract: {
-      goal: GOAL, definition_of_done: ['every module audited'],
+      goal, definition_of_done: ['every module audited'],
       authority: { tools: [], spawn_children: true, max_child_count: 3, budget_usd: 10 },
       constraints: [],
     },
   });
 
-  startNodeActor(db, id, GOAL);
+  startNodeActor(db, id, goal);
   await vi.waitFor(
     () => expect(['COMPLETE', 'FAILED', 'CANCELLED']).toContain(getNode(db, id)?.state),
     { timeout: 10_000 },
@@ -84,6 +84,7 @@ afterEach(() => {
   delete process.env.ANTHROPIC_API_KEY;
   delete process.env.ORG_REPO_MAP_TOKENS;
   delete process.env.ORG_EFFICIENCY_MODE;
+  delete process.env.ORG_MAX_TURNS_PLAN;
   vi.clearAllMocks();
 });
 
@@ -147,6 +148,63 @@ describe('the planning dispatch', () => {
     const work = calls.find((call) => !call.goal.includes('Split this goal'));
     expect(work).toBeDefined();
     expect(work!.model).toBeUndefined();
+  });
+
+  it('applies the planner turn cap to the planner Job, not just to the config', async () => {
+    const calls = await runDelegating(createDb(TEST_DB), tmpRepo(), '[]');
+    const plan = calls.find((call) => call.goal.includes('Split this goal'))!;
+    // A measured planning run used 5 turns exploring a repository it had
+    // already been handed a map of. Planning is look-then-answer; a cap that
+    // only lives in config/efficiency.ts and never reaches the dispatch is not
+    // a cap at all.
+    expect(plan.maxTurns).toBe(2);
+
+    // The work dispatch gets a circuit breaker rather than a budget. It was
+    // uncapped, on the reasoning that a whole-codebase investigation needs its
+    // turns — true, and it left the only unbounded term in the system
+    // unbounded: cost inside a dispatch grows superlinearly in turns because
+    // the conversation prefix is re-read on every one, and a measured 42-turn
+    // run spent 1.77M cache-read tokens against a 19-turn one's 652k. 60 is
+    // above every turn count ever measured here, so it costs nothing today and
+    // bounds the tail. The agent is told the number (src/prompts/roles.ts) so
+    // it summarises at the limit instead of being cut off at it.
+    const work = calls.find((call) => !call.goal.includes('Split this goal'))!;
+    expect(work.maxTurns).toBe(60);
+    expect(work.systemPrompt).toMatch(/60 turns/);
+  });
+
+  it('honours an operator raising the planner turn cap', async () => {
+    process.env.ORG_MAX_TURNS_PLAN = '6';
+    const calls = await runDelegating(createDb(TEST_DB), tmpRepo(), '[]');
+    expect(calls.find((call) => call.goal.includes('Split this goal'))!.maxTurns).toBe(6);
+  });
+
+  it('does not buy a planner, children or a synthesis run for a global review', async () => {
+    // The whole 26%-of-a-window run, end to end: routing -> decomposition ->
+    // dispatch -> collection. This goal is the one that was recorded splitting
+    // five ways off the single word "codebase"; it has full spawn authority and
+    // a $10 budget here, so nothing but the classification stops it.
+    const db = createDb(TEST_DB);
+    const calls = await runDelegating(
+      db, tmpRepo(), '[]',
+      'Review the codebase and find bugs. Do not modify anything.',
+    );
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0].goal).not.toContain('Split this goal');
+    // Still the strong model: not splitting must not mean not thinking.
+    expect(calls[0].model).toBeUndefined();
+    // No children, so nothing to synthesise.
+    expect(listNodes(db).filter((node) => node.parentId !== null)).toHaveLength(0);
+  });
+
+  it('still fans out, but no wider than the default cap', async () => {
+    const db = createDb(TEST_DB);
+    const five = JSON.stringify(['a', 'b', 'c', 'd', 'e']);
+    await runDelegating(db, tmpRepo(), five);
+    // max_child_count is 3 and the planner offered 5; the default cap of 2 is
+    // the binding constraint.
+    expect(listNodes(db).filter((node) => node.parentId !== null)).toHaveLength(2);
   });
 
   it('gives the planner the whole map again when efficiency is switched off', async () => {

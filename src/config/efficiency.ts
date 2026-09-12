@@ -39,9 +39,18 @@ const MODEL_DEFAULT: Record<DispatchRole, string | undefined> = {
 // smaller budget. 15 was a coding agent's allowance: a measured planning run
 // used 5 turns exploring a repository it was already handed a goal-aware map of
 // (src/context/dispatch-context.ts). Two turns is look-then-answer.
+//
+// `execute` is the one unbounded term in the whole system. The conversation
+// prefix is re-read on every turn, so cost inside a dispatch grows superlinearly
+// in turns: a measured 42-turn run spent 1.77M cache-read tokens against a
+// 19-turn one's 652k. 60 is a circuit breaker rather than a budget — the
+// measured spread was 19-42, so it costs nothing today and bounds the one term
+// nothing bounded. `ORG_MAX_TURNS_EXECUTE=0` removes it, which is the behaviour
+// this branch shipped with.
 const MAX_TURNS_DEFAULT: Partial<Record<DispatchRole, number>> = {
   plan: 2,
   synthesize: 1,
+  execute: 60,
 };
 
 export function dispatchOptionsFor(role: DispatchRole): { model?: string; maxTurns?: number } {
@@ -51,6 +60,12 @@ export function dispatchOptionsFor(role: DispatchRole): { model?: string; maxTur
 
   if (role === 'plan') opts.maxTurns = envInt('ORG_MAX_TURNS_PLAN', MAX_TURNS_DEFAULT.plan!);
   if (role === 'synthesize') opts.maxTurns = envInt('ORG_MAX_TURNS_SYNTHESIZE', MAX_TURNS_DEFAULT.synthesize!);
+  // Zero means uncapped, and the runtime reads an *absent* flag as uncapped —
+  // passing `--max-turns 0` would end the run before its first turn.
+  if (role === 'execute') {
+    const cap = envInt('ORG_MAX_TURNS_EXECUTE', MAX_TURNS_DEFAULT.execute!);
+    if (cap > 0) opts.maxTurns = cap;
+  }
 
   return opts;
 }
@@ -70,6 +85,19 @@ export function maxChildJobs(): number {
 /** 0 disables the plan cache entirely. */
 export function planCacheTtlHours(): number {
   return envInt('ORG_PLAN_CACHE_TTL_HOURS', 24);
+}
+
+/** How long a finished read-only dispatch's answer stays reusable; 0 disables
+ *  result reuse entirely.
+ *
+ *  Same validity rule as the plan cache, one level up: the same goal against the
+ *  same committed tree, under the same model and the same grant. The difference
+ *  is what it saves — a cached plan skips a planning sandbox measured at $0.045,
+ *  a cached read-only execution skips one measured at $0.95. Restricted to
+ *  read-only dispatches, because "we did not re-run it" is only equivalent to
+ *  "we re-ran it" when there were no side effects to lose. */
+export function resultCacheTtlHours(): number {
+  return envInt('ORG_RESULT_CACHE_TTL_HOURS', 24);
 }
 
 /** 0 disables the repo-map handoff (Phase 2). */

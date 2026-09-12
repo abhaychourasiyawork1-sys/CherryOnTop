@@ -34,16 +34,25 @@ export interface RoleTokenRow {
 
 interface StoredValue { role: string; model: string | null; usage: DispatchUsage; costUsd: number }
 
-export function tokensByRole(db: Db, caseId?: string): { rows: RoleTokenRow[]; planCacheHits: number } {
+/** A dispatch that did not happen is not a dispatch with zero tokens: averaged
+ *  into the per-role rows it would drag every figure towards nothing and hide
+ *  the saving it represents. Counted separately, by role. */
+const CACHE_HIT_ROLES: Record<string, 'planCacheHits' | 'resultCacheHits'> = {
+  'plan:cache-hit': 'planCacheHits',
+  'execute:cache-hit': 'resultCacheHits',
+};
+
+export function tokensByRole(db: Db, caseId?: string): { rows: RoleTokenRow[]; planCacheHits: number; resultCacheHits: number } {
   const all = db.select().from(memory).where(eq(memory.kind, KIND)).all();
   const scope = caseId ? new Set(subtreeNodeIds(db, caseId)) : null;
   const rows = all.filter((row) => !scope || (row.nodeId && scope.has(row.nodeId)));
 
-  let planCacheHits = 0;
+  const hits = { planCacheHits: 0, resultCacheHits: 0 };
   const acc = new Map<string, RoleTokenRow>();
   for (const row of rows) {
     const v = row.value as StoredValue;
-    if (v.role === 'plan:cache-hit') { planCacheHits++; continue; }
+    const hit = CACHE_HIT_ROLES[v.role];
+    if (hit) { hits[hit]++; continue; }
     const model = v.model ?? '(default)';
     const bucket = `${v.role}\0${model}`;
     const cur = acc.get(bucket) ?? { role: v.role, model, dispatches: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, costUsd: 0 };
@@ -56,6 +65,6 @@ export function tokensByRole(db: Db, caseId?: string): { rows: RoleTokenRow[]; p
   }
   return {
     rows: [...acc.values()].sort((a, b) => b.inputTokens - a.inputTokens),
-    planCacheHits,
+    ...hits,
   };
 }

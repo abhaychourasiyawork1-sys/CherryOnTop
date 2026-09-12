@@ -41,11 +41,12 @@ import type { Authority } from '../schemas/node-contract.js';
 import type { ToolGrant, RuntimeAdapter } from '../adapters/adapter.js';
 import { setNodeSnapshot, clearNodeSnapshot } from '../db/queries/nodes.js';
 import { insertDodItems, listDodForNode, setDodState } from '../db/queries/dod.js';
-import { dispatchOptionsFor, planCacheTtlHours, repoMapTokenBudget, rolePromptsEnabled, efficiencyMode, type DispatchRole } from '../config/efficiency.js';
+import { dispatchOptionsFor, planCacheTtlHours, repoMapTokenBudget, rolePromptsEnabled, efficiencyMode, resultCacheTtlHours, type DispatchRole } from '../config/efficiency.js';
 import { routeModel } from '../intelligence/model-router.js';
 import { assessDecomposition } from '../intelligence/decompose.js';
 import { repoHead, repoDirty } from '../execution/git-state.js';
 import { planCacheKey, getCachedPlan, putCachedPlan } from '../db/queries/plan-cache.js';
+import { resultCacheKey, getCachedResult, putCachedResult } from '../db/queries/result-cache.js';
 import { withRepoContext } from '../intelligence/repo-map.js';
 import { dispatchContextFor, warmRepoInventory } from '../context/dispatch-context-cache.js';
 import { recordDispatchUsage } from '../db/queries/tokens.js';
@@ -247,7 +248,7 @@ function publishContextReceipt(db: Db, nodeId: string, receipt: DispatchReceipt)
  *  answer", which is a far worse outcome than a missing row in `org tokens`. */
 function recordUsage(
   db: Db,
-  r: { nodeId: string; role: string; model: string | null; usage: DispatchUsage; costUsd: number },
+  r: { nodeId: string; role: string; model: string | null; usage: DispatchUsage; costUsd: number; tokensAvoided?: number },
 ): void {
   try {
     recordDispatchUsage(db, { ...r, createdAt: new Date().toISOString() });
@@ -260,6 +261,10 @@ function recordUsage(
   // 'plan:cache-hit' is not a dispatch — it is the dispatch that did not happen,
   // which is the number this whole phase exists to move.
   if (r.role === 'plan:cache-hit') { ledger.recordAvoided(r.nodeId, 'plan'); return; }
+  // The expensive one. `tokensAvoided` is what the reused dispatch cost the
+  // last time it was actually paid for, so a hit reports a measurement rather
+  // than an estimate of what it saved.
+  if (r.role === 'execute:cache-hit') { ledger.recordAvoided(r.nodeId, 'execute', r.tokensAvoided ?? 0); return; }
   const timing = drainTiming(r.nodeId);
   ledger.recordDispatch(r.nodeId, {
     role: r.role as LedgerRole,
@@ -506,6 +511,50 @@ const sandboxes = sandboxLimiter();
 // organization's spend, not any single node's.
 const ledger = efficiencyLedger();
 
+/** The runtime's own final answer text, off its `result` events. The same
+ *  extraction the planning and synthesis paths do, and the same thing
+ *  `answerOf` reads back out of the event log. */
+function finalResultText(events: { type: string; payload: unknown }[]): string {
+  return events
+    .filter((event) => event.type === 'result')
+    .filter((event) => (event.payload as { is_error?: unknown } | null)?.is_error !== true)
+    .map((event) => String((event.payload as { result?: unknown } | null)?.result ?? ''))
+    .join('\n')
+    .trim();
+}
+
+/** The key this dispatch's answer may be stored under and served from, or null
+ *  when it may not be reused at all.
+ *
+ *  Three conditions, each of which is the whole argument on its own:
+ *
+ *   - **read-only.** Reusing the answer of a run that changed something would
+ *     skip the change and report it done. Read-only is what makes "we did not
+ *     re-run it" equivalent to "we re-ran it": there were no side effects to
+ *     lose.
+ *   - **a readable, clean HEAD.** The answer describes the code as it stood.
+ *     `repoDirty` says true when it cannot tell, so an unknowable tree is never
+ *     keyed — exactly the plan cache's rule.
+ *   - **same model and same grant.** A cheaper model's answer must not be
+ *     served to a request routed to a stronger one, and an answer produced
+ *     under a wider grant saw more of the repository than this node may. */
+function resultReuseKey(
+  worktreePath: string,
+  goal: string,
+  grant: ToolGrant,
+  model: string | undefined,
+): string | null {
+  if (!grant.readOnly || resultCacheTtlHours() <= 0) return null;
+  try {
+    const head = repoHead(worktreePath);
+    if (!head || repoDirty(worktreePath)) return null;
+    return resultCacheKey(goal, head, model ?? '(default)', grant.allowedTools);
+  } catch {
+    // A cache that cannot key itself costs a sandbox, not a run.
+    return null;
+  }
+}
+
 /** Runs a sandbox when a slot is free, and says so while it waits. A node
  *  sitting in a queue looks identical to one that has hung unless it tells you. */
 async function dispatch<T>(db: Db, nodeId: string, task: () => Promise<T>): Promise<T> {
@@ -530,9 +579,31 @@ async function dispatch<T>(db: Db, nodeId: string, task: () => Promise<T>): Prom
       // spent 9 of its 26 percentage points of the five-hour window exactly
       // this way, on a child that started two seconds *after* being cancelled
       // and ran 42 turns past the answer the user had already been given.
-      const state = getNode(db, nodeId)?.state;
+      const node = getNode(db, nodeId);
+      const state = node?.state;
       if (state !== undefined && TERMINAL_STATES.has(state)) {
         throw new Error(`Agent ${nodeId} was ${state.toLowerCase()} while waiting for a sandbox, so no sandbox was opened for it.`);
+      }
+      // The same moment, for the same reason: it is the last point before money
+      // is spent, and every role's sandbox passes through it. Until now
+      // `budget_usd` bounded what the organization would agree to *start* — the
+      // escalation floor in decide-execution.ts, the pressure threshold in
+      // model-router.ts — and nothing re-checked it once work was under way, so
+      // a task could run arbitrarily far past its own authority. Zero means
+      // "nobody costed this node", not "out of money", which is the convention
+      // model-router.ts already uses.
+      const budgetUsd = node?.contract.authority.budget_usd ?? 0;
+      if (budgetUsd > 0) {
+        const spentUsd = getCostForNodes(db, [nodeId]);
+        if (spentUsd >= budgetUsd) {
+          const message = `Budget spent — $${spentUsd.toFixed(2)} of $${budgetUsd.toFixed(2)}. No further sandbox was opened for this agent.`;
+          // Said out loud as well as thrown: the throw reaches VERIFY as a
+          // failed result, which is the machine's business, while a person
+          // watching the transcript needs to see that the run stopped on money
+          // rather than on an error.
+          publishProgress(db, nodeId, message);
+          throw new Error(message);
+        }
       }
       return task();
     });
@@ -798,6 +869,34 @@ function productionMachine(db: Db, nodeId: string) {
         }
 
         const adapter = chooseAdapter(db, nodeId);
+
+        // Asked before anything is built and before anything is said about
+        // starting a sandbox, because on a hit none of that happens. The model
+        // is resolved first only because it is part of what makes two runs the
+        // same run — a haiku answer must not be served to a sonnet request.
+        const grant = grantOf(node!.contract.authority);
+        let usedModel = modelFor(adapter, modelChoiceFor(db, nodeId, 'execute', input.goal));
+        const reuseKey = resultReuseKey(worktreePath, input.goal, grant, usedModel);
+        if (reuseKey) {
+          const cached = getCachedResult(db, reuseKey, resultCacheTtlHours());
+          if (cached) {
+            publishProgress(db, nodeId, 'This exact question was already answered against this commit — reusing that answer instead of running again');
+            // The reused run left no transcript here, so the answer has to be
+            // published as one: `answerOf` reads `node.answer` before it looks
+            // for a report, and without this the node would finish having said
+            // nothing.
+            publishAnswer(db, nodeId, cached.text);
+            // Counted as work avoided, not work done.
+            recordUsage(db, {
+              nodeId, role: 'execute:cache-hit', model: usedModel ?? null,
+              usage: { ...ZERO_USAGE }, costUsd: 0, tokensAvoided: cached.tokens,
+            });
+            const result = { succeeded: true, message: cached.text, events: [], usage: { ...ZERO_USAGE } };
+            publishStepOutcome(db, nodeId, result);
+            return result;
+          }
+        }
+
         publishProgress(db, nodeId, `Starting a sandbox on ${adapter.name} against ${worktreePath}`);
         const execOpts = dispatchOptionsFor('execute');
         // Built once, out here rather than inside runOnce: the fallback retry
@@ -822,6 +921,10 @@ function productionMachine(db: Db, nodeId: string) {
               allowedTools: node ? grantOf(node.contract.authority).allowedTools : undefined,
               constraints,
               definitionOfDone: node?.contract.definition_of_done ?? [],
+              // The same cap that goes into argv below. A run told its budget
+              // summarises at the limit; one that is merely cut off at it
+              // reports "max turns exceeded" and loses what it found.
+              maxTurns: execOpts.maxTurns,
             })
           : undefined;
         const goalWithConstraints = (!roleSystemPrompt && constraints.length > 0)
@@ -847,7 +950,7 @@ function productionMachine(db: Db, nodeId: string) {
           credentials: resolveCredentials(os.homedir(), process.env.ANTHROPIC_API_KEY),
           adapter,
           image: runnerImageOverride(),
-          grant: grantOf(node!.contract.authority),
+          grant,
           model,
           maxTurns: execOpts.maxTurns,
           onViolation: (tool) => publishDenial(db, nodeId, tool, node!.contract.authority),
@@ -871,7 +974,6 @@ function productionMachine(db: Db, nodeId: string) {
         // One shot at the tiered model — and only a model this runtime can
         // actually serve. If the runtime then says it cannot have it, the run
         // continues on the default rather than failing over a knob.
-        let usedModel = modelFor(adapter, modelChoiceFor(db, nodeId, 'execute', input.goal));
         let result = await runOnce(usedModel);
         if (usedModel && shouldRetryWithoutModel(result.events)) {
           publishProgress(db, nodeId, `Model "${usedModel}" is unavailable on this plan — retrying on the default model`);
@@ -887,6 +989,28 @@ function productionMachine(db: Db, nodeId: string) {
           usage: result.usage, costUsd: costFromEvents(result.events),
         });
         publishStepOutcome(db, nodeId, result);
+
+        // Stored only on success, and only under the key computed *before* the
+        // run — the agent may have dirtied the worktree, and what the answer
+        // describes is the tree it was given. Guarded for the same reason
+        // `recordUsage` is: an answer that was produced and paid for must not be
+        // thrown away because writing it down failed. The retry above can change
+        // which model ran, so the key is recomputed against the one that did.
+        const storeKey = usedModel === undefined ? resultReuseKey(worktreePath, input.goal, grant, undefined) : reuseKey;
+        if (storeKey && result.succeeded) {
+          const text = finalResultText(result.events);
+          if (text) {
+            try {
+              putCachedResult(db, storeKey, {
+                text,
+                tokens: result.usage.inputTokens + result.usage.outputTokens,
+                costUsd: costFromEvents(result.events),
+              }, new Date().toISOString());
+            } catch (err) {
+              console.error(`Failed to cache the result for node ${nodeId}:`, err);
+            }
+          }
+        }
         // No answer event here: a node that did the work itself already said its
         // answer, and it is in the transcript. Publishing it again rendered the
         // whole report twice, once as speech and once as "the answer".

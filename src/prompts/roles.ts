@@ -5,6 +5,11 @@ export interface RolePromptParams {
   allowedTools?: string[] | null;
   constraints?: string[];
   definitionOfDone?: string[];
+  /** The hard turn cap this dispatch runs under, when there is one. Told to the
+   *  agent rather than merely enforced: a run cut off at the cap reports "max
+   *  turns exceeded" and loses everything it found, while one that knows its
+   *  budget can land inside it. */
+  maxTurns?: number;
 }
 
 export const HARNESS_CONSTITUTION = [
@@ -43,9 +48,12 @@ function stanza(role: PromptRole, p: RolePromptParams): string {
         // model to read it. Best-effort: a run that ignores it degrades to the
         // prose merge that was the only option before.
         ENVELOPE_INSTRUCTION,
+        p.maxTurns && p.maxTurns > 0
+          ? `You have at most ${p.maxTurns} turns. Track how many you have used; when you are near the limit, stop exploring and summarise what you have found and what is still unchecked. Being cut off mid-task loses your work.`
+          : '',
         list('Standing constraints (told, not enforced)', p.constraints),
         list('Definition of done', p.definitionOfDone),
-      ].join('\n');
+      ].filter(Boolean).join('\n');
     }
     case 'synthesize':
       return [

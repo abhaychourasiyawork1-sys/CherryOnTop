@@ -31,6 +31,10 @@ export interface SuiteSummary {
   coordinationTokenShare: number;
   recoveryTokenShare: number;
   synthesisAvoidanceRatio: number;
+  /** Summed across the run: tokens a previous identical dispatch had already
+   *  paid for. The direct measure of reuse. */
+  tokensAvoided: number;
+  workAvoidedRatio: number;
   /** Dispatch time over elapsed time. Above 1 means work genuinely overlapped. */
   concurrencyEfficiency: number;
 }
@@ -70,6 +74,8 @@ export function summarizeRun(records: EfficiencyRecord[]): SuiteSummary {
     coordinationTokenShare: mean(records.map((r) => r.coordinationTokenShare)),
     recoveryTokenShare: mean(records.map((r) => r.recoveryTokenShare)),
     synthesisAvoidanceRatio: mean(records.map((r) => r.synthesisAvoidanceRatio)),
+    tokensAvoided: records.reduce((sum, r) => sum + r.tokensAvoided, 0),
+    workAvoidedRatio: mean(records.map((r) => r.workAvoidedRatio)),
     concurrencyEfficiency: elapsedMs === 0 ? 0 : dispatchMs / elapsedMs,
   };
 }
