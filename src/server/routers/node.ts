@@ -9,6 +9,7 @@ import { resolveApproval, getApproval, getPendingApproval, listPendingApprovals 
 import { getSubtreeCosts, getCostForNodes, budgetHealth } from '../../db/queries/stats.js';
 import { subtreeNodeIds } from '../../db/queries/nodes.js';
 import { listArtifactsForNode } from '../../db/queries/artifacts.js';
+import { executionGraph, readyNodes, blockedNodes, graphSummary } from '../../execution/graph.js';
 import { listDecisionsForNode } from '../../db/queries/decisions.js';
 import { answerOf } from '../../db/queries/answers.js';
 import { listCommitmentsForNode } from '../../db/queries/commitments.js';
@@ -261,4 +262,20 @@ export const nodeRouter = router({
       resolveApproval(ctx.db, input.approvalId, input.decision, new Date().toISOString());
       return { ok: true as const };
     }),
+
+  /** The work model: what is ready, what is blocked and on what, and how much
+   *  finished work was reused rather than repeated. Derived from the nodes and
+   *  events that already exist — there is no second store to disagree with. */
+  executionGraph: publicProcedure.query(({ ctx }) => {
+    const graph = executionGraph(ctx.db);
+    return {
+      summary: graphSummary(graph),
+      ready: readyNodes(graph).map((node) => ({ id: node.id, goal: node.goal })),
+      blocked: blockedNodes(graph).map(({ node, reason }) => ({ id: node.id, goal: node.goal, reason })),
+      nodes: graph.map((node) => ({
+        id: node.id, parentId: node.parentId, goal: node.goal,
+        state: node.state, machineState: node.machineState, reused: node.reused,
+      })),
+    };
+  }),
 });

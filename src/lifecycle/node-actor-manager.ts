@@ -3,7 +3,7 @@ import { createActor, fromPromise, waitFor, type Actor } from 'xstate';
 import { nodeMachine, type NodeMachineEvent } from './node-machine.js';
 import type { Db } from '../db/client.js';
 import { updateNodeState, getNode, insertNode, listNodes, setNodeRuntime } from '../db/queries/nodes.js';
-import { appendEvent } from '../db/queries/events.js';
+import { appendEvent, listEventsForNode } from '../db/queries/events.js';
 import { publish } from '../events/bus.js';
 import { executeStep } from '../execution/execute-step.js';
 import { ZERO_USAGE, type DispatchUsage } from '../execution/tokens.js';
@@ -20,7 +20,7 @@ import { insertCommitment, updateCommitmentStatus, setCommitmentEvidence, listCo
 import { insertArtifact, listArtifactsForNode } from '../db/queries/artifacts.js';
 import { artifactsFromEvent } from '../execution/artifacts.js';
 import { codexAdapter } from '../adapters/codex.js';
-import { selectRuntime } from '../intelligence/select-runtime.js';
+import { routeProvider, type ProviderCapability } from '../intelligence/provider-router.js';
 import { buildPlanPrompt, parseSubgoals } from '../intelligence/plan.js';
 import { buildSynthesisPrompt, type ChildReport } from '../intelligence/synthesize.js';
 import { decideIntegration } from '../intelligence/integrate-results.js';
@@ -48,6 +48,14 @@ import { repoHead, repoDirty } from '../execution/git-state.js';
 import { planCacheKey, getCachedPlan, putCachedPlan } from '../db/queries/plan-cache.js';
 import { resultCacheKey, getCachedResult, putCachedResult } from '../db/queries/result-cache.js';
 import { dependenciesFromEvents, buildDependencyFingerprint, dependenciesValid } from '../context/dependencies.js';
+import { indexRunObservations, scoreProjection } from './run-index.js';
+import { buildAgentEnvelope, renderEnvelope, EnvelopeError } from '../intelligence/agent-envelope.js';
+import { putAgentEnvelope, getAgentEnvelope } from '../db/queries/envelopes.js';
+import { scopeOf } from '../context/types.js';
+import { judgeTask } from '../intelligence/task-judge.js';
+import { templateFor, pruneTemplate } from '../intelligence/execution-templates.js';
+import type { TaskClass } from '../intelligence/task-judge.js';
+import { decideExecutionPath, type DecisionReceipt } from '../decision/engine.js';
 import { withRepoContext } from '../intelligence/repo-map.js';
 import { dispatchContextFor, warmRepoInventory } from '../context/dispatch-context-cache.js';
 import { recordDispatchUsage } from '../db/queries/tokens.js';
@@ -119,6 +127,33 @@ function realDelegateDeps(db: Db): DelegateChildDeps {
       // work the root did itself, which is usually none of it.
       insertDodItems(db, childId, [goal], now, () => randomUUID());
     },
+    recordEnvelope: (childId, goal, approvedBudgetUsd) => {
+      const child = getNode(db, childId);
+      if (!child) return;
+      try {
+        const grant = grantOf(child.contract.authority);
+        putAgentEnvelope(db, childId, buildAgentEnvelope({
+          goal,
+          // The parent's standing constraints are the child's too: a mandate
+          // does not stop applying because the work was handed on.
+          constraints: child.contract.constraints ?? [],
+          budget: {
+            usd: approvedBudgetUsd || child.contract.authority.budget_usd,
+            maxTurns: dispatchOptionsFor('execute').maxTurns,
+          },
+          capabilities: grant.allowedTools ?? [],
+          scope: scopeOf(grant.allowedTools, grant.readOnly),
+        }));
+      } catch (err) {
+        // An envelope that cannot be built costs the child its handoff, never
+        // its dispatch — including EnvelopeError, which is a refusal to hand
+        // over something unsafe and must not become a failed delegation.
+        console.error(
+          `Failed to build the envelope for node ${childId}:`,
+          err instanceof EnvelopeError ? err.message : err,
+        );
+      }
+    },
     startChild: (childId, goal) => startNodeActor(db, childId, goal),
     waitForChild: (childId) => waitForNodeCompletion(childId),
   };
@@ -126,28 +161,44 @@ function realDelegateDeps(db: Db): DelegateChildDeps {
 
 const ADAPTERS = { 'claude-code': claudeCodeAdapter, codex: codexAdapter };
 
-/** Which runtime runs this node, decided from what the organization has learned
- *  rather than from a constant. The choice is persisted as a Decision and
- *  published as an event, so it is inspectable in the same place delegation is.
+/** Which provider serves this node, decided from what the organization has
+ *  learned rather than from a constant. The choice is persisted as a Decision
+ *  and published as an event, so it is inspectable in the same place delegation
+ *  is.
+ *
+ *  Asked *after* the model is chosen and never allowed to revise it: a provider
+ *  that cannot serve the model is ruled out rather than substituted, because an
+ *  outage silently becoming a weaker model is a quality decision nobody took.
  *
  *  ORG_RUNNER_IMAGE still short-circuits the whole thing: it means "dispatch a
  *  stand-in image", and no real harness runs inside it to choose between. */
-function chooseAdapter(db: Db, nodeId: string) {
+function chooseAdapter(db: Db, nodeId: string, model?: string) {
   if (runnerImageOverride()) return stopgapAdapter;
 
-  const selection = selectRuntime({
-    available: Object.keys(ADAPTERS),
-    stats: getRuntimeStats(db),
-  });
-  const adapter = ADAPTERS[selection.runtime as keyof typeof ADAPTERS] ?? claudeCodeAdapter;
+  // Capability is asked of the adapter rather than hardcoded by name, the same
+  // way `modelFor` does — a new runtime answers for itself. Health is optimistic
+  // until this runtime learns to observe it; the interface exists so that
+  // learning does not require a rewrite.
+  const candidates: ProviderCapability[] = Object.entries(ADAPTERS).map(([name, adapter]) => ({
+    provider: name,
+    models: model !== undefined && adapter.servesModel?.(model) === false ? [] : null,
+    health: 'healthy',
+  }));
+
+  const route = routeProvider({ model, candidates, stats: getRuntimeStats(db) });
+  const adapter = ADAPTERS[(route.provider ?? '') as keyof typeof ADAPTERS] ?? claudeCodeAdapter;
   const now = new Date().toISOString();
 
+  const breakdown = route.breakdown ?? { score: 0, reason_fast_path: 1 };
   setNodeRuntime(db, nodeId, adapter.name, now);
   insertDecision(db, {
     id: randomUUID(), nodeId, type: 'runtime_selection',
-    outcome: adapter.name, breakdown: selection.breakdown, createdAt: now,
+    outcome: adapter.name, breakdown, createdAt: now,
   });
-  const payload = { outcome: adapter.name, breakdown: selection.breakdown, type: 'runtime_selection' };
+  const payload = {
+    outcome: adapter.name, breakdown, type: 'runtime_selection',
+    reason: route.reason, rejected: route.rejected,
+  };
   const eventId = appendEvent(db, { nodeId, type: 'decision.made', payload, createdAt: now });
   publish({ id: eventId, nodeId, type: 'decision.made', payload, createdAt: now });
 
@@ -219,6 +270,71 @@ function insertMemoryRow(db: Db, kind: string, key: string, value: unknown, node
     }).run();
   } catch (err) {
     console.error(`Failed to record ${kind} for node ${nodeId}:`, err);
+  }
+}
+
+/** Publishes the receipt for a decision the engine took.
+ *
+ *  The decisions table holds the delegation score and nothing else; this is the
+ *  channel for every other choice — reuse over a fresh run, a tool over a model,
+ *  stopping rather than gathering. Same reasoning as `context.receipt`: a
+ *  dispatch's only channel is its argv, so the event log is where the
+ *  explanation has to live. */
+function publishDecisionReceipt(db: Db, nodeId: string, decision: DecisionReceipt): void {
+  const now = new Date().toISOString();
+  const payload = {
+    chosen: decision.chosen,
+    reason: decision.reason,
+    confidence: decision.confidence,
+    estimate: decision.estimate,
+    alternatives: decision.alternatives,
+    gate: decision.gate ?? null,
+    fastPath: decision.fastPath,
+  };
+  try {
+    const id = appendEvent(db, { nodeId, type: 'decision.receipt', payload, createdAt: now });
+    publish({ id, nodeId, type: 'decision.receipt', payload, createdAt: now });
+  } catch (err) {
+    // Explaining a decision must never cost the decision.
+    console.error(`Failed to publish a decision receipt for node ${nodeId}:`, err);
+  }
+}
+
+/** What the runtime already holds the product of, for pruning a template.
+ *
+ *  Deliberately coarse: a repository projection was built, so `repo_structure`
+ *  is known. Anything finer would be claiming knowledge of a step's product
+ *  from the fact that something adjacent to it happened. */
+function indexedKnowledge(db: Db, nodeId: string): Set<string> {
+  const known = new Set<string>();
+  try {
+    for (const event of listEventsForNode(db, nodeId)) {
+      if (event.type === 'context.receipt') known.add('repo_structure');
+      if (event.type === 'exec.result') known.add('edit');
+    }
+  } catch {
+    // A template that cannot be pruned is the full template, which is correct
+    // and merely less efficient.
+  }
+  return known;
+}
+
+/** Publishes the execution template for this task class and what was pruned
+ *  from it. Instrumentation, not instruction — the agent is never handed a step
+ *  list, because that would cost tokens on every dispatch to say something the
+ *  runtime is already deciding. */
+function publishExecutionPlan(db: Db, nodeId: string, taskClass: TaskClass, known: Set<string>): void {
+  try {
+    const pruned = pruneTemplate(templateFor(taskClass), known);
+    const payload = {
+      taskClass,
+      steps: pruned.steps.map((step) => ({ name: step.name, intent: step.intent, optional: step.optional })),
+      removed: pruned.removed.map((entry) => ({ name: entry.step.name, reason: entry.reason })),
+    };
+    const id = appendEvent(db, { nodeId, type: 'execution.plan', payload, createdAt: new Date().toISOString() });
+    publish({ id, nodeId, type: 'execution.plan', payload, createdAt: new Date().toISOString() });
+  } catch (err) {
+    console.error(`Failed to publish an execution plan for node ${nodeId}:`, err);
   }
 }
 
@@ -664,6 +780,15 @@ async function planSubgoals(db: Db, nodeId: string, goal: string, maxChildren: n
     }
   }
 
+  // Asked before a sandbox is opened, not after: planning's only possible
+  // product is a split, so on a goal with no seam it buys a dispatch to be told
+  // what the classification already knows.
+  const verdict = judgeTask(goal);
+  if (!verdict.worthPlanning) {
+    publishProgress(db, nodeId, `${verdict.reason} — doing it directly`);
+    return [];
+  }
+
   const credentials = checkCredentials(os.homedir(), process.env.ANTHROPIC_API_KEY);
   if (!credentials.ok) return [];
 
@@ -880,27 +1005,58 @@ function productionMachine(db: Db, nodeId: string) {
         const grant = grantOf(node!.contract.authority);
         let usedModel = modelFor(adapter, modelChoiceFor(db, nodeId, 'execute', input.goal));
         const reuseKey = resultReuseKey(input.goal, grant, usedModel);
-        if (reuseKey) {
-          // Validity is asked of each candidate answer in turn, newest first:
-          // does the code it actually read still say what it said?
-          const cached = getCachedResult(db, reuseKey, resultCacheTtlHours(),
-            (value) => dependenciesValid(worktreePath, value.deps));
-          if (cached) {
-            publishProgress(db, nodeId, 'This exact question was already answered against this commit — reusing that answer instead of running again');
-            // The reused run left no transcript here, so the answer has to be
-            // published as one: `answerOf` reads `node.answer` before it looks
-            // for a report, and without this the node would finish having said
-            // nothing.
-            publishAnswer(db, nodeId, cached.text);
-            // Counted as work avoided, not work done.
-            recordUsage(db, {
-              nodeId, role: 'execute:cache-hit', model: usedModel ?? null,
-              usage: { ...ZERO_USAGE }, costUsd: 0, tokensAvoided: cached.tokens,
-            });
-            const result = { succeeded: true, message: cached.text, events: [], usage: { ...ZERO_USAGE } };
-            publishStepOutcome(db, nodeId, result);
-            return result;
-          }
+        // Validity is asked of each candidate answer in turn, newest first:
+        // does the code it actually read still say what it said?
+        const cached = reuseKey
+          ? getCachedResult(db, reuseKey, resultCacheTtlHours(),
+              (value) => dependenciesValid(worktreePath, value.deps))
+          : null;
+
+        // Routed through the one decision contract rather than decided inline,
+        // so reusing and running fresh are explained the same way and by the
+        // same rules — the budget gate included. `judgeTask` is the cheap
+        // classification the template and the utility record both key on.
+        const verdict = judgeTask(input.goal);
+        const pathDecision = decideExecutionPath({
+          goal: input.goal,
+          authority: node!.contract.authority,
+          spentUsd: getCostForNodes(db, [nodeId]),
+          complexity: verdict.decomposition.complexity,
+          worthSplitting: verdict.decomposition.worthSplitting,
+          signals: verdict.decomposition.signals,
+          reusable: cached ? { tokens: cached.tokens, costUsd: cached.costUsd } : undefined,
+          // Priced from what this exact run cost the last time it was paid for.
+          // With no such measurement the estimate is honestly zero rather than
+          // an invented one — and the only branch that reads it is the one that
+          // has a measurement.
+          dispatch: { tokens: cached?.tokens ?? 0, latencyMs: 0, costUsd: cached?.costUsd ?? 0 },
+        });
+        publishDecisionReceipt(db, nodeId, pathDecision);
+        // The shape this kind of task usually takes, and the steps the runtime
+        // already holds the product of. Published rather than prompted: a step
+        // list in the argv would cost tokens on every dispatch to tell the agent
+        // something the runtime is deciding for it.
+        publishExecutionPlan(db, nodeId, verdict.taskClass, indexedKnowledge(db, nodeId));
+
+        if (cached && pathDecision.chosen === 'REUSE_COMPUTATION') {
+          publishProgress(db, nodeId, 'This exact question was already answered against this commit — reusing that answer instead of running again');
+          // The reused run left no transcript here, so the answer has to be
+          // published as one: `answerOf` reads `node.answer` before it looks
+          // for a report, and without this the node would finish having said
+          // nothing.
+          publishAnswer(db, nodeId, cached.text);
+          // Counted as work avoided, not work done.
+          recordUsage(db, {
+            nodeId, role: 'execute:cache-hit', model: usedModel ?? null,
+            usage: { ...ZERO_USAGE }, costUsd: 0, tokensAvoided: cached.tokens,
+          });
+          const result = { succeeded: true, message: cached.text, events: [], usage: { ...ZERO_USAGE } };
+          publishStepOutcome(db, nodeId, result);
+          scoreProjection(db, {
+            nodeId, taskClass: verdict.taskClass, read: [], outcome: 'success',
+            tokensAvoided: cached.tokens, executionAvoided: true,
+          });
+          return result;
         }
 
         publishProgress(db, nodeId, `Starting a sandbox on ${adapter.name} against ${worktreePath}`);
@@ -940,11 +1096,26 @@ function productionMachine(db: Db, nodeId: string) {
         // instead of landing between the standing instructions and the goal they
         // govern — a file listing separating an instruction from its task is a
         // worse prompt than either change intended on its own.
-        const goalForDispatch = repoContext
-          ? withRepoContext(goalWithConstraints, repoContext.content)
+        // What the parent addressed to this child, if anything. Rendered into
+        // the argv rather than into the node's goal, because the goal is what a
+        // person reads in the tree — an envelope folded into it would turn a
+        // sentence into a paragraph of machine instructions wearing the goal's
+        // name.
+        const envelope = getAgentEnvelope(db, nodeId);
+        const envelopeText = envelope ? renderEnvelope(envelope) : '';
+        const goalWithHandoff = envelopeText
+          ? `${envelopeText}\n\n${goalWithConstraints}`
           : goalWithConstraints;
+        const goalForDispatch = repoContext
+          ? withRepoContext(goalWithHandoff, repoContext.content)
+          : goalWithHandoff;
 
-        const runOnce = (model: string | undefined) => dispatch(db, nodeId, () => executeStep({
+        // Reset per attempt: the fallback retry below re-runs the dispatch, and
+        // its stream is the one whose rows the observations belong to.
+        let eventIds: number[] = [];
+        const runOnce = (model: string | undefined) => {
+          eventIds = [];
+          return dispatch(db, nodeId, () => executeStep({
           nodeId,
           goal: goalForDispatch,
           systemPrompt: roleSystemPrompt,
@@ -969,6 +1140,11 @@ function productionMachine(db: Db, nodeId: string) {
             const type = `exec.${event.type}`;
             const id = appendEvent(db, { nodeId, type, payload: event.payload, createdAt: now });
             publish({ id, nodeId, type, payload: event.payload, createdAt: now });
+            // Recorded in arrival order, which is the order `result.events`
+            // comes back in — so an observation can point at the row that
+            // already holds its output instead of the context store keeping a
+            // second copy of it.
+            eventIds.push(id);
             // Artifacts are derived from the same stream, at the same moment —
             // no second capture pass over the event log afterwards.
             for (const artifact of artifactsFromEvent(event)) {
@@ -976,6 +1152,7 @@ function productionMachine(db: Db, nodeId: string) {
             }
           },
         }));
+        };
 
         // One shot at the tiered model — and only a model this runtime can
         // actually serve. If the runtime then says it cannot have it, the run
@@ -996,6 +1173,21 @@ function productionMachine(db: Db, nodeId: string) {
           startupMs: result.startupMs,
         });
         publishStepOutcome(db, nodeId, result);
+
+        // The run's own account of what it touched, indexed into the context
+        // graph. Built from what actually ran rather than from a scan of what
+        // might matter, and pointing at the event rows that already hold the
+        // output rather than copying it.
+        const indexed = indexRunObservations(db, { nodeId, events: result.events, eventIds, grant });
+        // What the projection predicted, against what the run actually read.
+        // Free, because the run already told us both.
+        scoreProjection(db, {
+          nodeId,
+          taskClass: verdict.taskClass,
+          receipt: repoContext?.receipt,
+          read: indexed.read,
+          outcome: result.succeeded ? 'success' : 'failure',
+        });
 
         // Stored only on success. The fingerprint is built from the run's own
         // stream — the files it actually read — against the commit it was given,
