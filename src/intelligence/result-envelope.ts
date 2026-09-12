@@ -11,7 +11,16 @@
  *  failing. */
 import { z } from 'zod';
 
-export const AgentResultStatusSchema = z.enum(['success', 'partial', 'failed']);
+// `blocked` and `needs_input` are not decoration. A status outside this enum
+// fails validation, which discards the *whole* envelope — findings, changed
+// files, confidence and all — and sends the parent down the prose path, buying
+// a synthesis sandbox because a child used an honest word for its situation.
+// Accepting the words a child actually reaches for is a token saving.
+//
+// `conflict` from the source plan is deliberately absent: a conflict is
+// something a parent observes between two children, not a state a child can
+// report about itself. See decideIntegration, which detects it.
+export const AgentResultStatusSchema = z.enum(['success', 'partial', 'failed', 'blocked', 'needs_input']);
 export type AgentResultStatus = z.infer<typeof AgentResultStatusSchema>;
 
 export const AgentResultEnvelopeSchema = z.object({
@@ -33,7 +42,7 @@ export type AgentResultEnvelope = z.infer<typeof AgentResultEnvelopeSchema>;
 export const ENVELOPE_INSTRUCTION = [
   'End your final message with a fenced ```json block in exactly this shape, after your prose:',
   '{',
-  '  "status": "success" | "partial" | "failed",',
+  '  "status": "success" | "partial" | "blocked" | "needs_input" | "failed",',
   '  "summary": "one sentence a colleague could act on",',
   '  "findings": ["what you learned that someone else needs to know"],',
   '  "changedFiles": ["paths you actually modified"],',

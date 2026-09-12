@@ -18,6 +18,7 @@ const base = {
   tokensAvoided: 0,
   retries: 0,
   queueMs: 50,
+  startupMs: 500,
   dispatchMs: 2500,
   endToEndMs: 4100,
   costUsd: 0.02,
@@ -25,6 +26,13 @@ const base = {
 };
 
 describe('buildEfficiencyRecord', () => {
+  it('reports how much of a dispatch was spent getting ready rather than working', () => {
+    // The gate for warm pools and snapshots. Small here means that machinery
+    // would be bought to save seconds on a path that costs minutes.
+    expect(buildEfficiencyRecord(base).executionOverheadRatio).toBeCloseTo(500 / 2500);
+    expect(buildEfficiencyRecord({ ...base, dispatchMs: 0 }).executionOverheadRatio).toBe(0);
+  });
+
   // The point of the whole exercise is work that did not happen, and an absence
   // is not measurable by looking at what did. A reused result is the only place
   // the system can say "these tokens were not spent" with a number behind it.

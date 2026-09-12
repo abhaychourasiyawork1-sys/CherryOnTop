@@ -44,6 +44,12 @@ export interface EfficiencyInput {
   retries: number;
   /** Time spent waiting for a sandbox slot rather than doing anything. */
   queueMs: number;
+  /** Time inside dispatches spent getting ready to work rather than working:
+   *  cluster scheduling, image pull, container start, agent boot. Summed across
+   *  dispatches, like `dispatchMs`, and a *slice* of it. Telemetry only —
+   *  whether warm pools or snapshots are worth their complexity is a question
+   *  about this number, and nothing measured it before. */
+  startupMs: number;
   /** Time inside dispatches, summed. Exceeds `endToEndMs` when work overlapped,
    *  which is exactly what makes it worth recording separately. */
   dispatchMs: number;
@@ -63,6 +69,10 @@ export interface EfficiencyRecord extends EfficiencyInput {
   /** Dispatches avoided over dispatches considered. The headline number for
    *  "did this system get cheaper as it accumulated reusable work?". */
   workAvoidedRatio: number;
+  /** Startup over time inside dispatches. The gate for Part X of the plan: if
+   *  this is small, warm pools and snapshots are machinery bought to save
+   *  seconds on a path that costs minutes. */
+  executionOverheadRatio: number;
   tokensPerModelCall: number;
   /** Null unless the task succeeded. The headline metric is cost *per success*:
    *  a change that halves tokens by failing twice as often is not an
@@ -77,7 +87,7 @@ export const EMPTY_TOTALS = {
   recoveryTokens: 0, planningCalls: 0, executionCalls: 0, synthesisCalls: 0,
   avoidedPlanningCalls: 0, avoidedSynthesisCalls: 0, avoidedExecutionCalls: 0,
   tokensAvoided: 0, retries: 0,
-  queueMs: 0, dispatchMs: 0, endToEndMs: 0, costUsd: 0,
+  queueMs: 0, startupMs: 0, dispatchMs: 0, endToEndMs: 0, costUsd: 0,
 } as const;
 
 function share(part: number, whole: number): number {
@@ -106,6 +116,7 @@ export function buildEfficiencyRecord(input: EfficiencyInput): EfficiencyRecord 
       input.avoidedSynthesisCalls + input.synthesisCalls,
     ),
     workAvoidedRatio: share(avoidedCalls, avoidedCalls + modelCalls),
+    executionOverheadRatio: share(input.startupMs, input.dispatchMs),
     tokensPerModelCall: share(totalTokens, modelCalls),
     tokensPerSuccessfulTask: input.outcome === 'success' ? totalTokens : null,
   };

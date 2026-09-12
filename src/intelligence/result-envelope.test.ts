@@ -12,6 +12,25 @@ const good = {
 
 const fenced = (value: unknown) => '```json\n' + JSON.stringify(value, null, 2) + '\n```';
 
+describe('statuses a child can honestly report', () => {
+  it('accepts blocked and needs_input rather than discarding the whole envelope', () => {
+    // Not cosmetic. A status outside the enum fails schema validation, the
+    // envelope is discarded, and the parent falls back to "reported in prose,
+    // which only a model can merge" — buying a synthesis sandbox because a
+    // child used an honest word for its situation. Accepting the words a child
+    // actually reaches for is a token saving, not a taxonomy exercise.
+    for (const status of ['success', 'partial', 'failed', 'blocked', 'needs_input']) {
+      const parsed = parseResultEnvelope(
+        `prose\n\n\`\`\`json\n{"status":"${status}","summary":"s","findings":["f"]}\n\`\`\``,
+        'failed',
+      );
+      expect(parsed.structured).toBe(true);
+      expect(parsed.envelope.status).toBe(status);
+      expect(parsed.envelope.findings).toEqual(['f']);
+    }
+  });
+});
+
 describe('parseResultEnvelope', () => {
   it('reads a fenced envelope off the end of a report', () => {
     const parsed = parseResultEnvelope(`I fixed the bug.\n\n${fenced(good)}`, 'success');

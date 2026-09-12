@@ -85,14 +85,18 @@ describe('efficiency ledger', () => {
     expect(record.workAvoidedRatio).toBe(1);
   });
 
-  it('records queue time separately from dispatch time', () => {
+  it('records queue and startup time separately from dispatch time', () => {
     const ledger = createEfficiencyLedger(fakeClock().now);
     ledger.startTask('n1');
-    ledger.recordDispatch('n1', { role: 'execute', usage: usage(10, 10), costUsd: 0, ms: 500, queuedMs: 1500 });
+    ledger.recordDispatch('n1', { role: 'execute', usage: usage(10, 10), costUsd: 0, ms: 500, queuedMs: 1500, startupMs: 120 });
 
     const record = ledger.finishTask('n1', 'success');
+    // Waiting for a slot, waiting for a container, and working are three
+    // different things with three different fixes.
     expect(record.queueMs).toBe(1500);
+    expect(record.startupMs).toBe(120);
     expect(record.dispatchMs).toBe(500);
+    expect(record.executionOverheadRatio).toBeCloseTo(120 / 500);
   });
 
   it('publishes exactly one terminal event per task', () => {

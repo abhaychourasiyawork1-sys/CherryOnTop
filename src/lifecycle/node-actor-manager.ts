@@ -28,7 +28,7 @@ import { answerOf } from '../db/queries/answers.js';
 import { recordRunOutcome, getRuntimeStats } from '../db/queries/memory.js';
 import { getCostForNodes } from '../db/queries/stats.js';
 import { resolveCredentials, checkCredentials } from '../execution/credentials.js';
-import { sandboxLimiter, maxConcurrentFromEnv } from '../execution/dispatch-limit.js';
+import { sandboxLimiter, maxConcurrentFromEnv, CRITICAL_PATH } from '../execution/dispatch-limit.js';
 import { efficiencyLedger, type LedgerRole } from '../efficiency/ledger.js';
 import type { EfficiencyOutcome } from '../efficiency/metrics.js';
 import type { DispatchReceipt } from '../context/dispatch-context.js';
@@ -47,6 +47,7 @@ import { assessDecomposition } from '../intelligence/decompose.js';
 import { repoHead, repoDirty } from '../execution/git-state.js';
 import { planCacheKey, getCachedPlan, putCachedPlan } from '../db/queries/plan-cache.js';
 import { resultCacheKey, getCachedResult, putCachedResult } from '../db/queries/result-cache.js';
+import { dependenciesFromEvents, buildDependencyFingerprint, dependenciesValid } from '../context/dependencies.js';
 import { withRepoContext } from '../intelligence/repo-map.js';
 import { dispatchContextFor, warmRepoInventory } from '../context/dispatch-context-cache.js';
 import { recordDispatchUsage } from '../db/queries/tokens.js';
@@ -248,7 +249,12 @@ function publishContextReceipt(db: Db, nodeId: string, receipt: DispatchReceipt)
  *  answer", which is a far worse outcome than a missing row in `org tokens`. */
 function recordUsage(
   db: Db,
-  r: { nodeId: string; role: string; model: string | null; usage: DispatchUsage; costUsd: number; tokensAvoided?: number },
+  r: {
+    nodeId: string; role: string; model: string | null; usage: DispatchUsage;
+    costUsd: number; tokensAvoided?: number;
+    /** Time inside the dispatch spent before the runtime said anything. */
+    startupMs?: number;
+  },
 ): void {
   try {
     recordDispatchUsage(db, { ...r, createdAt: new Date().toISOString() });
@@ -272,6 +278,7 @@ function recordUsage(
     costUsd: r.costUsd,
     ms: timing.dispatchMs,
     queuedMs: timing.queuedMs,
+    startupMs: r.startupMs,
   });
 }
 
@@ -313,12 +320,12 @@ function modelChoiceFor(db: Db, nodeId: string, role: DispatchRole, goal: string
 function recordSupersededAttempt(
   nodeId: string,
   role: LedgerRole,
-  result: { usage: DispatchUsage; events: { type: string; payload: unknown }[] },
+  result: { usage: DispatchUsage; events: { type: string; payload: unknown }[]; startupMs?: number },
 ): void {
   const timing = drainTiming(nodeId);
   ledger.recordDispatch(nodeId, {
     role, usage: result.usage, costUsd: costFromEvents(result.events),
-    ms: timing.dispatchMs, queuedMs: timing.queuedMs, superseded: true,
+    ms: timing.dispatchMs, queuedMs: timing.queuedMs, startupMs: result.startupMs, superseded: true,
   });
 }
 
@@ -453,7 +460,7 @@ async function synthesizeChildren(db: Db, nodeId: string, goal: string): Promise
         const id = appendEvent(db, { nodeId, type, payload: event.payload, createdAt: now });
         publish({ id, nodeId, type, payload: event.payload, createdAt: now });
       },
-    }));
+    }), CRITICAL_PATH);
 
     // One shot at the tiered model, exactly as the execute dispatch does it:
     // a role that defaults to Haiku must not lose the whole answer on a plan
@@ -471,6 +478,7 @@ async function synthesizeChildren(db: Db, nodeId: string, goal: string): Promise
     recordUsage(db, {
       nodeId, role: 'synthesize', model: usedModel ?? null,
       usage: result.usage, costUsd: costFromEvents(result.events),
+      startupMs: result.startupMs,
     });
 
     // An errored `result` is the runtime's complaint, not an answer — and the
@@ -526,38 +534,32 @@ function finalResultText(events: { type: string; payload: unknown }[]): string {
 /** The key this dispatch's answer may be stored under and served from, or null
  *  when it may not be reused at all.
  *
- *  Three conditions, each of which is the whole argument on its own:
+ *  Two conditions, each of which is the whole argument on its own:
  *
  *   - **read-only.** Reusing the answer of a run that changed something would
  *     skip the change and report it done. Read-only is what makes "we did not
  *     re-run it" equivalent to "we re-ran it": there were no side effects to
  *     lose.
- *   - **a readable, clean HEAD.** The answer describes the code as it stood.
- *     `repoDirty` says true when it cannot tell, so an unknowable tree is never
- *     keyed — exactly the plan cache's rule.
  *   - **same model and same grant.** A cheaper model's answer must not be
  *     served to a request routed to a stronger one, and an answer produced
- *     under a wider grant saw more of the repository than this node may. */
-function resultReuseKey(
-  worktreePath: string,
-  goal: string,
-  grant: ToolGrant,
-  model: string | undefined,
-): string | null {
+ *     under a wider grant saw more of the repository than this node may.
+ *
+ *  The commit is deliberately not part of the key. What makes an answer still
+ *  true is whether the files it read still say what they said, which is checked
+ *  on read (context/dependencies.ts) — keying on HEAD instead would invalidate
+ *  every cached answer about every module on one commit to a README. */
+function resultReuseKey(goal: string, grant: ToolGrant, model: string | undefined): string | null {
   if (!grant.readOnly || resultCacheTtlHours() <= 0) return null;
-  try {
-    const head = repoHead(worktreePath);
-    if (!head || repoDirty(worktreePath)) return null;
-    return resultCacheKey(goal, head, model ?? '(default)', grant.allowedTools);
-  } catch {
-    // A cache that cannot key itself costs a sandbox, not a run.
-    return null;
-  }
+  return resultCacheKey(goal, model ?? '(default)', grant.allowedTools);
 }
 
 /** Runs a sandbox when a slot is free, and says so while it waits. A node
- *  sitting in a queue looks identical to one that has hung unless it tells you. */
-async function dispatch<T>(db: Db, nodeId: string, task: () => Promise<T>): Promise<T> {
+ *  sitting in a queue looks identical to one that has hung unless it tells you.
+ *
+ *  `priority` orders the queue, never the ceiling: planning blocks the creation
+ *  of every child and synthesis is the last thing between a person and their
+ *  answer, while a work dispatch blocks only itself and may run sixty turns. */
+async function dispatch<T>(db: Db, nodeId: string, task: () => Promise<T>, priority = 0): Promise<T> {
   if (sandboxes.active() >= maxConcurrentFromEnv()) {
     publishProgress(db, nodeId, `Waiting for a free sandbox — ${sandboxes.queued() + 1} ahead in the queue`);
   }
@@ -606,7 +608,7 @@ async function dispatch<T>(db: Db, nodeId: string, task: () => Promise<T>): Prom
         }
       }
       return task();
-    });
+    }, priority);
   } finally {
     pendingTiming.set(nodeId, { queuedMs: startedAt - queuedAt, dispatchMs: Date.now() - startedAt });
   }
@@ -714,7 +716,7 @@ async function planSubgoals(db: Db, nodeId: string, goal: string, maxChildren: n
         const id = appendEvent(db, { nodeId, type, payload: event.payload, createdAt: now });
         publish({ id, nodeId, type, payload: event.payload, createdAt: now });
       },
-    }));
+    }), CRITICAL_PATH);
 
     // One shot at the tiered model, exactly as the execute dispatch does it.
     // `plan` is the role that actually defaults to a tiered model, so without
@@ -739,6 +741,7 @@ async function planSubgoals(db: Db, nodeId: string, goal: string, maxChildren: n
     recordUsage(db, {
       nodeId, role: 'plan', model: usedModel ?? null,
       usage: result.usage, costUsd: costFromEvents(result.events),
+      startupMs: result.startupMs,
     });
     // Both answers are worth pinning, including "does not split". That one used
     // to be dropped as "cheap to recompute", which it is not: recomputing it
@@ -876,9 +879,12 @@ function productionMachine(db: Db, nodeId: string) {
         // same run — a haiku answer must not be served to a sonnet request.
         const grant = grantOf(node!.contract.authority);
         let usedModel = modelFor(adapter, modelChoiceFor(db, nodeId, 'execute', input.goal));
-        const reuseKey = resultReuseKey(worktreePath, input.goal, grant, usedModel);
+        const reuseKey = resultReuseKey(input.goal, grant, usedModel);
         if (reuseKey) {
-          const cached = getCachedResult(db, reuseKey, resultCacheTtlHours());
+          // Validity is asked of each candidate answer in turn, newest first:
+          // does the code it actually read still say what it said?
+          const cached = getCachedResult(db, reuseKey, resultCacheTtlHours(),
+            (value) => dependenciesValid(worktreePath, value.deps));
           if (cached) {
             publishProgress(db, nodeId, 'This exact question was already answered against this commit — reusing that answer instead of running again');
             // The reused run left no transcript here, so the answer has to be
@@ -987,25 +993,38 @@ function productionMachine(db: Db, nodeId: string) {
         recordUsage(db, {
           nodeId, role: 'execute', model: usedModel ?? null,
           usage: result.usage, costUsd: costFromEvents(result.events),
+          startupMs: result.startupMs,
         });
         publishStepOutcome(db, nodeId, result);
 
-        // Stored only on success, and only under the key computed *before* the
-        // run — the agent may have dirtied the worktree, and what the answer
-        // describes is the tree it was given. Guarded for the same reason
-        // `recordUsage` is: an answer that was produced and paid for must not be
-        // thrown away because writing it down failed. The retry above can change
-        // which model ran, so the key is recomputed against the one that did.
-        const storeKey = usedModel === undefined ? resultReuseKey(worktreePath, input.goal, grant, undefined) : reuseKey;
+        // Stored only on success. The fingerprint is built from the run's own
+        // stream — the files it actually read — against the commit it was given,
+        // not the tree as it now stands: a read-only run should not have moved
+        // the tree, and if something else did, what the answer describes is
+        // still the commit it saw. Guarded for the same reason `recordUsage` is:
+        // an answer that was produced and paid for must not be thrown away
+        // because writing it down failed. The retry above can change which model
+        // ran, so the key is recomputed against the one that did.
+        const storeKey = usedModel === undefined ? resultReuseKey(input.goal, grant, undefined) : reuseKey;
         if (storeKey && result.succeeded) {
           const text = finalResultText(result.events);
           if (text) {
             try {
-              putCachedResult(db, storeKey, {
-                text,
-                tokens: result.usage.inputTokens + result.usage.outputTokens,
-                costUsd: costFromEvents(result.events),
-              }, new Date().toISOString());
+              const observed = dependenciesFromEvents(result.events);
+              const head = repoHead(worktreePath);
+              const deps = head && !repoDirty(worktreePath)
+                ? buildDependencyFingerprint(worktreePath, observed.paths, observed.opaque, head)
+                : null;
+              // No fingerprint, no reuse. An answer we cannot say the validity
+              // of is not one we may serve again.
+              if (deps) {
+                putCachedResult(db, storeKey, {
+                  text,
+                  tokens: result.usage.inputTokens + result.usage.outputTokens,
+                  costUsd: costFromEvents(result.events),
+                  deps,
+                }, new Date().toISOString());
+              }
             } catch (err) {
               console.error(`Failed to cache the result for node ${nodeId}:`, err);
             }

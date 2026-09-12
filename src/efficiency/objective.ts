@@ -35,6 +35,9 @@ export interface SuiteSummary {
    *  paid for. The direct measure of reuse. */
   tokensAvoided: number;
   workAvoidedRatio: number;
+  /** Startup over time inside dispatches, averaged. The measurement that
+   *  decides whether warm-sandbox work is worth building. */
+  executionOverheadRatio: number;
   /** Dispatch time over elapsed time. Above 1 means work genuinely overlapped. */
   concurrencyEfficiency: number;
 }
@@ -76,6 +79,7 @@ export function summarizeRun(records: EfficiencyRecord[]): SuiteSummary {
     synthesisAvoidanceRatio: mean(records.map((r) => r.synthesisAvoidanceRatio)),
     tokensAvoided: records.reduce((sum, r) => sum + r.tokensAvoided, 0),
     workAvoidedRatio: mean(records.map((r) => r.workAvoidedRatio)),
+    executionOverheadRatio: mean(records.map((r) => r.executionOverheadRatio)),
     concurrencyEfficiency: elapsedMs === 0 ? 0 : dispatchMs / elapsedMs,
   };
 }

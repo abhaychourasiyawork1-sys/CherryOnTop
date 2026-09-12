@@ -61,3 +61,63 @@ different name or rejected there with the evidence.
 | Modify | `recordAvoided` gains `execute` and a token estimate; `EfficiencyInput` gains `avoidedExecutionCalls`, `tokensAvoided`; `EfficiencyRecord` gains `workAvoidedRatio`; `SuiteSummary` gains `tokensAvoided`/`workAvoidedRatio` |
 | Tests | `src/efficiency/{metrics,ledger,objective}.test.ts` |
 | Depends on | — |
+
+## Task 5 — dependency-based cache validity (source plan Tasks 3, 20, 21)
+
+| | |
+|---|---|
+| Files | `src/context/dependencies.ts` (new), `src/db/queries/result-cache.ts`, `src/lifecycle/node-actor-manager.ts` |
+| Reuse | the run's own `tool_use` stream (the same envelope `artifacts.ts` walks), `repoHead`/`repoDirty` |
+| New | `dependenciesFromEvents`, `buildDependencyFingerprint`, `dependenciesValid`; `getCachedResult` takes a validity predicate |
+| Tests | `src/context/dependencies.test.ts`, `src/lifecycle/result-reuse.test.ts` |
+| Depends on | Task 3 |
+
+Keying reuse on HEAD makes the cache die on every commit. The dispatch's real
+dependencies are the files it read, and this runtime can see them. Opaque runs (a `Bash`
+call) fall back to an exact-commit match; a searched directory is checked as a set so an
+added module invalidates an audit rather than being omitted from it.
+
+## Task 6 — critical-path scheduling (source plan Task 19)
+
+| | |
+|---|---|
+| Files | `src/execution/dispatch-limit.ts`, `src/lifecycle/node-actor-manager.ts` |
+| Reuse | the existing daemon-wide limiter and its slot-transfer discipline |
+| New | `CRITICAL_PATH`; `Limiter.run(task, priority)` |
+| Tests | `src/execution/dispatch-limit.test.ts` |
+| Depends on | — |
+
+## Task 7 — execution-overhead telemetry (source plan Task 23)
+
+| | |
+|---|---|
+| Files | `src/execution/execute-step.ts`, `src/efficiency/{ledger,metrics,objective}.ts` |
+| New | `ExecuteStepResult.startupMs`, `EfficiencyInput.startupMs`, `executionOverheadRatio` |
+| Tests | `src/execution/execute-step.test.ts`, `src/efficiency/*.test.ts` |
+| Depends on | Task 4 |
+
+Telemetry only. It exists so the Part X gate is decided by a number rather than asserted.
+
+## Task 8 — decision replay (source plan Task 31)
+
+| | |
+|---|---|
+| Files | `src/efficiency/replay.ts` (new), `src/server/routers/decision.ts`, `src/cli/commands/decision.ts` |
+| Reuse | `decisions` table, `scoreDelegation`, `counterfactual` |
+| New | `replayDecision`, `replayNode`, `decision.replay` procedure, `org decision --replay` |
+| Tests | `src/efficiency/replay.test.ts`, `src/server/routers/decision.test.ts` |
+| Depends on | — |
+
+## Task 9 — honest child statuses (source plan Task 14)
+
+| | |
+|---|---|
+| Files | `src/intelligence/result-envelope.ts` |
+| Modify | `AgentResultStatusSchema` gains `blocked` and `needs_input`; `ENVELOPE_INSTRUCTION` names them |
+| Tests | `src/intelligence/result-envelope.test.ts` |
+| Depends on | — |
+
+A status outside the enum fails validation, which discards the whole envelope and sends the
+parent down the prose path — buying a synthesis sandbox because a child used an honest word.
+`conflict` is deliberately not added: a conflict is something a parent observes between two
+children, not a state a child reports about itself.

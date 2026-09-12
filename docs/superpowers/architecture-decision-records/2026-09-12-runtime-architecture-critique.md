@@ -145,6 +145,17 @@ step 5) but only inside the router.
 | 2 | Task spend breaker at the single `dispatch()` chokepoint | enforces cost-per-task instead of reporting it | Finding 5 |
 | 3 | Result reuse for read-only dispatches, keyed as the plan cache is | whole dispatches avoided | doctrine rung 2 (reuse); plan Task 28 |
 | 4 | Ledger records avoided execution and tokens avoided | makes 1–3 measurable rather than asserted | plan Task 1 steps 1/3 |
+| 5 | Dependency-based cache validity from the run's own tool stream | a HEAD-keyed cache dies on every commit; this one survives unrelated ones | plan Tasks 3, 20, 21 (Task 21 step 5 asks for exactly this) |
+| 6 | Critical-path priority in the sandbox queue | p95: a 1-turn synthesis was queueing behind a 60-turn execution | plan Task 19 |
+| 7 | Execution-overhead telemetry (`startupMs`, `executionOverheadRatio`) | decides the Part X gate with a number instead of an assertion | plan Task 23 |
+| 8 | Decision replay (`org decision --replay`) | turns the auditability claim into a command | plan Task 31 |
+| 9 | `blocked` / `needs_input` child statuses | an unrecognised status discards the whole envelope and buys a synthesis call | plan Task 14 |
+
+Changes 5–9 were added in a second pass after re-auditing the rejected tasks: each is a
+plan task whose *intent* survives translation to this architecture even though its proposed
+mechanism does not. Task 3's "dependency fingerprints and partial invalidation" is the
+clearest case — the plan builds them over Context Objects we do not have, and the same
+property falls out of the tool stream we do have.
 
 Each is deterministic, adds no hot-path model call, degrades to current behaviour on
 failure, and is verifiable without spending a token on inference.
@@ -154,7 +165,7 @@ failure, and is verifiable without spending a token on inference.
 | Not built | Would be justified by |
 |---|---|
 | Context objects / graph / RPC (Tasks 2–4, 8) | CherryOnTop owning the model context window — i.e. an adapter that drives the agent turn-by-turn instead of `claude -p` |
-| Observation engine / tool projections / evidence planner (Tasks 10–12) | same |
+| Observation engine / tool projections / evidence planner (Tasks 10–12) | same. Note the *stream* is now read — for dependency fingerprints, where it pays — but reducing what we store in it still saves no model token |
 | Snapshots / warm pools / workspace forks (Tasks 22–25) | `executionOverheadRatio` measured above ~15% of successful-task latency |
 | Provider routing split (Task 27) | a second provider actually configured |
 | Learned ranking / utility memory / shadow harness (Tasks 29–31) | a deterministic selector shown to be the binding constraint |

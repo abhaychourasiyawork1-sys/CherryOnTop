@@ -28,6 +28,9 @@ export interface LedgerDispatch {
   ms: number;
   /** Wall-clock spent waiting for a sandbox slot before it. */
   queuedMs?: number;
+  /** Wall-clock inside the dispatch spent before the runtime said anything:
+   *  scheduling, image pull, container start, agent boot. A slice of `ms`. */
+  startupMs?: number;
   /** This dispatch was thrown away and re-run — the model-fallback retry. Its
    *  tokens bought nothing, so they are recovery spend rather than work. */
   superseded?: boolean;
@@ -87,6 +90,7 @@ export function createEfficiencyLedger(
       t.costUsd += dispatch.costUsd;
       t.dispatchMs += dispatch.ms;
       t.queueMs += dispatch.queuedMs ?? 0;
+      t.startupMs += dispatch.startupMs ?? 0;
 
       if (dispatch.role === 'plan') t.planningCalls += 1;
       else if (dispatch.role === 'execute') t.executionCalls += 1;

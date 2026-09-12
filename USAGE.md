@@ -265,16 +265,40 @@ bounds the tail. The agent is *told* the number in its role prompt: a run cut of
 reports "max turns exceeded" and loses what it found, while one that knows its budget
 summarises inside it.
 
-**Result reuse.** The same read-only goal, against the same committed HEAD, under the same
-model and the same grant, gets the answer the last run produced instead of a second sandbox.
-Same validity rule as the plan cache — a dirty or unreadable tree is never keyed — applied
-where the money is: a cached plan skips a dispatch measured at $0.045, a cached read-only
-execution skips one measured at $0.95. Strictly read-only, because "we did not re-run it" is
-only equivalent to "we re-ran it" when there were no side effects to lose. A hit publishes
-the answer as a `node.answer` event (the reused run leaves no transcript of its own), counts
-as *work avoided* rather than a zero-token dispatch, and reports what that work cost the last
-time it was actually paid for. `org tokens` shows the hits; `ORG_RESULT_CACHE_TTL_HOURS=0`
-turns it off.
+**Result reuse.** The same read-only goal, under the same model and the same grant, gets the
+answer the last run produced instead of a second sandbox — applied where the money is: a
+cached plan skips a dispatch measured at $0.045, a cached read-only execution skips one
+measured at $0.95. Strictly read-only, because "we did not re-run it" is only equivalent to
+"we re-ran it" when there were no side effects to lose. A hit publishes the answer as a
+`node.answer` event (the reused run leaves no transcript of its own), counts as *work
+avoided* rather than a zero-token dispatch, and reports what that work cost the last time it
+was actually paid for. `org tokens` shows the hits; `ORG_RESULT_CACHE_TTL_HOURS=0` turns it
+off.
+
+What makes a reused answer still true is **not** the commit it was produced at. Keying on
+HEAD is correct and blunt: one commit to a README would invalidate every cached answer about
+every module, which in a repository anyone is working in is a cache that never hits. Validity
+is instead the files the run actually read — taken from its own event stream, so it is the
+run's evidence rather than a guess — checked against the current tree file by file. A
+directory it *searched* is checked as a set, so a module added to an audited package
+invalidates the audit rather than being silently omitted from it. Two things make it fall
+back to requiring the exact commit: a `Bash` call, which can read anything we cannot name,
+and a stream we learned nothing from. A dirty tree is never reusable at all.
+
+**Critical-path scheduling.** The sandbox queue holds two things that are not comparable. A
+planning dispatch is capped at 2 turns and nothing can start until it answers; a synthesis
+dispatch is capped at 1 turn and is the last thing between a person and their answer; a work
+dispatch may run 60 turns and blocks only itself. Coordination dispatches therefore take a
+freed slot ahead of queued work dispatches. Ordering only — the concurrency ceiling
+(`ORG_MAX_CONCURRENT_SANDBOXES`) is untouched, so the worst this degrades to is the
+first-in-first-out behaviour it replaced.
+
+**Replaying a decision.** `org decision <nodeId> --replay` re-runs each recorded decision
+through the same arithmetic that produced it and reports whether today's code still agrees,
+naming the single term that would have flipped it. Free — the decisions were formulas, not
+model calls. A decision taken on a rule rather than a score is reported as *not replayable*
+rather than as reproduced: announcing an audit that never happened is worse than announcing
+none.
 
 **Conditional synthesis.** A delegating node used to buy a synthesis sandbox whenever any
 child had said anything. Children now close their report with a small JSON envelope (status,
@@ -305,7 +329,10 @@ calls.**
 
 **Measuring it.** Every task writes one `efficiency_record` to memory when it reaches a
 terminal state: tokens split into input/output/cached, the coordination and recovery
-*shares* of them, dispatch counts, the dispatches that were avoided and what those avoided
+*shares* of them, dispatch counts, time spent getting a container ready rather than working
+(`executionOverheadRatio` — the measurement that decides whether warm pools and snapshots
+would be machinery bought to save seconds on a path that costs minutes; it enables nothing on
+its own, which is the point), the dispatches that were avoided and what those avoided
 dispatches had cost when they were last actually paid for, queue time separated
 from dispatch time, and end-to-end wall clock. `workAvoidedRatio` — dispatches avoided over
 dispatches considered — is the direct answer to "is this organization getting cheaper as it

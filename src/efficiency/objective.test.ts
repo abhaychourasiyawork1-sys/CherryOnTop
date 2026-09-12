@@ -12,7 +12,7 @@ const suite = (over: Partial<ReturnType<typeof summarizeRun>> = {}) => ({
   tokensPerSuccessfulTask: 10_000, p50LatencyMs: 50_000, p95LatencyMs: 100_000,
   cacheHitRatio: 0, coordinationTokenShare: 0.2, recoveryTokenShare: 0,
   synthesisAvoidanceRatio: 0, concurrencyEfficiency: 1,
-  tokensAvoided: 0, workAvoidedRatio: 0, ...over,
+  tokensAvoided: 0, workAvoidedRatio: 0, executionOverheadRatio: 0, ...over,
 });
 
 describe('summarizeRun', () => {
