@@ -132,13 +132,26 @@ test/             integration tests
 
 ## Token efficiency
 
-Each dispatch is given only the part of the repository its goal is about, planning and
-synthesis are skipped whenever their answer is already known or already mechanical, and the
-model tier follows the work's complexity. One switch, `ORG_EFFICIENCY_MODE`
-(`enabled` | `shadow` | `disabled`), covers all of it — `shadow` computes every decision and
-records it without acting, so you can see the change before taking it. Every task writes an
-`efficiency_record` when it finishes, and `org tokens` reports what was spent. See
-[USAGE.md](USAGE.md#token-efficiency) for the knobs and the failure behaviour.
+The thing being optimized is **cost per successful task**, not the size of the initial
+prompt. A smaller prompt that sends the agent hunting for what it was not given is more
+expensive, not less: cost inside a dispatch grows superlinearly in turns, because the whole
+conversation prefix is re-read on every one.
+
+So each dispatch is given the part of the repository its goal is about — chosen from the
+goal's own words *and* the compiler's import edges, so a named file arrives with its
+dependencies, its dependents and its test — planning and synthesis are skipped whenever
+their answer is already known or already mechanical, and the model tier follows the work's
+complexity. Turn budgets adapt to what a task was judged to need, and a spend guard at the
+single dispatch chokepoint stops a task that has run out of money, run out of turns, or
+stopped making progress.
+
+Two switches, both reversible without a code change:
+`ORG_EFFICIENCY_MODE` (`enabled` | `shadow` | `disabled`) covers selection, synthesis and
+routing — `shadow` computes every decision and records it without acting, so you can see the
+change before taking it — and `ORG_CONTEXT_PLANNER=off` returns the lexical selector on its
+own. Every task writes an `efficiency_record` when it finishes, and `org tokens` reports
+what was spent. See [USAGE.md](USAGE.md#token-efficiency) for the knobs and the failure
+behaviour.
 
 ## Development
 
