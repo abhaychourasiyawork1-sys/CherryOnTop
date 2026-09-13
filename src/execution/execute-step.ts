@@ -51,6 +51,12 @@ export interface ExecuteStepResult {
    *  the wrong call, and the node should do the work itself instead of retrying
    *  the same decision. */
   notDelegatable?: boolean;
+  /** The runtime refused this dispatch because the account's usage window is
+   *  spent, not because anything about the goal or the sandbox was wrong.
+   *  Retrying immediately is guaranteed to fail the same way — the window
+   *  does not refill between attempts a few minutes apart — so this is what
+   *  the node machine's retry loop checks before spending another attempt. */
+  rateLimited?: boolean;
   /** Token counts for this dispatch, read from the runtime's final result
    *  event. All zeros when the runtime reported none. */
   usage: import('./tokens.js').DispatchUsage;
@@ -228,6 +234,7 @@ export async function executeStep(
         events: collected,
         usage: usageFromEvents(collected),
         startupMs: Math.max(0, (firstEventAt ?? Date.now()) - requestedAt),
+        rateLimited: !jobResult.succeeded && rateLimitFromEvents(collected) !== null,
       };
     } finally {
       await d.deleteJob(jobName, input.namespace);

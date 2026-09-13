@@ -100,6 +100,32 @@ export function resultCacheTtlHours(): number {
   return envInt('ORG_RESULT_CACHE_TTL_HOURS', 24);
 }
 
+/** The most one task may spend before the guard stops it, in dollars.
+ *
+ *  0 means "no ceiling of its own", which is the default: a node's contract
+ *  already carries `authority.budget_usd`, and inventing a second, lower
+ *  ceiling that nobody asked for would stop work an operator explicitly
+ *  funded. This is the deployment-wide backstop for the case where the
+ *  contract's budget is 0 — i.e. nobody set one at all. */
+export function taskSpendCapUsd(): number {
+  const raw = process.env.ORG_TASK_SPEND_CAP_USD;
+  if (raw === undefined) return 0;
+  const n = Number(raw);
+  return Number.isFinite(n) && n >= 0 ? n : 0;
+}
+
+/** The kill switch for the structural context planner.
+ *
+ *  Off returns the selector to the lexical-only behaviour this branch shipped
+ *  with, which is what makes the new planner a change an operator can take
+ *  back in one environment variable rather than a revert. On unless explicitly
+ *  turned off, for the same reason `efficiencyMode` defaults on: a flag nobody
+ *  turns on measures nothing. */
+export function contextPlannerEnabled(): boolean {
+  const v = (process.env.ORG_CONTEXT_PLANNER ?? '').trim().toLowerCase();
+  return !['off', '0', 'false', 'no', 'disabled'].includes(v);
+}
+
 /** 0 disables the repo-map handoff (Phase 2). */
 export function repoMapTokenBudget(): number {
   return envInt('ORG_REPO_MAP_TOKENS', 6000);

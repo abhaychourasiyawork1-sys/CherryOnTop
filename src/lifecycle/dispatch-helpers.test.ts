@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { readOnlyPlanningGrant, READ_ONLY_TOOLS } from './dispatch-helpers.js';
+import { readOnlyPlanningGrant, investigativeExecuteGrant, READ_ONLY_TOOLS } from './dispatch-helpers.js';
 
 describe('readOnlyPlanningGrant', () => {
   it('an unrestricted grant becomes the read-only tool set', () => {
@@ -20,5 +20,22 @@ describe('readOnlyPlanningGrant', () => {
     // back to the read-only set rather than an allowlist of nothing.
     const g = readOnlyPlanningGrant({ allowedTools: ['Edit', 'Write'], readOnly: false });
     expect(g.allowedTools).toEqual(READ_ONLY_TOOLS);
+  });
+});
+
+describe('investigativeExecuteGrant', () => {
+  it('narrows an unrestricted grant to read-only for an investigative goal', () => {
+    const g = investigativeExecuteGrant({ allowedTools: null, readOnly: false }, true);
+    expect(g).toEqual({ allowedTools: READ_ONLY_TOOLS, readOnly: true });
+  });
+
+  it('leaves an unrestricted grant alone for a goal that is not investigative', () => {
+    const grant = { allowedTools: null, readOnly: false };
+    expect(investigativeExecuteGrant(grant, false)).toBe(grant);
+  });
+
+  it('leaves an explicitly configured grant alone either way — this only fills in a default', () => {
+    const grant = { allowedTools: ['Read', 'Edit', 'Bash'], readOnly: false };
+    expect(investigativeExecuteGrant(grant, true)).toBe(grant);
   });
 });

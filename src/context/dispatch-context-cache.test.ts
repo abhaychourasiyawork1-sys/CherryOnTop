@@ -13,6 +13,8 @@ const dirs: string[] = [];
 
 afterEach(() => {
   delete process.env.ORG_REPO_MAP_TOKENS;
+  delete process.env.ORG_EFFICIENCY_MODE;
+  delete process.env.ORG_CONTEXT_PLANNER;
   for (const suffix of ['', '-journal', '-wal', '-shm']) {
     if (existsSync(DB + suffix)) unlinkSync(DB + suffix);
   }
@@ -120,5 +122,104 @@ describe('dispatchContextFor', () => {
     process.env.ORG_REPO_MAP_TOKENS = '6000';
     expect(repoInventoryFor(db, '/no/such/dir')).toBeNull();
     expect(dispatchContextFor(db, '/no/such/dir', 'anything')).toBeNull();
+  });
+});
+
+describe('dispatchContextFor — modes, stability and failing upward', () => {
+  it('applies the selection when enabled', () => {
+    const db = createDb(DB);
+    const dir = tmpRepo();
+    process.env.ORG_REPO_MAP_TOKENS = '6000';
+    process.env.ORG_EFFICIENCY_MODE = 'enabled';
+
+    const context = dispatchContextFor(db, dir, 'fix the session refresh bug')!;
+    expect(context.receipt.applied).toBe(true);
+    expect(context.receipt.selected).toContain('src/auth/session.ts');
+    expect(context.receipt.dropped.length).toBeGreaterThan(0);
+  });
+
+  it('computes the receipt but dispatches the full map in shadow', () => {
+    const db = createDb(DB);
+    const dir = tmpRepo();
+    process.env.ORG_REPO_MAP_TOKENS = '6000';
+    process.env.ORG_EFFICIENCY_MODE = 'shadow';
+
+    const context = dispatchContextFor(db, dir, 'fix the session refresh bug')!;
+    // The receipt says what it *would* have dropped — the whole point of a
+    // shadow — while the content handed over is still the unselected map.
+    expect(context.receipt.applied).toBe(false);
+    expect(context.receipt.dropped.length).toBeGreaterThan(0);
+    expect(context.content).toContain('src/cart/discount.ts');
+  });
+
+  it('dispatches the full map when disabled, with the receipt still recorded', () => {
+    const db = createDb(DB);
+    const dir = tmpRepo();
+    process.env.ORG_REPO_MAP_TOKENS = '6000';
+    process.env.ORG_EFFICIENCY_MODE = 'disabled';
+
+    const context = dispatchContextFor(db, dir, 'fix the session refresh bug')!;
+    expect(context.receipt.applied).toBe(false);
+    expect(context.content).toContain('src/cart/discount.ts');
+  });
+
+  it('gives the same bytes for the same goal, commit and policy', () => {
+    const db = createDb(DB);
+    const dir = tmpRepo();
+    process.env.ORG_REPO_MAP_TOKENS = '6000';
+
+    const first = dispatchContextFor(db, dir, 'fix the session refresh bug')!;
+    const second = dispatchContextFor(db, dir, 'fix the session refresh bug')!;
+    // Byte-identical, because the provider's cache is keyed on the prompt
+    // prefix: a selection that drifted between two siblings on one commit
+    // would pay full price for both.
+    expect(second.content).toBe(first.content);
+    expect(second.receipt.selected).toEqual(first.receipt.selected);
+  });
+
+  it('changes what it sends when the policy changes, on the next dispatch', () => {
+    const db = createDb(DB);
+    const dir = tmpRepo();
+    process.env.ORG_REPO_MAP_TOKENS = '6000';
+    const planned = dispatchContextFor(db, dir, 'fix the session refresh bug')!;
+
+    process.env.ORG_CONTEXT_PLANNER = 'off';
+    const lexical = dispatchContextFor(db, dir, 'fix the session refresh bug')!;
+
+    expect(planned.receipt.policyVersion).not.toBe(lexical.receipt.policyVersion);
+    // And the inventory was not rebuilt to do it — the scan is keyed on the
+    // commit, the rendering is not.
+    expect(getRepoInventory(db, repoHead(dir)!)).not.toBeNull();
+  });
+
+  it('falls back to a larger bounded context when selection throws, never to nothing', () => {
+    const db = createDb(DB);
+    const dir = tmpRepo();
+    process.env.ORG_REPO_MAP_TOKENS = '6000';
+
+    // A goal object that explodes the moment the selector touches it.
+    const hostile = { toString() { throw new Error('boom'); } } as unknown as string;
+    const context = dispatchContextFor(db, dir, hostile);
+
+    expect(context).not.toBeNull();
+    expect(context!.receipt.degraded).toBe(true);
+    // Degrading means *more* bounded context, not less: a broken selector
+    // costs tokens, never correctness.
+    expect(context!.content).toContain('src/cart/discount.ts');
+    expect(context!.estimatedTokens).toBeLessThanOrEqual(6000);
+  });
+
+  it('keeps the inventory cache independent of the rendering budget', () => {
+    const db = createDb(DB);
+    const dir = tmpRepo();
+    process.env.ORG_REPO_MAP_TOKENS = '6000';
+    dispatchContextFor(db, dir, 'fix the session refresh bug');
+    const scanned = getRepoInventory(db, repoHead(dir)!)!;
+
+    process.env.ORG_REPO_MAP_TOKENS = '400';
+    const small = dispatchContextFor(db, dir, 'fix the session refresh bug')!;
+    expect(small.estimatedTokens).toBeLessThanOrEqual(400);
+    // Same rows, unbudgeted: the budget is applied at selection, not at scan.
+    expect(getRepoInventory(db, repoHead(dir)!)).toEqual(scanned);
   });
 });

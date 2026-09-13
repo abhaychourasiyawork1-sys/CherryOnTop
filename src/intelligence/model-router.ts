@@ -68,16 +68,20 @@ export function routeModel(input: ModelRouteInput): ModelRouteDecision {
   }
 
   // Budget pressure above still wins: out of money is out of money. Short of
-  // that, a low score on an investigation means "this goal names nothing
-  // specific", which is a reason to think harder, not less.
-  if (input.complexity === 'low' && !input.investigative) {
-    return fast('low-complexity work does not need the default model');
-  }
+  // that, "low complexity" was measured as "cheap per token, not cheap to
+  // finish": a one-line README fix tiered to the fast model took 6x the turns
+  // and cache-read of the same fix on the runtime default, and cost 95% more
+  // in total despite the lower per-token price. A weak model substitutes
+  // extra tool-call round-trips for reasoning, and that substitution is not
+  // free — the fast tier's savings are real for plan/synthesize (a bounded,
+  // narrow output) but were never measured to hold for execute's open-ended
+  // agentic edits. Low-complexity execute work stays on the runtime default
+  // until an operator names a fast model explicitly (ORG_MODEL_EXECUTE).
   if (input.complexity === 'low') {
     return {
       tier: 'standard',
       model: modelForTier('standard'),
-      reason: 'reviewing, diagnosing or investigating — not tiered down on complexity alone',
+      reason: 'low-complexity execute work stays on the runtime default — the fast tier is not a measured win here',
     };
   }
 

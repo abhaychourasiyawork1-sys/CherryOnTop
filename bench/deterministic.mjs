@@ -91,10 +91,19 @@ table('Generic fallback (no reducer claims the output)', [[
 ]], ['output', 'tokens before', 'tokens after', 'removed']);
 
 // ------------------------------------------------------------------ projection
+// Real edges, so the structural planner has something to be structural about:
+// each module imports the one five before it (a different area), and every
+// tenth module has a test beside it. A tree of unconnected files would flatter
+// the lexical selector by giving the structural one nothing to find.
 const entries = Array.from({ length: 600 }, (_, i) => ({
   path: `src/${['auth', 'cart', 'session', 'billing', 'search'][i % 5]}/module-${i}.ts`,
   symbols: [`handler${i}`, `validate${i}`, `serialize${i}`],
+  imports: i >= 5 ? [`../${['auth', 'cart', 'session', 'billing', 'search'][(i - 5) % 5]}/module-${i - 5}.js`] : [],
 }));
+for (let i = 0; i < 600; i += 10) {
+  const area = ['auth', 'cart', 'session', 'billing', 'search'][i % 5];
+  entries.push({ path: `src/${area}/module-${i}.test.ts`, symbols: [], imports: [`./module-${i}.js`] });
+}
 
 const projections = [
   ['names one area', 'Fix the expired-token bug in the auth session handler'],
@@ -116,6 +125,43 @@ table('Context projection against a 600-file tree, 6000-token ceiling', projecti
     `${((selected.estimatedTokens / 6000) * 100).toFixed(0)}%`,
   ];
 }), ['goal', 'whole inventory', 'projected', 'files kept', 'ceiling used']);
+
+// --------------------------------------------------- planner vs lexical selector
+// The A/B this architecture is actually about, measured with no model and no
+// cluster. What it can show: how much context each selector hands over, and
+// whether the structural one reaches files the lexical one cannot see. What it
+// cannot show: whether that changes turns or cost, which needs a paid run.
+const plannerGoals = [
+  ['anchored one-file edit', 'Fix the expired-token bug in src/auth/module-5.ts'],
+  ['anchored with callers', 'Rename handler10 in src/auth/module-10.ts and update every caller'],
+  ['names an area only', 'Audit the billing modules for missing validation'],
+  ['names nothing specific', 'Review the codebase and find bugs'],
+];
+
+function selectUnder(goal, planner) {
+  const previous = process.env.ORG_CONTEXT_PLANNER;
+  process.env.ORG_CONTEXT_PLANNER = planner;
+  try {
+    return selectDispatchContext({ goal, entries, tokenBudget: 6000 });
+  } finally {
+    if (previous === undefined) delete process.env.ORG_CONTEXT_PLANNER;
+    else process.env.ORG_CONTEXT_PLANNER = previous;
+  }
+}
+
+table('Structural planner vs lexical selector, same tree and ceiling', plannerGoals.map(([label, goal]) => {
+  const lexical = selectUnder(goal, 'off');
+  const structural = selectUnder(goal, 'on');
+  const reached = structural.receipt.selected.filter((p) => !lexical.receipt.selected.includes(p));
+  return [
+    label,
+    num(lexical.estimatedTokens),
+    num(structural.estimatedTokens),
+    `${((structural.estimatedTokens / 6000) * 100).toFixed(0)}%`,
+    `${lexical.receipt.selected.length} -> ${structural.receipt.selected.length}`,
+    num(reached.length),
+  ];
+}), ['goal', 'lexical tokens', 'planner tokens', 'ceiling used', 'files kept', 'newly reached']);
 
 // ------------------------------------------------------------------- decisions
 const dispatch = { tokens: 1_772_218, latencyMs: 263_000, costUsd: 0.95 };

@@ -9,13 +9,19 @@ const KIND = 'dispatch_usage';
 
 export function recordDispatchUsage(
   db: Db,
-  r: { nodeId: string; role: string; model: string | null; usage: DispatchUsage; costUsd: number; createdAt: string },
+  r: {
+    nodeId: string; role: string; model: string | null; usage: DispatchUsage; costUsd: number; createdAt: string;
+    /** Which policy generation produced this dispatch. Stored per row rather
+     *  than assumed per database: a deployment that changes policy mid-run must
+     *  not make its own history unreadable. */
+    policy?: { context: string; execution: string };
+  },
 ): void {
   db.insert(memory).values({
     id: randomUUID(),
     kind: KIND,
     key: r.role,
-    value: { role: r.role, model: r.model, usage: r.usage, costUsd: r.costUsd },
+    value: { role: r.role, model: r.model, usage: r.usage, costUsd: r.costUsd, policy: r.policy },
     confidence: null,
     nodeId: r.nodeId,
     createdAt: r.createdAt,
@@ -26,13 +32,35 @@ export interface RoleTokenRow {
   role: string;
   model: string;
   dispatches: number;
+  /** Turns inside the dispatches, summed. The one term whose growth is
+   *  superlinear in cost — the conversation prefix is re-read on every turn —
+   *  so a comparison that reports tokens but not turns cannot explain itself. */
+  turns: number;
   inputTokens: number;
   outputTokens: number;
   cacheReadTokens: number;
   costUsd: number;
 }
 
-interface StoredValue { role: string; model: string | null; usage: DispatchUsage; costUsd: number }
+interface StoredValue {
+  role: string; model: string | null; usage: DispatchUsage; costUsd: number;
+  policy?: { context: string; execution: string };
+}
+
+/** Every policy generation this database has dispatches from, newest first.
+ *
+ *  Exists so a comparison can refuse to average two generations together
+ *  instead of doing it silently. */
+export function policyVersionsSeen(db: Db, caseId?: string): string[] {
+  const scope = caseId ? new Set(subtreeNodeIds(db, caseId)) : null;
+  const seen = new Set<string>();
+  for (const row of db.select().from(memory).where(eq(memory.kind, KIND)).all()) {
+    if (scope && !(row.nodeId && scope.has(row.nodeId))) continue;
+    const policy = (row.value as StoredValue).policy;
+    if (policy) seen.add(`${policy.context}/${policy.execution}`);
+  }
+  return [...seen].sort();
+}
 
 /** A dispatch that did not happen is not a dispatch with zero tokens: averaged
  *  into the per-role rows it would drag every figure towards nothing and hide
@@ -41,6 +69,17 @@ const CACHE_HIT_ROLES: Record<string, 'planCacheHits' | 'resultCacheHits'> = {
   'plan:cache-hit': 'planCacheHits',
   'execute:cache-hit': 'resultCacheHits',
 };
+
+/** Turns this node has already spent, across every dispatch recorded for it.
+ *
+ *  Scoped to the node itself rather than its subtree, deliberately: it feeds the
+ *  guard that decides whether to open *this* node's next sandbox, and a parent
+ *  must not be stopped by turns its children spent under their own budgets. */
+export function turnsForNode(db: Db, nodeId: string): number {
+  return db.select().from(memory).where(eq(memory.kind, KIND)).all()
+    .filter((row) => row.nodeId === nodeId)
+    .reduce((sum, row) => sum + ((row.value as StoredValue).usage?.numTurns ?? 0), 0);
+}
 
 export function tokensByRole(db: Db, caseId?: string): { rows: RoleTokenRow[]; planCacheHits: number; resultCacheHits: number } {
   const all = db.select().from(memory).where(eq(memory.kind, KIND)).all();
@@ -55,8 +94,9 @@ export function tokensByRole(db: Db, caseId?: string): { rows: RoleTokenRow[]; p
     if (hit) { hits[hit]++; continue; }
     const model = v.model ?? '(default)';
     const bucket = `${v.role}\0${model}`;
-    const cur = acc.get(bucket) ?? { role: v.role, model, dispatches: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, costUsd: 0 };
+    const cur = acc.get(bucket) ?? { role: v.role, model, dispatches: 0, turns: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, costUsd: 0 };
     cur.dispatches += 1;
+    cur.turns += v.usage?.numTurns ?? 0;
     cur.inputTokens += v.usage?.inputTokens ?? 0;
     cur.outputTokens += v.usage?.outputTokens ?? 0;
     cur.cacheReadTokens += v.usage?.cacheReadTokens ?? 0;

@@ -38,7 +38,7 @@ import { deleteNodeNetworkPolicy, deleteNodeJobs } from '../k8s/cleanup.js';
 import { subtreeNodeIds } from '../db/queries/nodes.js';
 import { allowedTools, isReadOnly } from '../engines/enforce-tools.js';
 import type { Authority } from '../schemas/node-contract.js';
-import type { ToolGrant, RuntimeAdapter } from '../adapters/adapter.js';
+import type { ToolGrant, RuntimeAdapter, StructuredEvent } from '../adapters/adapter.js';
 import { setNodeSnapshot, clearNodeSnapshot } from '../db/queries/nodes.js';
 import { insertDodItems, listDodForNode, setDodState } from '../db/queries/dod.js';
 import { dispatchOptionsFor, planCacheTtlHours, repoMapTokenBudget, rolePromptsEnabled, efficiencyMode, resultCacheTtlHours, type DispatchRole } from '../config/efficiency.js';
@@ -53,14 +53,17 @@ import { buildAgentEnvelope, renderEnvelope, EnvelopeError } from '../intelligen
 import { putAgentEnvelope, getAgentEnvelope } from '../db/queries/envelopes.js';
 import { scopeOf } from '../context/types.js';
 import { judgeTask } from '../intelligence/task-judge.js';
+import { evaluateSpendGuard, type SpendGuardState } from '../efficiency/spend-guard.js';
+import { summarizeExecutionTrajectory, UNKNOWN_PROGRESS } from '../efficiency/progress-signals.js';
+import { executionPolicyForGoal, effectiveTurnCap, currentPolicyVersions, EXECUTION_POLICY_VERSION } from '../efficiency/policy.js';
 import { templateFor, pruneTemplate } from '../intelligence/execution-templates.js';
 import type { TaskClass } from '../intelligence/task-judge.js';
 import { decideExecutionPath, type DecisionReceipt } from '../decision/engine.js';
 import { withRepoContext } from '../intelligence/repo-map.js';
 import { dispatchContextFor, warmRepoInventory } from '../context/dispatch-context-cache.js';
-import { recordDispatchUsage } from '../db/queries/tokens.js';
+import { recordDispatchUsage, turnsForNode } from '../db/queries/tokens.js';
 import { shouldRetryWithoutModel } from '../execution/tokens.js';
-import { readOnlyPlanningGrant } from './dispatch-helpers.js';
+import { readOnlyPlanningGrant, investigativeExecuteGrant } from './dispatch-helpers.js';
 import { memory } from '../db/schema.js';
 
 // In-process actor registry. It is lost on a daemon restart, which is why every
@@ -250,11 +253,21 @@ export function modelFor(adapter: RuntimeAdapter, model: string | undefined): st
 }
 
 /** What a dispatch cost, off the runtime's own final result event — the same
- *  number the cost views already read, recorded alongside the token counts. */
+ *  number the cost views already read, recorded alongside the token counts.
+ *
+ *  The *last* `result` event only, matching `usageFromEvents`'s convention
+ *  (execution/tokens.ts). `total_cost_usd` is the session's running total, not
+ *  a per-event delta: a dispatch that spawns background subagents gets one
+ *  `result` event per subagent completion in addition to the main turn's, each
+ *  carrying that same cumulative figure. Summing them (the old behaviour)
+ *  multiplied the true cost by however many of those notifications arrived —
+ *  a run with 5 subagents reported roughly 6x its real spend. */
 function costFromEvents(events: { type: string; payload: unknown }[]): number {
-  return events
-    .filter((e) => e.type === 'result')
-    .reduce((s, e) => s + Number((e.payload as { total_cost_usd?: number } | null)?.total_cost_usd ?? 0), 0);
+  for (let i = events.length - 1; i >= 0; i--) {
+    if (events[i].type !== 'result') continue;
+    return Number((events[i].payload as { total_cost_usd?: number } | null)?.total_cost_usd ?? 0);
+  }
+  return 0;
 }
 
 /** One fact the organization learned, written straight to memory. Total, for the
@@ -357,6 +370,20 @@ function publishContextReceipt(db: Db, nodeId: string, receipt: DispatchReceipt)
   };
   const id = appendEvent(db, { nodeId, type: 'context.receipt', payload, createdAt: now });
   publish({ id, nodeId, type: 'context.receipt', payload, createdAt: now });
+  // The same fact, told to the task-level ledger. Without it a before/after
+  // comparison can say spend moved and cannot say what moved it — which is the
+  // difference between a measurement and an anecdote.
+  try {
+    ledger.recordContextPlan(nodeId, {
+      candidates: receipt.candidates ?? receipt.selected.length + receipt.dropped.length,
+      selected: receipt.selected.length,
+      estimatedTokens: receipt.selectedTokens,
+      contextPolicyVersion: receipt.policyVersion ?? null,
+      executionPolicyVersion: EXECUTION_POLICY_VERSION,
+    });
+  } catch (err) {
+    console.error(`Failed to record the context plan for node ${nodeId}:`, err);
+  }
 }
 
 /** Accounting, and only accounting. A dispatch that ran and produced an answer
@@ -373,7 +400,11 @@ function recordUsage(
   },
 ): void {
   try {
-    recordDispatchUsage(db, { ...r, createdAt: new Date().toISOString() });
+    recordDispatchUsage(db, {
+      ...r,
+      createdAt: new Date().toISOString(),
+      policy: currentPolicyVersions(),
+    });
   } catch (err) {
     console.error(`Failed to record ${r.role} token usage for node ${r.nodeId}:`, err);
   }
@@ -669,6 +700,85 @@ function resultReuseKey(goal: string, grant: ToolGrant, model: string | undefine
   return resultCacheKey(goal, model ?? '(default)', grant.allowedTools);
 }
 
+/** What the run so far looks like: mostly searching, or mostly working.
+ *
+ *  Read off the node's own recorded tool stream — the `exec.*` rows the live
+ *  event handler already writes — rather than from a second capture pass or a
+ *  model judge. Every attempt this node has made is included, deliberately: a
+ *  retry that repeats the previous attempt's failing search is exactly the
+ *  trajectory worth catching, and scoping to the latest attempt would hide it.
+ *
+ *  Unreadable stream, unreadable database, anything at all: the neutral middle.
+ *  That is not a placeholder that happens to work — the guard's stall branch
+ *  needs observed *absence* of progress, so unknown signals can only make it
+ *  more reluctant to stop, never less. */
+function trajectorySignals(db: Db, nodeId: string): {
+  explorationSignal: number; progressSignal: number; repeatedFailureSignal: number;
+} {
+  try {
+    const events = listEventsForNode(db, nodeId)
+      .filter((row) => row.type.startsWith('exec.'))
+      .map((row) => ({ type: row.type.slice('exec.'.length), payload: row.payload } as StructuredEvent));
+    const signals = summarizeExecutionTrajectory(events);
+    return {
+      explorationSignal: signals.exploration,
+      progressSignal: signals.progress,
+      repeatedFailureSignal: signals.repeatedFailure,
+    };
+  } catch (err) {
+    console.error(`Failed to read the trajectory for node ${nodeId}:`, err);
+    return {
+      explorationSignal: UNKNOWN_PROGRESS.exploration,
+      progressSignal: UNKNOWN_PROGRESS.progress,
+      repeatedFailureSignal: UNKNOWN_PROGRESS.repeatedFailure,
+    };
+  }
+}
+
+/** The economic verdict on a task, at the moment before it spends again.
+ *
+ *  Total, like everything else on this path: telemetry that cannot be read must
+ *  not stop a task that is otherwise entitled to run, so any failure here
+ *  answers GREEN. A guard that fires on its own bugs is worse than no guard —
+ *  it fails runs for reasons nobody can see.
+ *
+ *  The node's own `budget_usd` outranks the deployment-wide cap: it is an
+ *  amount someone explicitly funded this work with. Zero means "nobody costed
+ *  this node", not "out of money" — the convention model-router.ts already
+ *  uses — and that is when the deployment backstop applies instead. */
+function evaluateTaskSpend(db: Db, nodeId: string, node: ReturnType<typeof getNode>): SpendGuardState {
+  try {
+    const budgetUsd = node?.contract.authority.budget_usd ?? 0;
+    const policy = executionPolicyForGoal(node?.contract.goal ?? '');
+    const trajectory = trajectorySignals(db, nodeId);
+    const guard = evaluateSpendGuard({
+      spentUsd: getCostForNodes(db, [nodeId]),
+      spendCapUsd: budgetUsd > 0 ? budgetUsd : policy.spendCapUsd,
+      turns: turnsForNode(db, nodeId),
+      softTurnTarget: policy.softTurnTarget,
+      hardTurnCap: policy.hardTurnCap,
+      explorationSignal: trajectory.explorationSignal,
+      progressSignal: trajectory.progressSignal,
+      repeatedFailureSignal: trajectory.repeatedFailureSignal,
+    });
+    ledger.recordTrajectory(nodeId, {
+      exploration: trajectory.explorationSignal,
+      progress: trajectory.progressSignal,
+    });
+    if (guard.state !== 'GREEN') {
+      insertMemoryRow(db, 'spend_guard', guard.state, { ...guard, nodeId }, nodeId);
+    }
+    // Recorded on the task, not just in the transcript: "this run was stopped,
+    // and this is what stopped it" is the one fact a cost comparison cannot be
+    // read without — a cheap arm full of stopped tasks is not a cheaper arm.
+    if (guard.state === 'STOP' && guard.reason) ledger.recordStop(nodeId, guard.reason);
+    return guard;
+  } catch (err) {
+    console.error(`Failed to evaluate the spend guard for node ${nodeId}:`, err);
+    return { state: 'GREEN', spentUsd: 0, spendCapUsd: 0, reason: null };
+  }
+}
+
 /** Runs a sandbox when a slot is free, and says so while it waits. A node
  *  sitting in a queue looks identical to one that has hung unless it tells you.
  *
@@ -707,21 +817,23 @@ async function dispatch<T>(db: Db, nodeId: string, task: () => Promise<T>, prior
       // `budget_usd` bounded what the organization would agree to *start* — the
       // escalation floor in decide-execution.ts, the pressure threshold in
       // model-router.ts — and nothing re-checked it once work was under way, so
-      // a task could run arbitrarily far past its own authority. Zero means
-      // "nobody costed this node", not "out of money", which is the convention
-      // model-router.ts already uses.
-      const budgetUsd = node?.contract.authority.budget_usd ?? 0;
-      if (budgetUsd > 0) {
-        const spentUsd = getCostForNodes(db, [nodeId]);
-        if (spentUsd >= budgetUsd) {
-          const message = `Budget spent — $${spentUsd.toFixed(2)} of $${budgetUsd.toFixed(2)}. No further sandbox was opened for this agent.`;
-          // Said out loud as well as thrown: the throw reaches VERIFY as a
-          // failed result, which is the machine's business, while a person
-          // watching the transcript needs to see that the run stopped on money
-          // rather than on an error.
-          publishProgress(db, nodeId, message);
-          throw new Error(message);
-        }
+      // a task could run arbitrarily far past its own authority.
+      //
+      // It is also the only place that sees *everything* a task has spent so
+      // far, which is what makes it the right place for the guard rather than
+      // one more caller of it.
+      const guard = evaluateTaskSpend(db, nodeId, node);
+      if (guard.state === 'STOP') {
+        const message = `${guard.reason} No further sandbox was opened for this agent.`;
+        // Said out loud as well as thrown: the throw reaches VERIFY as a failed
+        // result, which is the machine's business, while a person watching the
+        // transcript needs to see that the run stopped on money rather than on
+        // an error.
+        publishProgress(db, nodeId, message);
+        throw new Error(message);
+      }
+      if (guard.state === 'RED') {
+        publishProgress(db, nodeId, `Running hot: ${guard.reason}`);
       }
       return task();
     }, priority);
@@ -1002,7 +1114,16 @@ function productionMachine(db: Db, nodeId: string) {
         // starting a sandbox, because on a hit none of that happens. The model
         // is resolved first only because it is part of what makes two runs the
         // same run — a haiku answer must not be served to a sonnet request.
-        const grant = grantOf(node!.contract.authority);
+        // `judgeTask` is the cheap, dispatch-free classification the template,
+        // the utility record and the grant below all key on — computed once,
+        // up front, so nothing here can disagree about what kind of goal this is.
+        const verdict = judgeTask(input.goal);
+        // Investigating is reading, not editing — and an unrestricted grant
+        // does not just permit editing, it also keeps the Task tool, which is
+        // how a single dispatch spawns its own background subagents. Narrowed
+        // to read-only only when nobody configured a grant of their own; see
+        // dispatch-helpers.ts for the measured run this closes off.
+        const grant = investigativeExecuteGrant(grantOf(node!.contract.authority), verdict.decomposition.investigative);
         let usedModel = modelFor(adapter, modelChoiceFor(db, nodeId, 'execute', input.goal));
         const reuseKey = resultReuseKey(input.goal, grant, usedModel);
         // Validity is asked of each candidate answer in turn, newest first:
@@ -1014,9 +1135,7 @@ function productionMachine(db: Db, nodeId: string) {
 
         // Routed through the one decision contract rather than decided inline,
         // so reusing and running fresh are explained the same way and by the
-        // same rules — the budget gate included. `judgeTask` is the cheap
-        // classification the template and the utility record both key on.
-        const verdict = judgeTask(input.goal);
+        // same rules — the budget gate included.
         const pathDecision = decideExecutionPath({
           goal: input.goal,
           authority: node!.contract.authority,
@@ -1061,6 +1180,13 @@ function productionMachine(db: Db, nodeId: string) {
 
         publishProgress(db, nodeId, `Starting a sandbox on ${adapter.name} against ${worktreePath}`);
         const execOpts = dispatchOptionsFor('execute');
+        // What this particular task was judged to need, rather than what every
+        // task gets. The configured cap is a deployment-wide circuit breaker
+        // and stays the outer bound — an operator who sets one means it, and
+        // `undefined` is the documented "uncapped", which this must not
+        // quietly re-impose a cap on top of.
+        const execPolicy = executionPolicyForGoal(input.goal, verdict);
+        const hardTurnCap = effectiveTurnCap(execOpts.maxTurns, execPolicy);
         // Built once, out here rather than inside runOnce: the fallback retry
         // below calls runOnce a second time with the same goal, and a goal
         // carrying two copies of the context is the thing this is meant to
@@ -1080,13 +1206,19 @@ function productionMachine(db: Db, nodeId: string) {
         const constraints = (node?.contract.constraints ?? []).map((c) => c.trim()).filter(Boolean);
         const roleSystemPrompt = rolePromptsEnabled() && honoursSystemPrompt(adapter)
           ? buildRolePrompt('execute', {
-              allowedTools: node ? grantOf(node.contract.authority).allowedTools : undefined,
+              allowedTools: grant.allowedTools,
               constraints,
               definitionOfDone: node?.contract.definition_of_done ?? [],
               // The same cap that goes into argv below. A run told its budget
               // summarises at the limit; one that is merely cut off at it
               // reports "max turns exceeded" and loses what it found.
-              maxTurns: execOpts.maxTurns,
+              maxTurns: hardTurnCap,
+              // Advice rather than a wall: the cap stops a run, this is what
+              // stops it wandering. Only worth saying when it is actually
+              // below the cap — "about 45 turns, at most 45 turns" is noise.
+              softTurnTarget: hardTurnCap !== undefined && execPolicy.softTurnTarget < hardTurnCap
+                ? execPolicy.softTurnTarget
+                : undefined,
             })
           : undefined;
         const goalWithConstraints = (!roleSystemPrompt && constraints.length > 0)
@@ -1129,7 +1261,7 @@ function productionMachine(db: Db, nodeId: string) {
           image: runnerImageOverride(),
           grant,
           model,
-          maxTurns: execOpts.maxTurns,
+          maxTurns: hardTurnCap,
           onViolation: (tool) => publishDenial(db, nodeId, tool, node!.contract.authority),
           // The runner's structured output is the point of the whole dispatch.
           // Was: a loop over result.events run once, after the whole Job

@@ -45,6 +45,10 @@ export async function startDaemon(): Promise<void> {
           ...(process.env.ORG_PLAN_CACHE_TTL_HOURS ? { ORG_PLAN_CACHE_TTL_HOURS: process.env.ORG_PLAN_CACHE_TTL_HOURS } : {}),
           ...(process.env.ORG_REPO_MAP_TOKENS ? { ORG_REPO_MAP_TOKENS: process.env.ORG_REPO_MAP_TOKENS } : {}),
           ...(process.env.ORG_ROLE_PROMPTS ? { ORG_ROLE_PROMPTS: process.env.ORG_ROLE_PROMPTS } : {}),
+          ...(process.env.ORG_EFFICIENCY_MODE ? { ORG_EFFICIENCY_MODE: process.env.ORG_EFFICIENCY_MODE } : {}),
+          ...(process.env.ORG_MAX_TURNS_EXECUTE ? { ORG_MAX_TURNS_EXECUTE: process.env.ORG_MAX_TURNS_EXECUTE } : {}),
+          ...(process.env.ORG_RESULT_CACHE_TTL_HOURS ? { ORG_RESULT_CACHE_TTL_HOURS: process.env.ORG_RESULT_CACHE_TTL_HOURS } : {}),
+          ...(process.env.ORG_MAX_CHILD_JOBS ? { ORG_MAX_CHILD_JOBS: process.env.ORG_MAX_CHILD_JOBS } : {}),
         },
       },
       (err) => {

@@ -121,3 +121,65 @@ A status outside the enum fails validation, which discards the whole envelope an
 parent down the prose path — buying a synthesis sandbox because a child used an honest word.
 `conflict` is deliberately not added: a conflict is something a parent observes between two
 children, not a state a child reports about itself.
+
+---
+
+# Token-efficiency architecture (plan of 2026-09-13)
+
+A second body of work on top of everything above. Its governing principle is
+*optimize the cheapest successful execution strategy, not the smallest initial
+prompt* — so the measured quantity is **cost per successful task**, never
+initial prompt size.
+
+## Frozen baseline contract
+
+| | |
+|---|---|
+| Population | `bench/goals.json` → `goals` (7, each labelled `size` + `family`). `families` is the expansion set and is off unless `--families` is passed. |
+| Metrics | `cost`, `turns`, `inputTokens`, `outputTokens`, `cacheReadTokens`, `wallSeconds`, terminal state, rubric verification |
+| Derived | `costPerSuccess`, `turnsPerSuccess`, `cacheReadPerSuccess` |
+| Comparison | `node bench/run.mjs <mode> --label=<name> [--baseline=bench/<prior>.json]` |
+| Recorded | `bench/README.md` → *Recorded results* |
+
+`turns` is newly surfaced end-to-end for this: it was already captured in
+`DispatchUsage.numTurns` and thrown away by `tokensByRole`.
+
+## Owners added by this work (do not duplicate these either)
+
+| Concern | File | Symbols |
+|---|---|---|
+| Task economics signals | `src/efficiency/task-economics.ts` | `deriveTaskEconomicsSignals`, `taskEconomicsFor`, `extractAnchors` |
+| Signal/policy contracts | `src/efficiency/policy-types.ts`, `task-signals.ts` | `TaskEconomicsSignals`, `ContextPolicy`, `ExecutionPolicy`, `normalizeTaskSignals` |
+| Adaptive policy | `src/efficiency/policy.ts` | `contextPolicyFor`, `executionPolicyFor`, `executionPolicyForGoal`, `effectiveTurnCap`, `currentPolicyVersions` |
+| Context candidates | `src/context/candidates.ts` | `buildCandidates`, `buildDependencyEdges`, `resolveImport`, `artifactRole`, `renderAt` |
+| Context scoring | `src/context/scoring.ts` | `contributions`, `createContextScorer`, `explorationAvoided`, `marginalValue` |
+| Context selection | `src/context/selector.ts` | `selectContext` |
+| Spend guard | `src/efficiency/spend-guard.ts` | `evaluateSpendGuard` |
+| Trajectory signals | `src/efficiency/progress-signals.ts` | `summarizeExecutionTrajectory` |
+
+## Architecture self-audit — 2026-09-13
+
+Checks run, not asserted (`grep` over the nine new modules):
+
+| Gate | Check | Result |
+|---|---|---|
+| E | No Context RPC / `ContextRef` / per-turn injection introduced | none present |
+| E | No model call, dispatch or `askModel` on the new hot path | none present |
+| E | No `Math.random`, `Date.now`, `new Date` in the new hot path | none present |
+| E | No filesystem or subprocess I/O in the new hot path | none present |
+| E | No duplicate decision engine, planner or cache — `task-judge`/`assessDecomposition` reused, never re-implemented | confirmed |
+| E | Warm pools, snapshots, workspace forks still ungated and unreferenced from the dispatch path | confirmed |
+| D | Selector failure → lexical; `dispatchContextFor` failure → full bounded map; policy failure → fixed defaults; guard failure → GREEN | four tests |
+| A | Full unit suite | 1036 passing |
+| A | Coverage of the new code | `src/context` 94%, `src/efficiency` 99% |
+
+Two things the audit changed rather than merely recorded:
+
+- `policiesFor` was written and never called. Deleted, and the fallback it was
+  supposed to provide was given a real home in `executionPolicyForGoal`, which
+  both runtime callers now use.
+- `contextCandidates`, `contextSelected`, `contextEstimatedTokens` and
+  `stopReason` were recorded and read by nothing. `summarizeRun` now reports
+  them, and `evaluateExperiment` refuses an arm that stopped more tasks than
+  its baseline — the one way an arm can look cheap by refusing to work while
+  its success rate still matches.

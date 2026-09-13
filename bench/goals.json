@@ -1,40 +1,117 @@
 {
   "repo": ".",
+  "_metrics": [
+    "cost", "turns", "inputTokens", "outputTokens", "cacheReadTokens",
+    "wallSeconds", "success", "verification"
+  ],
+  "_note": "`goals` is the frozen baseline population — do not add to it, or a later comparison stops being matched against the recorded baseline. New task families go in `families`, which is off unless --families is passed.",
   "goals": [
     {
       "id": "global-review",
+      "size": "large",
+      "family": "investigation",
       "goal": "Review the codebase and find bugs. Do not modify anything.",
       "rubric": "real bugs named with file:line, nothing modified, ONE Claude Job"
     },
     {
       "id": "global-investigation",
+      "size": "large",
+      "family": "investigation",
       "goal": "Investigate the root cause of the slowest code path in this repo",
       "rubric": "one concrete root cause with evidence, on the strong model, ONE Claude Job"
     },
     {
       "id": "typo-fix",
+      "size": "tiny",
+      "family": "tiny-edit",
       "goal": "Fix any typos in README.md",
       "rubric": "README typos corrected, no code changed"
     },
     {
       "id": "small-bug",
+      "size": "medium",
+      "family": "debugging",
       "goal": "Find and fix off-by-one errors in src/, if any",
       "rubric": "a real off-by-one is fixed or a clear 'none found' with evidence"
     },
     {
       "id": "add-test",
+      "size": "medium",
+      "family": "test-authoring",
       "goal": "Add a unit test for src/engines/economics.ts scoreDelegation tolerance behaviour",
       "rubric": "a passing test that exercises the 1e-9 tolerance path"
     },
     {
       "id": "audit",
+      "size": "large",
+      "family": "investigation",
       "goal": "Audit every query module in src/db/queries for missing error handling",
       "rubric": "each module named with a concrete finding or 'clean'"
     },
     {
       "id": "doc",
+      "size": "medium",
+      "family": "documentation",
       "goal": "Document the node lifecycle states in a new docs/lifecycle.md",
       "rubric": "each state from node-machine.ts described accurately"
+    }
+  ],
+  "families": [
+    {
+      "id": "fam-implementation",
+      "size": "medium",
+      "family": "implementation",
+      "goal": "Add an `org tokens --since <iso>` flag that filters the usage rows by createdAt",
+      "rubric": "the flag exists, filters, and has a test"
+    },
+    {
+      "id": "fam-test-heavy",
+      "size": "medium",
+      "family": "test-authoring",
+      "goal": "Raise branch coverage of src/context/dispatch-context.ts by testing its truncation paths",
+      "rubric": "new tests cover the truncated and empty-budget branches"
+    },
+    {
+      "id": "fam-refactor",
+      "size": "medium",
+      "family": "refactor",
+      "goal": "Extract the duplicated percentile helper in src/efficiency into one shared function",
+      "rubric": "one definition remains, every caller updated, tests still pass"
+    },
+    {
+      "id": "fam-new-file",
+      "size": "small",
+      "family": "new-file",
+      "goal": "Create src/efficiency/README.md describing what each module in that directory owns",
+      "rubric": "every module in src/efficiency named accurately"
+    },
+    {
+      "id": "fam-config-build",
+      "size": "small",
+      "family": "configuration",
+      "goal": "Add an npm script `test:efficiency` that runs only the src/efficiency and src/context unit tests",
+      "rubric": "the script exists and runs green"
+    },
+    {
+      "id": "fam-debugging",
+      "size": "medium",
+      "family": "debugging",
+      "goal": "Diagnose why tokensByRole reports a cache hit as a zero-token dispatch, if it does",
+      "rubric": "a concrete yes/no with the code path named"
+    },
+    {
+      "id": "fam-documentation",
+      "size": "small",
+      "family": "documentation",
+      "goal": "Document every ORG_* environment variable in USAGE.md with its default",
+      "rubric": "every knob in src/config/efficiency.ts is listed with its real default"
+    },
+    {
+      "id": "fam-multi-file",
+      "size": "large",
+      "family": "multi-file",
+      "goal": "Thread a `reason` string through publishStepOutcome so a failed step records why",
+      "rubric": "the reason reaches the event payload and the CLI renders it"
     }
   ]
 }

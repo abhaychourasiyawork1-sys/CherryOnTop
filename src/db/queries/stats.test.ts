@@ -71,6 +71,23 @@ describe('per-node cost', () => {
     expect(getCostForNodes(db, [])).toBe(0);
   });
 
+  it('collapses duplicate result rows from the same session instead of summing them', () => {
+    // A dispatch that spawns background subagents gets one `result` event per
+    // subagent completion in addition to the main turn's — and every one of
+    // them carries the *session's running total*, not its own delta. Naively
+    // summing every row (the old behaviour) multiplied a $1.95 dispatch by
+    // however many of those notifications arrived.
+    const db = createDb(TEST_DB);
+    add(db, 'n1', null);
+    for (let i = 0; i < 6; i++) {
+      appendEvent(db, { nodeId: 'n1', type: 'exec.result', payload: { session_id: 's1', total_cost_usd: 1.9467 }, createdAt: 't0' });
+    }
+    // A later, genuinely separate attempt (its own session) still adds.
+    appendEvent(db, { nodeId: 'n1', type: 'exec.result', payload: { session_id: 's2', total_cost_usd: 0 }, createdAt: 't0' });
+
+    expect(getCostForNodes(db, ['n1'])).toBeCloseTo(1.9467, 5);
+  });
+
   it('rolls a child’s spend up into every ancestor', () => {
     const db = createDb(TEST_DB);
     add(db, 'root', null, 5);

@@ -197,13 +197,15 @@ describe('model choice', () => {
   const KEYS = ['ORG_MODEL_EXECUTE', 'ORG_MODEL_DEEP'];
   afterEach(() => { for (const key of KEYS) delete process.env[key]; });
 
-  it('tiers a trivial job down, on the fast path', () => {
+  it('leaves a low-complexity execute job on the runtime default, not the fast path', () => {
+    // See model-router.ts: measured to cost more in total on the fast tier,
+    // not less, so low complexity alone no longer buys the fast path here.
     const decision = decideModel({
       authority: authority(), spentUsd: 0, dispatch,
       role: 'execute', complexity: 'low',
     });
     expect(decision.chosen).toBe('RUN_MODEL');
-    expect(decision.fastPath).toBe(true);
+    expect(decision.fastPath).toBe(false);
   });
 
   it('reports an escalation as one when an operator configured a deep tier', () => {

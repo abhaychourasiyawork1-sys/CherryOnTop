@@ -25,6 +25,29 @@ export interface SuiteSummary {
   /** Null when nothing in the run was scored. Never invented. */
   qualityScore: number | null;
   tokensPerSuccessfulTask: number;
+  /** The three acceptance metrics, per *success*. These are what a rollout gate
+   *  reads: a change that lowered a total by failing more often raises all
+   *  three, and a total alone would have called it a win. */
+  costPerSuccessfulTask: number;
+  turnsPerSuccessfulTask: number;
+  cacheReadPerSuccessfulTask: number;
+  /** Mean share of trajectories spent looking rather than doing. The mechanism
+   *  this architecture claims to move — if it does not move, no cost change is
+   *  attributable to it. */
+  explorationRatio: number;
+  /** Mean return on what the optimizer spent deciding. */
+  optimizationRoi: number;
+  /** Mean context handed over per task. The direct measure of what the planner
+   *  changed about the prompt — and the one that must be read *beside* cost
+   *  rather than instead of it, because less context is the mechanism, not the
+   *  result. */
+  contextTokensPerTask: number;
+  /** Selected over considered. How aggressive the planner was being. */
+  contextSelectionRatio: number;
+  /** Tasks the guard stopped. A cheap arm full of stopped tasks is not a
+   *  cheaper arm, and without this the two are indistinguishable in the
+   *  summary. */
+  tasksStopped: number;
   p50LatencyMs: number;
   p95LatencyMs: number;
   cacheHitRatio: number;
@@ -68,6 +91,15 @@ export function summarizeRun(records: EfficiencyRecord[]): SuiteSummary {
     // Per *successful* task: a change that halves tokens by failing twice as
     // often has not improved anything, and a plain average would hide it.
     tokensPerSuccessfulTask: mean(successful.map((r) => r.totalTokens)),
+    costPerSuccessfulTask: mean(successful.map((r) => r.costUsd)),
+    turnsPerSuccessfulTask: mean(successful.map((r) => r.turns)),
+    cacheReadPerSuccessfulTask: mean(successful.map((r) => r.cachedTokens)),
+    explorationRatio: mean(records.map((r) => r.explorationRatio)),
+    optimizationRoi: mean(records.map((r) => r.optimizationRoi)),
+    contextTokensPerTask: mean(records.map((r) => r.contextEstimatedTokens)),
+    contextSelectionRatio: mean(records.map((r) =>
+      (r.contextCandidates <= 0 ? 0 : r.contextSelected / r.contextCandidates))),
+    tasksStopped: records.filter((r) => r.stopReason !== null).length,
     // Latency over every task, successful or not — a person waits for failures
     // too, and a change that makes failures slow is a change that made things
     // worse.
@@ -141,6 +173,15 @@ export function evaluateExperiment(input: ExperimentInput): ExperimentResult {
 
   if (optimized.successRate < baseline.successRate - epsilon) {
     failures.push(`success rate fell more than ${epsilon}`);
+  }
+
+  // Stopping tasks is a way to make an arm look cheap that has nothing to do
+  // with being efficient. The success-rate gate catches most of it, but not the
+  // case where the guard stops a task the baseline would also have failed —
+  // there the rates match and the optimized arm still bought its saving by
+  // refusing to work.
+  if (optimized.tasksStopped > baseline.tasksStopped) {
+    failures.push(`the guard stopped more tasks (${optimized.tasksStopped} vs ${baseline.tasksStopped})`);
   }
 
   if (objectiveOptimized >= objectiveBaseline) failures.push('the objective did not improve');

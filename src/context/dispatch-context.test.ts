@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterEach } from 'vitest';
 import { selectDispatchContext, estimateTokens } from './dispatch-context.js';
 import type { RepoEntry } from '../intelligence/repo-map.js';
 
@@ -101,5 +101,73 @@ describe('selectDispatchContext', () => {
     const a = selectDispatchContext({ goal: 'fix session refresh', entries: REPO, tokenBudget: 2000 });
     const b = selectDispatchContext({ goal: 'fix session refresh', entries: REPO, tokenBudget: 2000 });
     expect(a.content).toBe(b.content);
+  });
+});
+
+describe('selectDispatchContext — the structural planner', () => {
+  const REPO_WITH_EDGES: RepoEntry[] = [
+    { path: 'src/auth/session.ts', symbols: ['refreshSession'], imports: ['./store.js'] },
+    { path: 'src/auth/store.ts', symbols: ['readStore'], imports: [] },
+    { path: 'src/auth/session.test.ts', symbols: [], imports: ['./session.js'] },
+    { path: 'src/billing/invoice.ts', symbols: ['renderInvoice'], imports: [] },
+    { path: 'README.md', symbols: [], imports: [] },
+  ];
+
+  afterEach(() => { delete process.env.ORG_CONTEXT_PLANNER; });
+
+  it('reaches a neighbour the goal never named', () => {
+    const context = selectDispatchContext({
+      goal: 'fix the bug in src/auth/session.ts', entries: REPO_WITH_EDGES, tokenBudget: 4000,
+    });
+    // `store.ts` shares no goal word at all — only an import edge.
+    expect(context.receipt.selected).toContain('src/auth/store.ts');
+    expect(context.receipt.structural).toBe(true);
+  });
+
+  it('leaves an unrelated file out', () => {
+    const context = selectDispatchContext({
+      goal: 'fix the bug in src/auth/session.ts', entries: REPO_WITH_EDGES, tokenBudget: 4000,
+    });
+    expect(context.receipt.selected).not.toContain('src/billing/invoice.ts');
+  });
+
+  it('treats the budget as a ceiling rather than a target', () => {
+    const context = selectDispatchContext({
+      goal: 'fix the bug in src/auth/session.ts', entries: REPO_WITH_EDGES, tokenBudget: 6000,
+    });
+    expect(context.estimatedTokens).toBeLessThan(6000 / 2);
+  });
+
+  it('records the candidates it considered and the confidence it selected at', () => {
+    const receipt = selectDispatchContext({
+      goal: 'fix the bug in src/auth/session.ts', entries: REPO_WITH_EDGES, tokenBudget: 4000,
+    }).receipt;
+    expect(receipt.candidates).toBeGreaterThan(0);
+    expect(receipt.confidence).toBeGreaterThan(0);
+    expect(receipt.policyVersion).toBe('ctx-1');
+  });
+
+  it('returns to the lexical selector when the planner is switched off', () => {
+    process.env.ORG_CONTEXT_PLANNER = 'off';
+    const receipt = selectDispatchContext({
+      goal: 'fix the bug in src/auth/session.ts', entries: REPO_WITH_EDGES, tokenBudget: 4000,
+    }).receipt;
+    expect(receipt.structural).toBe(false);
+    expect(receipt.policyVersion).toBe('lexical');
+    // No relationships in the rendering: the lexical selector has none to show,
+    // which is the difference the switch exists to take back.
+    const lexical = selectDispatchContext({ goal: 'fix the bug in src/auth/session.ts', entries: REPO_WITH_EDGES, tokenBudget: 4000 });
+    expect(lexical.content).not.toContain('tested-by:');
+  });
+
+  it('always keeps the repository skeleton, even for a goal that matches nothing', () => {
+    const context = selectDispatchContext({ goal: 'xyzzy plugh', entries: REPO_WITH_EDGES, tokenBudget: 4000 });
+    expect(context.content).toContain('Repository shape:');
+  });
+
+  it('is stable for the same goal and the same tree', () => {
+    const once = selectDispatchContext({ goal: 'fix src/auth/session.ts', entries: REPO_WITH_EDGES, tokenBudget: 4000 });
+    const twice = selectDispatchContext({ goal: 'fix src/auth/session.ts', entries: REPO_WITH_EDGES, tokenBudget: 4000 });
+    expect(once.content).toBe(twice.content);
   });
 });

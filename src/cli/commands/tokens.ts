@@ -18,18 +18,18 @@ export function registerTokensCommand(program: Command): void {
         return;
       }
       const fmt = (n: number) => n.toLocaleString('en-US');
-      console.log('role'.padEnd(18) + 'model'.padEnd(12) + 'runs'.padEnd(6) + 'in'.padEnd(12) + 'out'.padEnd(10) + 'cache-read'.padEnd(12) + 'cost $');
+      console.log('role'.padEnd(18) + 'model'.padEnd(12) + 'runs'.padEnd(6) + 'turns'.padEnd(7) + 'in'.padEnd(12) + 'out'.padEnd(10) + 'cache-read'.padEnd(12) + 'cost $');
       let tin = 0, tout = 0, tcost = 0;
       for (const r of rows) {
         tin += r.inputTokens; tout += r.outputTokens; tcost += r.costUsd;
         console.log(
-          r.role.padEnd(18) + r.model.padEnd(12) + String(r.dispatches).padEnd(6) +
+          r.role.padEnd(18) + r.model.padEnd(12) + String(r.dispatches).padEnd(6) + String(r.turns).padEnd(7) +
           fmt(r.inputTokens).padEnd(12) + fmt(r.outputTokens).padEnd(10) +
           fmt(r.cacheReadTokens).padEnd(12) + r.costUsd.toFixed(4),
         );
       }
-      console.log('-'.repeat(76));
-      console.log('total'.padEnd(36) + fmt(tin).padEnd(12) + fmt(tout).padEnd(10) + ''.padEnd(12) + tcost.toFixed(4));
+      console.log('-'.repeat(83));
+      console.log('total'.padEnd(43) + fmt(tin).padEnd(12) + fmt(tout).padEnd(10) + ''.padEnd(12) + tcost.toFixed(4));
       console.log(`plan-cache hits: ${planCacheHits}`);
       console.log(`result-cache hits: ${resultCacheHits ?? 0}`);
     });

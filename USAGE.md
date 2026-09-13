@@ -214,6 +214,8 @@ the next `org daemon` restart — the same contract as `ORG_RUNNER_IMAGE`.
 | `ORG_MODEL_STANDARD` | *(none — runtime default)* | Model for the standard tier |
 | `ORG_MODEL_DEEP` | *(none — off)* | Model for the deep tier. Unset means routing never tiers **up** |
 | `ORG_MAX_CHILD_JOBS` | `2` | Most children one node may fan out to. A node's own `max_child_count` authority can only lower this, never raise it |
+| `ORG_CONTEXT_PLANNER` | on | The structural context planner (below); `off`/`0`/`false`/`no`/`disabled` return the lexical selector this branch shipped with |
+| `ORG_TASK_SPEND_CAP_USD` | `0` | Deployment-wide ceiling on what one task may spend. `0` means no ceiling of its own — a node's contract `budget_usd` already carries one, and that always wins where it is set |
 
 An empty value, or `none`/`default`/`off`, on any `ORG_MODEL_*` variable means "pass no
 `--model` flag" — the runtime's own default model is used instead.
@@ -245,6 +247,79 @@ event log is that channel. If selection ever throws, it degrades **upward** — 
 inventory rendered to the same ceiling, which is what every dispatch received before.
 
 Set `ORG_REPO_MAP_TOKENS=0` to turn context off entirely.
+
+**The structural context planner.** Lexical matching answers "which files *sound* like the
+goal". That is a real signal and it is still used, but on its own it misses the files that
+cost the most to not have: a goal naming one file almost always needs that file's
+neighbours — what it imports, what imports it, the test that covers it — and none of them
+share a goal word. The agent then finds them by grepping, over several turns, each of which
+re-reads the whole conversation prefix.
+
+So the planner scores four independent kinds of evidence and selects under a policy:
+
+- **lexical** — the goal's own words, as before.
+- **structural** — real import edges, read off the same scan that already reads every file.
+  Direct edges only: a dependency of a dependency is two guesses stacked. Plus the test/
+  source pairing, which is the most reliably-needed neighbour there is.
+- **task fit** — generic properties of the artifact (is it a test? a config? documentation?)
+  against generic properties of the task. Never a named file: "high verification need
+  prefers test artifacts" travels to the next repository, "documentation tasks include
+  README.md" does not.
+- **confidence** — how much the evidence above deserves to be believed.
+
+Two behaviours follow from the policy rather than from the scoring, and both matter more
+than the weights:
+
+- **The budget is a ceiling, never a target.** Stopping early because nothing left is worth
+  its room is the correct outcome. A candidate is offered at the cheapest evidence level
+  that carries its meaning and escalated only while the *increment* pays for itself; under
+  budget pressure it is demoted (path only) rather than dropped, because a path the agent
+  can see costs four tokens and saves a search.
+- **Uncertainty widens.** Below the policy's confidence floor the selector relaxes rather
+  than prunes. Pruning a goal nobody understands is how an agent ends up re-deriving by grep
+  what it was nearly handed.
+
+`context.receipt` events additionally record how many candidates there were, the confidence
+the selection was made at, and which policy version produced it.
+
+**Turning it off.** `ORG_CONTEXT_PLANNER=off` returns the lexical selector and nothing else
+changes — same receipts, same caches, same fallbacks. It is also where the planner lands
+by itself if it ever throws. Rollback is an environment variable and a daemon restart, not
+a revert.
+
+**Adaptive turn and spend budgets.** `ORG_MAX_TURNS_EXECUTE` is a deployment-wide circuit
+breaker that, at 60, never fired — so in practice nothing bounded the one term whose cost
+grows superlinearly. Each task now also derives a cap from what it was judged to need, and
+the dispatch runs under the **tighter of the two**. Setting `ORG_MAX_TURNS_EXECUTE=0` still
+means uncapped: a policy cannot switch a breaker back on that an operator switched off.
+The agent is told a *soft target* beside its cap, because "you have 45 turns" and "this
+should take about 20" are different instructions.
+
+**The spend guard.** Every sandbox in every role passes through one chokepoint, and the
+guard runs there — the last moment before money is spent. It has four states:
+
+| State | What it means | What happens |
+|---|---|---|
+| `GREEN` | Nothing to say | The dispatch runs |
+| `AMBER` | Past the soft target, or 60% of the cap | Recorded, nothing else |
+| `RED` | 85% of the cap, or near the turn cap | Said out loud in the transcript |
+| `STOP` | See below | No sandbox is opened; the node fails with the reason |
+
+A `STOP` is one of four things, and the transcript names which: the spend cap reached; the
+hard turn cap reached (this one fires even with no cost telemetry at all, which is the only
+protection left against a runtime that reports no cost); or a **stall** — real money spent,
+past the point the task was judged to need, nothing produced, and the run either searching
+without acting or repeating one failure. The stall deliberately needs all of those at once.
+A high turn count is not by itself a verdict: the most expensive run ever measured here took
+42 turns and was working, and the one before it took 19 and was not.
+
+A stopped node reaches `FAILED` with the guard's sentence as its message, and the task's
+`efficiency_record` carries the same sentence as `stopReason` — a cheap arm full of stopped
+tasks is not a cheaper arm, and without the reason it reads as one.
+
+`ORG_TASK_SPEND_CAP_USD` sets a deployment-wide ceiling for tasks whose contract carries no
+`budget_usd`. It is `0` (no ceiling of its own) by default: inventing a second, lower
+ceiling nobody asked for would stop work an operator explicitly funded.
 
 **Model routing.** Beyond the fixed per-role choice, execution dispatches pick a tier from
 the goal's assessed complexity: low-complexity work runs on the fast tier, and so does any
@@ -354,6 +429,13 @@ synthesis and model routing together:
 Because it is a single switch, it is also the A/B knob: `node bench/run.mjs efficiency`
 runs the fixed goal set with it `enabled` and `disabled`. **That dispatches real, paid model
 calls.**
+
+**The objective.** Not the smallest initial prompt — the **cheapest successful execution**.
+The acceptance metrics are all per *success*: `costPerSuccess`, `turnsPerSuccess`,
+`cacheReadPerSuccess`. A change that lowers a total by failing more often raises all three,
+and a total alone would have called it a win. Correctness is a hard constraint outside the
+arithmetic, not a term inside it: a weighted score can always be improved by spending
+quality.
 
 **Measuring it.** Every task writes one `efficiency_record` to memory when it reaches a
 terminal state: tokens split into input/output/cached, the coordination and recovery

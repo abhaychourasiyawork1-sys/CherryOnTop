@@ -209,6 +209,16 @@ export const nodeMachine = setup({
     VERIFY: {
       always: [
         { target: 'COMPLETE', guard: ({ context }) => context.lastResult?.succeeded === true },
+        // A rate-limited dispatch is refused for a reason retrying cannot fix:
+        // the account's usage window is spent, and it does not refill between
+        // attempts a few minutes apart. Retrying anyway was a measured run
+        // burning its remaining three attempts — each a full sandbox — into
+        // the same refusal, for nothing. Straight to FAILED instead, on the
+        // first one.
+        {
+          target: 'FAILED',
+          guard: ({ context }) => context.lastResult?.rateLimited === true,
+        },
         {
           target: 'EXECUTION_DECISION',
           guard: ({ context }) => (context.executionAttempts ?? 0) < MAX_EXECUTION_ATTEMPTS,

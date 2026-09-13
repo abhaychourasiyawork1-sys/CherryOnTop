@@ -2,7 +2,7 @@ import { describe, it, expect, afterEach } from 'vitest';
 import { existsSync, unlinkSync } from 'node:fs';
 import { createDb } from '../client.js';
 import { insertNode } from './nodes.js';
-import { recordDispatchUsage, tokensByRole } from './tokens.js';
+import { recordDispatchUsage, tokensByRole, policyVersionsSeen } from './tokens.js';
 
 const DB = './test-tokens.db';
 afterEach(() => { for (const s of ['', '-journal', '-wal', '-shm']) if (existsSync(DB + s)) unlinkSync(DB + s); });
@@ -29,6 +29,9 @@ describe('tokensByRole', () => {
     const { rows } = tokensByRole(db);
     const plan = rows.find((r) => r.role === 'plan')!;
     expect(plan.dispatches).toBe(2);
+    // Turns, not just dispatches: two 1-turn plans is a different run from one
+    // 2-turn plan, and only one of the two numbers says which.
+    expect(plan.turns).toBe(2);
     expect(plan.inputTokens).toBe(150);
     expect(plan.model).toBe('haiku');
     const exec = rows.find((r) => r.role === 'execute')!;
@@ -67,5 +70,31 @@ describe('tokensByRole', () => {
     // a plan-cache-hit is recorded as a dispatch_usage row with role 'plan:cache-hit'
     recordDispatchUsage(db, { nodeId: 'a', role: 'plan:cache-hit', model: null, usage: usage(0, 0), costUsd: 0, createdAt: 'x' });
     expect(tokensByRole(db).planCacheHits).toBe(1);
+  });
+});
+
+describe('policyVersionsSeen', () => {
+  it('keeps two policy generations distinguishable rather than averaging them', () => {
+    const db = createDb(DB);
+    const t = '2026-09-13T00:00:00.000Z';
+    recordDispatchUsage(db, {
+      nodeId: 'a', role: 'execute', model: null, usage: usage(10, 1), costUsd: 0.1, createdAt: t,
+      policy: { context: 'lexical', execution: 'exec-1' },
+    });
+    recordDispatchUsage(db, {
+      nodeId: 'a', role: 'execute', model: null, usage: usage(10, 1), costUsd: 0.1, createdAt: t,
+      policy: { context: 'ctx-1', execution: 'exec-1' },
+    });
+
+    expect(policyVersionsSeen(db)).toEqual(['ctx-1/exec-1', 'lexical/exec-1']);
+  });
+
+  it('says nothing at all about rows recorded before versions existed', () => {
+    const db = createDb(DB);
+    recordDispatchUsage(db, {
+      nodeId: 'a', role: 'execute', model: null, usage: usage(10, 1), costUsd: 0.1,
+      createdAt: '2026-09-13T00:00:00.000Z',
+    });
+    expect(policyVersionsSeen(db)).toEqual([]);
   });
 });
