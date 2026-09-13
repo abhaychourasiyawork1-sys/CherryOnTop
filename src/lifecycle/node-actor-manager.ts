@@ -38,7 +38,7 @@ import { deleteNodeNetworkPolicy, deleteNodeJobs } from '../k8s/cleanup.js';
 import { subtreeNodeIds } from '../db/queries/nodes.js';
 import { allowedTools, isReadOnly } from '../engines/enforce-tools.js';
 import type { Authority } from '../schemas/node-contract.js';
-import type { ToolGrant, RuntimeAdapter } from '../adapters/adapter.js';
+import type { ToolGrant, RuntimeAdapter, StructuredEvent } from '../adapters/adapter.js';
 import { setNodeSnapshot, clearNodeSnapshot } from '../db/queries/nodes.js';
 import { insertDodItems, listDodForNode, setDodState } from '../db/queries/dod.js';
 import { dispatchOptionsFor, planCacheTtlHours, repoMapTokenBudget, rolePromptsEnabled, efficiencyMode, resultCacheTtlHours, type DispatchRole } from '../config/efficiency.js';
@@ -55,6 +55,7 @@ import { scopeOf } from '../context/types.js';
 import { judgeTask } from '../intelligence/task-judge.js';
 import { taskEconomicsFor } from '../efficiency/task-economics.js';
 import { evaluateSpendGuard, type SpendGuardState } from '../efficiency/spend-guard.js';
+import { summarizeExecutionTrajectory, UNKNOWN_PROGRESS } from '../efficiency/progress-signals.js';
 import { executionPolicyFor, effectiveTurnCap } from '../efficiency/policy.js';
 import { templateFor, pruneTemplate } from '../intelligence/execution-templates.js';
 import type { TaskClass } from '../intelligence/task-judge.js';
@@ -684,12 +685,27 @@ function resultReuseKey(goal: string, grant: ToolGrant, model: string | undefine
 
 /** What the run so far looks like: mostly searching, or mostly working.
  *
- *  Neutral until the deterministic trajectory reader lands — and neutral is the
- *  safe value, not a placeholder that happens to work: the stall branch of the
- *  guard needs observed *absence* of progress, so unknown signals can only ever
- *  make it more reluctant to stop, never less. */
-function trajectorySignals(_db: Db, _nodeId: string): { explorationSignal: number; progressSignal: number } {
-  return { explorationSignal: 0.5, progressSignal: 0.5 };
+ *  Read off the node's own recorded tool stream — the `exec.*` rows the live
+ *  event handler already writes — rather than from a second capture pass or a
+ *  model judge. Every attempt this node has made is included, deliberately: a
+ *  retry that repeats the previous attempt's failing search is exactly the
+ *  trajectory worth catching, and scoping to the latest attempt would hide it.
+ *
+ *  Unreadable stream, unreadable database, anything at all: the neutral middle.
+ *  That is not a placeholder that happens to work — the guard's stall branch
+ *  needs observed *absence* of progress, so unknown signals can only make it
+ *  more reluctant to stop, never less. */
+function trajectorySignals(db: Db, nodeId: string): { explorationSignal: number; progressSignal: number } {
+  try {
+    const events = listEventsForNode(db, nodeId)
+      .filter((row) => row.type.startsWith('exec.'))
+      .map((row) => ({ type: row.type.slice('exec.'.length), payload: row.payload } as StructuredEvent));
+    const signals = summarizeExecutionTrajectory(events);
+    return { explorationSignal: signals.exploration, progressSignal: signals.progress };
+  } catch (err) {
+    console.error(`Failed to read the trajectory for node ${nodeId}:`, err);
+    return { explorationSignal: UNKNOWN_PROGRESS.exploration, progressSignal: UNKNOWN_PROGRESS.progress };
+  }
 }
 
 /** The economic verdict on a task, at the moment before it spends again.
