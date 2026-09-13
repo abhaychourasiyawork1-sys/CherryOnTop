@@ -9,3 +9,4 @@ test-results/
 .org/
 .worktrees/
 node_modules
+bench/last-run.json

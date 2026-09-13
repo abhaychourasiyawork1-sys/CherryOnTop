@@ -9,7 +9,7 @@ import { ZERO_USAGE } from '../execution/tokens.js';
 function machineWithMocks(overrides: {
   assessUncertainty?: Partial<IntelligenceBundle> & { sufficientContext: boolean; complexity: 'low' | 'medium' | 'high' };
   decideExecution?: { outcome: 'SELF_EXECUTE' | 'DELEGATE' | 'ESCALATE'; breakdown: Record<string, number> };
-  executeStep?: { succeeded: boolean };
+  executeStep?: { succeeded: boolean; rateLimited?: boolean };
 } = {}) {
   return nodeMachine.provide({
     actors: {
@@ -66,6 +66,16 @@ describe('nodeMachine', () => {
     actor.send({ type: 'START' });
     await vi.waitFor(() => expect(actor.getSnapshot().value).toBe('FAILED'));
     expect(actor.getSnapshot().context.executionAttempts).toBe(3);
+  });
+
+  it('fails on the first rate-limited step instead of retrying into a dead quota', async () => {
+    const actor = createActor(machineWithMocks({ executeStep: { succeeded: false, rateLimited: true } }), { input: { nodeId: 'n1', goal: 'test' } });
+    actor.start();
+    actor.send({ type: 'START' });
+    await vi.waitFor(() => expect(actor.getSnapshot().value).toBe('FAILED'));
+    // Not 3: the usage window does not refill between attempts a few minutes
+    // apart, so every retry was guaranteed to fail the same way for nothing.
+    expect(actor.getSnapshot().context.executionAttempts).toBeUndefined();
   });
 
   it('escalates through to WAIT_APPROVAL when the decision combinator says so', async () => {

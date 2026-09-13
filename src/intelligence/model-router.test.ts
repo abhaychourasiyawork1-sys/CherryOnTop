@@ -15,15 +15,19 @@ describe('routeModel', () => {
     expect(routeModel({ role: 'synthesize', complexity: 'high', ...healthy }).tier).toBe('fast');
   });
 
-  it('tiers a trivial piece of work down', () => {
+  it('leaves low-complexity execute work on the runtime default, not the fast tier', () => {
+    // Measured: a one-line README fix tiered to Haiku took 6x the turns and
+    // cache-read of the same fix on the runtime default, and cost 95% more in
+    // total despite Haiku's lower per-token price. Complexity alone is not a
+    // reliable signal that the fast tier will finish the job cheaply.
     const route = routeModel({ role: 'execute', complexity: 'low', ...healthy });
-    expect(route.tier).toBe('fast');
-    expect(route.model).toBe('haiku');
+    expect(route.tier).toBe('standard');
+    expect(route.model).toBeUndefined();
     expect(route.reason).toContain('low');
   });
 
   it('leaves real work on the runtime default', () => {
-    for (const complexity of ['medium', 'high'] as const) {
+    for (const complexity of ['low', 'medium', 'high'] as const) {
       const route = routeModel({ role: 'execute', complexity, ...healthy });
       expect(route.tier).toBe('standard');
       // Undefined means no --model flag at all: whatever the runtime would have
@@ -74,16 +78,16 @@ describe('routeModel', () => {
 
   it('does not tier an investigation down to the fast model on complexity alone', () => {
     // "Investigate the root cause of this bug" names no breadth and no file
-    // list, so it scores low — and low was the fast-tier trigger. A diagnosis is
-    // the last work that should be cheapened: a wrong root cause does not look
-    // like a failure the way a broken edit does.
+    // list, so it scores low. A diagnosis is the last work that should be
+    // cheapened: a wrong root cause does not look like a failure the way a
+    // broken edit does — and low-complexity execute work stays on the
+    // runtime default either way now (see the routeModel comment).
     const route = routeModel({ role: 'execute', complexity: 'low', investigative: true, ...healthy });
     expect(route.tier).toBe('standard');
-    expect(route.reason).toContain('investigating');
   });
 
-  it('still tiers plain low-complexity work down', () => {
-    expect(routeModel({ role: 'execute', complexity: 'low', investigative: false, ...healthy }).tier).toBe('fast');
+  it('leaves plain low-complexity work on the runtime default too', () => {
+    expect(routeModel({ role: 'execute', complexity: 'low', investigative: false, ...healthy }).tier).toBe('standard');
   });
 
   it('lets budget pressure override that: out of money is out of money', () => {

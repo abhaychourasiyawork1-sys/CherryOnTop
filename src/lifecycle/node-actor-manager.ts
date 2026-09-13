@@ -60,7 +60,7 @@ import { withRepoContext } from '../intelligence/repo-map.js';
 import { dispatchContextFor, warmRepoInventory } from '../context/dispatch-context-cache.js';
 import { recordDispatchUsage } from '../db/queries/tokens.js';
 import { shouldRetryWithoutModel } from '../execution/tokens.js';
-import { readOnlyPlanningGrant } from './dispatch-helpers.js';
+import { readOnlyPlanningGrant, investigativeExecuteGrant } from './dispatch-helpers.js';
 import { memory } from '../db/schema.js';
 
 // In-process actor registry. It is lost on a daemon restart, which is why every
@@ -250,11 +250,21 @@ export function modelFor(adapter: RuntimeAdapter, model: string | undefined): st
 }
 
 /** What a dispatch cost, off the runtime's own final result event — the same
- *  number the cost views already read, recorded alongside the token counts. */
+ *  number the cost views already read, recorded alongside the token counts.
+ *
+ *  The *last* `result` event only, matching `usageFromEvents`'s convention
+ *  (execution/tokens.ts). `total_cost_usd` is the session's running total, not
+ *  a per-event delta: a dispatch that spawns background subagents gets one
+ *  `result` event per subagent completion in addition to the main turn's, each
+ *  carrying that same cumulative figure. Summing them (the old behaviour)
+ *  multiplied the true cost by however many of those notifications arrived —
+ *  a run with 5 subagents reported roughly 6x its real spend. */
 function costFromEvents(events: { type: string; payload: unknown }[]): number {
-  return events
-    .filter((e) => e.type === 'result')
-    .reduce((s, e) => s + Number((e.payload as { total_cost_usd?: number } | null)?.total_cost_usd ?? 0), 0);
+  for (let i = events.length - 1; i >= 0; i--) {
+    if (events[i].type !== 'result') continue;
+    return Number((events[i].payload as { total_cost_usd?: number } | null)?.total_cost_usd ?? 0);
+  }
+  return 0;
 }
 
 /** One fact the organization learned, written straight to memory. Total, for the
@@ -1002,7 +1012,16 @@ function productionMachine(db: Db, nodeId: string) {
         // starting a sandbox, because on a hit none of that happens. The model
         // is resolved first only because it is part of what makes two runs the
         // same run — a haiku answer must not be served to a sonnet request.
-        const grant = grantOf(node!.contract.authority);
+        // `judgeTask` is the cheap, dispatch-free classification the template,
+        // the utility record and the grant below all key on — computed once,
+        // up front, so nothing here can disagree about what kind of goal this is.
+        const verdict = judgeTask(input.goal);
+        // Investigating is reading, not editing — and an unrestricted grant
+        // does not just permit editing, it also keeps the Task tool, which is
+        // how a single dispatch spawns its own background subagents. Narrowed
+        // to read-only only when nobody configured a grant of their own; see
+        // dispatch-helpers.ts for the measured run this closes off.
+        const grant = investigativeExecuteGrant(grantOf(node!.contract.authority), verdict.decomposition.investigative);
         let usedModel = modelFor(adapter, modelChoiceFor(db, nodeId, 'execute', input.goal));
         const reuseKey = resultReuseKey(input.goal, grant, usedModel);
         // Validity is asked of each candidate answer in turn, newest first:
@@ -1014,9 +1033,7 @@ function productionMachine(db: Db, nodeId: string) {
 
         // Routed through the one decision contract rather than decided inline,
         // so reusing and running fresh are explained the same way and by the
-        // same rules — the budget gate included. `judgeTask` is the cheap
-        // classification the template and the utility record both key on.
-        const verdict = judgeTask(input.goal);
+        // same rules — the budget gate included.
         const pathDecision = decideExecutionPath({
           goal: input.goal,
           authority: node!.contract.authority,
@@ -1080,7 +1097,7 @@ function productionMachine(db: Db, nodeId: string) {
         const constraints = (node?.contract.constraints ?? []).map((c) => c.trim()).filter(Boolean);
         const roleSystemPrompt = rolePromptsEnabled() && honoursSystemPrompt(adapter)
           ? buildRolePrompt('execute', {
-              allowedTools: node ? grantOf(node.contract.authority).allowedTools : undefined,
+              allowedTools: grant.allowedTools,
               constraints,
               definitionOfDone: node?.contract.definition_of_done ?? [],
               // The same cap that goes into argv below. A run told its budget
