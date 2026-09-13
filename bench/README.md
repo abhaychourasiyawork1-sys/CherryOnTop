@@ -1,6 +1,11 @@
 # Benchmark harness
 
-**STATUS: this benchmark has NOT been run.** No result in this repo reflects a
+**STATUS: partially run.** One matched pair (`efficiency`, goal `typo-fix`) is
+recorded in `bench/last-run.json` and summarised under *Recorded results*. The
+rest of the matrix has not been paid for. Treat every unrecorded number as
+unknown.
+
+**Historic status line, kept because it still applies to everything unrecorded:** No result in this repo reflects a
 measured comparison. `ORG_REPO_MAP_TOKENS=6000` and `ORG_ROLE_PROMPTS=on` are
 shipped as defaults on the strength of the design spec alone — they are
 **unvalidated by measurement**. Treat every number this script would print as
@@ -37,6 +42,46 @@ prints a line per goal. It aborts loudly (rather than hanging or reporting
 zeros) if `org run` never prints a parseable node id, or if a node never
 reaches a terminal state within 30 minutes of polling.
 
+## The frozen baseline population
+
+`goals.json` has two arrays and only the first one is the baseline:
+
+- **`goals`** — the frozen population. Seven goals, each labelled with a `size`
+  (`tiny` / `medium` / `large`) and a `family`. Do not add to it: a comparison
+  against a baseline whose population changed is not a comparison.
+- **`families`** — slots for the task families the architecture has to be
+  general across (implementation, test-heavy, debugging, investigation,
+  refactor, new-file, configuration/build, multi-file, documentation). Off
+  unless `--families` is passed, so adding one cannot silently move the
+  baseline.
+
+## Acceptance metrics
+
+Every run reports, per goal: `cost`, `turns`, `inputTokens`, `outputTokens`,
+`cacheReadTokens`, `wallSeconds`, the terminal `state` (success), and the
+`rubric` a human verifies against. The totals block additionally derives the
+three that decide anything — **`costPerSuccess`**, **`turnsPerSuccess`**,
+**`cacheReadPerSuccess`**. A change that lowers a total by failing more often
+raises all three, which is the point of dividing by successes rather than by
+goals.
+
+`turns` is the term the architecture is aimed at: cost inside a dispatch grows
+superlinearly in turns, because the whole conversation prefix is re-read on
+every one. A report with tokens but no turns cannot explain its own movement.
+
+## Comparing a policy version against the baseline
+
+```bash
+node bench/run.mjs efficiency --label=baseline
+# ... change policy ...
+node bench/run.mjs efficiency --label=policy-v2 --baseline=bench/baseline.json
+```
+
+`--label` names the output file; `--baseline=<file>` prints a delta table of
+the three per-success metrics plus wall-clock against that recorded run. Both
+arms are kept in the file, so a later reader can re-derive anything the summary
+did not print.
+
 ## Ship criteria (from the token-efficiency spec)
 
 **Phase 2 — `repo-map`:** ship default-on only if total input tokens are
@@ -51,5 +96,26 @@ rise.
 
 ## Recorded results
 
-_(none yet — fill in after an actual run, with date, commit SHA, and the raw
-per-goal output, not just a verdict)_
+### `efficiency`, goal `typo-fix` — 2026-09-12, branch `feat/token-efficiency`
+
+Raw rows: `bench/last-run.json`.
+
+| arm | state | dispatches | billed tokens | cache-read | cost | wall |
+|---|---|---|---|---|---|---|
+| on (`ORG_EFFICIENCY_MODE=enabled`) | COMPLETE | 1 | 2,882 | 168,193 | $0.1055 | 51s |
+| off (`=disabled`) | COMPLETE | 1 | 424 | 79,402 | $0.0354 | 20s |
+
+**A regression, and the one this architecture exists to answer.** Same outcome,
+same single dispatch, 2.1x the cache-read and 3.0x the cost with the efficiency
+work on. The cause was diagnosed as the fast model tier substituting extra
+tool-call round-trips for reasoning on `execute` — fixed on
+`feat/token-efficiency` (`fix: act on what the first efficiency benchmark
+measured`), which is *not* re-measured here. This row is therefore the
+**pre-fix** baseline.
+
+### Claims carried in from the implementation plan, unverified in this repo
+
+The plan this architecture came from cites an 18/18 run showing medium-task
+cost +42.3%, turns +31.1%, cache-read +31.6%. **No artifact in this repository
+records that run.** It is quoted as the motivation, not as evidence, and
+nothing here should be read as having reproduced it.

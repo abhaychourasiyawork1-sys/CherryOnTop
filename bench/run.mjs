@@ -45,7 +45,14 @@ if (!MATRIX[mode]) {
   process.exit(2);
 }
 
-const all = JSON.parse(readFileSync(new URL('./goals.json', import.meta.url))).goals;
+const fixtures = JSON.parse(readFileSync(new URL('./goals.json', import.meta.url)));
+// The frozen baseline population, and nothing else, unless --families is asked
+// for explicitly. Adding a goal to the default set would silently change what
+// "the baseline" means, and every later comparison would be against a number
+// no earlier run produced.
+const all = process.argv.includes('--families')
+  ? [...fixtures.goals, ...fixtures.families]
+  : fixtures.goals;
 const goals = only.length > 0 ? all.filter((g) => only.includes(g.id)) : all;
 if (goals.length === 0) {
   console.error(`no goals matched --goals=${only.join(',')}; available: ${all.map((g) => g.id).join(', ')}`);
@@ -94,8 +101,14 @@ for (const [label, env] of MATRIX[mode]) {
     const sum = (field) => tokens.rows.reduce((acc, r) => acc + (r[field] ?? 0), 0);
     const row = {
       goal: g.id,
+      size: g.size ?? 'unknown',
+      family: g.family ?? 'unknown',
       state,
       dispatches: sum('dispatches'),
+      // The term nothing bounded before, and the one the architecture is meant
+      // to move: cost inside a dispatch grows superlinearly in turns, because
+      // the whole conversation prefix is re-read on every one.
+      turns: sum('turns'),
       inputTokens: sum('inputTokens'),
       outputTokens: sum('outputTokens'),
       cacheReadTokens: sum('cacheReadTokens'),
@@ -121,12 +134,22 @@ const totals = arms.map((arm) => {
     goals: rows.length,
     succeeded: rows.filter((r) => r.state === 'COMPLETE').length,
     dispatches: add('dispatches'),
+    turns: add('turns'),
     billedTokens: add('inputTokens') + add('outputTokens'),
     cacheReadTokens: add('cacheReadTokens'),
     costUsd: Number(add('costUsd').toFixed(4)),
     wallSeconds: add('wallSeconds'),
   };
 });
+
+// The acceptance metrics are all *per success*. A change that halves cost by
+// failing twice as often has not improved anything, and a raw total hides it.
+for (const t of totals) {
+  const per = (n) => (t.succeeded === 0 ? null : Number((n / t.succeeded).toFixed(4)));
+  t.costPerSuccess = per(t.costUsd);
+  t.turnsPerSuccess = per(t.turns);
+  t.cacheReadPerSuccess = per(t.cacheReadTokens);
+}
 
 console.log('\n=== totals ===');
 for (const t of totals) console.log(JSON.stringify(t));
@@ -145,6 +168,28 @@ if (totals.length === 2) {
   }, null, 2));
 }
 
+// A recorded run to compare against, so "did the new policy help?" is answered
+// from two matched files rather than from memory of a number in a terminal.
+const baselineArg = (process.argv.find((a) => a.startsWith('--baseline=')) || '').slice(11);
+if (baselineArg) {
+  const prior = JSON.parse(readFileSync(baselineArg, 'utf8'));
+  const pick = (run, arm) => run.totals.find((t) => t.arm === arm) ?? run.totals[0];
+  const a = pick(prior, 'on');
+  const b = pick({ totals }, 'on');
+  const pct = (field) => (a[field] ? Number((((b[field] - a[field]) / a[field]) * 100).toFixed(1)) : 0);
+  console.log(`\n=== vs baseline ${baselineArg} ===`);
+  console.log(JSON.stringify({
+    successBaseline: `${a.succeeded}/${a.goals}`,
+    successNow: `${b.succeeded}/${b.goals}`,
+    costPerSuccessDeltaPct: pct('costPerSuccess'),
+    turnsPerSuccessDeltaPct: pct('turnsPerSuccess'),
+    cacheReadPerSuccessDeltaPct: pct('cacheReadPerSuccess'),
+    wallDeltaPct: pct('wallSeconds'),
+  }, null, 2));
+}
+
 console.log('\nScore the rubric by hand. Ship criterion: cost per *successful* goal lower AND every rubric still passes.');
-writeFileSync(new URL('./last-run.json', import.meta.url), JSON.stringify({ mode, results, totals }, null, 2));
-console.log('Raw rows written to bench/last-run.json');
+const label = (process.argv.find((a) => a.startsWith('--label=')) || '').slice(8) || 'last-run';
+const out = new URL(`./${label}.json`, import.meta.url);
+writeFileSync(out, JSON.stringify({ mode, label, results, totals }, null, 2));
+console.log(`Raw rows written to bench/${label}.json`);

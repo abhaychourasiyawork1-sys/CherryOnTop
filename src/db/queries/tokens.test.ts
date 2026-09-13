@@ -29,6 +29,9 @@ describe('tokensByRole', () => {
     const { rows } = tokensByRole(db);
     const plan = rows.find((r) => r.role === 'plan')!;
     expect(plan.dispatches).toBe(2);
+    // Turns, not just dispatches: two 1-turn plans is a different run from one
+    // 2-turn plan, and only one of the two numbers says which.
+    expect(plan.turns).toBe(2);
     expect(plan.inputTokens).toBe(150);
     expect(plan.model).toBe('haiku');
     const exec = rows.find((r) => r.role === 'execute')!;

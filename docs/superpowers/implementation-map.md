@@ -121,3 +121,25 @@ A status outside the enum fails validation, which discards the whole envelope an
 parent down the prose path — buying a synthesis sandbox because a child used an honest word.
 `conflict` is deliberately not added: a conflict is something a parent observes between two
 children, not a state a child reports about itself.
+
+---
+
+# Token-efficiency architecture (plan of 2026-09-13)
+
+A second body of work on top of everything above. Its governing principle is
+*optimize the cheapest successful execution strategy, not the smallest initial
+prompt* — so the measured quantity is **cost per successful task**, never
+initial prompt size.
+
+## Frozen baseline contract
+
+| | |
+|---|---|
+| Population | `bench/goals.json` → `goals` (7, each labelled `size` + `family`). `families` is the expansion set and is off unless `--families` is passed. |
+| Metrics | `cost`, `turns`, `inputTokens`, `outputTokens`, `cacheReadTokens`, `wallSeconds`, terminal state, rubric verification |
+| Derived | `costPerSuccess`, `turnsPerSuccess`, `cacheReadPerSuccess` |
+| Comparison | `node bench/run.mjs <mode> --label=<name> [--baseline=bench/<prior>.json]` |
+| Recorded | `bench/README.md` → *Recorded results* |
+
+`turns` is newly surfaced end-to-end for this: it was already captured in
+`DispatchUsage.numTurns` and thrown away by `tokensByRole`.
