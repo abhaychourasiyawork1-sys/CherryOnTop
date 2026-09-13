@@ -43,6 +43,13 @@ export interface ContextCandidate {
   /** Stable identity across dispatches on one commit: the path. */
   key: string;
   path: string;
+  /** The file's top-level symbols, carried so the cost of every evidence level
+   *  is computable from the candidate alone. Without it the selector would have
+   *  to hold the inventory too, and the two could disagree about what a line
+   *  costs — which is how a budget gets busted by a rounding difference. */
+  symbols: string[];
+  /** The richest level this candidate has evidence for. The selector may hand
+   *  over less when the budget says so; it never invents more. */
   evidenceLevel: EvidenceLevel;
   estimatedTokens: number;
   lexicalScore: number;
@@ -242,19 +249,26 @@ function confidenceScore(kinds: { anchored: boolean; structural: boolean; lexica
   return kinds.lexical > 0 ? 0.3 : 0;
 }
 
-function evidenceLine(entry: RepoEntry, level: EvidenceLevel, relationships: string[]): string {
-  if (level === 'L0') return `  ${entry.path}`;
-  const symbols = entry.symbols.length > 0 ? `: ${entry.symbols.join(', ')}` : '';
-  if (level === 'L1') return `  ${entry.path}${symbols}`;
-  const related = relationships.length > 0 ? ` [${relationships.join(', ')}]` : '';
-  return `  ${entry.path}${symbols}${related}`;
+/** The one place that knows how a candidate becomes text, so the selector's
+ *  token arithmetic and the renderer can never disagree about what a line
+ *  costs. `L3` is not rendered here: it is a whole file, which this module has
+ *  promised never to read. */
+export function renderAt(
+  candidate: Pick<ContextCandidate, 'path' | 'symbols' | 'relationships'>,
+  level: EvidenceLevel,
+): string {
+  if (level === 'L0') return `  ${candidate.path}`;
+  const symbols = candidate.symbols.length > 0 ? `: ${candidate.symbols.join(', ')}` : '';
+  if (level === 'L1') return `  ${candidate.path}${symbols}`;
+  const related = candidate.relationships.length > 0 ? ` [${candidate.relationships.join(', ')}]` : '';
+  return `  ${candidate.path}${symbols}${related}`;
 }
 
-/** The rendered form of a candidate at its own evidence level. The one place
- *  that knows how a candidate becomes text, so the selector's token arithmetic
- *  and the renderer can never disagree about what a line costs. */
-export function renderCandidate(candidate: ContextCandidate, entry: RepoEntry): string {
-  return evidenceLine(entry, candidate.evidenceLevel, candidate.relationships);
+export function tokensAt(
+  candidate: Pick<ContextCandidate, 'path' | 'symbols' | 'relationships'>,
+  level: EvidenceLevel,
+): number {
+  return estimateTokens(renderAt(candidate, level));
 }
 
 export function estimateTokens(text: string): number {
@@ -325,13 +339,14 @@ export function buildCandidates(input: CandidateInput): ContextCandidate[] {
     const role = artifactRole(entry.path);
     // L2 buys relationships, and only a file that has some can spend it.
     const evidenceLevel: EvidenceLevel = relationships.length > (isAnchor ? 1 : 0) ? 'L2' : 'L1';
-    const text = evidenceLine(entry, evidenceLevel, relationships);
+    const shape = { path: entry.path, symbols: entry.symbols, relationships };
 
     candidates.push({
       key: entry.path,
       path: entry.path,
+      symbols: entry.symbols,
       evidenceLevel,
-      estimatedTokens: estimateTokens(text),
+      estimatedTokens: tokensAt(shape, evidenceLevel),
       lexicalScore: lexical,
       structuralScore: isAnchor ? 1 : structural,
       taskFitScore: taskFitScore(role, input.taskFit),

@@ -3,7 +3,7 @@ import { contributions, createContextScorer, explorationAvoided, marginalValue, 
 import type { ContextCandidate } from './candidates.js';
 
 const candidate = (over: Partial<ContextCandidate> = {}): ContextCandidate => ({
-  key: 'src/a.ts', path: 'src/a.ts', evidenceLevel: 'L1', estimatedTokens: 20,
+  key: 'src/a.ts', path: 'src/a.ts', symbols: [], evidenceLevel: 'L1', estimatedTokens: 20,
   lexicalScore: 0, structuralScore: 0, taskFitScore: 0.5, confidenceScore: 0,
   reuseScore: 0, relationships: [], materialization: 'inventory', ...over,
 });
