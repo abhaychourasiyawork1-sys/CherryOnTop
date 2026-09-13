@@ -46,6 +46,17 @@ const CACHE_HIT_ROLES: Record<string, 'planCacheHits' | 'resultCacheHits'> = {
   'execute:cache-hit': 'resultCacheHits',
 };
 
+/** Turns this node has already spent, across every dispatch recorded for it.
+ *
+ *  Scoped to the node itself rather than its subtree, deliberately: it feeds the
+ *  guard that decides whether to open *this* node's next sandbox, and a parent
+ *  must not be stopped by turns its children spent under their own budgets. */
+export function turnsForNode(db: Db, nodeId: string): number {
+  return db.select().from(memory).where(eq(memory.kind, KIND)).all()
+    .filter((row) => row.nodeId === nodeId)
+    .reduce((sum, row) => sum + ((row.value as StoredValue).usage?.numTurns ?? 0), 0);
+}
+
 export function tokensByRole(db: Db, caseId?: string): { rows: RoleTokenRow[]; planCacheHits: number; resultCacheHits: number } {
   const all = db.select().from(memory).where(eq(memory.kind, KIND)).all();
   const scope = caseId ? new Set(subtreeNodeIds(db, caseId)) : null;

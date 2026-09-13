@@ -30,6 +30,7 @@ const { appendEvent, listEventsForNode } = await import('../db/queries/events.js
 const { startNodeActor } = await import('./node-actor-manager.js');
 const { executeStep } = await import('../execution/execute-step.js');
 const { ZERO_USAGE } = await import('../execution/tokens.js');
+const { recordDispatchUsage } = await import('../db/queries/tokens.js');
 
 const stub = executeStep as unknown as Mock;
 const TEST_DB = './test-dispatch-budget.db';
@@ -84,7 +85,11 @@ describe('a dispatch for a node that has spent its budget', () => {
 
     expect(stub).not.toHaveBeenCalled();
     const progress = listEventsForNode(db, id).filter((e) => e.type === 'step.progress');
-    expect(JSON.stringify(progress)).toMatch(/budget spent/i);
+    // The guard names the money and the amounts, whichever ceiling bound it:
+    // a person reading the transcript has to see that the run stopped on spend
+    // rather than on an error.
+    expect(JSON.stringify(progress)).toMatch(/spend cap reached/i);
+    expect(JSON.stringify(progress)).toMatch(/\$1\.25 of \$1\.00/);
   });
 
   it('still runs a node that is inside its budget, and one nobody costed', async () => {
@@ -102,5 +107,30 @@ describe('a dispatch for a node that has spent its budget', () => {
     startNodeActor(db, funded, GOAL);
     startNodeActor(db, uncosted, GOAL);
     await vi.waitFor(() => expect(stub.mock.calls.length).toBe(2), { timeout: 10_000 });
+  });
+});
+
+describe('the guard at the chokepoint', () => {
+  it('stops on the turn cap even when the node was never costed', async () => {
+    const db = createDb(TEST_DB);
+    const repoPath = mkdtempSync(join(tmpdir(), 'dispatch-budget-'));
+    stub.mockResolvedValue(ok);
+
+    const id = add(db, repoPath, 0);
+    // Turns recorded, no cost at all — the shape a runtime that reports no
+    // `total_cost_usd` produces. Money cannot bound this run; turns must, or
+    // the one term whose price grows superlinearly is unbounded.
+    recordDispatchUsage(db, {
+      nodeId: id, role: 'execute', model: null,
+      usage: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, numTurns: 500 },
+      costUsd: 0, createdAt: new Date().toISOString(),
+    });
+
+    startNodeActor(db, id, GOAL);
+    await vi.waitFor(() => expect(getNode(db, id)?.state).toMatch(/COMPLETE|FAILED/), { timeout: 10_000 });
+
+    expect(stub).not.toHaveBeenCalled();
+    const progress = listEventsForNode(db, id).filter((e) => e.type === 'step.progress');
+    expect(JSON.stringify(progress)).toMatch(/turn cap reached/i);
   });
 });

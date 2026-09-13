@@ -54,13 +54,14 @@ import { putAgentEnvelope, getAgentEnvelope } from '../db/queries/envelopes.js';
 import { scopeOf } from '../context/types.js';
 import { judgeTask } from '../intelligence/task-judge.js';
 import { taskEconomicsFor } from '../efficiency/task-economics.js';
+import { evaluateSpendGuard, type SpendGuardState } from '../efficiency/spend-guard.js';
 import { executionPolicyFor, effectiveTurnCap } from '../efficiency/policy.js';
 import { templateFor, pruneTemplate } from '../intelligence/execution-templates.js';
 import type { TaskClass } from '../intelligence/task-judge.js';
 import { decideExecutionPath, type DecisionReceipt } from '../decision/engine.js';
 import { withRepoContext } from '../intelligence/repo-map.js';
 import { dispatchContextFor, warmRepoInventory } from '../context/dispatch-context-cache.js';
-import { recordDispatchUsage } from '../db/queries/tokens.js';
+import { recordDispatchUsage, turnsForNode } from '../db/queries/tokens.js';
 import { shouldRetryWithoutModel } from '../execution/tokens.js';
 import { readOnlyPlanningGrant, investigativeExecuteGrant } from './dispatch-helpers.js';
 import { memory } from '../db/schema.js';
@@ -681,6 +682,49 @@ function resultReuseKey(goal: string, grant: ToolGrant, model: string | undefine
   return resultCacheKey(goal, model ?? '(default)', grant.allowedTools);
 }
 
+/** What the run so far looks like: mostly searching, or mostly working.
+ *
+ *  Neutral until the deterministic trajectory reader lands — and neutral is the
+ *  safe value, not a placeholder that happens to work: the stall branch of the
+ *  guard needs observed *absence* of progress, so unknown signals can only ever
+ *  make it more reluctant to stop, never less. */
+function trajectorySignals(_db: Db, _nodeId: string): { explorationSignal: number; progressSignal: number } {
+  return { explorationSignal: 0.5, progressSignal: 0.5 };
+}
+
+/** The economic verdict on a task, at the moment before it spends again.
+ *
+ *  Total, like everything else on this path: telemetry that cannot be read must
+ *  not stop a task that is otherwise entitled to run, so any failure here
+ *  answers GREEN. A guard that fires on its own bugs is worse than no guard —
+ *  it fails runs for reasons nobody can see.
+ *
+ *  The node's own `budget_usd` outranks the deployment-wide cap: it is an
+ *  amount someone explicitly funded this work with. Zero means "nobody costed
+ *  this node", not "out of money" — the convention model-router.ts already
+ *  uses — and that is when the deployment backstop applies instead. */
+function evaluateTaskSpend(db: Db, nodeId: string, node: ReturnType<typeof getNode>): SpendGuardState {
+  try {
+    const budgetUsd = node?.contract.authority.budget_usd ?? 0;
+    const policy = executionPolicyFor(taskEconomicsFor(node?.contract.goal ?? ''));
+    const guard = evaluateSpendGuard({
+      spentUsd: getCostForNodes(db, [nodeId]),
+      spendCapUsd: budgetUsd > 0 ? budgetUsd : policy.spendCapUsd,
+      turns: turnsForNode(db, nodeId),
+      softTurnTarget: policy.softTurnTarget,
+      hardTurnCap: policy.hardTurnCap,
+      ...trajectorySignals(db, nodeId),
+    });
+    if (guard.state !== 'GREEN') {
+      insertMemoryRow(db, 'spend_guard', guard.state, { ...guard, nodeId }, nodeId);
+    }
+    return guard;
+  } catch (err) {
+    console.error(`Failed to evaluate the spend guard for node ${nodeId}:`, err);
+    return { state: 'GREEN', spentUsd: 0, spendCapUsd: 0, reason: null };
+  }
+}
+
 /** Runs a sandbox when a slot is free, and says so while it waits. A node
  *  sitting in a queue looks identical to one that has hung unless it tells you.
  *
@@ -719,21 +763,23 @@ async function dispatch<T>(db: Db, nodeId: string, task: () => Promise<T>, prior
       // `budget_usd` bounded what the organization would agree to *start* — the
       // escalation floor in decide-execution.ts, the pressure threshold in
       // model-router.ts — and nothing re-checked it once work was under way, so
-      // a task could run arbitrarily far past its own authority. Zero means
-      // "nobody costed this node", not "out of money", which is the convention
-      // model-router.ts already uses.
-      const budgetUsd = node?.contract.authority.budget_usd ?? 0;
-      if (budgetUsd > 0) {
-        const spentUsd = getCostForNodes(db, [nodeId]);
-        if (spentUsd >= budgetUsd) {
-          const message = `Budget spent — $${spentUsd.toFixed(2)} of $${budgetUsd.toFixed(2)}. No further sandbox was opened for this agent.`;
-          // Said out loud as well as thrown: the throw reaches VERIFY as a
-          // failed result, which is the machine's business, while a person
-          // watching the transcript needs to see that the run stopped on money
-          // rather than on an error.
-          publishProgress(db, nodeId, message);
-          throw new Error(message);
-        }
+      // a task could run arbitrarily far past its own authority.
+      //
+      // It is also the only place that sees *everything* a task has spent so
+      // far, which is what makes it the right place for the guard rather than
+      // one more caller of it.
+      const guard = evaluateTaskSpend(db, nodeId, node);
+      if (guard.state === 'STOP') {
+        const message = `${guard.reason} No further sandbox was opened for this agent.`;
+        // Said out loud as well as thrown: the throw reaches VERIFY as a failed
+        // result, which is the machine's business, while a person watching the
+        // transcript needs to see that the run stopped on money rather than on
+        // an error.
+        publishProgress(db, nodeId, message);
+        throw new Error(message);
+      }
+      if (guard.state === 'RED') {
+        publishProgress(db, nodeId, `Running hot: ${guard.reason}`);
       }
       return task();
     }, priority);
