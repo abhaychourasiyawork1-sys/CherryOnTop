@@ -182,3 +182,69 @@ describe('loadEfficiencyRecords', () => {
     expect(loaded[0].taskId).toBe('n1');
   });
 });
+
+describe('optimization attribution', () => {
+  it('records what the planner chose, accumulating across dispatches', () => {
+    const ledger = createEfficiencyLedger(() => 0, () => {});
+    ledger.startTask('t');
+    ledger.recordContextPlan('t', { candidates: 40, selected: 5, estimatedTokens: 600, contextPolicyVersion: 'ctx-1', executionPolicyVersion: 'exec-1' });
+    ledger.recordContextPlan('t', { candidates: 40, selected: 3, estimatedTokens: 400, contextPolicyVersion: 'ctx-1' });
+
+    const record = ledger.finishTask('t', 'success');
+    // Both handovers were really paid for, so both are counted.
+    expect(record.contextCandidates).toBe(80);
+    expect(record.contextSelected).toBe(8);
+    expect(record.contextEstimatedTokens).toBe(1000);
+    expect(record.contextPolicyVersion).toBe('ctx-1');
+    expect(record.executionPolicyVersion).toBe('exec-1');
+  });
+
+  it('keeps the last trajectory reading, not every one it passed through', () => {
+    const ledger = createEfficiencyLedger(() => 0, () => {});
+    ledger.startTask('t');
+    ledger.recordTrajectory('t', { exploration: 0.9, progress: 0.1 });
+    ledger.recordTrajectory('t', { exploration: 0.3, progress: 0.8 });
+
+    const record = ledger.finishTask('t', 'success');
+    expect(record.explorationSignal).toBe(0.3);
+    expect(record.progressSignal).toBe(0.8);
+  });
+
+  it('records why a task was stopped, and leaves it null when nothing stopped it', () => {
+    const stopped = createEfficiencyLedger(() => 0, () => {});
+    stopped.startTask('t');
+    stopped.recordStop('t', 'Spend cap reached — $1.25 of $1.00.');
+    expect(stopped.finishTask('t', 'budget_exhausted').stopReason).toMatch(/Spend cap/);
+
+    const finished = createEfficiencyLedger(() => 0, () => {});
+    finished.startTask('t');
+    expect(finished.finishTask('t', 'success').stopReason).toBeNull();
+  });
+
+  it('sums turns across dispatches — the term whose cost grows superlinearly', () => {
+    const ledger = createEfficiencyLedger(() => 0, () => {});
+    ledger.startTask('t');
+    ledger.recordDispatch('t', { role: 'execute', usage: { ...ZERO_USAGE, numTurns: 19 }, costUsd: 0.5, ms: 1 });
+    ledger.recordDispatch('t', { role: 'execute', usage: { ...ZERO_USAGE, numTurns: 42 }, costUsd: 0.9, ms: 1 });
+    expect(ledger.finishTask('t', 'success').turns).toBe(61);
+  });
+
+  it('reports the acceptance metrics per success, and null on a failure', () => {
+    const ok = createEfficiencyLedger(() => 0, () => {});
+    ok.startTask('t');
+    ok.recordDispatch('t', { role: 'execute', usage: { ...ZERO_USAGE, inputTokens: 100, cacheReadTokens: 5000, numTurns: 12 }, costUsd: 0.4, ms: 1 });
+    const success = ok.finishTask('t', 'success');
+    expect(success.costPerSuccessfulTask).toBeCloseTo(0.4);
+    expect(success.turnsPerSuccessfulTask).toBe(12);
+    expect(success.cacheReadPerSuccessfulTask).toBe(5000);
+
+    const bad = createEfficiencyLedger(() => 0, () => {});
+    bad.startTask('t');
+    bad.recordDispatch('t', { role: 'execute', usage: { ...ZERO_USAGE, numTurns: 12 }, costUsd: 0.4, ms: 1 });
+    const failure = bad.finishTask('t', 'failure');
+    // A failure has no cost-per-success to contribute, and averaging a zero in
+    // would make failing look cheap.
+    expect(failure.costPerSuccessfulTask).toBeNull();
+    expect(failure.turnsPerSuccessfulTask).toBeNull();
+  });
+});

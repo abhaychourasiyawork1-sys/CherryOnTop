@@ -1,15 +1,17 @@
 import { describe, it, expect } from 'vitest';
 import { summarizeRun, objectiveScore, evaluateExperiment, DEFAULT_WEIGHTS } from './objective.js';
-import { buildEfficiencyRecord, EMPTY_TOTALS, type EfficiencyOutcome } from './metrics.js';
+import { buildEfficiencyRecord, EMPTY_TOTALS, EMPTY_ATTRIBUTION, type EfficiencyOutcome } from './metrics.js';
 
 const record = (over: Partial<Parameters<typeof buildEfficiencyRecord>[0]> = {}) => buildEfficiencyRecord({
-  taskId: 't', outcome: 'success' as EfficiencyOutcome, ...EMPTY_TOTALS,
+  taskId: 't', outcome: 'success' as EfficiencyOutcome, ...EMPTY_TOTALS, ...EMPTY_ATTRIBUTION,
   inputTokens: 1000, outputTokens: 200, endToEndMs: 10_000, qualityScore: 0.9, ...over,
 });
 
 const suite = (over: Partial<ReturnType<typeof summarizeRun>> = {}) => ({
   tasks: 10, successRate: 0.95, qualityScore: 0.9,
   tokensPerSuccessfulTask: 10_000, p50LatencyMs: 50_000, p95LatencyMs: 100_000,
+  costPerSuccessfulTask: 0.5, turnsPerSuccessfulTask: 12,
+  cacheReadPerSuccessfulTask: 80_000, explorationRatio: 0.4, optimizationRoi: 0,
   cacheHitRatio: 0, coordinationTokenShare: 0.2, recoveryTokenShare: 0,
   synthesisAvoidanceRatio: 0, concurrencyEfficiency: 1,
   tokensAvoided: 0, workAvoidedRatio: 0, executionOverheadRatio: 0, ...over,

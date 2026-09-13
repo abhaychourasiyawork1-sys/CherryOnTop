@@ -23,6 +23,16 @@ const base = {
   endToEndMs: 4100,
   costUsd: 0.02,
   qualityScore: 0.95,
+  turns: 12,
+  contextPolicyVersion: 'ctx-1',
+  executionPolicyVersion: 'exec-1',
+  contextCandidates: 9,
+  contextSelected: 3,
+  contextEstimatedTokens: 400,
+  explorationSignal: 0.4,
+  progressSignal: 0.6,
+  optimizationOverheadUsd: 0,
+  stopReason: null,
 };
 
 describe('buildEfficiencyRecord', () => {

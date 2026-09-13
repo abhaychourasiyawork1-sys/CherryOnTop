@@ -10,7 +10,7 @@ import { publish, type BusEvent } from '../events/bus.js';
 import { listMemory } from '../db/queries/memory.js';
 import type { Db } from '../db/client.js';
 import {
-  buildEfficiencyRecord, EMPTY_TOTALS,
+  buildEfficiencyRecord, EMPTY_TOTALS, EMPTY_ATTRIBUTION,
   type EfficiencyOutcome, type EfficiencyRecord,
 } from './metrics.js';
 
@@ -45,6 +45,26 @@ export interface EfficiencyLedger {
    *  was last actually paid for — known only for a reused result, which is the
    *  only case where a real prior measurement exists to quote. */
   recordAvoided(taskId: string, role: 'plan' | 'synthesize' | 'execute', tokensAvoided?: number): void;
+  /** What the optimizer decided for this task, and what deciding cost.
+   *
+   *  Separate from `recordDispatch` because it is not a dispatch: it happens
+   *  once per task, before the money is spent, and recording it as spend would
+   *  make the optimization look like the work. Called more than once — a task
+   *  with a plan dispatch and an execute dispatch plans context twice — and the
+   *  counters accumulate, because both handovers were really paid for. */
+  recordContextPlan(taskId: string, plan: {
+    candidates: number;
+    selected: number;
+    estimatedTokens: number;
+    contextPolicyVersion?: string | null;
+    executionPolicyVersion?: string | null;
+    overheadUsd?: number;
+  }): void;
+  /** How the run was going when it last passed the guard, and why it stopped if
+   *  something stopped it. Last value wins: what matters is the state the task
+   *  ended in, not every state it passed through. */
+  recordTrajectory(taskId: string, trajectory: { exploration: number; progress: number }): void;
+  recordStop(taskId: string, reason: string): void;
   finishTask(taskId: string, outcome: EfficiencyOutcome, qualityScore?: number | null): EfficiencyRecord;
   /** How many tasks are still open. Exists so a leak is a failing test rather
    *  than a slow memory climb in a daemon that runs for weeks. */
@@ -52,10 +72,11 @@ export interface EfficiencyLedger {
 }
 
 type Totals = typeof EMPTY_TOTALS;
-interface OpenTask { startedMs: number; totals: Totals }
+type Attribution = typeof EMPTY_ATTRIBUTION;
+interface OpenTask { startedMs: number; totals: Totals; attribution: Attribution }
 
 function openTask(nowMs: number): OpenTask {
-  return { startedMs: nowMs, totals: { ...EMPTY_TOTALS } };
+  return { startedMs: nowMs, totals: { ...EMPTY_TOTALS }, attribution: { ...EMPTY_ATTRIBUTION } };
 }
 
 export function createEfficiencyLedger(
@@ -88,6 +109,7 @@ export function createEfficiencyLedger(
       // only the *read* is the saving worth reporting.
       t.cachedTokens += usage.cacheReadTokens;
       t.costUsd += dispatch.costUsd;
+      t.turns += usage.numTurns;
       t.dispatchMs += dispatch.ms;
       t.queueMs += dispatch.queuedMs ?? 0;
       t.startupMs += dispatch.startupMs ?? 0;
@@ -109,12 +131,34 @@ export function createEfficiencyLedger(
       t.tokensAvoided += Math.max(0, tokensAvoided);
     },
 
+    recordContextPlan(taskId, plan) {
+      const task = taskFor(taskId);
+      const t = task.totals as Record<string, number>;
+      t.contextCandidates += Math.max(0, plan.candidates);
+      t.contextSelected += Math.max(0, plan.selected);
+      t.contextEstimatedTokens += Math.max(0, plan.estimatedTokens);
+      t.optimizationOverheadUsd += Math.max(0, plan.overheadUsd ?? 0);
+      if (plan.contextPolicyVersion) task.attribution.contextPolicyVersion = plan.contextPolicyVersion;
+      if (plan.executionPolicyVersion) task.attribution.executionPolicyVersion = plan.executionPolicyVersion;
+    },
+
+    recordTrajectory(taskId, trajectory) {
+      const t = taskFor(taskId).totals as Record<string, number>;
+      t.explorationSignal = trajectory.exploration;
+      t.progressSignal = trajectory.progress;
+    },
+
+    recordStop(taskId, reason) {
+      taskFor(taskId).attribution.stopReason = reason;
+    },
+
     finishTask(taskId, outcome, qualityScore = null) {
       const task = open.get(taskId) ?? openTask(now());
       open.delete(taskId);
 
       const record = buildEfficiencyRecord({
         ...task.totals,
+        ...task.attribution,
         taskId,
         outcome,
         qualityScore,

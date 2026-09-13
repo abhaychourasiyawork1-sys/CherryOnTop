@@ -56,7 +56,7 @@ import { judgeTask } from '../intelligence/task-judge.js';
 import { taskEconomicsFor } from '../efficiency/task-economics.js';
 import { evaluateSpendGuard, type SpendGuardState } from '../efficiency/spend-guard.js';
 import { summarizeExecutionTrajectory, UNKNOWN_PROGRESS } from '../efficiency/progress-signals.js';
-import { executionPolicyFor, effectiveTurnCap } from '../efficiency/policy.js';
+import { executionPolicyFor, effectiveTurnCap, EXECUTION_POLICY_VERSION } from '../efficiency/policy.js';
 import { templateFor, pruneTemplate } from '../intelligence/execution-templates.js';
 import type { TaskClass } from '../intelligence/task-judge.js';
 import { decideExecutionPath, type DecisionReceipt } from '../decision/engine.js';
@@ -371,6 +371,20 @@ function publishContextReceipt(db: Db, nodeId: string, receipt: DispatchReceipt)
   };
   const id = appendEvent(db, { nodeId, type: 'context.receipt', payload, createdAt: now });
   publish({ id, nodeId, type: 'context.receipt', payload, createdAt: now });
+  // The same fact, told to the task-level ledger. Without it a before/after
+  // comparison can say spend moved and cannot say what moved it — which is the
+  // difference between a measurement and an anecdote.
+  try {
+    ledger.recordContextPlan(nodeId, {
+      candidates: receipt.candidates ?? receipt.selected.length + receipt.dropped.length,
+      selected: receipt.selected.length,
+      estimatedTokens: receipt.selectedTokens,
+      contextPolicyVersion: receipt.policyVersion ?? null,
+      executionPolicyVersion: EXECUTION_POLICY_VERSION,
+    });
+  } catch (err) {
+    console.error(`Failed to record the context plan for node ${nodeId}:`, err);
+  }
 }
 
 /** Accounting, and only accounting. A dispatch that ran and produced an answer
@@ -723,17 +737,27 @@ function evaluateTaskSpend(db: Db, nodeId: string, node: ReturnType<typeof getNo
   try {
     const budgetUsd = node?.contract.authority.budget_usd ?? 0;
     const policy = executionPolicyFor(taskEconomicsFor(node?.contract.goal ?? ''));
+    const trajectory = trajectorySignals(db, nodeId);
     const guard = evaluateSpendGuard({
       spentUsd: getCostForNodes(db, [nodeId]),
       spendCapUsd: budgetUsd > 0 ? budgetUsd : policy.spendCapUsd,
       turns: turnsForNode(db, nodeId),
       softTurnTarget: policy.softTurnTarget,
       hardTurnCap: policy.hardTurnCap,
-      ...trajectorySignals(db, nodeId),
+      explorationSignal: trajectory.explorationSignal,
+      progressSignal: trajectory.progressSignal,
+    });
+    ledger.recordTrajectory(nodeId, {
+      exploration: trajectory.explorationSignal,
+      progress: trajectory.progressSignal,
     });
     if (guard.state !== 'GREEN') {
       insertMemoryRow(db, 'spend_guard', guard.state, { ...guard, nodeId }, nodeId);
     }
+    // Recorded on the task, not just in the transcript: "this run was stopped,
+    // and this is what stopped it" is the one fact a cost comparison cannot be
+    // read without — a cheap arm full of stopped tasks is not a cheaper arm.
+    if (guard.state === 'STOP' && guard.reason) ledger.recordStop(nodeId, guard.reason);
     return guard;
   } catch (err) {
     console.error(`Failed to evaluate the spend guard for node ${nodeId}:`, err);
