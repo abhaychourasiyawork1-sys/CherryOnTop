@@ -46,7 +46,18 @@ export function getRepoInventory(db: Db, head: string): RepoEntry[] | null {
   const entries = (latest(db, INVENTORY_KIND, head)?.value as { entries?: unknown } | undefined)?.entries;
   if (!Array.isArray(entries) || entries.length === 0) return null;
   // A malformed row is a miss, not a crash: the caller rebuilds.
-  return entries.every((e) => typeof (e as RepoEntry)?.path === 'string' && Array.isArray((e as RepoEntry)?.symbols))
+  //
+  // `imports` is part of that check rather than optional-on-read, and the
+  // distinction matters. A row written by the scanner that predates import
+  // extraction has paths and symbols and looks perfectly healthy — but it
+  // carries no dependency edges, so the structural planner would silently
+  // degrade to lexical selection on every commit that happened to be scanned
+  // before the upgrade. Treating it as a miss costs one rescan; serving it
+  // costs the feature, invisibly.
+  return entries.every((e) =>
+    typeof (e as RepoEntry)?.path === 'string'
+    && Array.isArray((e as RepoEntry)?.symbols)
+    && Array.isArray((e as RepoEntry)?.imports))
     ? (entries as RepoEntry[])
     : null;
 }
