@@ -147,6 +147,28 @@ turns, cost, or wall-clock. Smaller initial context is the *mechanism* this
 architecture bets on, not the outcome it is judged by. The outcome needs a
 matched paid run, and that run has not happened.
 
+### Guard trajectories — 2026-09-13, run and recorded
+
+`node bench/economic-trajectories.mjs` scores the spend guard against eight
+synthetic trajectories, no model and no cluster. A guard is judged by its
+mistakes, and the two cost different things: a **false positive** kills work
+that was going to succeed and charges for everything spent up to that moment;
+a **false negative** lets a doomed run finish spending. The guard is
+deliberately biased towards the second.
+
+Result: **0 false positives, 0 false negatives** across productive work,
+expensive-but-productive debugging, a slow start, a repeated-search loop, a
+repeated-failure loop, a hard budget breach, a turn cap with no cost telemetry
+at all, and an unreadable trace.
+
+The run found a real gap on its first pass: the repeated-failure loop was not
+stopped, because its exploration signal reads zero — hammering one failing
+command is not *searching*. `repeatedFailure` was being computed and never
+consumed. The guard now stalls on either pathology, under the same three
+preconditions (real money spent, past the soft target, no progress). The
+benchmark exits non-zero on any false positive, so this stays checked rather
+than remembered.
+
 ### End-to-end matched run — NOT RUN
 
 `node bench/run.mjs context-planner --label=...` has **not** been executed on

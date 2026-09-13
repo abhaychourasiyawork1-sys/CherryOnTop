@@ -110,3 +110,32 @@ describe('evaluateSpendGuard — totality', () => {
     expect(guard({ spentUsd: 7, turns: 22 })).toEqual(guard({ spentUsd: 7, turns: 22 }));
   });
 });
+
+describe('evaluateSpendGuard — the other way a run goes nowhere', () => {
+  const looping = {
+    turns: 30, hardTurnCap: 60, spentUsd: 6,
+    // A run hammering the same failing command is not searching — its
+    // exploration reads zero — and is going nowhere just as surely.
+    explorationSignal: 0, progressSignal: 0, repeatedFailureSignal: 0.9,
+  };
+
+  it('stops a run repeating one failure, even with no exploration at all', () => {
+    const g = guard(looping);
+    expect(g.state).toBe('STOP');
+    expect(g.reason).toMatch(/failing over and over/);
+  });
+
+  it('leaves a run working through different failures alone', () => {
+    expect(guard({ ...looping, repeatedFailureSignal: 0.1, progressSignal: 0.3 }).state).not.toBe('STOP');
+  });
+
+  it('needs the money and the turns too, not just the repetition', () => {
+    expect(guard({ ...looping, spentUsd: 1 }).state).not.toBe('STOP');
+    expect(guard({ ...looping, turns: 5 }).state).not.toBe('STOP');
+  });
+
+  it('treats an absent repetition signal as zero, never as a stop', () => {
+    const { repeatedFailureSignal, ...withoutSignal } = looping;
+    expect(guard(withoutSignal).state).not.toBe('STOP');
+  });
+});

@@ -713,16 +713,26 @@ function resultReuseKey(goal: string, grant: ToolGrant, model: string | undefine
  *  That is not a placeholder that happens to work — the guard's stall branch
  *  needs observed *absence* of progress, so unknown signals can only make it
  *  more reluctant to stop, never less. */
-function trajectorySignals(db: Db, nodeId: string): { explorationSignal: number; progressSignal: number } {
+function trajectorySignals(db: Db, nodeId: string): {
+  explorationSignal: number; progressSignal: number; repeatedFailureSignal: number;
+} {
   try {
     const events = listEventsForNode(db, nodeId)
       .filter((row) => row.type.startsWith('exec.'))
       .map((row) => ({ type: row.type.slice('exec.'.length), payload: row.payload } as StructuredEvent));
     const signals = summarizeExecutionTrajectory(events);
-    return { explorationSignal: signals.exploration, progressSignal: signals.progress };
+    return {
+      explorationSignal: signals.exploration,
+      progressSignal: signals.progress,
+      repeatedFailureSignal: signals.repeatedFailure,
+    };
   } catch (err) {
     console.error(`Failed to read the trajectory for node ${nodeId}:`, err);
-    return { explorationSignal: UNKNOWN_PROGRESS.exploration, progressSignal: UNKNOWN_PROGRESS.progress };
+    return {
+      explorationSignal: UNKNOWN_PROGRESS.exploration,
+      progressSignal: UNKNOWN_PROGRESS.progress,
+      repeatedFailureSignal: UNKNOWN_PROGRESS.repeatedFailure,
+    };
   }
 }
 
@@ -750,6 +760,7 @@ function evaluateTaskSpend(db: Db, nodeId: string, node: ReturnType<typeof getNo
       hardTurnCap: policy.hardTurnCap,
       explorationSignal: trajectory.explorationSignal,
       progressSignal: trajectory.progressSignal,
+      repeatedFailureSignal: trajectory.repeatedFailureSignal,
     });
     ledger.recordTrajectory(nodeId, {
       exploration: trajectory.explorationSignal,

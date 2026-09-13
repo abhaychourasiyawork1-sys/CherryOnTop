@@ -48,6 +48,13 @@ export interface SpendGuardInput {
   explorationSignal: number;
   /** [0,1]. How much of it produced something: an edit, a passing command. */
   progressSignal: number;
+  /** [0,1]. How much of it was the same failure over again.
+   *
+   *  A second pathology, and one exploration cannot see: a run hammering the
+   *  same failing command is not searching — its exploration reads zero — and
+   *  is going nowhere just as surely. Optional, and absent means zero, because
+   *  a caller that cannot measure repetition must not thereby trip the stall. */
+  repeatedFailureSignal?: number;
 }
 
 /** Fractions of the spend cap at which the state escalates. RED is a warning
@@ -59,6 +66,9 @@ const AMBER_SHARE = 0.6;
 const STALL_SPEND_SHARE = 0.5;
 const STALL_PROGRESS = 0.1;
 const STALL_EXPLORATION = 0.8;
+/** Most of the failures being the same failure. Two distinct failures are a
+ *  run working through problems; the same one ten times is a loop. */
+const STALL_REPEATED_FAILURE = 0.5;
 
 const finite = (value: number, fallback = 0): number =>
   (Number.isFinite(value) ? value : fallback);
@@ -73,6 +83,9 @@ export function evaluateSpendGuard(input: SpendGuardInput): SpendGuardState {
   const softTurnTarget = Math.max(0, finite(input.softTurnTarget));
   const exploration = clamp01(input.explorationSignal);
   const progress = clamp01(input.progressSignal);
+  const repeatedFailure = Number.isFinite(input.repeatedFailureSignal as number)
+    ? clamp01(input.repeatedFailureSignal as number)
+    : 0;
 
   const capped = spendCapUsd > 0;
   const share = capped ? spentUsd / spendCapUsd : 0;
@@ -91,18 +104,23 @@ export function evaluateSpendGuard(input: SpendGuardInput): SpendGuardState {
     return stop(`Turn cap reached — ${turns} of ${hardTurnCap} turns.`);
   }
 
-  // The stall. Three conditions at once, and only where spend is actually being
-  // measured: a guard that fires on missing telemetry fires on every runtime
-  // that does not report cost.
-  if (
-    capped
+  // The stall. Real money spent, past the point the task was judged to need,
+  // no progress to show for it — and then one of the two ways a run goes
+  // nowhere: searching without acting, or repeating a failure. Only where
+  // spend is actually being measured: a guard that fires on missing telemetry
+  // fires on every runtime that does not report cost.
+  const stalled = capped
     && share >= STALL_SPEND_SHARE
     && softTurnTarget > 0 && turns >= softTurnTarget
-    && progress <= STALL_PROGRESS
-    && exploration >= STALL_EXPLORATION
-  ) {
+    && progress <= STALL_PROGRESS;
+  if (stalled && exploration >= STALL_EXPLORATION) {
     return stop(
       `No progress after ${turns} turns and $${spentUsd.toFixed(2)} — the trajectory is searching, not working.`,
+    );
+  }
+  if (stalled && repeatedFailure >= STALL_REPEATED_FAILURE) {
+    return stop(
+      `No progress after ${turns} turns and $${spentUsd.toFixed(2)} — the same call is failing over and over.`,
     );
   }
 
