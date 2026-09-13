@@ -39,6 +39,16 @@ const MATRIX = {
   // comparison is one command rather than a code change.
   'turn-cap': [['on', { ORG_MAX_TURNS_EXECUTE: '60' }], ['off', { ORG_MAX_TURNS_EXECUTE: '0' }]],
   'result-reuse': [['on', { ORG_RESULT_CACHE_TTL_HOURS: '24' }], ['off', { ORG_RESULT_CACHE_TTL_HOURS: '0' }]],
+  // The token-efficiency *architecture* switch: structural candidates,
+  // composable scoring, progressive selection, adaptive turn budget. `off`
+  // returns the lexical selector and the flat turn cap this branch shipped
+  // with, which is exactly the arm the recorded baseline was measured on — so
+  // the two arms are comparable by construction rather than by argument.
+  //
+  // The spend guard is deliberately *not* behind it: a hard ceiling on money
+  // is a safety property, and an arm that runs without one is not a control,
+  // it is an unbounded bill.
+  'context-planner': [['on', { ORG_CONTEXT_PLANNER: 'on' }], ['off', { ORG_CONTEXT_PLANNER: 'off' }]],
 };
 if (!MATRIX[mode]) {
   console.error('mode must be one of: ' + Object.keys(MATRIX).join(', '));

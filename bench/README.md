@@ -32,9 +32,18 @@ judges whether the rubric was met.
 ## Running it
 
 ```bash
-npm run bench repo-map      # Phase 2: ORG_REPO_MAP_TOKENS=6000 vs =0
-npm run bench role-prompts  # Phase 3: ORG_ROLE_PROMPTS=on vs off
+npm run bench repo-map        # Phase 2: ORG_REPO_MAP_TOKENS=6000 vs =0
+npm run bench role-prompts    # Phase 3: ORG_ROLE_PROMPTS=on vs off
+npm run bench context-planner # the architecture: ORG_CONTEXT_PLANNER=on vs off
 ```
+
+`context-planner` is the arm that matters for the token-efficiency
+architecture. `off` returns the lexical selector and the flat turn cap this
+branch shipped with — which is exactly what the recorded baseline below was
+measured on, so the two arms are comparable by construction rather than by
+argument. The spend guard is deliberately *not* behind the switch: a hard
+ceiling on money is a safety property, and an arm running without one is not a
+control, it is an unbounded bill.
 
 The script restarts the daemon between arms so each arm's env is recaptured,
 runs each goal to a terminal state (`COMPLETE`/`FAILED`/`CANCELLED`), and
@@ -112,6 +121,51 @@ tool-call round-trips for reasoning on `execute` — fixed on
 `feat/token-efficiency` (`fix: act on what the first efficiency benchmark
 measured`), which is *not* re-measured here. This row is therefore the
 **pre-fix** baseline.
+
+### Deterministic arm — 2026-09-13, `feat/token-efficiency-architecture`
+
+Full output: `bench/deterministic-2026-09-13.md`. No model, no cluster, so
+every number is reproducible by re-running `npm run bench:deterministic`.
+
+Structural planner vs lexical selector, same 660-file tree, same 6000-token
+ceiling:
+
+| goal | lexical tokens | planner tokens | ceiling used | files kept | newly reached |
+|---|---|---|---|---|---|
+| anchored one-file edit | 5,998 | 1,196 | 20% | 402 → 105 | 0 |
+| anchored with callers | 5,998 | 2,569 | 43% | 402 → 190 | 1 |
+| names an area only | 5,998 | 2,942 | 49% | 402 → 180 | 14 |
+| names nothing specific | 37 | 37 | 1% | 0 → 0 | 0 |
+
+**What this shows:** the lexical selector filled the ceiling on every goal that
+matched anything at all; the planner spends 20–49% of it and reaches files the
+lexical selector could not see (the "newly reached" column — direct import
+edges and test pairings, none of which share a goal word).
+
+**What this does not show, and must not be read as showing:** any change in
+turns, cost, or wall-clock. Smaller initial context is the *mechanism* this
+architecture bets on, not the outcome it is judged by. The outcome needs a
+matched paid run, and that run has not happened.
+
+### End-to-end matched run — NOT RUN
+
+`node bench/run.mjs context-planner --label=...` has **not** been executed on
+this branch. It needs a live `kind` cluster, `claude login`, and real paid
+usage, none of which existed in the session that wrote this code. Until it is
+run:
+
+- no claim about cost per successful task is supported;
+- no claim about turns per successful task is supported;
+- the original medium-task regression is **not** demonstrated fixed;
+- Gate B (economics) and Gate C (task generality) are **not** passed.
+
+To run it, after `npm run build && npm link` with a cluster up:
+
+```bash
+node bench/run.mjs context-planner --label=planner-v1
+node bench/run.mjs context-planner --families --label=planner-v1-families \
+  --baseline=bench/planner-v1.json
+```
 
 ### Claims carried in from the implementation plan, unverified in this repo
 
