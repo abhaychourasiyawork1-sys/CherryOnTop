@@ -16,3 +16,7 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run bench:deterministic
+      - run: npm run bench:guard
+      # The end-to-end arm (`node bench/run.mjs context-planner`) is deliberately
+      # absent. It needs a live kind cluster and real paid model usage, so it
+      # stays a deliberate human act — see bench/README.md.

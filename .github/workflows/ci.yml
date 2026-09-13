@@ -16,6 +16,13 @@ jobs:
       - run: npm run typecheck
       - run: npm run build
       - run: npm run test:coverage -- --reporter=junit --outputFile=test-results/unit.xml
+      # The guard's own benchmark, not a test: it scores the spend guard against
+      # synthetic trajectories and exits non-zero on a false positive — a guard
+      # that kills work which was going to succeed costs an answer as well as
+      # the money already spent on it. No model and no cluster, so it belongs on
+      # every push rather than on a schedule.
+      - name: Spend guard — no false positives
+        run: npm run bench:guard
       - name: Upload test diagnostics
         if: always()
         uses: actions/upload-artifact@v4
