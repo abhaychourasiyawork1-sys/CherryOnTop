@@ -53,6 +53,8 @@ import { buildAgentEnvelope, renderEnvelope, EnvelopeError } from '../intelligen
 import { putAgentEnvelope, getAgentEnvelope } from '../db/queries/envelopes.js';
 import { scopeOf } from '../context/types.js';
 import { judgeTask } from '../intelligence/task-judge.js';
+import { taskEconomicsFor } from '../efficiency/task-economics.js';
+import { executionPolicyFor, effectiveTurnCap } from '../efficiency/policy.js';
 import { templateFor, pruneTemplate } from '../intelligence/execution-templates.js';
 import type { TaskClass } from '../intelligence/task-judge.js';
 import { decideExecutionPath, type DecisionReceipt } from '../decision/engine.js';
@@ -1078,6 +1080,14 @@ function productionMachine(db: Db, nodeId: string) {
 
         publishProgress(db, nodeId, `Starting a sandbox on ${adapter.name} against ${worktreePath}`);
         const execOpts = dispatchOptionsFor('execute');
+        // What this particular task was judged to need, rather than what every
+        // task gets. The configured cap is a deployment-wide circuit breaker
+        // and stays the outer bound — an operator who sets one means it, and
+        // `undefined` is the documented "uncapped", which this must not
+        // quietly re-impose a cap on top of.
+        const economics = taskEconomicsFor(input.goal, verdict);
+        const execPolicy = executionPolicyFor(economics);
+        const hardTurnCap = effectiveTurnCap(execOpts.maxTurns, execPolicy);
         // Built once, out here rather than inside runOnce: the fallback retry
         // below calls runOnce a second time with the same goal, and a goal
         // carrying two copies of the context is the thing this is meant to
@@ -1103,7 +1113,13 @@ function productionMachine(db: Db, nodeId: string) {
               // The same cap that goes into argv below. A run told its budget
               // summarises at the limit; one that is merely cut off at it
               // reports "max turns exceeded" and loses what it found.
-              maxTurns: execOpts.maxTurns,
+              maxTurns: hardTurnCap,
+              // Advice rather than a wall: the cap stops a run, this is what
+              // stops it wandering. Only worth saying when it is actually
+              // below the cap — "about 45 turns, at most 45 turns" is noise.
+              softTurnTarget: hardTurnCap !== undefined && execPolicy.softTurnTarget < hardTurnCap
+                ? execPolicy.softTurnTarget
+                : undefined,
             })
           : undefined;
         const goalWithConstraints = (!roleSystemPrompt && constraints.length > 0)
@@ -1146,7 +1162,7 @@ function productionMachine(db: Db, nodeId: string) {
           image: runnerImageOverride(),
           grant,
           model,
-          maxTurns: execOpts.maxTurns,
+          maxTurns: hardTurnCap,
           onViolation: (tool) => publishDenial(db, nodeId, tool, node!.contract.authority),
           // The runner's structured output is the point of the whole dispatch.
           // Was: a loop over result.events run once, after the whole Job

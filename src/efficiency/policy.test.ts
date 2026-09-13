@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import { contextPolicyFor, executionPolicyFor, CONTEXT_POLICY_VERSION, EXECUTION_POLICY_VERSION } from './policy.js';
+import { contextPolicyFor, executionPolicyFor, effectiveTurnCap, CONTEXT_POLICY_VERSION, EXECUTION_POLICY_VERSION } from './policy.js';
 import { normalizeTaskSignals, UNKNOWN_SIGNALS } from './task-signals.js';
 import { taskEconomicsFor } from './task-economics.js';
 import type { TaskEconomicsSignals } from './policy-types.js';
@@ -101,5 +101,27 @@ describe('policy versions', () => {
   it('are stable, non-empty identifiers', () => {
     expect(CONTEXT_POLICY_VERSION).toMatch(/^ctx-/);
     expect(EXECUTION_POLICY_VERSION).toMatch(/^exec-/);
+  });
+});
+
+describe('effectiveTurnCap', () => {
+  const policy = (hardTurnCap: number) => ({ ...executionPolicyFor(NORMAL), hardTurnCap });
+
+  it('takes the tighter of the configured breaker and the policy', () => {
+    expect(effectiveTurnCap(60, policy(20))).toBe(20);
+    expect(effectiveTurnCap(10, policy(45))).toBe(10);
+  });
+
+  it('leaves an operator-disabled breaker disabled', () => {
+    // ORG_MAX_TURNS_EXECUTE=0 reaches here as undefined. A policy must not be
+    // able to switch a breaker back on that someone deliberately switched off.
+    expect(effectiveTurnCap(undefined, policy(20))).toBeUndefined();
+  });
+
+  it('gives a tiny task a far tighter cap than a broad one, under one config', () => {
+    const tiny = effectiveTurnCap(60, executionPolicyFor(TINY))!;
+    const broad = effectiveTurnCap(60, executionPolicyFor(BROAD))!;
+    expect(tiny).toBeLessThan(broad);
+    expect(tiny).toBeGreaterThanOrEqual(1);
   });
 });

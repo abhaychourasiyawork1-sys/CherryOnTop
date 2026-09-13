@@ -10,6 +10,12 @@ export interface RolePromptParams {
    *  turns exceeded" and loses everything it found, while one that knows its
    *  budget can land inside it. */
   maxTurns?: number;
+  /** The turn count this task was judged to need, well inside the cap. Advice,
+   *  not a boundary: the cap is what stops a run, this is what stops it
+   *  *wandering*. Told separately because "you have 45 turns" and "this should
+   *  take about 20" are different instructions, and only the second one changes
+   *  what an agent does on turn five. */
+  softTurnTarget?: number;
 }
 
 export const HARNESS_CONSTITUTION = [
@@ -50,6 +56,9 @@ function stanza(role: PromptRole, p: RolePromptParams): string {
         ENVELOPE_INSTRUCTION,
         p.maxTurns && p.maxTurns > 0
           ? `You have at most ${p.maxTurns} turns. Track how many you have used; when you are near the limit, stop exploring and summarise what you have found and what is still unchecked. Being cut off mid-task loses your work.`
+          : '',
+        p.softTurnTarget && p.softTurnTarget > 0
+          ? `This task is judged to need about ${p.softTurnTarget} turns. Past that, prefer acting on what you already know over looking for more.`
           : '',
         list('Standing constraints (told, not enforced)', p.constraints),
         list('Definition of done', p.definitionOfDone),

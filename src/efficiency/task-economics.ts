@@ -10,7 +10,7 @@
  *
  *  Every output is normalized in `task-signals.ts`, so a caller can weight
  *  these against each other without knowing how any of them was derived. */
-import { judgeTask, type TaskClass } from '../intelligence/task-judge.js';
+import { judgeTask, type TaskClass, type TaskVerdict } from '../intelligence/task-judge.js';
 import { normalizeTaskSignals } from './task-signals.js';
 import type { TaskEconomicsSignals } from './policy-types.js';
 
@@ -144,8 +144,12 @@ export function deriveTaskEconomicsSignals(input: TaskEconomicsInput): TaskEcono
 /** The signals for a goal, using the classification the runtime already
  *  computes. The convenience form: every caller in the runtime has a goal
  *  string and nothing else at the moment it needs these. */
-export function taskEconomicsFor(goal: string): TaskEconomicsSignals {
-  const verdict = judgeTask(goal);
+export function taskEconomicsFor(goal: string, precomputed?: TaskVerdict): TaskEconomicsSignals {
+  // The runtime already judges every goal once at the dispatch chokepoint.
+  // Judging it a second time would give the same answer — both are pure — but
+  // paying twice for an answer already in hand is the habit this whole
+  // subsystem exists to break.
+  const verdict = precomputed ?? judgeTask(goal);
   const signals = deriveTaskEconomicsSignals({
     goal,
     taskClass: verdict.taskClass,

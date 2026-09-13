@@ -102,6 +102,16 @@ export function executionPolicyFor(signals: TaskEconomicsSignals): ExecutionPoli
   });
 }
 
+/** The turn cap a dispatch actually runs under.
+ *
+ *  Two bounds, and the tighter one wins — with one exception that matters:
+ *  `configured === undefined` is the documented "uncapped"
+ *  (`ORG_MAX_TURNS_EXECUTE=0`), which is an operator switching the breaker off
+ *  on purpose. A policy must not be able to switch it back on. */
+export function effectiveTurnCap(configured: number | undefined, policy: ExecutionPolicy): number | undefined {
+  return configured === undefined ? undefined : Math.min(configured, policy.hardTurnCap);
+}
+
 /** The policy pair, and the failure story for both.
  *
  *  Every caller in the runtime wants both and none of them can afford to fail:

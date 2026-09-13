@@ -40,6 +40,16 @@ describe('buildRolePrompt', () => {
     expect(buildRolePrompt('execute', { maxTurns: 0 })).not.toMatch(/turns/i);
   });
 
+  it('tells execute its soft target separately from its cap', () => {
+    const prompt = buildRolePrompt('execute', { maxTurns: 45, softTurnTarget: 20 });
+    // The cap stops a run; the target stops it wandering. They are different
+    // instructions and only the second one changes what an agent does on turn
+    // five.
+    expect(prompt).toMatch(/at most 45 turns/);
+    expect(prompt).toMatch(/about 20 turns/);
+    expect(buildRolePrompt('execute', { maxTurns: 45 })).not.toMatch(/about \d+ turns/);
+  });
+
   it('is compact — under 500 words for any role', () => {
     for (const role of ['plan', 'execute', 'synthesize', 'verify'] as const) {
       expect(buildRolePrompt(role, { constraints: ['x'], definitionOfDone: ['y'], allowedTools: ['Read'] }).split(/\s+/).length).toBeLessThan(500);
