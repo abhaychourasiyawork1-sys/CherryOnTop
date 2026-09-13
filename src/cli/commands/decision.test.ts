@@ -46,6 +46,16 @@ describe('org decision (default listing)', () => {
     expect(logSpy).toHaveBeenCalledWith('No decisions recorded for this node.');
     logSpy.mockRestore();
   });
+
+  it('passes an empty-string nodeId straight through to the query', async () => {
+    const listForNode = vi.fn().mockResolvedValue([]);
+    vi.mocked(createDaemonClient).mockReturnValue({ decision: { listForNode: { query: listForNode } } } as never);
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    await program().parseAsync(['decision', ''], { from: 'user' });
+
+    expect(listForNode).toHaveBeenCalledWith({ nodeId: '' });
+  });
 });
 
 describe('org decision --replay', () => {
