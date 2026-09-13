@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import { contextPolicyFor, executionPolicyFor, effectiveTurnCap, CONTEXT_POLICY_VERSION, EXECUTION_POLICY_VERSION } from './policy.js';
+import { contextPolicyFor, executionPolicyFor, effectiveTurnCap, currentPolicyVersions, CONTEXT_POLICY_VERSION, EXECUTION_POLICY_VERSION } from './policy.js';
 import { normalizeTaskSignals, UNKNOWN_SIGNALS } from './task-signals.js';
 import { taskEconomicsFor } from './task-economics.js';
 import type { TaskEconomicsSignals } from './policy-types.js';
@@ -101,6 +101,16 @@ describe('policy versions', () => {
   it('are stable, non-empty identifiers', () => {
     expect(CONTEXT_POLICY_VERSION).toMatch(/^ctx-/);
     expect(EXECUTION_POLICY_VERSION).toMatch(/^exec-/);
+  });
+
+  it('report the planner that is actually running, read at record time', () => {
+    expect(currentPolicyVersions().context).toBe(CONTEXT_POLICY_VERSION);
+    process.env.ORG_CONTEXT_PLANNER = 'off';
+    // A deployment that switches the planner off mid-run must produce rows that
+    // say so, or a comparison across the switch averages two systems into one
+    // number describing neither.
+    expect(currentPolicyVersions().context).toBe('lexical');
+    delete process.env.ORG_CONTEXT_PLANNER;
   });
 });
 

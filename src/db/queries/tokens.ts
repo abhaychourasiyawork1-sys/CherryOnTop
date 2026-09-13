@@ -9,13 +9,19 @@ const KIND = 'dispatch_usage';
 
 export function recordDispatchUsage(
   db: Db,
-  r: { nodeId: string; role: string; model: string | null; usage: DispatchUsage; costUsd: number; createdAt: string },
+  r: {
+    nodeId: string; role: string; model: string | null; usage: DispatchUsage; costUsd: number; createdAt: string;
+    /** Which policy generation produced this dispatch. Stored per row rather
+     *  than assumed per database: a deployment that changes policy mid-run must
+     *  not make its own history unreadable. */
+    policy?: { context: string; execution: string };
+  },
 ): void {
   db.insert(memory).values({
     id: randomUUID(),
     kind: KIND,
     key: r.role,
-    value: { role: r.role, model: r.model, usage: r.usage, costUsd: r.costUsd },
+    value: { role: r.role, model: r.model, usage: r.usage, costUsd: r.costUsd, policy: r.policy },
     confidence: null,
     nodeId: r.nodeId,
     createdAt: r.createdAt,
@@ -36,7 +42,25 @@ export interface RoleTokenRow {
   costUsd: number;
 }
 
-interface StoredValue { role: string; model: string | null; usage: DispatchUsage; costUsd: number }
+interface StoredValue {
+  role: string; model: string | null; usage: DispatchUsage; costUsd: number;
+  policy?: { context: string; execution: string };
+}
+
+/** Every policy generation this database has dispatches from, newest first.
+ *
+ *  Exists so a comparison can refuse to average two generations together
+ *  instead of doing it silently. */
+export function policyVersionsSeen(db: Db, caseId?: string): string[] {
+  const scope = caseId ? new Set(subtreeNodeIds(db, caseId)) : null;
+  const seen = new Set<string>();
+  for (const row of db.select().from(memory).where(eq(memory.kind, KIND)).all()) {
+    if (scope && !(row.nodeId && scope.has(row.nodeId))) continue;
+    const policy = (row.value as StoredValue).policy;
+    if (policy) seen.add(`${policy.context}/${policy.execution}`);
+  }
+  return [...seen].sort();
+}
 
 /** A dispatch that did not happen is not a dispatch with zero tokens: averaged
  *  into the per-role rows it would drag every figure towards nothing and hide

@@ -56,7 +56,7 @@ import { judgeTask } from '../intelligence/task-judge.js';
 import { taskEconomicsFor } from '../efficiency/task-economics.js';
 import { evaluateSpendGuard, type SpendGuardState } from '../efficiency/spend-guard.js';
 import { summarizeExecutionTrajectory, UNKNOWN_PROGRESS } from '../efficiency/progress-signals.js';
-import { executionPolicyFor, effectiveTurnCap, EXECUTION_POLICY_VERSION } from '../efficiency/policy.js';
+import { executionPolicyFor, effectiveTurnCap, currentPolicyVersions, EXECUTION_POLICY_VERSION } from '../efficiency/policy.js';
 import { templateFor, pruneTemplate } from '../intelligence/execution-templates.js';
 import type { TaskClass } from '../intelligence/task-judge.js';
 import { decideExecutionPath, type DecisionReceipt } from '../decision/engine.js';
@@ -401,7 +401,11 @@ function recordUsage(
   },
 ): void {
   try {
-    recordDispatchUsage(db, { ...r, createdAt: new Date().toISOString() });
+    recordDispatchUsage(db, {
+      ...r,
+      createdAt: new Date().toISOString(),
+      policy: currentPolicyVersions(),
+    });
   } catch (err) {
     console.error(`Failed to record ${r.role} token usage for node ${r.nodeId}:`, err);
   }

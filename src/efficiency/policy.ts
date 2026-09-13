@@ -19,7 +19,7 @@ import {
   normalizeContextPolicy, normalizeExecutionPolicy,
   type ContextPolicy, type ExecutionPolicy, type TaskEconomicsSignals,
 } from './policy-types.js';
-import { repoMapTokenBudget, taskSpendCapUsd, dispatchOptionsFor } from '../config/efficiency.js';
+import { repoMapTokenBudget, taskSpendCapUsd, dispatchOptionsFor, contextPlannerEnabled } from '../config/efficiency.js';
 
 /** Bumped by hand when a weight below changes. Recorded with every measured
  *  dispatch, so two policy generations in one database are distinguishable
@@ -100,6 +100,20 @@ export function executionPolicyFor(signals: TaskEconomicsSignals): ExecutionPoli
     // wandering in it.
     confidenceRequirement: 0.15 + signals.confidence * 0.35,
   });
+}
+
+/** The policy generation this process is currently running.
+ *
+ *  Read at the moment a dispatch is recorded rather than baked in at import, so
+ *  a deployment that switches the planner off mid-run produces rows that say
+ *  so. Two generations in one database have to be distinguishable, or a
+ *  comparison across them averages two different systems into one number that
+ *  describes neither. */
+export function currentPolicyVersions(): { context: string; execution: string } {
+  return {
+    context: contextPlannerEnabled() ? CONTEXT_POLICY_VERSION : 'lexical',
+    execution: EXECUTION_POLICY_VERSION,
+  };
 }
 
 /** The turn cap a dispatch actually runs under.
