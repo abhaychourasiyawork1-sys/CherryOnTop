@@ -12,6 +12,7 @@ const suite = (over: Partial<ReturnType<typeof summarizeRun>> = {}) => ({
   tokensPerSuccessfulTask: 10_000, p50LatencyMs: 50_000, p95LatencyMs: 100_000,
   costPerSuccessfulTask: 0.5, turnsPerSuccessfulTask: 12,
   cacheReadPerSuccessfulTask: 80_000, explorationRatio: 0.4, optimizationRoi: 0,
+  contextTokensPerTask: 1200, contextSelectionRatio: 0.1, tasksStopped: 0,
   cacheHitRatio: 0, coordinationTokenShare: 0.2, recoveryTokenShare: 0,
   synthesisAvoidanceRatio: 0, concurrencyEfficiency: 1,
   tokensAvoided: 0, workAvoidedRatio: 0, executionOverheadRatio: 0, ...over,
@@ -157,5 +158,42 @@ describe('evaluateExperiment', () => {
     const result = run(suite({ qualityScore: 0.5, successRate: 0.5, tokensPerSuccessfulTask: 99_000 }));
     expect(result.reason).toContain('quality');
     expect(result.reason).toContain('success');
+  });
+});
+
+describe('an arm that bought its saving by refusing to work', () => {
+  it('is refused even when the success rate matches', () => {
+    const baseline = suite({ tasksStopped: 0 });
+    const result = evaluateExperiment({
+      baseline,
+      // Half the tokens, same success rate — and four tasks the guard killed.
+      optimized: suite({ tasksStopped: 4, tokensPerSuccessfulTask: 5_000 }),
+      weights: DEFAULT_WEIGHTS,
+      epsilon: 0.02,
+    });
+    expect(result.accepted).toBe(false);
+    expect(result.reason).toMatch(/stopped more tasks/);
+  });
+
+  it('accepts an arm that stopped no more than the baseline did', () => {
+    const result = evaluateExperiment({
+      baseline: suite({ tasksStopped: 2 }),
+      optimized: suite({ tasksStopped: 2, tokensPerSuccessfulTask: 5_000 }),
+      weights: DEFAULT_WEIGHTS,
+      epsilon: 0.02,
+    });
+    expect(result.accepted).toBe(true);
+  });
+});
+
+describe('summarizeRun — the planner\'s own numbers', () => {
+  it('reports context handed over, how much of it was selected, and what was stopped', () => {
+    const summary = summarizeRun([
+      record({ contextCandidates: 40, contextSelected: 4, contextEstimatedTokens: 1000 }),
+      record({ contextCandidates: 20, contextSelected: 4, contextEstimatedTokens: 2000, stopReason: 'Spend cap reached.' }),
+    ]);
+    expect(summary.contextTokensPerTask).toBe(1500);
+    expect(summary.contextSelectionRatio).toBeCloseTo((0.1 + 0.2) / 2);
+    expect(summary.tasksStopped).toBe(1);
   });
 });

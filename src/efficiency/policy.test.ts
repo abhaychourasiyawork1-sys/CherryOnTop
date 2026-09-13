@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import { contextPolicyFor, executionPolicyFor, effectiveTurnCap, currentPolicyVersions, CONTEXT_POLICY_VERSION, EXECUTION_POLICY_VERSION } from './policy.js';
+import { contextPolicyFor, executionPolicyFor, executionPolicyForGoal, effectiveTurnCap, currentPolicyVersions, CONTEXT_POLICY_VERSION, EXECUTION_POLICY_VERSION } from './policy.js';
 import { normalizeTaskSignals, UNKNOWN_SIGNALS } from './task-signals.js';
 import { taskEconomicsFor } from './task-economics.js';
 import type { TaskEconomicsSignals } from './policy-types.js';
@@ -133,5 +133,29 @@ describe('effectiveTurnCap', () => {
     const broad = effectiveTurnCap(60, executionPolicyFor(BROAD))!;
     expect(tiny).toBeLessThan(broad);
     expect(tiny).toBeGreaterThanOrEqual(1);
+  });
+});
+
+describe('executionPolicyForGoal', () => {
+  it('derives from the goal like the direct call does', () => {
+    expect(executionPolicyForGoal('Fix the typo in README.md'))
+      .toEqual(executionPolicyFor(taskEconomicsFor('Fix the typo in README.md')));
+  });
+
+  it('falls back to the fixed policy rather than throwing the dispatch away', () => {
+    // A goal object that explodes the moment anything reads it. Both callers of
+    // this sit where a throw fails a dispatch or a whole task, so a policy that
+    // cannot be derived must cost adaptivity and nothing else.
+    const hostile = { toString() { throw new Error('boom'); } } as unknown as string;
+    const policy = executionPolicyForGoal(hostile);
+    expect(policy.hardTurnCap).toBeGreaterThanOrEqual(1);
+    expect(policy.softTurnTarget).toBeLessThanOrEqual(policy.hardTurnCap);
+  });
+
+  it('still honours the configured breaker in the fallback', () => {
+    process.env.ORG_MAX_TURNS_EXECUTE = '7';
+    const hostile = { toString() { throw new Error('boom'); } } as unknown as string;
+    expect(executionPolicyForGoal(hostile).hardTurnCap).toBe(7);
+    delete process.env.ORG_MAX_TURNS_EXECUTE;
   });
 });

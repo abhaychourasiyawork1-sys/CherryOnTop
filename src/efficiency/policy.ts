@@ -19,6 +19,8 @@ import {
   normalizeContextPolicy, normalizeExecutionPolicy,
   type ContextPolicy, type ExecutionPolicy, type TaskEconomicsSignals,
 } from './policy-types.js';
+import { taskEconomicsFor } from './task-economics.js';
+import type { TaskVerdict } from '../intelligence/task-judge.js';
 import { repoMapTokenBudget, taskSpendCapUsd, dispatchOptionsFor, contextPlannerEnabled } from '../config/efficiency.js';
 
 /** Bumped by hand when a weight below changes. Recorded with every measured
@@ -126,24 +128,27 @@ export function effectiveTurnCap(configured: number | undefined, policy: Executi
   return configured === undefined ? undefined : Math.min(configured, policy.hardTurnCap);
 }
 
-/** The policy pair, and the failure story for both.
+/** The execution policy for a goal, and the failure story for it.
  *
- *  Every caller in the runtime wants both and none of them can afford to fail:
- *  a policy that throws must cost the dispatch its *adaptivity*, never its
- *  context or its turn budget. So the catch returns the same fixed defaults the
- *  branch already shipped with. */
-export function policiesFor(signals: TaskEconomicsSignals): { context: ContextPolicy; execution: ExecutionPolicy } {
+ *  The runtime's two callers — the turn budget and the spend guard — both sit
+ *  on paths where throwing is not an option: one would fail a dispatch, the
+ *  other would fail a task at the chokepoint. A policy that cannot be derived
+ *  must cost the dispatch its *adaptivity*, never its turn budget, so the catch
+ *  returns the fixed defaults this branch already shipped with.
+ *
+ *  `verdict` is the classification the chokepoint already computed. Judging the
+ *  goal twice gives the same answer — both are pure — but paying twice for an
+ *  answer in hand is the habit this subsystem exists to break. */
+export function executionPolicyForGoal(goal: string, verdict?: TaskVerdict): ExecutionPolicy {
   try {
-    return { context: contextPolicyFor(signals), execution: executionPolicyFor(signals) };
+    return executionPolicyFor(taskEconomicsFor(goal, verdict));
   } catch (err) {
-    console.error('Falling back to the fixed efficiency policy:', err);
-    return {
-      context: normalizeContextPolicy({ ...DEFAULT_CONTEXT_POLICY, tokenBudget: repoMapTokenBudget() }),
-      execution: normalizeExecutionPolicy({
-        ...DEFAULT_EXECUTION_POLICY,
-        contextBudget: repoMapTokenBudget(),
-        hardTurnCap: dispatchOptionsFor('execute').maxTurns ?? DEFAULT_EXECUTION_POLICY.hardTurnCap,
-      }),
-    };
+    console.error('Falling back to the fixed execution policy:', err);
+    return normalizeExecutionPolicy({
+      ...DEFAULT_EXECUTION_POLICY,
+      contextBudget: DEFAULT_CONTEXT_POLICY.tokenBudget,
+      hardTurnCap: dispatchOptionsFor('execute').maxTurns ?? DEFAULT_EXECUTION_POLICY.hardTurnCap,
+      spendCapUsd: taskSpendCapUsd(),
+    });
   }
 }
