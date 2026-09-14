@@ -16,6 +16,7 @@
  *      cost.
  *   3. **Economics last**, and always against a named alternative.
  */
+import { randomUUID } from 'node:crypto';
 import { decideExecution, type DecideExecutionInput } from '../engines/decide-execution.js';
 import { routeModel, type ModelRouteInput } from '../intelligence/model-router.js';
 import { decideIntegration } from '../intelligence/integrate-results.js';
@@ -252,4 +253,166 @@ export function decideModel(input: ModelInput): DecisionReceipt {
     }],
     fastPath: route.tier === 'fast',
   });
+}
+
+// ---------------------------------------------------------------------------
+// The state/action evaluator.
+//
+// Everything above answers one specific question each — which model, which
+// evidence, whether to split — in its own vocabulary. This answers the general
+// one: given everything the runtime currently knows, and everything it could
+// currently do, what is worth doing?
+//
+// It is emphatically not a second brain either. It contains no economics of its
+// own: `evaluateActionUtility` prices a candidate and this ranks what it
+// returns. What it adds is an order of operations and a conservative default —
+// the same two things `decideExecutionPath` adds to the engines it composes.
+// ---------------------------------------------------------------------------
+
+import { normalizeActionCandidate, actionCandidate, type ActionCandidate, type ActionDecision } from './actions.js';
+import { evaluateActionUtility, type UtilityWeights, type UtilityEvaluation } from './utility.js';
+import type { EconomicState } from './state.js';
+
+/** Floating-point equality for a ranking. The same 1e-9 tolerance
+ *  `engines/economics.ts` already uses for the same reason: two scores that
+ *  differ in the sixteenth decimal are a tie, and treating them otherwise makes
+ *  the winner depend on the order the candidates happened to arrive in. */
+const TIE_EPSILON = 1e-9;
+
+/** How many rejections a decision records. Enough to explain a surprising
+ *  answer, bounded so a hundred filtered candidates cannot turn one decision
+ *  into a hundred-line row. */
+const MAX_RECORDED_REJECTIONS = 8;
+
+/** Doing nothing, priced at nothing. The default answer, and deliberately a
+ *  real candidate rather than a null return: a no-op that goes through the same
+ *  ranking and the same receipt is a no-op somebody can audit. */
+function continueAction(): ActionCandidate {
+  return actionCandidate({
+    id: 'continue', kind: 'continue', capability: 'agent.continue', confidence: 1,
+  });
+}
+
+function stopAction(): ActionCandidate {
+  return actionCandidate({ id: 'stop', kind: 'stop', capability: 'runtime.stop', confidence: 1 });
+}
+
+export interface EconomicDecisionInput {
+  state: EconomicState;
+  candidates: ActionCandidate[];
+  weights?: UtilityWeights;
+  nowMs?: number;
+  /** Injected so a decision is reproducible in a test without stubbing crypto.
+   *  Production never passes it. */
+  decisionId?: string;
+}
+
+interface Ranked {
+  candidate: ActionCandidate;
+  evaluation: UtilityEvaluation;
+}
+
+/** The one entry point the runtime asks "what now?" through.
+ *
+ *  Four steps, in an order that is the design rather than an implementation
+ *  detail:
+ *
+ *   1. Price every candidate.
+ *   2. Drop the ones a hard constraint forbids — before ranking, so no score
+ *      can promote a forbidden action.
+ *   3. Rank what survives by utility, then confidence, then a stable id. Never
+ *      by kind, and never by anything derived from what the task is *about*.
+ *   4. Fall back conservatively: `continue` unless continuing is itself
+ *      disallowed, and only then `stop`. The healthy action is non-intervention.
+ */
+export function chooseEconomicAction(input: EconomicDecisionInput): ActionDecision {
+  const { state, weights } = input;
+  const price = (candidate: ActionCandidate): Ranked => ({
+    candidate,
+    evaluation: evaluateActionUtility(candidate, state, weights),
+  });
+
+  const priced = (input.candidates ?? []).map(normalizeActionCandidate).map(price);
+  const allowed = priced.filter((r) => r.evaluation.allowed);
+  const rejected = priced.filter((r) => !r.evaluation.allowed);
+
+  // Every rejection, named. A decision that cannot say what it refused and why
+  // is one nobody can argue with — the same reason `DecisionReceipt` carries
+  // its alternatives.
+  const rejectionCodes = rejected.slice(0, MAX_RECORDED_REJECTIONS).flatMap((r) =>
+    r.evaluation.reasonCodes
+      .filter((code) => code.endsWith('_floor') || code.endsWith('_stop')
+        || code.endsWith('_violation') || code.endsWith('_budget') || code.endsWith('_approval'))
+      .map((code) => `rejected:${r.candidate.id}:${code}`));
+
+  // Ranked once, so the tie-break tests below read the same order the winner
+  // came from.
+  const ranked = [...allowed].sort(compareRanked);
+  const best = ranked[0];
+
+  const decide = (
+    candidate: ActionCandidate,
+    evaluation: UtilityEvaluation,
+    extra: string[],
+  ): ActionDecision => ({
+    decisionId: input.decisionId ?? randomDecisionId(),
+    stateVersion: state.version,
+    action: candidate,
+    utility: evaluation.score,
+    reasonCodes: [
+      ...evaluation.reasonCodes, ...extra,
+      // A decision made while the state carries a hard stop says so on its own
+      // face, even when the action it chose was the one the stop permits. The
+      // alternative is a receipt reading `positive_utility` on a run that was
+      // already over.
+      ...(state.constraints.hardStop ? ['hard_stop'] : []),
+      ...rejectionCodes,
+    ],
+    // The orchestrator's confidence in its own reading is a ceiling on every
+    // decision it makes. An uncertain orchestrator intervening harder is the
+    // failure mode this whole layer exists to avoid, and a cap is the cheapest
+    // possible expression of "doubt reduces pressure".
+    confidence: Math.min(candidate.confidence, state.trajectory.orchestrationConfidence),
+  });
+
+  if (best && best.evaluation.score > 0) {
+    const extra = ['chosen_by_utility'];
+    const runnerUp = ranked[1];
+    if (runnerUp && Math.abs(runnerUp.evaluation.score - best.evaluation.score) <= TIE_EPSILON) {
+      extra.push(best.candidate.confidence === runnerUp.candidate.confidence
+        ? 'tie_broken_on_id'
+        : 'tie_broken_on_confidence');
+    }
+    return decide(best.candidate, best.evaluation, extra);
+  }
+
+  // Nothing was worth doing. The default is to let the agent get on with it —
+  // and `continue` is put through the same pricing rather than assumed legal,
+  // because a hard stop must be able to forbid it.
+  const suppliedContinue = allowed.find((r) => r.candidate.kind === 'continue');
+  const fallback = suppliedContinue ?? price(continueAction());
+  if (fallback.evaluation.allowed) {
+    return decide(fallback.candidate, fallback.evaluation, ['no_justified_opportunity']);
+  }
+
+  // Continuing is not permitted. Only now is stopping the answer — and stopping
+  // because continuing is invalid is a different fact from stopping because a
+  // score said so, so it says which.
+  const stop = price(stopAction());
+  return decide(stop.candidate, stop.evaluation, ['continuation_not_permitted']);
+}
+
+function compareRanked(a: Ranked, b: Ranked): number {
+  const byUtility = b.evaluation.score - a.evaluation.score;
+  if (Math.abs(byUtility) > TIE_EPSILON) return byUtility;
+  const byConfidence = b.candidate.confidence - a.candidate.confidence;
+  if (Math.abs(byConfidence) > TIE_EPSILON) return byConfidence;
+  // The last tie-break is the candidate's own stable id, never its kind and
+  // never anything read off the goal: two runs over the same state must choose
+  // the same action, and "whichever the producer listed first" is not that.
+  return a.candidate.id < b.candidate.id ? -1 : a.candidate.id > b.candidate.id ? 1 : 0;
+}
+
+function randomDecisionId(): string {
+  return `dec-${randomUUID()}`;
 }
