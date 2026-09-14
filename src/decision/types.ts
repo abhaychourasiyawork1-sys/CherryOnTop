@@ -70,3 +70,6 @@ export type {
   EvidenceKind, UncertaintyKind, EvidenceRef, UncertaintyState, UncertaintyObservation,
   ResourceState, TrajectoryState, EconomicState, EconomicEvent,
 } from './state.js';
+
+export { ACTION_KINDS, isActionKind, actionCandidate, normalizeActionCandidate } from './actions.js';
+export type { ActionKind, ActionCandidate, ActionDecision } from './actions.js';
