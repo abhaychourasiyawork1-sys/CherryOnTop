@@ -271,6 +271,7 @@ export function decideModel(input: ModelInput): DecisionReceipt {
 
 import { normalizeActionCandidate, actionCandidate, type ActionCandidate, type ActionDecision } from './actions.js';
 import { evaluateActionUtility, type UtilityWeights, type UtilityEvaluation } from './utility.js';
+import { assessDecisionTrust, trustAdjusted, type TrustAssessment } from './trust.js';
 import type { EconomicState } from './state.js';
 
 /** Floating-point equality for a ranking. The same 1e-9 tolerance
@@ -310,6 +311,12 @@ export interface EconomicDecisionInput {
 interface Ranked {
   candidate: ActionCandidate;
   evaluation: UtilityEvaluation;
+  trust: TrustAssessment;
+  /** The score actually ranked on: utility, discounted by how much the decision
+   *  deserves to be believed given what it puts at stake. Equal to the raw
+   *  utility for a free action, because being wrong about a free action costs
+   *  nothing. */
+  score: number;
 }
 
 /** The one entry point the runtime asks "what now?" through.
@@ -327,10 +334,11 @@ interface Ranked {
  */
 export function chooseEconomicAction(input: EconomicDecisionInput): ActionDecision {
   const { state, weights } = input;
-  const price = (candidate: ActionCandidate): Ranked => ({
-    candidate,
-    evaluation: evaluateActionUtility(candidate, state, weights),
-  });
+  const price = (candidate: ActionCandidate): Ranked => {
+    const evaluation = evaluateActionUtility(candidate, state, weights);
+    const trust = assessDecisionTrust({ state, action: candidate });
+    return { candidate, evaluation, trust, score: trustAdjusted(evaluation.score, trust) };
+  };
 
   const priced = (input.candidates ?? []).map(normalizeActionCandidate).map(price);
   const allowed = priced.filter((r) => r.evaluation.allowed);
@@ -375,15 +383,15 @@ export function chooseEconomicAction(input: EconomicDecisionInput): ActionDecisi
     confidence: Math.min(candidate.confidence, state.trajectory.orchestrationConfidence),
   });
 
-  if (best && best.evaluation.score > 0) {
+  if (best && best.score > 0) {
     const extra = ['chosen_by_utility'];
     const runnerUp = ranked[1];
-    if (runnerUp && Math.abs(runnerUp.evaluation.score - best.evaluation.score) <= TIE_EPSILON) {
+    if (runnerUp && Math.abs(runnerUp.score - best.score) <= TIE_EPSILON) {
       extra.push(best.candidate.confidence === runnerUp.candidate.confidence
         ? 'tie_broken_on_id'
         : 'tie_broken_on_confidence');
     }
-    return decide(best.candidate, best.evaluation, extra);
+    return decide(best.candidate, best.evaluation, [...extra, ...best.trust.reasonCodes]);
   }
 
   // Nothing was worth doing. The default is to let the agent get on with it —
@@ -403,7 +411,10 @@ export function chooseEconomicAction(input: EconomicDecisionInput): ActionDecisi
 }
 
 function compareRanked(a: Ranked, b: Ranked): number {
-  const byUtility = b.evaluation.score - a.evaluation.score;
+  // Trust-adjusted, so that as confidence falls the *expensive* options become
+  // uncompetitive first. An orchestrator that intervenes harder when it knows
+  // less is the failure this ordering exists to prevent.
+  const byUtility = b.score - a.score;
   if (Math.abs(byUtility) > TIE_EPSILON) return byUtility;
   const byConfidence = b.candidate.confidence - a.candidate.confidence;
   if (Math.abs(byConfidence) > TIE_EPSILON) return byConfidence;
