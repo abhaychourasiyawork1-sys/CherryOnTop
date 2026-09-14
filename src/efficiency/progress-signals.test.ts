@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { summarizeExecutionTrajectory, UNKNOWN_PROGRESS } from './progress-signals.js';
+import { summarizeExecutionTrajectory, executionSnapshot, UNKNOWN_PROGRESS } from './progress-signals.js';
 import { evaluateSpendGuard } from './spend-guard.js';
 import type { StructuredEvent } from '../adapters/adapter.js';
 
@@ -13,15 +13,15 @@ const call = (name: string, input: Record<string, unknown>): { event: Structured
   };
 };
 
-const result = (id: string, isError = false): StructuredEvent =>
-  ({ type: 'user', payload: { message: { content: [{ type: 'tool_result', tool_use_id: id, content: 'out', is_error: isError }] } } } as StructuredEvent);
+const result = (id: string, isError = false, content = 'out'): StructuredEvent =>
+  ({ type: 'user', payload: { message: { content: [{ type: 'tool_result', tool_use_id: id, content, is_error: isError }] } } } as StructuredEvent);
 
 /** A trace as the runtime emits it: call, result, call, result. */
-function trace(steps: [string, Record<string, unknown>, boolean?][]): StructuredEvent[] {
+function trace(steps: [string, Record<string, unknown>, boolean?, string?][]): StructuredEvent[] {
   const events: StructuredEvent[] = [];
-  for (const [name, input, failed] of steps) {
+  for (const [name, input, failed, output] of steps) {
     const { event, id } = call(name, input);
-    events.push(event, result(id, failed === true));
+    events.push(event, result(id, failed === true, output ?? 'out'));
   }
   return events;
 }
@@ -158,5 +158,73 @@ describe('the signals against the guard', () => {
 
   it('does not stop on an unreadable trace', () => {
     expect(guard([]).state).not.toBe('STOP');
+  });
+});
+
+
+describe('executionSnapshot — the fingerprint', () => {
+  const at = (events: StructuredEvent[], over = {}) =>
+    executionSnapshot({ events, sequence: 1, tokensConsumed: 1000, ...over });
+
+  it('separates where the run is working from what it is looking for', () => {
+    const s = at(trace([
+      ['Read', { file_path: 'src/a.ts' }],
+      ['Grep', { pattern: 'refreshSession' }],
+      ['Edit', { file_path: 'src/b.ts' }],
+    ]));
+    expect(s.activeTargets).toEqual(['src/b.ts']);
+    expect(s.searchTargets).toEqual(['refreshSession', 'src/a.ts']);
+  });
+
+  it('counts a green verifying command as productive and names its subject', () => {
+    const s = at(trace([['Bash', { command: 'npm test' }]]));
+    expect(s.productiveActions).toBe(1);
+    expect(s.activeTargets).toEqual(['npm test']);
+  });
+
+  it('gives one failing command a stable signature across repetitions', () => {
+    const out = 'src/a.ts(4,2): error TS2345: Argument of type X';
+    const s = at(trace([
+      ['Bash', { command: 'npm run typecheck' }, true, out],
+      ['Bash', { command: 'npm run typecheck' }, true, out],
+    ]));
+    expect(new Set(s.failureSignatures).size).toBe(1);
+    expect(s.failureSignatures).toHaveLength(2);
+  });
+
+  it('gives two different errors two signatures', () => {
+    const s = at(trace([
+      ['Bash', { command: 'npm run typecheck' }, true, 'error TS2345: one thing'],
+      ['Bash', { command: 'npm run typecheck' }, true, 'error TS2741: a different thing'],
+    ]));
+    expect(new Set(s.failureSignatures).size).toBe(2);
+  });
+
+  it('sorts its target sets so two snapshots of one world compare equal', () => {
+    const a = at(trace([['Read', { file_path: 'src/b.ts' }], ['Read', { file_path: 'src/a.ts' }]]));
+    const b = at(trace([['Read', { file_path: 'src/a.ts' }], ['Read', { file_path: 'src/b.ts' }]]));
+    expect(a.searchTargets).toEqual(b.searchTargets);
+  });
+
+  it('ignores bookkeeping tools, so writing todo lists is not work', () => {
+    const s = at(trace([['TodoWrite', { todos: [] }], ['ExitPlanMode', {}]]));
+    expect(s.totalActions).toBe(0);
+    expect(s.productiveActions).toBe(0);
+  });
+
+  it('carries the evidence and validation status it was handed', () => {
+    const s = at([], { knownEvidence: ['e1', 'e1', 'e2'], validationStatus: 'passed' as const });
+    expect(s.knownEvidence).toEqual(['e1', 'e2']);
+    expect(s.validationStatus).toBe('passed');
+  });
+
+  it('returns an empty fingerprint rather than throwing on an unreadable stream', () => {
+    const s = at([{ type: 'assistant', payload: null } as unknown as StructuredEvent]);
+    expect(s.activeTargets).toEqual([]);
+    expect(s.totalActions).toBe(0);
+  });
+
+  it('never reports negative consumed tokens', () => {
+    expect(at([], { tokensConsumed: -5 }).tokensConsumed).toBe(0);
   });
 });

@@ -23,6 +23,7 @@
  *  validated" — each is one subtraction over two numbers the state already
  *  holds, and each reaches exactly zero when the run is healthy. */
 import { clamp01 } from '../efficiency/policy-types.js';
+import { signalGap as gap } from './trajectory.js';
 import type { EconomicState } from './state.js';
 
 export interface FastPathResult {
@@ -64,8 +65,9 @@ export interface Signal { code: string; strength: number }
  *
  *  A product would not do: `similarity * (1 - gain)` is small-but-nonzero for
  *  every healthy run, so every healthy run would report a weak opportunity and
- *  the screen would have to invent a noise floor to suppress its own output. */
-const gap = (a: number, b: number): number => clamp01(Math.max(0, a - b));
+ *  the screen would have to invent a noise floor to suppress its own output.
+ *
+ *  `signalGap` is defined once, in `trajectory.ts`, and imported here. */
 
 /** Doubt that the evidence in hand has not addressed.
  *

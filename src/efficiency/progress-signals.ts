@@ -13,6 +13,10 @@
  *  being unsure, not like a verdict. */
 import type { StructuredEvent } from '../adapters/adapter.js';
 import { observationsFromEvents, type Observation } from '../execution/observation.js';
+// The shape `decision/trajectory.ts` compares. Imported rather than restated so
+// the producer of a fingerprint and the comparison over it cannot disagree
+// about the fields.
+import type { ExecutionSnapshot } from '../decision/trajectory.js';
 
 export interface ProgressSignals {
   /** [0,1]. The share of the trajectory spent looking rather than doing. */
@@ -126,5 +130,125 @@ export function summarizeExecutionTrajectory(events: StructuredEvent[]): Progres
     progress,
     repeatedFailure: repetition(failures.map(callSignature)) * Math.min(1, failures.length / total),
     repeatedSearch: repetition(searches.map(callSignature)),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// The fingerprint.
+//
+// `summarizeExecutionTrajectory` above answers "how is this run going?" from
+// the whole stream. This answers a different question the same stream can
+// settle: "what is this run *about* right now?" — which files, which searches,
+// which failures. Two of those, compared, are what `decision/trajectory.ts`
+// reads to tell a run going in circles from one working carefully in one place.
+//
+// Deliberately about *subjects* rather than calls. An agent re-reading one file
+// at three offsets, or grepping three spellings of one symbol, is repeating
+// itself and looks entirely different call-by-call; what repeats is the target.
+// ---------------------------------------------------------------------------
+
+/** The inputs that name what a call was *about*, in priority order. The first
+ *  one present wins, so a `Read` is identified by its path and a `Grep` by its
+ *  pattern rather than by whichever key happens to be enumerated first. */
+const TARGET_KEYS = ['file_path', 'notebook_path', 'path', 'pattern', 'query', 'url', 'command'] as const;
+
+function targetOf(observation: Observation): string {
+  const input = observation.invocation.input ?? {};
+  for (const key of TARGET_KEYS) {
+    const value = input[key];
+    if (typeof value === 'string' && value.trim()) return value.trim();
+  }
+  return '';
+}
+
+/** A failure's identity, stable across repetitions and distinct between
+ *  different problems.
+ *
+ *  The tool and its subject, plus the first error-shaped line of the output.
+ *  Not the whole output: a compiler error carries line numbers and a timestamp,
+ *  and hashing those would make the same failure look new every time — which is
+ *  precisely the case the signal exists to catch. */
+function failureSignature(observation: Observation): string {
+  const head = observation.raw
+    .split('\n')
+    .map((line) => line.trim())
+    .find((line) => /error|fail|exception|refused|denied|cannot|not found/i.test(line)) ?? '';
+  return `${identity(observation)}#${targetOf(observation)}#${head.slice(0, 120)}`;
+}
+
+export interface SnapshotInput {
+  events: StructuredEvent[];
+  /** Monotonic, supplied by the caller — this module has no clock and must not
+   *  acquire one, because a signal that depends on wall-clock is a signal that
+   *  cannot be reproduced from the record afterwards. */
+  sequence: number;
+  tokensConsumed: number;
+  knownEvidence?: string[];
+  validationStatus?: ExecutionSnapshot['validationStatus'];
+}
+
+/** What the run is about, read off its own tool stream.
+ *
+ *  Total, like everything else on this path: an unreadable stream produces an
+ *  empty fingerprint, and an empty fingerprint has zero overlap with anything —
+ *  so a trace we cannot read can only make the orchestrator *less* willing to
+ *  act, never more. */
+export function executionSnapshot(input: SnapshotInput): ExecutionSnapshot {
+  const base: ExecutionSnapshot = {
+    sequence: input.sequence,
+    tokensConsumed: Math.max(0, input.tokensConsumed),
+    activeTargets: [], searchTargets: [], failureSignatures: [],
+    knownEvidence: [...new Set(input.knownEvidence ?? [])],
+    validationStatus: input.validationStatus ?? 'unknown',
+    productiveActions: 0, totalActions: 0,
+  };
+
+  let observations: Observation[];
+  try {
+    observations = observationsFromEvents(input.events, 'snapshot');
+  } catch {
+    return base;
+  }
+
+  const counted = observations.filter((o) => !INERT_TOOLS.has(o.tool.name));
+  const activeTargets = new Set<string>();
+  const searchTargets = new Set<string>();
+  const failureSignatures: string[] = [];
+  let productive = 0;
+
+  for (const observation of counted) {
+    const name = observation.tool.name;
+    const target = targetOf(observation);
+
+    if (!observation.execution.succeeded) failureSignatures.push(failureSignature(observation));
+
+    if (WRITE_TOOLS.has(name)) {
+      // A file that was edited is where the work *is*, not where it looked.
+      if (target) activeTargets.add(target);
+      productive += 1;
+      continue;
+    }
+    if (SEARCH_TOOLS.has(name)) {
+      if (target) searchTargets.add(target);
+      continue;
+    }
+    const command = shellCommand(observation);
+    if (VERIFYING.test(command)) {
+      if (observation.execution.succeeded) productive += 1;
+      if (target) activeTargets.add(target);
+      continue;
+    }
+    if (observation.execution.succeeded) productive += 0.5;
+  }
+
+  return {
+    ...base,
+    // Sorted so two snapshots of the same world are equal by value, which is
+    // what makes a fingerprint comparison reproducible.
+    activeTargets: [...activeTargets].sort(),
+    searchTargets: [...searchTargets].sort(),
+    failureSignatures,
+    productiveActions: productive,
+    totalActions: counted.length,
   };
 }
