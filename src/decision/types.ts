@@ -61,3 +61,12 @@ export function receipt(over: Partial<DecisionReceipt> & Pick<DecisionReceipt, '
     ...over,
   };
 }
+
+/** The canonical economic state contract, re-exported so every consumer of the
+ *  decision layer has one import point rather than reaching past `engine.ts`
+ *  into individual modules. The definitions live in `state.ts`; this is an
+ *  index, not a second source of truth. */
+export type {
+  EvidenceKind, UncertaintyKind, EvidenceRef, UncertaintyState, UncertaintyObservation,
+  ResourceState, TrajectoryState, EconomicState, EconomicEvent,
+} from './state.js';
