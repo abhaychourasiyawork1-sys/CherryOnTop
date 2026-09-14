@@ -1,4 +1,4 @@
-import { sqliteTable, text, integer, real } from 'drizzle-orm/sqlite-core';
+import { sqliteTable, text, integer, real, index } from 'drizzle-orm/sqlite-core';
 import type { NodeContract, Authority } from '../schemas/node-contract.js';
 import type { Commitment } from '../schemas/commitment.js';
 import type { Decision } from '../schemas/decision.js';
@@ -131,5 +131,62 @@ export const dodItems = sqliteTable('dod_items', {
   eventId: integer('event_id'),
   note: text('note'),
   checkedAt: text('checked_at'),
+  createdAt: text('created_at').notNull(),
+});
+
+/** What one run learned about a repository, in a form another run can check
+ *  before believing it.
+ *
+ *  Deliberately *not* in `memory`. That table is a key/value bag whose rows are
+ *  read by kind and filtered in JavaScript, which is right for a handful of
+ *  run outcomes and wrong for something queried by repository, revision, path
+ *  and symbol — those are the four questions a reader always asks, and
+ *  answering them with a full scan is how a retrieval meant to save tokens
+ *  comes to cost more than the search it replaced.
+ *
+ *  `revision` is the load-bearing column. It is what turns "this might still be
+ *  true" into a question with an answer, and a row without one is a claim
+ *  nobody can check. */
+export const knowledge = sqliteTable('knowledge', {
+  id: text('id').primaryKey(),
+  /** fact | pattern | observation */
+  kind: text('kind').notNull(),
+  content: text('content').notNull(),
+  repository: text('repository').notNull(),
+  revision: text('revision').notNull(),
+  sourcePaths: text('source_paths', { mode: 'json' }).$type<string[]>().notNull(),
+  sourceSymbols: text('source_symbols', { mode: 'json' }).$type<string[]>().notNull(),
+  confidence: real('confidence').notNull(),
+  /** Something other than the producing agent agreed. A validated fact and an
+   *  asserted one are different objects, and one field with a confidence number
+   *  would lose the distinction that matters most. */
+  validated: integer('validated', { mode: 'boolean' }).notNull().default(false),
+  /** The item this replaces. A chain rather than a delete: knowing what a claim
+   *  used to be is how a contradiction gets diagnosed rather than just
+   *  observed. */
+  supersedes: text('supersedes'),
+  /** Set when this was found to be wrong. Distinct from being superseded — an
+   *  invalidated item was withdrawn, not improved on. */
+  invalidatedAt: text('invalidated_at'),
+  createdAt: text('created_at').notNull(),
+}, (table) => [
+  // The two columns every read filters on, together: a query is always about
+  // one repository, and usually about one revision of it.
+  index('knowledge_repo_revision').on(table.repository, table.revision),
+  index('knowledge_repo_kind').on(table.repository, table.kind),
+]);
+
+/** Two pieces of evidence that cannot both be right.
+ *
+ *  Recorded rather than resolved. Resolving automatically is how a system
+ *  silently picks the wrong answer; what *is* automatic is precedence, and the
+ *  loser is kept rather than deleted so the disagreement stays diagnosable. */
+export const evidenceConflicts = sqliteTable('evidence_conflicts', {
+  id: text('id').primaryKey(),
+  evidenceIds: text('evidence_ids', { mode: 'json' }).$type<string[]>().notNull(),
+  reason: text('reason').notNull(),
+  /** low | medium | high */
+  severity: text('severity').notNull(),
+  resolved: integer('resolved', { mode: 'boolean' }).notNull().default(false),
   createdAt: text('created_at').notNull(),
 });
