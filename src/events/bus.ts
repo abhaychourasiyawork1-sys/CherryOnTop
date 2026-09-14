@@ -31,3 +31,15 @@ export function subscribeToNode(nodeId: string, handler: (event: BusEvent) => vo
   emitter.on(`event:${nodeId}`, handler);
   return () => { emitter.off(`event:${nodeId}`, handler); };
 }
+
+/** Every event whose type starts with `prefix`.
+ *
+ *  Exists because every subscriber that wants a family of events — the economic
+ *  stream, the `exec.*` stream — otherwise writes the same two lines of
+ *  filtering, and one of them eventually writes `includes` instead of
+ *  `startsWith` and receives half the bus. */
+export function subscribeToPrefix(prefix: string, handler: (event: BusEvent) => void): () => void {
+  return subscribeAll((event) => {
+    if (event.type.startsWith(prefix)) handler(event);
+  });
+}
