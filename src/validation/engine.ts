@@ -141,6 +141,18 @@ export function validate(input: ValidateInput): ValidationResult {
   const required = requiredConfidence(contract);
   const reasonCodes: string[] = [];
 
+  // Deliberately *not* capped at what this runtime can reach. A first attempt
+  // did that — so a contract demanding more evidence than the ladder can
+  // produce would pass anyway, with the shortfall recorded — and it was wrong:
+  // it makes the quality floor buyable by the runtime's own limitations, which
+  // is the "silence is a pass" failure in a different costume. A contract
+  // asking for certainty is unsatisfiable, and saying so is the point.
+  //
+  // What *is* bounded is the floor `contractFor` derives from a goal signal.
+  // See `contract.ts`: the derivation is a guess about how much proving a task
+  // needs, and a guess must not be able to demand evidence nothing can produce.
+  // An explicit floor set by a person is honoured exactly as written.
+
   let best: { level: ValidationLevel; verdict: LevelVerdict } | null = null;
   let tokens = 0;
   let latencyMs = 0;

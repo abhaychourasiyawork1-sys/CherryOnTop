@@ -318,3 +318,42 @@ describe('a finished execution is not a successful task', () => {
     expect(verdict.reasonCodes).toContain('V3:no_verifier');
   });
 });
+
+describe('validation sees a settled definition of done', () => {
+  it('records a run that produced evidence as a success, not as partial', async () => {
+    // The ordering defect this pins: validation reads the definition of done,
+    // so the definition of done has to be closed first. Reversed, every item
+    // reads `unverified`, every run is downgraded, and tokens per *successful*
+    // task can never be computed — which is exactly how a benchmark reports a
+    // success rate of zero on two runs that both completed.
+    const db = createDb(TEST_DB);
+    const repo = tmpRepo();
+    const events = [
+      {
+        type: 'assistant',
+        payload: { message: { content: [{ type: 'tool_use', id: 'e1', name: 'Edit', input: { file_path: 'src/cart/checkout.ts' } }] } },
+      },
+      { type: 'user', payload: { message: { content: [{ type: 'tool_result', tool_use_id: 'e1', content: 'ok' }] } } },
+      {
+        type: 'assistant',
+        payload: { message: { content: [{ type: 'tool_use', id: 'e2', name: 'Bash', input: { command: 'npm test' } }] } },
+      },
+      { type: 'user', payload: { message: { content: [{ type: 'tool_result', tool_use_id: 'e2', content: 'all tests passed' }] } } },
+      { type: 'result', payload: { is_error: false, result: 'fixed it' } },
+    ];
+    // Delivered through `onEvent`, as the real dispatch does — that is what
+    // records the artifacts the ladder reads at V1.
+    stub.mockImplementation(async (input: ExecuteStepInput) => {
+      for (const event of events) input.onEvent?.(event as never);
+      return { succeeded: true, message: 'done', events: events as never, usage: { ...ZERO_USAGE } };
+    });
+
+    const id = seedNode(db, repo);
+    startNodeActor(db, id, GOAL);
+    await vi.waitFor(() => expect(getNode(db, id)?.state).toBe('COMPLETE'), { timeout: 10_000 });
+
+    const { listMemory } = await import('../db/queries/memory.js');
+    const record = listMemory(db, 'efficiency_record')[0].value as { outcome: string };
+    expect(record.outcome).toBe('success');
+  });
+});

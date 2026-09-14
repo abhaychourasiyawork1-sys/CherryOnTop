@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { validate, canClaimSuccess, NO_EVIDENCE, type ValidationEvidence, type FreshVerifier } from './engine.js';
 import {
   LEVEL_MODEL, VALIDATION_LEVELS, requiredConfidence, DEFAULT_VALIDATION_CONTRACT,
+  contractFor, MINIMUM_QUALITY_FLOOR, MAXIMUM_DERIVED_FLOOR,
   type ValidationContract,
 } from './contract.js';
 
@@ -234,5 +235,81 @@ describe('requiredConfidence', () => {
 
   it('clamps nonsense rather than propagating it', () => {
     expect(requiredConfidence(contract({ qualityFloor: 5, allowedUncertainty: -2 }))).toBe(1);
+  });
+});
+
+describe('the floor comes from the task, bounded where it is a guess', () => {
+  it('lets a task nobody asked to verify pass on having produced something', () => {
+    // The defect the benchmark exposed: at a global floor of 0.7, a task that
+    // edits a file and runs no test could never pass, so tokens per
+    // *successful* task was uncomputable for most of a corpus.
+    const typoFix = contractFor({ verificationNeed: 0.25 });
+    const result = validate({
+      evidence: evidence({ claimedSuccess: true, artifactIds: ['README.md'] }),
+      contract: typoFix,
+    });
+    expect(result.level).toBe('V1');
+    expect(result.passed).toBe(true);
+  });
+
+  it('still refuses a bare claim for that same task', () => {
+    const typoFix = contractFor({ verificationNeed: 0.25 });
+    expect(validate({ evidence: evidence({ claimedSuccess: true }), contract: typoFix }).passed).toBe(false);
+  });
+
+  it('demands a green check of a task that was judged to need proving', () => {
+    const bugFix = contractFor({ verificationNeed: 0.8 });
+    expect(validate({
+      evidence: evidence({ claimedSuccess: true, artifactIds: ['src/a.ts'] }),
+      contract: bugFix,
+    }).passed).toBe(false);
+    expect(validate({
+      evidence: evidence({
+        claimedSuccess: true, artifactIds: ['src/a.ts'],
+        observedChecks: [{ id: 'c', command: 'npm test', passed: true }],
+      }),
+      contract: bugFix,
+    }).passed).toBe(true);
+  });
+
+  it('never derives a floor nothing in this runtime could satisfy', () => {
+    // `Add a unit test for X` scores 0.95. Demanding a fresh re-run for it
+    // would make every task of that shape permanently unverifiable rather than
+    // merely demanding.
+    const demanding = contractFor({ verificationNeed: 0.95 });
+    expect(demanding.qualityFloor).toBeLessThanOrEqual(MAXIMUM_DERIVED_FLOOR);
+    expect(validate({
+      evidence: evidence({
+        claimedSuccess: true,
+        observedChecks: [{ id: 'c', command: 'npm test', passed: true }],
+      }),
+      contract: demanding,
+    }).passed).toBe(true);
+  });
+
+  it('honours an explicit floor exactly as written, however unsatisfiable', () => {
+    // The bound is on the *derivation*, which is a guess. A person who writes
+    // qualityFloor: 1 gets what they asked for, and that is what keeps the
+    // floor falsifiable.
+    expect(validate({
+      evidence: evidence({
+        claimedSuccess: true,
+        observedChecks: [{ id: 'c', command: 'npm test', passed: true }],
+      }),
+      contract: { qualityFloor: 1, requiredChecks: [], allowedUncertainty: 0 },
+      verify: greenVerifier,
+    }).passed).toBe(false);
+  });
+
+  it('never derives a floor a bare claim could satisfy', () => {
+    for (const need of [0, 0.1, 0.25, 0.5, 0.8, 1]) {
+      const derived = contractFor({ verificationNeed: need });
+      expect(derived.qualityFloor, String(need)).toBeGreaterThan(LEVEL_MODEL.V0.confidence);
+    }
+  });
+
+  it('survives a nonsense verification need', () => {
+    expect(contractFor({ verificationNeed: Number.NaN }).qualityFloor).toBeGreaterThan(0);
+    expect(contractFor({ verificationNeed: -5 }).qualityFloor).toBe(MINIMUM_QUALITY_FLOOR);
   });
 });

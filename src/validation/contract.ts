@@ -69,6 +69,10 @@ export interface LevelModel {
   latencyMs: number;
 }
 
+/** Named separately so `MAXIMUM_DERIVED_FLOOR` can reference it above the table
+ *  without the two drifting apart. */
+const LEVEL_MODEL_V2_CONFIDENCE = 0.85;
+
 export const LEVEL_MODEL: Record<ValidationLevel, LevelModel> = {
   // Deliberately below every sane floor. An unsupported claim is not evidence.
   V0: { confidence: 0.2, tokens: 0, latencyMs: 0 },
@@ -76,7 +80,7 @@ export const LEVEL_MODEL: Record<ValidationLevel, LevelModel> = {
   // changed" and "the change is right" are different facts.
   V1: { confidence: 0.5, tokens: 0, latencyMs: 0 },
   // Something other than the agent agreed, inside the run's own trace.
-  V2: { confidence: 0.85, tokens: 0, latencyMs: 0 },
+  V2: { confidence: LEVEL_MODEL_V2_CONFIDENCE, tokens: 0, latencyMs: 0 },
   // Re-checked against the tree as it stands. Never 1: a passing test is
   // evidence, not proof, and rounding it to certainty would make the floor
   // unfalsifiable.
@@ -94,4 +98,56 @@ export function requiredConfidence(contract: ValidationContract): number {
     Math.min(1, Math.max(0, contract.qualityFloor)),
     1 - Math.min(1, Math.max(0, contract.allowedUncertainty)),
   );
+}
+
+/** The floor below which no task's contract may fall.
+ *
+ *  Above `V0` and below `V1`, so that "the process exited zero" can never be a
+ *  success however little verification a task was judged to need, while "a file
+ *  changed" can be — for a task nobody asked to verify. */
+export const MINIMUM_QUALITY_FLOOR = 0.35;
+
+/** The highest floor a *derived* contract may demand.
+ *
+ *  Set to `V2` — an observed green check — because that is the strongest
+ *  evidence a goal signal can reasonably insist on. `verificationNeed` is a
+ *  guess read off the words of a goal, and a guess must not be able to demand
+ *  evidence nothing in this runtime can produce: `Add a unit test for X` scores
+ *  0.95, and demanding a fresh re-run for it would make every task of that
+ *  shape permanently unverifiable rather than merely demanding.
+ *
+ *  This bounds the *derivation*, never the contract. A person who writes
+ *  `qualityFloor: 1` gets an unsatisfiable contract, which is exactly what they
+ *  asked for and what keeps the floor falsifiable. */
+export const MAXIMUM_DERIVED_FLOOR = LEVEL_MODEL_V2_CONFIDENCE;
+
+/** The contract for a task, from how much it was judged to need proving.
+ *
+ *  `verificationNeed` is the existing generic signal — `taskEconomicsFor`
+ *  already derives it from the goal, and it is a property of the work rather
+ *  than of a task category. A typo fix scores 0.25 and a bug fix 0.80, so the
+ *  first is satisfied by having produced something and the second demands a
+ *  green check.
+ *
+ *  A single global floor is what the benchmark exposed as wrong: at 0.7, a task
+ *  that edits a file and runs no test could never pass, so the primary metric —
+ *  tokens per *successful* task — was uncomputable for most of the corpus.
+ *  Making the floor a property of the task fixes that without making it a
+ *  property of a task *class*. */
+export function contractFor(input: {
+  verificationNeed: number;
+  requiredChecks?: string[];
+}): ValidationContract {
+  const need = Math.min(1, Math.max(0, Number.isFinite(input.verificationNeed) ? input.verificationNeed : 0.7));
+  const floor = Math.min(
+    MAXIMUM_DERIVED_FLOOR,
+    Math.max(MINIMUM_QUALITY_FLOOR, need),
+  );
+  return {
+    qualityFloor: floor,
+    requiredChecks: input.requiredChecks ?? [],
+    // The complement, so a task that demands proving tolerates little doubt and
+    // one that does not tolerates more.
+    allowedUncertainty: 1 - floor,
+  };
 }

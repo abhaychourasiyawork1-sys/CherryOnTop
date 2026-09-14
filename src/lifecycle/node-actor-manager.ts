@@ -67,6 +67,8 @@ import { readOnlyPlanningGrant, investigativeExecuteGrant } from './dispatch-hel
 import { evaluateBoundary, forgetNode, isIntervention, registerEvidenceSources } from './economic-runtime.js';
 import { evaluateFallback, mustBlockAction, detectFaults } from '../decision/fallback.js';
 import { validate, type ValidationEvidence } from '../validation/engine.js';
+import { contractFor } from '../validation/contract.js';
+import { taskEconomicsFor } from '../efficiency/task-economics.js';
 import { requestEvidenceAtBoundary, renderAcquiredEvidence } from '../context/evidence-actions.js';
 import type { ActionDecision } from '../decision/actions.js';
 import type { EconomicState } from '../decision/state.js';
@@ -1692,13 +1694,16 @@ function recordEfficiency(db: Db, nodeId: string, outcome: EfficiencyOutcome): v
 function recordValidation(db: Db, nodeId: string): boolean {
   try {
     const node = getNode(db, nodeId);
+    // From how much this task was judged to need proving, not from a global
+    // constant. A typo fix is satisfied by having produced something; a bug fix
+    // demands a green check. The signal is the one the context planner already
+    // derives, so there is one answer to "how much does this need verifying".
     const result = validate({
       evidence: validationEvidenceFor(db, nodeId, true),
-      contract: {
-        qualityFloor: 0.7,
+      contract: contractFor({
+        verificationNeed: taskEconomicsFor(node?.contract.goal ?? '').verificationNeed,
         requiredChecks: node?.contract.definition_of_done ?? [],
-        allowedUncertainty: 0.3,
-      },
+      }),
     });
     const now = new Date().toISOString();
     const payload = {
@@ -1766,9 +1771,15 @@ function createAndRun(db: Db, nodeId: string, goal: string, persisted: unknown):
       // CANCELLED is 'partial', not a failure: the work stopped because someone
       // stopped it, and counting that against the success rate would make every
       // change look worse the more often people intervened.
+      // Order matters, and getting it wrong is invisible until a benchmark
+      // reports a success rate of zero: `recordEfficiency` validates the run
+      // against its definition of done, so the definition of done has to be
+      // *closed* first. Reversed, validation reads every item as `unverified`,
+      // every run is downgraded to `partial`, and the primary metric — tokens
+      // per *successful* task — can never be computed at all.
+      closeDefinitionOfDone(db, nodeId, String(snapshot.value), now);
       recordEfficiency(db, nodeId, snapshot.value === 'COMPLETE' ? 'success'
         : snapshot.value === 'CANCELLED' ? 'partial' : 'failure');
-      closeDefinitionOfDone(db, nodeId, String(snapshot.value), now);
       const evidence = listArtifactsForNode(db, nodeId).map((a) => a.id);
       for (const commitment of listCommitmentsForNode(db, nodeId)) {
         updateCommitmentStatus(db, commitment.id, outcome, now);
