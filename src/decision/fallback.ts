@@ -86,6 +86,47 @@ export function confidenceRequiredFor(decision: ActionDecision, state: EconomicS
   return Math.min(1, Math.max(0, share));
 }
 
+/** Faults readable from the state itself.
+ *
+ *  Most faults are things only the caller saw — a read that failed, a row that
+ *  failed its own validity check — and arrive as `faults`. These two are
+ *  visible here, and checking them centrally is what stops each call site from
+ *  having its own idea of what "stale" means.
+ *
+ *  Total: a state this cannot read at all is itself missing telemetry, which is
+ *  the correct answer rather than an exception. */
+export function detectFaults(state: EconomicState): FallbackReason[] {
+  const faults: FallbackReason[] = [];
+  try {
+    // The orchestrator has no basis at all for reading this run. Distinct from
+    // reading it and finding nothing: one is an absence of signal, the other is
+    // a signal of absence, and only the first is a reason to stand down.
+    if (state.trajectory.orchestrationConfidence <= 0) faults.push('missing_telemetry');
+
+    // Evidence about a revision the run is no longer on. Not fatal on its own —
+    // `evidence/reuse.ts` prices staleness rather than refusing it — but a
+    // decision resting on it is a decision about a tree that has moved.
+    if (state.repositoryRevision) {
+      const stale = state.evidence.some((ref) =>
+        ref.repositoryRevision !== undefined && ref.repositoryRevision !== state.repositoryRevision);
+      if (stale) faults.push('stale_repository_graph');
+    }
+  } catch {
+    return ['missing_telemetry'];
+  }
+  return faults;
+}
+
+/** Whether a reason code reports a safety violation, at the top level or
+ *  attributed to a rejected candidate.
+ *
+ *  The engine records a refused candidate as `rejected:<id>:safety_violation`,
+ *  and a plain equality check would miss exactly the case that matters most:
+ *  every option was unsafe and the decision fell through to continuing. */
+function reportsSafetyViolation(reasonCodes: string[]): boolean {
+  return reasonCodes.some((code) => code === 'safety_violation' || code.endsWith(':safety_violation'));
+}
+
 export interface FallbackInput {
   state: EconomicState;
   /** Absent when no decision was produced at all, which is itself a reason. */
@@ -106,16 +147,17 @@ export function evaluateFallback(input: FallbackInput): FallbackDecision {
 
   // Safety first, and checked before anything else, because it is the one
   // reason whose answer is not "run unoptimized".
-  const unsafe = reasons.includes('safety_violation')
-    || decision?.reasonCodes.includes('safety_violation') === true;
-  if (decision?.reasonCodes.includes('safety_violation') && !reasons.includes('safety_violation')) {
-    reasons.push('safety_violation');
-  }
+  const reportedBySomething = decision ? reportsSafetyViolation(decision.reasonCodes) : false;
+  const unsafe = reasons.includes('safety_violation') || reportedBySomething;
+  if (unsafe && !reasons.includes('safety_violation')) reasons.push('safety_violation');
 
   if (!decision) reasons.push('missing_telemetry');
 
-  if (state.resources.optimizationTokens > 0
-      && state.resources.optimizationConsumedTokens >= state.resources.optimizationTokens) {
+  // Includes an allowance of zero, which is exhaustion from the start: an
+  // optimizer permitted to spend nothing on deciding is not optimizing, and
+  // reporting that run as Full Architecture would put Baseline behaviour in the
+  // Full column of every comparison.
+  if (state.resources.optimizationConsumedTokens >= state.resources.optimizationTokens) {
     reasons.push('optimization_budget_exhausted');
   }
 

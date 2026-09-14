@@ -65,7 +65,7 @@ import { recordDispatchUsage, turnsForNode } from '../db/queries/tokens.js';
 import { shouldRetryWithoutModel } from '../execution/tokens.js';
 import { readOnlyPlanningGrant, investigativeExecuteGrant } from './dispatch-helpers.js';
 import { evaluateBoundary, forgetNode, isIntervention, registerEvidenceSources } from './economic-runtime.js';
-import { evaluateFallback, mustBlockAction } from '../decision/fallback.js';
+import { evaluateFallback, mustBlockAction, detectFaults } from '../decision/fallback.js';
 import { validate, type ValidationEvidence } from '../validation/engine.js';
 import { requestEvidenceAtBoundary, renderAcquiredEvidence } from '../context/evidence-actions.js';
 import type { ActionDecision } from '../decision/actions.js';
@@ -466,7 +466,10 @@ async function economicBoundary(
     const fallback = evaluateFallback({
       state,
       decision,
-      faults: cycle.cost.reason === 'decision_engine_error' ? ['decision_engine_error'] : [],
+      faults: [
+        ...detectFaults(state),
+        ...(cycle.cost.reason === 'decision_engine_error' ? ['decision_engine_error' as const] : []),
+      ],
     });
     if (fallback.mode === 'baseline') {
       publishFallback(db, input.nodeId, fallback.reason, mustBlockAction(fallback));
