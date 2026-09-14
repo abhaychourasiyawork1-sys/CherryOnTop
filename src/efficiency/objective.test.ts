@@ -76,15 +76,40 @@ describe('objectiveScore', () => {
     expect(objectiveScore(base, base, DEFAULT_WEIGHTS)).toBeCloseTo(1);
   });
 
-  it('falls below 1 when both terms improve', () => {
+  it('falls below 1 when tokens and latency improve at equal quality', () => {
     const score = objectiveScore(suite({ tokensPerSuccessfulTask: 5000, p95LatencyMs: 50_000 }), suite(), DEFAULT_WEIGHTS);
-    expect(score).toBeCloseTo(0.5);
+    // 0.4*0.5 + 0.2*0.5 + 0.4*1 (quality unchanged) = 0.7
+    expect(score).toBeCloseTo(0.7);
   });
 
-  it('weights the two terms as configured', () => {
+  it('weights the three terms as configured', () => {
     const halved = suite({ tokensPerSuccessfulTask: 5000 });
     expect(objectiveScore(halved, suite(), { tokens: 1, latency: 0 })).toBeCloseTo(0.5);
     expect(objectiveScore(halved, suite(), { tokens: 0, latency: 1 })).toBeCloseTo(1);
+    expect(objectiveScore(halved, suite(), { tokens: 0, latency: 0, quality: 1 })).toBeCloseTo(1);
+  });
+
+  it('carries the 2:2:1 objective this architecture was approved under', () => {
+    expect(DEFAULT_WEIGHTS).toEqual({ tokens: 0.4, quality: 0.4, latency: 0.2 });
+    // The same preference `decision/utility.ts` scores a single action with:
+    // tokens and quality equal, latency half of either.
+    expect(DEFAULT_WEIGHTS.quality).toBe(DEFAULT_WEIGHTS.tokens);
+    expect(DEFAULT_WEIGHTS.latency).toBeCloseTo(DEFAULT_WEIGHTS.tokens / 2);
+  });
+
+  it('rewards a quality improvement at unchanged cost', () => {
+    const better = suite({ qualityScore: 0.95 });
+    expect(objectiveScore(better, suite(), DEFAULT_WEIGHTS)).toBeLessThan(1);
+  });
+
+  it('penalises a quality regression bought with tokens', () => {
+    const cheapAndWorse = suite({ tokensPerSuccessfulTask: 8000, qualityScore: 0.6 });
+    expect(objectiveScore(cheapAndWorse, suite(), DEFAULT_WEIGHTS)).toBeGreaterThan(1);
+  });
+
+  it('treats an unscored run as neutral on quality rather than as an improvement', () => {
+    const unscored = suite({ qualityScore: null });
+    expect(objectiveScore(unscored, suite(), { tokens: 0, latency: 0, quality: 1 })).toBeCloseTo(1);
   });
 
   it('does not divide by a baseline of zero', () => {
