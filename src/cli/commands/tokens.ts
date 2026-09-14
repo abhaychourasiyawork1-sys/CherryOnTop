@@ -6,11 +6,17 @@ export function registerTokensCommand(program: Command): void {
     .command('tokens [caseId]')
     .description('Show token usage by dispatch role and model')
     .option('--json', 'print machine-readable JSON instead of a table', false)
-    .action(async (caseId: string | undefined, options: { json: boolean }) => {
+    .option('--economic', 'include the economic record: what the control plane decided, predicted and cost', false)
+    .action(async (caseId: string | undefined, options: { json: boolean; economic: boolean }) => {
       const client = createDaemonClient();
-      const { rows, planCacheHits, resultCacheHits } = await client.memory.tokens.query(caseId ? { caseId } : undefined);
+      const scope = caseId ? { caseId } : undefined;
+      const { rows, planCacheHits, resultCacheHits } = await client.memory.tokens.query(scope);
       if (options.json) {
-        console.log(JSON.stringify({ rows, planCacheHits, resultCacheHits }));
+        // Asked for only when asked for: the economic records are what the
+        // benchmark reads, and a bare `--json` should stay the shape every
+        // existing caller already parses.
+        const economic = options.economic ? await client.memory.economic.query(scope) : undefined;
+        console.log(JSON.stringify({ rows, planCacheHits, resultCacheHits, ...(economic ? { economic } : {}) }));
         return;
       }
       if (rows.length === 0) {

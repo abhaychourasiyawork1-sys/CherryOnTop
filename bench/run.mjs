@@ -12,6 +12,7 @@
 //   node bench/run.mjs result-reuse  # ORG_RESULT_CACHE_TTL_HOURS=24 vs 0
 import { execFileSync } from 'node:child_process';
 import { readFileSync, writeFileSync } from 'node:fs';
+import { summarizeEconomicRun, compareArms, renderComparison } from './metrics/economic.mjs';
 
 const mode = process.argv[2];
 // `--goals=a,b` runs a subset. The full matrix is 7 goals x 2 arms, and the
@@ -107,7 +108,10 @@ for (const [label, env] of MATRIX[mode]) {
     // 22-46 input tokens against 1.77M cache-read: the bill is the conversation
     // prefix re-read every turn, so a comparison on input tokens compares two
     // rounding errors. Everything the provider actually billed is reported.
-    const tokens = JSON.parse(sh('org', ['tokens', id, '--json'], env));
+    // `--economic` adds what the control plane decided, predicted and cost.
+    // Asked for here and nowhere else: a bare `--json` keeps the shape every
+    // other caller already parses.
+    const tokens = JSON.parse(sh('org', ['tokens', id, '--json', '--economic'], env));
     const sum = (field) => tokens.rows.reduce((acc, r) => acc + (r[field] ?? 0), 0);
     const row = {
       goal: g.id,
@@ -129,7 +133,7 @@ for (const [label, env] of MATRIX[mode]) {
       models: tokens.rows.map((r) => `${r.role}:${r.model}`).join(' '),
       rubric: g.rubric,
     };
-    results.push({ arm: label, ...row });
+    results.push({ arm: label, ...row, economic: tokens.economic ?? [] });
     console.log(JSON.stringify(row));
   }
 }
@@ -196,6 +200,26 @@ if (baselineArg) {
     cacheReadPerSuccessDeltaPct: pct('cacheReadPerSuccess'),
     wallDeltaPct: pct('wallSeconds'),
   }, null, 2));
+}
+
+// The economic comparison: the primary metric first, with quality and latency
+// beside it, and every component of the spend so a regression can be attributed
+// rather than only observed.
+if (arms.length === 2) {
+  const armRecords = (arm) => results.filter((r) => r.arm === arm).flatMap((r) => r.economic ?? []);
+  // `on` is the Full Architecture arm in every matrix row, and `off` is
+  // Baseline — named for the knob rather than the architecture, which is why
+  // they are re-labelled here rather than relied on positionally elsewhere.
+  const full = summarizeEconomicRun(armRecords(arms[0]));
+  const baselineSummary = summarizeEconomicRun(armRecords(arms[1]));
+  if (full.tasks > 0 && baselineSummary.tasks > 0) {
+    const comparison = compareArms(baselineSummary, full);
+    console.log('\n=== economic comparison (baseline vs full architecture) ===\n');
+    console.log(renderComparison(baselineSummary, full, comparison));
+  } else {
+    console.log('\n=== economic comparison ===');
+    console.log('No efficiency records were produced by one or both arms; nothing to compare.');
+  }
 }
 
 console.log('\nScore the rubric by hand. Ship criterion: cost per *successful* goal lower AND every rubric still passes.');

@@ -16,6 +16,11 @@ import { planEvidence } from '../dist/execution/evidence-planner.js';
 import { updateFrontier, EMPTY_FRONTIER } from '../dist/context/frontier.js';
 import { decideExecutionPath } from '../dist/decision/engine.js';
 import { judgeTask } from '../dist/intelligence/task-judge.js';
+import { inspectFastPath } from '../dist/decision/fast-path.js';
+import { runDecisionCycle } from '../dist/decision/orchestration-loop.js';
+import { initialEconomicState, normalizeEconomicState } from '../dist/decision/state.js';
+import { evaluateInformationOpportunity } from '../dist/efficiency/information-economics.js';
+import { buildCandidates } from '../dist/context/candidates.js';
 
 const CHARS_PER_TOKEN = 4;
 const tokens = (text) => Math.ceil(text.length / CHARS_PER_TOKEN);
@@ -230,5 +235,85 @@ table('Evidence planning', [
   evidence('only a full dispatch', open, [candidates[0]]),
   evidence('nothing outstanding', EMPTY_FRONTIER, candidates),
 ], ['situation', 'chosen', 'tokens']);
+
+// -------------------------------------------------------- the control plane
+// What the orchestrator costs, and how often it costs anything at all. These
+// are the numbers that decide whether the economic layer pays for itself, and
+// they are measurable without a model because the decision layers are
+// arithmetic over data already in memory.
+const econState = (over) => {
+  const base = initialEconomicState({
+    goal: goals[0], totalTokenBudget: 200_000, repository: 'bench', repositoryRevision: 'rev-1',
+  });
+  return normalizeEconomicState({ ...base, ...over });
+};
+
+const healthyRun = econState({
+  evidence: [
+    { id: 'observed:src/a.ts', kind: 'fact', source: 'read', confidence: 0.9 },
+    { id: 'observed:src/b.ts', kind: 'fact', source: 'read', confidence: 0.9 },
+    { id: 'observed:test', kind: 'validation', source: 'test', confidence: 0.9 },
+  ],
+  uncertainty: { target: 0.1, structural: 0.1, behavioral: 0.2, validation: 0.1 },
+  trajectory: {
+    progress: 0.6, informationGain: 0.7, explorationPressure: 0.2,
+    failurePressure: 0, stateSimilarity: 0.2, orchestrationConfidence: 0.8,
+  },
+  resources: { ...econState({}).resources, consumedTokens: 60_000 },
+  validation: { required: true, confidence: 0.9, status: 'passed' },
+});
+
+const strugglingRun = econState({
+  uncertainty: { target: 0.9, structural: 0.9, behavioral: 0.6, validation: 0.9 },
+  trajectory: {
+    progress: 0.05, informationGain: 0.02, explorationPressure: 0.8,
+    failurePressure: 0.9, stateSimilarity: 0.95, orchestrationConfidence: 0.8,
+  },
+  resources: { ...econState({}).resources, consumedTokens: 120_000 },
+});
+
+const cycle = (name, state) => {
+  const result = runDecisionCycle(state, { nowMs: () => 0 });
+  const screen = inspectFastPath(state);
+  return [
+    name,
+    screen.opportunity ? 'yes' : 'no',
+    result.skippedDeepEvaluation ? 'screen only' : 'screen + evaluation',
+    result.decision?.action.kind ?? 'none',
+    num(result.cost.tokens),
+    `${(result.cost.tokens / state.resources.consumedTokens * 100).toFixed(3)}%`,
+  ];
+};
+
+table('What deciding costs', [
+  cycle('healthy run', healthyRun),
+  cycle('struggling run', strugglingRun),
+], ['run', 'opportunity', 'work done', 'decision', 'tokens', 'of task spend']);
+
+// -------------------------------------------------- information economics
+// Hand it over now, or let the agent find it? The asymmetry the whole context
+// layer rests on, priced.
+const infoEntries = [
+  { path: 'src/auth/session.ts', symbols: ['refreshSession'], imports: ['./store.js'], bytes: 2400 },
+  { path: 'src/auth/store.ts', symbols: ['readStore'], imports: [], bytes: 900 },
+  { path: 'src/auth/session.test.ts', symbols: [], imports: ['./session.js'], bytes: 1200 },
+  { path: 'src/billing/invoice.ts', symbols: ['renderInvoice'], imports: [], bytes: 3000 },
+];
+const infoCandidates = buildCandidates({
+  entries: infoEntries,
+  goal: 'Fix the refresh bug in src/auth/session.ts',
+  anchors: ['session.ts'],
+  taskFit: { verificationNeed: 0.8, investigationLikelihood: 0.3, readOnly: false },
+});
+table('Provide now versus discover later', infoCandidates.map((candidate) => {
+  const economics = evaluateInformationOpportunity({ candidate, state: strugglingRun });
+  return [
+    candidate.path,
+    candidate.relationships.join(' ') || '(lexical only)',
+    num(economics.acquisitionCost),
+    num(Math.round(economics.expectedRediscoveryCost)),
+    num(Math.round(economics.expectedNetValue)),
+  ];
+}), ['file', 'why it is a candidate', 'to send', 'to rediscover', 'net value']);
 
 console.log('\nNo model was called and no cluster was used. Every number above is\narithmetic over fixtures, reproducible by re-running this file.\n');
