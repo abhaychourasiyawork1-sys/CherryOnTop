@@ -173,3 +173,106 @@ export function evaluateDeepPath(state: EconomicState): ActionCandidate[] {
     evaluating = false;
   }
 }
+
+// ---------------------------------------------------------------------------
+// Historical knowledge as a candidate source.
+//
+// The join between the evidence plane and the decision layer. It lives here
+// rather than in `evidence/` because the direction matters: the deep path
+// *asks* whether stored knowledge is worth retrieving, and the store has no
+// opinion about the decision. A store that could propose actions would be a
+// second decider with privileged access to what it itself wrote down.
+//
+// Two bounds keep retrieval from becoming the cost it exists to avoid:
+//
+//  - It runs only inside the deep path, which the screen has already decided is
+//    worth paying for. A healthy run never touches the store at all.
+//  - It asks only when structural or target doubt is what is actually
+//    outstanding. Stored knowledge is about *where things are and how they
+//    work*; offering it to a run whose problem is whether its change is correct
+//    would be paying to answer a question nobody asked.
+// ---------------------------------------------------------------------------
+
+/** The most items one decision cycle will look at. Small on purpose: the
+ *  ranking in `store.ts` already puts the best first, and a cycle that
+ *  considers fifty candidates has spent more deciding than the top one could
+ *  save. */
+export const MAX_HISTORICAL_CANDIDATES = 5;
+
+/** The least this source needs to know about a stored item.
+ *
+ *  Deliberately not `KnowledgeItem`. The decision layer importing the evidence
+ *  plane's types would invert the dependency: the deep path *asks* whether
+ *  knowledge is worth retrieving, and it must not acquire opinions about how
+ *  knowledge is shaped in order to ask. */
+export interface HistoricalItem {
+  id: string;
+  content: string;
+}
+
+/** The verdict `evidence/reuse.ts` returns, named structurally for the same
+ *  reason. */
+export interface ReuseVerdict {
+  usable: boolean;
+  directReuse: boolean;
+  requiresVerification: boolean;
+  expectedBenefit: number;
+  retrievalCost: number;
+  verificationCost: number;
+  staleRisk: number;
+  reasonCodes: string[];
+}
+
+export interface HistoricalSourceDeps<T extends HistoricalItem = HistoricalItem> {
+  /** Bound to a database by the caller. This module never opens one. */
+  lookup: (query: { repository: string; revision?: string; limit: number }) => T[];
+  /** Prices one item against the state. Injected so the ranking here cannot
+   *  drift from `evidence/reuse.ts`. */
+  evaluate: (item: T, state: EconomicState) => ReuseVerdict;
+}
+
+/** A candidate source over stored knowledge, bound to one repository. */
+export function historicalEvidenceSource<T extends HistoricalItem>(
+  deps: HistoricalSourceDeps<T>,
+): CandidateSource {
+  return (state) => {
+    if (!state.repository) return [];
+    // What stored knowledge can answer. Asking when the outstanding doubt is
+    // about correctness would be paying to answer a question nobody asked.
+    const answerable = Math.max(state.uncertainty.structural, state.uncertainty.target);
+    if (answerable <= 0) return [];
+
+    const items = deps.lookup({
+      repository: state.repository,
+      revision: state.repositoryRevision,
+      limit: MAX_HISTORICAL_CANDIDATES,
+    });
+
+    const out: ActionCandidate[] = [];
+    for (const item of items) {
+      const verdict = deps.evaluate(item, state);
+      if (!verdict.usable) continue;
+      out.push(actionCandidate({
+        id: `historical:${item.id}`,
+        kind: 'reuse_evidence',
+        capability: 'evidence.store',
+        expectedTokenBenefit: verdict.expectedBenefit,
+        expectedInformationGain: clamp01(answerable * (1 - verdict.staleRisk)),
+        tokenCost: verdict.retrievalCost + verdict.verificationCost,
+        // Believing something stale is how cross-run memory becomes a system
+        // that is confidently wrong. Priced as a quality risk, which is the one
+        // term a token saving may never buy.
+        qualityRisk: verdict.staleRisk,
+        confidence: clamp01(state.trajectory.orchestrationConfidence * (1 - verdict.staleRisk)),
+        metadata: {
+          knowledgeId: item.id,
+          directReuse: verdict.directReuse,
+          requiresVerification: verdict.requiresVerification,
+          content: item.content,
+          reasonCodes: verdict.reasonCodes,
+        },
+      }));
+    }
+    return out;
+  };
+}

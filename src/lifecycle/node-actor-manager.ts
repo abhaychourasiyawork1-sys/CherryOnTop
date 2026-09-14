@@ -44,7 +44,7 @@ import { insertDodItems, listDodForNode, setDodState } from '../db/queries/dod.j
 import { dispatchOptionsFor, planCacheTtlHours, repoMapTokenBudget, rolePromptsEnabled, runtimeMode, resultCacheTtlHours, type DispatchRole } from '../config/efficiency.js';
 import { routeModel } from '../intelligence/model-router.js';
 import { assessDecomposition } from '../intelligence/decompose.js';
-import { repoHead, repoDirty } from '../execution/git-state.js';
+import { repoHead, repoDirty, repoIdentity } from '../execution/git-state.js';
 import { planCacheKey, getCachedPlan, putCachedPlan } from '../db/queries/plan-cache.js';
 import { resultCacheKey, getCachedResult, putCachedResult } from '../db/queries/result-cache.js';
 import { dependenciesFromEvents, buildDependencyFingerprint, dependenciesValid } from '../context/dependencies.js';
@@ -64,7 +64,7 @@ import { dispatchContextFor, warmRepoInventory } from '../context/dispatch-conte
 import { recordDispatchUsage, turnsForNode } from '../db/queries/tokens.js';
 import { shouldRetryWithoutModel } from '../execution/tokens.js';
 import { readOnlyPlanningGrant, investigativeExecuteGrant } from './dispatch-helpers.js';
-import { evaluateBoundary, forgetNode, isIntervention } from './economic-runtime.js';
+import { evaluateBoundary, forgetNode, isIntervention, registerEvidenceSources } from './economic-runtime.js';
 import { evaluateFallback, mustBlockAction } from '../decision/fallback.js';
 import { validate, type ValidationEvidence } from '../validation/engine.js';
 import { requestEvidenceAtBoundary, renderAcquiredEvidence } from '../context/evidence-actions.js';
@@ -419,8 +419,12 @@ async function economicBoundary(
   if (runtimeMode() !== 'full') return '';
   try {
     const revision = repoHead(input.worktreePath) ?? undefined;
+    // Registered here rather than at import: the source needs a database, and
+    // this is the first point that has one. Idempotent by name.
+    registerEvidenceSources(db);
     const { decision, state, cycle } = evaluateBoundary(db, {
       nodeId: input.nodeId, goal: input.goal, repositoryRevision: revision,
+      repository: repoIdentity(input.worktreePath) ?? undefined,
       fullArtifactRequests: input.fullArtifactRequests,
     });
 

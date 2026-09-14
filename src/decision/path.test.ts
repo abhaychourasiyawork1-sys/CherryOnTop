@@ -1,7 +1,8 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import { inspectFastPath, DEEP_EVALUATION_TOKEN_COST } from './fast-path.js';
 import {
   evaluateDeepPath, registerCandidateSource, registeredCandidateSources, deepPathInProgress,
+  historicalEvidenceSource, MAX_HISTORICAL_CANDIDATES,
 } from './deep-path.js';
 import { initialEconomicState, normalizeEconomicState, type EconomicState } from './state.js';
 import { actionCandidate } from './actions.js';
@@ -249,5 +250,84 @@ describe('the deep path proposes', () => {
     registerCandidateSource('broken', () => { throw new Error('no'); });
     evaluateDeepPath(healthy());
     expect(deepPathInProgress()).toBe(false);
+  });
+});
+
+describe('historical knowledge competes as an ordinary candidate', () => {
+  afterEach(() => {
+    for (const name of registeredCandidateSources()) registerCandidateSource(name, () => [])();
+  });
+
+  const lost = (over: Partial<EconomicState> = {}) => healthy({
+    repository: 'github.com/acme/app',
+    repositoryRevision: 'rev-1',
+    uncertainty: { target: 0.8, structural: 0.8, behavioral: 0.2, validation: 0.1 },
+    ...over,
+  });
+
+  const item = { id: 'k1', content: 'x'.repeat(400), sourcePaths: ['src/a.ts'], sourceSymbols: [] };
+  const usable = {
+    usable: true, directReuse: true, requiresVerification: false,
+    expectedBenefit: 3_000, retrievalCost: 5, verificationCost: 0, staleRisk: 0,
+    reasonCodes: ['same_revision', 'direct_reuse'],
+  };
+
+  const source = (over: Partial<typeof usable> = {}, items = [item]) => historicalEvidenceSource({
+    lookup: () => items,
+    evaluate: () => ({ ...usable, ...over }),
+  });
+
+  it('offers a reuse action for knowledge worth retrieving', () => {
+    registerCandidateSource('historical', source());
+    const candidate = evaluateDeepPath(lost()).find((c) => c.id === 'historical:k1');
+    expect(candidate?.kind).toBe('reuse_evidence');
+    expect(candidate?.expectedTokenBenefit).toBe(3_000);
+    expect(candidate?.tokenCost).toBe(5);
+    expect(candidate?.metadata.knowledgeId).toBe('k1');
+  });
+
+  it('prices staleness as a quality risk, which a token saving may never buy', () => {
+    registerCandidateSource('historical', source({ staleRisk: 0.6, directReuse: false, requiresVerification: true }));
+    const candidate = evaluateDeepPath(lost()).find((c) => c.id === 'historical:k1')!;
+    expect(candidate.qualityRisk).toBe(0.6);
+    // And it makes the candidate less believable, not more.
+    expect(candidate.confidence).toBeLessThan(lost().trajectory.orchestrationConfidence);
+  });
+
+  it('offers nothing the reuse evaluation refused', () => {
+    registerCandidateSource('historical', source({ usable: false }));
+    expect(evaluateDeepPath(lost()).filter((c) => c.kind === 'reuse_evidence')).toEqual([]);
+  });
+
+  it('does not look at the store when the outstanding doubt is not one it can answer', () => {
+    const lookup = vi.fn(() => [item]);
+    registerCandidateSource('historical', historicalEvidenceSource({ lookup, evaluate: () => usable }));
+    // Knows exactly where it is working; the open question is whether the
+    // change is right. Stored knowledge cannot answer that.
+    evaluateDeepPath(lost({ uncertainty: { target: 0, structural: 0, behavioral: 0.9, validation: 0.9 } }));
+    expect(lookup).not.toHaveBeenCalled();
+  });
+
+  it('does not look at the store for a run with no repository identity', () => {
+    const lookup = vi.fn(() => [item]);
+    registerCandidateSource('historical', historicalEvidenceSource({ lookup, evaluate: () => usable }));
+    evaluateDeepPath(healthy({ repository: undefined }));
+    expect(lookup).not.toHaveBeenCalled();
+  });
+
+  it('asks for a bounded window rather than everything the organization knows', () => {
+    const lookup = vi.fn(() => [item]);
+    registerCandidateSource('historical', historicalEvidenceSource({ lookup, evaluate: () => usable }));
+    evaluateDeepPath(lost());
+    expect(lookup).toHaveBeenCalledWith(expect.objectContaining({ limit: MAX_HISTORICAL_CANDIDATES }));
+  });
+
+  it('never reaches the store from a healthy run at all', () => {
+    // The screen has to have said there is something worth paying to look into
+    // before any of this happens; a healthy run proposes nothing.
+    const lookup = vi.fn(() => [item]);
+    registerCandidateSource('historical', historicalEvidenceSource({ lookup, evaluate: () => usable }));
+    const decided = evaluateDeepPath(healthy());
+    expect(decided.filter((c) => c.kind === 'reuse_evidence')).toEqual([]);
   });
 });

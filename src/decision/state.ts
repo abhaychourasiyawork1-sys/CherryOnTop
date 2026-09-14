@@ -108,6 +108,10 @@ export interface EconomicState {
    *  decision that arrives late can be recognised as stale rather than applied. */
   version: number;
   goal: string;
+  /** Which repository this is about. Sits beside the revision because stored
+   *  knowledge is scoped by both, and a claim about a different repository is
+   *  not stale — it is irrelevant, which is a different answer. */
+  repository?: string;
   repositoryRevision?: string;
   evidence: EvidenceRef[];
   uncertainty: UncertaintyState;
@@ -145,6 +149,7 @@ export type EconomicEvent =
   | {
       kind: 'TASK_STARTED';
       goal: string;
+      repository?: string;
       repositoryRevision?: string;
       totalTokenBudget: number;
       optimizationTokens?: number;
@@ -209,6 +214,7 @@ function nonNegative(value: number | undefined, fallback = 0): number {
 export function initialEconomicState(input: {
   goal: string;
   totalTokenBudget: number;
+  repository?: string;
   repositoryRevision?: string;
   optimizationTokens?: number;
   qualityFloor?: number;
@@ -219,6 +225,7 @@ export function initialEconomicState(input: {
   return normalizeEconomicState({
     version: 0,
     goal: input.goal,
+    repository: input.repository,
     repositoryRevision: input.repositoryRevision,
     evidence: [],
     uncertainty: { ...FULL_UNCERTAINTY },
@@ -259,6 +266,7 @@ export function normalizeEconomicState(state: EconomicState): EconomicState {
   return {
     version: Math.max(0, Math.floor(nonNegative(state.version))),
     goal: typeof state.goal === 'string' ? state.goal : '',
+    repository: state.repository,
     repositoryRevision: state.repositoryRevision,
     evidence: normalizeEvidence(state.evidence ?? []),
     uncertainty: {
@@ -332,6 +340,7 @@ function advance(state: EconomicState, event: EconomicEvent): EconomicState {
       return {
         ...state,
         goal: event.goal,
+        repository: event.repository ?? state.repository,
         repositoryRevision: event.repositoryRevision ?? state.repositoryRevision,
         uncertainty: { ...state.uncertainty, ...event.uncertainty },
         resources: {

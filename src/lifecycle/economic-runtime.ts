@@ -41,6 +41,10 @@ import {
   type OrchestrationCadence, type OrchestrationCycleResult,
 } from '../decision/orchestration-loop.js';
 import { actionCandidate, type ActionCandidate, type ActionDecision } from '../decision/actions.js';
+import { registerCandidateSource, historicalEvidenceSource } from '../decision/deep-path.js';
+import { queryKnowledge } from '../evidence/store.js';
+import { evaluateHistoricalEvidence } from '../evidence/reuse.js';
+import { repoIdentity } from '../execution/git-state.js';
 
 /** What one turn of a dispatch costs, before any run has measured it.
  *
@@ -145,6 +149,10 @@ function validationOf(db: Db, nodeId: string): EconomicState['validation'] {
 export interface ExecutionBoundaryInput {
   nodeId: string;
   goal: string;
+  /** Which repository this run is about. Scopes every read of stored
+   *  knowledge: a claim about a different repository is not stale, it is
+   *  irrelevant. */
+  repository?: string;
   /** Files the context selection judged worth opening, if one was just made.
    *
    *  Passed in rather than recomputed: the selection has already priced these
@@ -197,6 +205,7 @@ export function economicStateFor(db: Db, input: ExecutionBoundaryInput): Economi
   const doubt = Math.min(1, Math.max(0, 1 - signals.confidence));
   const base = initialEconomicState({
     goal: input.goal,
+    repository: input.repository,
     repositoryRevision: input.repositoryRevision,
     totalTokenBudget,
     validationRequired: validation.required,
@@ -308,12 +317,28 @@ function evidenceCandidates(input: ExecutionBoundaryInput, state: EconomicState)
   }));
 }
 
+/** Makes stored knowledge visible to the deep path.
+ *
+ *  Registered rather than imported directly by `deep-path.ts`, because the
+ *  direction matters: the decision layer asks whether knowledge is worth
+ *  retrieving, and the store has no opinion about the decision. Bound to a
+ *  database here — the only layer that has one — and replaced rather than
+ *  appended on a second call, so two runtimes in one process do not produce two
+ *  copies of every candidate. */
+export function registerEvidenceSources(db: Db): () => void {
+  return registerCandidateSource('historical-evidence', historicalEvidenceSource({
+    lookup: (query) => queryKnowledge(db, query),
+    evaluate: (item, state) => evaluateHistoricalEvidence({ item, state }),
+  }));
+}
+
 /** The runtime the lifecycle holds.
  *
  *  A factory rather than a singleton because it closes over a database handle,
  *  and a process that opens two databases — which the tests do — must not have
  *  one of them silently answering for the other. */
 export function createEconomicRuntime(db: Db): EconomicRuntime {
+  registerEvidenceSources(db);
   return {
     async onExecutionBoundary(input) {
       try {

@@ -23,3 +23,27 @@ export function repoDirty(worktreePath: string): boolean {
   if (out === null) return true;
   return out.length > 0;
 }
+
+/** A stable name for the repository itself, as opposed to the checkout.
+ *
+ *  The origin remote when there is one, because two checkouts of one project —
+ *  a worktree and a clone, a CI runner and a laptop — are the same repository
+ *  and knowledge learned in one applies to the other. The absolute path when
+ *  there is not, which at least keeps one machine's knowledge consistent with
+ *  itself rather than silently pooling every local project under one key.
+ *
+ *  Null only when the directory is not a repository at all, which is the honest
+ *  answer: knowledge scoped to "unknown" would be knowledge about nothing. */
+export function repoIdentity(worktreePath: string): string | null {
+  const remote = git(['remote', 'get-url', 'origin'], worktreePath);
+  if (remote) {
+    // Normalized so `git@host:owner/repo.git` and `https://host/owner/repo`
+    // are one repository rather than two.
+    return remote
+      .replace(/^git@([^:]+):/, '$1/')
+      .replace(/^[a-z+]+:\/\//, '')
+      .replace(/\.git$/, '')
+      .replace(/\/+$/, '');
+  }
+  return git(['rev-parse', '--show-toplevel'], worktreePath);
+}
