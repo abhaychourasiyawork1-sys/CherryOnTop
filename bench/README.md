@@ -35,7 +35,71 @@ judges whether the rubric was met.
 npm run bench repo-map        # Phase 2: ORG_REPO_MAP_TOKENS=6000 vs =0
 npm run bench role-prompts    # Phase 3: ORG_ROLE_PROMPTS=on vs off
 npm run bench context-planner # the architecture: ORG_CONTEXT_PLANNER=on vs off
+npm run bench efficiency      # Baseline vs Full Architecture
+node bench/run.mjs efficiency --regimes   # the regime suite (bench/regimes.md)
 ```
+
+## Matched runs
+
+A benchmark comparison is only as good as its pairing. Two arms that ran
+different goals, or the same goals against different commits, or with one arm's
+daemon reading the other's database, produce a number that looks exactly like a
+result and is not one. `bench/compare.mjs` is mostly about refusing those cases.
+
+**Isolation.** Each arm gets its own daemon port and its own SQLite file,
+derived from the arm name so a rerun assigns the same ones. Two arms sharing a
+database is not a subtle contamination: the second reads the first's efficiency
+records and reports them as its own.
+
+**Pairing.** Runs are matched on goal, repository revision, provider, models and
+an environment fingerprint — everything that has to be the same for the
+difference to mean anything. What cannot be paired is **reported, not dropped**:
+a comparison over five of seven goals is a different claim from one over seven.
+
+**Retries.** An environment failure — a rate limit, an expired token, a cluster
+that will not schedule — is retried up to twice. A *product* failure is recorded
+as a result, because retrying a real failure turns a finding into a flake. An
+unexplained failure counts as a product failure: silence is not evidence of an
+environment problem.
+
+**Reproducibility.** Every run writes a metadata block: revision, whether the
+tree was dirty, Node version, provider, models, runner image, the policy
+generations seen, and each arm's port and database. If any of that would stop
+someone reproducing the run, the harness says so in the output rather than
+leaving it to be discovered later.
+
+## Reading the statistics
+
+The statistics are deliberately weak, and that is not an apology. With seven
+goals per arm there is no honest way to make a strong claim, and a harness that
+produces a confident p-value from seven paired observations is a harness that
+will be quoted.
+
+So the comparison reports a **sign test** — which assumes nothing about the
+distribution — beside the plain paired difference and the sample size. The
+strongest phrase it will ever print is *"suggestive, not conclusive at this
+sample size"*. Below five paired observations it declines to say anything beyond
+the direction.
+
+Per-pair percentages are averaged rather than the percentage of the totals
+taken, so one enormous goal does not decide the headline for six small ones.
+
+## The acceptance contract
+
+A strong win, checked by `bench/metrics/economic.mjs`:
+
+```text
+tokens / successful task   ↓
+quality                    ↔ or ↑
+success rate               ↔ or ↑
+latency                    ↔ or acceptably ↑
+orchestration overhead     justified
+```
+
+Four ways an arm can look cheap without being better are refused explicitly: not
+getting cheaper, regressing quality, failing more often, and stopping tasks the
+baseline would also have failed. A run that stopped measuring quality is refused
+too — silence is not a pass.
 
 `context-planner` is the arm that matters for the token-efficiency
 architecture. `off` returns the lexical selector and the flat turn cap this

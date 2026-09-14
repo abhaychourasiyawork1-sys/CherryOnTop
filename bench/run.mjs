@@ -13,6 +13,10 @@
 import { execFileSync } from 'node:child_process';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { summarizeEconomicRun, compareArms, renderComparison } from './metrics/economic.mjs';
+import {
+  isolationFor, classifyFailure, runMetadata, validateMetadata,
+  pairRuns, pairedDifference, MAX_ENVIRONMENT_RETRIES,
+} from './compare.mjs';
 
 const mode = process.argv[2];
 // `--goals=a,b` runs a subset. The full matrix is 7 goals x 2 arms, and the
@@ -77,6 +81,44 @@ if (goals.length === 0) {
 }
 const sh = (cmd, args, env) => execFileSync(cmd, args, { encoding: 'utf8', env: { ...process.env, ...env } });
 
+/** What the whole comparison ran against. Captured once, before anything runs,
+ *  because a result without it is an anecdote about a terminal somebody had
+ *  open. */
+const git = (args) => {
+  try { return execFileSync('git', args, { encoding: 'utf8' }).trim(); } catch { return null; }
+};
+const startedAt = new Date().toISOString();
+const repositoryRevision = git(['rev-parse', 'HEAD']);
+const repositoryDirty = (git(['status', '--porcelain']) ?? 'unknown') !== '';
+const environmentFingerprint = [
+  process.version,
+  process.env.ORG_K8S_NAMESPACE ?? 'org-exec',
+  process.env.ORG_RUNNER_IMAGE ?? 'cherryontop-runner:local',
+].join('/');
+
+/** One goal, run once, with environment failures retried and product failures
+ *  recorded.
+ *
+ *  Getting the distinction wrong corrupts the comparison in both directions:
+ *  retrying a real product failure hides it, and recording an expired token as a
+ *  product failure invents one. */
+function runGoal(attempt, context) {
+  for (let tries = 0; tries <= MAX_ENVIRONMENT_RETRIES; tries++) {
+    try {
+      return { ok: true, value: attempt() };
+    } catch (err) {
+      const verdict = classifyFailure(`${err?.message ?? ''}\n${err?.stdout ?? ''}\n${err?.stderr ?? ''}`);
+      if (!verdict.retryable) return { ok: false, verdict, error: err };
+      if (tries === MAX_ENVIRONMENT_RETRIES) {
+        console.error(`[${context}] gave up after ${tries + 1} attempts: ${verdict.kind}`);
+        return { ok: false, verdict, error: err };
+      }
+      console.error(`[${context}] ${verdict.kind}; retrying (${tries + 1}/${MAX_ENVIRONMENT_RETRIES})`);
+    }
+  }
+  return { ok: false, verdict: { retryable: false, kind: 'unknown', scope: 'product' } };
+}
+
 // Poll `org tree` at most this many times (5s apart) before giving up rather
 // than hanging forever on a node that never reaches a terminal state.
 const MAX_POLLS = 360; // 30 minutes
@@ -85,13 +127,32 @@ const TERMINAL_STATES = ['COMPLETE', 'FAILED', 'CANCELLED'];
 
 const results = [];
 
-for (const [label, env] of MATRIX[mode]) {
-  console.log(`\n=== ${mode}: ${label} ===`);
+// Each arm gets its own port and database. Two arms sharing a SQLite file is
+// not a subtle contamination: the second reads the first's efficiency records
+// and reports them as its own.
+const isolation = Object.fromEntries(MATRIX[mode].map(([label]) => [label, isolationFor(label)]));
+
+for (const [label, knob] of MATRIX[mode]) {
+  const env = { ...knob, ...isolation[label].env };
+  console.log(`\n=== ${mode}: ${label} (port ${isolation[label].port}) ===`);
   sh('org', ['daemon', 'stop'], env); // restart so env is recaptured
   sh('org', ['daemon', 'start'], env);
   for (const g of goals) {
     const started = Date.now();
-    const out = sh('org', ['run', g.goal], env);
+    const launched = runGoal(() => sh('org', ['run', g.goal], env), `${mode}:${label}:${g.id}`);
+    if (!launched.ok) {
+      // Recorded rather than thrown: one unrunnable goal must not take down the
+      // other six, and a report that omits it reads as a claim about all seven.
+      results.push({
+        arm: label, goal: g.id, size: g.size ?? 'unknown', family: g.family ?? 'unknown',
+        regime: g.regime ?? 'unknown', state: 'UNRUNNABLE',
+        failureScope: launched.verdict.scope, failureKind: launched.verdict.kind,
+        repositoryRevision, environmentFingerprint, economic: [],
+      });
+      console.log(JSON.stringify({ goal: g.id, state: 'UNRUNNABLE', ...launched.verdict }));
+      continue;
+    }
+    const out = launched.value;
     const id = (out.match(/Root node created: (\S+)/) || [])[1];
     if (!id) {
       throw new Error(
@@ -139,6 +200,12 @@ for (const [label, env] of MATRIX[mode]) {
       wallSeconds: Number(((Date.now() - started) / 1000).toFixed(0)),
       models: tokens.rows.map((r) => `${r.role}:${r.model}`).join(' '),
       rubric: g.rubric,
+      // Everything that has to match for two runs to be the same experiment.
+      // Recorded per row so pairing is a property of the data rather than an
+      // assumption made afterwards.
+      repositoryRevision,
+      provider: process.env.ANTHROPIC_API_KEY ? 'anthropic-api-key' : 'anthropic-oauth',
+      environmentFingerprint,
     };
     results.push({ arm: label, ...row, economic: tokens.economic ?? [] });
     console.log(JSON.stringify(row));
@@ -231,6 +298,50 @@ if (arms.length === 2) {
 
 console.log('\nScore the rubric by hand. Ship criterion: cost per *successful* goal lower AND every rubric still passes.');
 const label = (process.argv.find((a) => a.startsWith('--label=')) || '').slice(8) || 'last-run';
+
+const metadata = runMetadata({
+  startedAt,
+  mode,
+  goalSet: process.argv.includes('--regimes') ? 'regimes' : process.argv.includes('--families') ? 'goals+families' : 'goals',
+  goalIds: goals.map((g) => g.id),
+  repositoryRevision,
+  repositoryDirty,
+  nodeVersion: process.version,
+  provider: process.env.ANTHROPIC_API_KEY ? 'anthropic-api-key' : 'anthropic-oauth',
+  models: [...new Set(results.map((r) => r.models).filter(Boolean))].join(' | '),
+  runnerImage: process.env.ORG_RUNNER_IMAGE ?? 'cherryontop-runner:local',
+  policyVersions: results.flatMap((r) => (r.economic ?? []).map((e) => e.policyVersion)).filter(Boolean),
+  arms: Object.values(isolation),
+});
+
+const reproducible = validateMetadata(metadata);
+if (!reproducible.reproducible) {
+  console.log('\n=== this run is not fully reproducible ===');
+  for (const problem of reproducible.problems) console.log(`  ${problem}`);
+  console.log('Read the numbers above with that in mind.');
+}
+
+// Paired differences, goal by goal. The honest form of the comparison: a mean
+// over unpaired runs of different goals is a number nothing produced.
+if (arms.length === 2) {
+  const rowsFor = (arm) => results.filter((r) => r.arm === arm && r.state !== 'UNRUNNABLE')
+    .map((r) => ({ ...r, billedTokens: r.inputTokens + r.outputTokens }));
+  const { pairs, reasons } = pairRuns(rowsFor(arms[1]), rowsFor(arms[0]));
+  console.log('\n=== paired differences (full architecture minus baseline) ===');
+  if (reasons.length > 0) console.log(`  could not pair: ${reasons.join(', ')}`);
+  for (const metric of ['billedTokens', 'turns', 'costUsd', 'wallSeconds']) {
+    const difference = pairedDifference(pairs, metric);
+    console.log(JSON.stringify({
+      metric,
+      n: difference.n,
+      meanPercent: difference.meanPercent === null ? null : Number(difference.meanPercent.toFixed(1)),
+      better: difference.wins,
+      worse: difference.losses,
+      evidence: difference.evidence,
+    }));
+  }
+}
+
 const out = new URL(`./${label}.json`, import.meta.url);
-writeFileSync(out, JSON.stringify({ mode, label, results, totals }, null, 2));
+writeFileSync(out, JSON.stringify({ mode, label, metadata, reproducible, results, totals }, null, 2));
 console.log(`Raw rows written to bench/${label}.json`);
