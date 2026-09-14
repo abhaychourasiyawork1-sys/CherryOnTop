@@ -282,3 +282,39 @@ describe('isIntervention', () => {
     })).toBe(true);
   });
 });
+
+describe('a finished execution is not a successful task', () => {
+  it('records a run with no evidence as partial rather than success', async () => {
+    const db = createDb(TEST_DB);
+    stub.mockImplementation(async () => OK);
+    const id = seedNode(db, tmpRepo());
+    startNodeActor(db, id, GOAL);
+    await vi.waitFor(() => expect(getNode(db, id)?.state).toBe('COMPLETE'), { timeout: 10_000 });
+
+    const verdicts = listEventsForNode(db, id).filter((e) => e.type === 'validation.result');
+    expect(verdicts).toHaveLength(1);
+    const verdict = verdicts[0].payload as { passed: boolean; level: string; reasonCodes: string[] };
+    // The runtime said it worked and nothing checked. That claim is exactly what
+    // the ladder refuses to launder into a success.
+    expect(verdict.passed).toBe(false);
+
+    const records = listEventsForNode(db, id);
+    expect(records).toBeDefined();
+    const efficiency = (await import('../db/queries/memory.js')).listMemory(db, 'efficiency_record');
+    expect((efficiency[0].value as { outcome: string }).outcome).toBe('partial');
+  });
+
+  it('names the ceiling it stopped at rather than leaving it to be inferred', async () => {
+    const db = createDb(TEST_DB);
+    stub.mockImplementation(async () => OK);
+    const id = seedNode(db, tmpRepo());
+    startNodeActor(db, id, GOAL);
+    await vi.waitFor(() => expect(getNode(db, id)?.state).toBe('COMPLETE'), { timeout: 10_000 });
+
+    const verdict = listEventsForNode(db, id)
+      .filter((e) => e.type === 'validation.result')[0].payload as { reasonCodes: string[] };
+    // This runtime cannot re-run a repository's tests from inside the daemon,
+    // so the ladder stops at V2 — and says so.
+    expect(verdict.reasonCodes).toContain('V3:no_verifier');
+  });
+});

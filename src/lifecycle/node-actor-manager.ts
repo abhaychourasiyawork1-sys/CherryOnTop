@@ -54,7 +54,7 @@ import { putAgentEnvelope, getAgentEnvelope } from '../db/queries/envelopes.js';
 import { scopeOf } from '../context/types.js';
 import { judgeTask } from '../intelligence/task-judge.js';
 import { evaluateSpendGuard, type SpendGuardState } from '../efficiency/spend-guard.js';
-import { summarizeExecutionTrajectory, UNKNOWN_PROGRESS } from '../efficiency/progress-signals.js';
+import { summarizeExecutionTrajectory, executionSnapshot, UNKNOWN_PROGRESS } from '../efficiency/progress-signals.js';
 import { executionPolicyForGoal, effectiveTurnCap, currentPolicyVersions, EXECUTION_POLICY_VERSION } from '../efficiency/policy.js';
 import { templateFor, pruneTemplate } from '../intelligence/execution-templates.js';
 import type { TaskClass } from '../intelligence/task-judge.js';
@@ -66,6 +66,7 @@ import { shouldRetryWithoutModel } from '../execution/tokens.js';
 import { readOnlyPlanningGrant, investigativeExecuteGrant } from './dispatch-helpers.js';
 import { evaluateBoundary, forgetNode, isIntervention } from './economic-runtime.js';
 import { evaluateFallback, mustBlockAction } from '../decision/fallback.js';
+import { validate, type ValidationEvidence } from '../validation/engine.js';
 import { requestEvidenceAtBoundary, renderAcquiredEvidence } from '../context/evidence-actions.js';
 import type { ActionDecision } from '../decision/actions.js';
 import type { EconomicState } from '../decision/state.js';
@@ -1582,16 +1583,107 @@ function recordOutcomeInMemory(db: Db, nodeId: string, succeeded: boolean, now: 
  *
  *  Total, like every other recorder here: this runs on the terminal transition,
  *  and a node must not be left un-finalized because measuring it failed. */
+/** What the runtime already knows about how well a finished run went.
+ *
+ *  Every field is read off something that already happened — the artifacts
+ *  table, the run's own tool stream, the definition of done. No new telemetry,
+ *  which is what makes validation at V0-V2 cost nothing. */
+function validationEvidenceFor(db: Db, nodeId: string, succeeded: boolean): ValidationEvidence {
+  const artifacts = listArtifactsForNode(db, nodeId).filter((a) => a.kind !== 'result');
+  const snapshot = executionSnapshot({
+    events: listEventsForNode(db, nodeId)
+      .filter((row) => row.type.startsWith('exec.'))
+      .map((row) => ({ type: row.type.slice('exec.'.length), payload: row.payload } as StructuredEvent)),
+    sequence: 0,
+    tokensConsumed: 0,
+  });
+  // A verifying command that ran green is the strongest evidence the trace can
+  // offer, and the fingerprint already separated those out as active targets.
+  const failures = new Set(snapshot.failureSignatures);
+  const observedChecks = snapshot.activeTargets
+    .filter((target) => VERIFYING_COMMAND.test(target))
+    .map((target) => ({
+      id: `observed:${target}`,
+      command: target,
+      passed: ![...failures].some((signature) => signature.includes(target)),
+    }));
+
+  return {
+    claimedSuccess: succeeded,
+    artifactIds: artifacts.map((a) => a.id),
+    observedChecks,
+    requiredChecks: listDodForNode(db, nodeId).map((item) => ({
+      id: item.id, text: item.text, met: item.state === 'met',
+    })),
+  };
+}
+
+/** The same shapes `efficiency/progress-signals.ts` treats as proof. Duplicated
+ *  deliberately narrow rather than exported: what counts as *a verifying
+ *  command* and what counts as *an active target that is one* are the same
+ *  question, and if they ever diverge this is the line that should have to
+ *  change. */
+const VERIFYING_COMMAND = /\b(?:test|tests|vitest|jest|pytest|build|tsc|typecheck|lint|eslint|check|cargo|go\s+test|make)\b/i;
+
 function recordEfficiency(db: Db, nodeId: string, outcome: EfficiencyOutcome): void {
   // Said explicitly rather than left to a timeout: the control plane keeps a
   // little working memory per node, and a daemon that runs for weeks must not
   // accumulate one entry for every node it has ever seen.
   forgetNode(nodeId);
   try {
-    const record = ledger.finishTask(nodeId, outcome);
+    // `EXECUTION_FINISHED` is a fact about a process; `TASK_SUCCESS` is a claim
+    // about the world. The primary KPI is tokens per *successful* task, so a
+    // success count that includes runs which did not work scores an optimizer
+    // that makes runs cheaper and wronger as an improvement. This is the gate.
+    //
+    // Downgraded to `partial`, never to `failure`: the run did finish and did
+    // produce something, and calling that a failure would be as dishonest in
+    // the other direction.
+    const validated = outcome !== 'success'
+      ? outcome
+      : recordValidation(db, nodeId) ? 'success' : 'partial';
+    const record = ledger.finishTask(nodeId, validated);
     insertMemoryRow(db, 'efficiency_record', nodeId, record, nodeId);
   } catch (err) {
     console.error(`Failed to record the efficiency of node ${nodeId}:`, err);
+  }
+}
+
+/** Whether this run may be counted as a successful task, and the receipt for
+ *  the answer either way.
+ *
+ *  No fresh verifier is passed: re-running a repository's test suite from
+ *  inside the daemon is a capability this runtime does not have, so the ladder
+ *  stops at V2 — a green check in the run's own trace. Recorded as
+ *  `V3:no_verifier` rather than silently, so the ceiling is visible in the
+ *  telemetry rather than inferred from its absence. */
+function recordValidation(db: Db, nodeId: string): boolean {
+  try {
+    const node = getNode(db, nodeId);
+    const result = validate({
+      evidence: validationEvidenceFor(db, nodeId, true),
+      contract: {
+        qualityFloor: 0.7,
+        requiredChecks: node?.contract.definition_of_done ?? [],
+        allowedUncertainty: 0.3,
+      },
+    });
+    const now = new Date().toISOString();
+    const payload = {
+      level: result.level, passed: result.passed, confidence: result.confidence,
+      tokens: result.tokens, latencyMs: result.latencyMs,
+      evidenceIds: result.evidenceIds, reasonCodes: result.reasonCodes,
+    };
+    const id = appendEvent(db, { nodeId, type: 'validation.result', payload, createdAt: now });
+    publish({ id, nodeId, type: 'validation.result', payload, createdAt: now });
+    return result.passed;
+  } catch (err) {
+    // Unreadable evidence must not manufacture a success. It also must not
+    // manufacture a failure of the *run* — the caller downgrades to partial,
+    // which is the honest reading of "it finished and we cannot say whether it
+    // worked".
+    console.error(`Failed to validate node ${nodeId}:`, err);
+    return false;
   }
 }
 
