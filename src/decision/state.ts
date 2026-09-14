@@ -26,6 +26,10 @@
  *     it, and a bug in a *state* must not become a bug in a *dispatch*. Every
  *     field is clamped to something safe rather than trusted. */
 import { clamp01 } from '../efficiency/policy-types.js';
+// The update rule lives in `uncertainty.ts` and is imported rather than
+// restated here. A reducer with its own copy of the arithmetic is a second
+// answer to "how much did this evidence teach us", and the two would drift.
+import { updateUncertainty as applyObservations } from './uncertainty.js';
 
 export type EvidenceKind = 'fact' | 'observation' | 'hypothesis' | 'validation';
 export type UncertaintyKind = 'target' | 'structural' | 'behavioral' | 'validation';
@@ -352,7 +356,9 @@ function advance(state: EconomicState, event: EconomicEvent): EconomicState {
       return {
         ...state,
         evidence: [...state.evidence, ...fresh],
-        uncertainty: applyObservations(state.uncertainty, event.uncertainty ?? []),
+        // Evidence already held has already had its effect on doubt; passing
+        // the held ids is what stops a redelivery from reducing it twice.
+        uncertainty: applyObservations(state.uncertainty, event.uncertainty ?? [], held),
         resources: {
           ...state.resources,
           consumedTokens: state.resources.consumedTokens + nonNegative(event.tokenCost),
@@ -466,18 +472,7 @@ function advance(state: EconomicState, event: EconomicEvent): EconomicState {
   }
 }
 
-function applyObservations(current: UncertaintyState, observations: UncertaintyObservation[]): UncertaintyState {
-  if (observations.length === 0) return current;
-  const next = { ...current };
-  for (const o of observations) {
-    if (!o || !(o.kind in next)) continue;
-    // Weighted by how much the observer trusts itself: a confident reading moves
-    // doubt all the way to what it observed, a tentative one moves it part way.
-    const weight = clamp01(o.confidence);
-    next[o.kind] = clamp01(next[o.kind] + (clamp01(o.after) - next[o.kind]) * weight);
-  }
-  return next;
-}
+
 
 /** How much doubt this evidence actually removed, as a fraction of the doubt
  *  there was. Evidence that named no dimension gets a small fixed credit rather
