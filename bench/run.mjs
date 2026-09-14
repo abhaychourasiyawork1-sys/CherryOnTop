@@ -61,9 +61,15 @@ const fixtures = JSON.parse(readFileSync(new URL('./goals.json', import.meta.url
 // for explicitly. Adding a goal to the default set would silently change what
 // "the baseline" means, and every later comparison would be against a number
 // no earlier run produced.
-const all = process.argv.includes('--families')
-  ? [...fixtures.goals, ...fixtures.families]
-  : fixtures.goals;
+// `--regimes` selects the regime suite instead of the frozen population: those
+// goals are grouped by the *shape of the economic situation* rather than by kind
+// of work, which is what makes a regression attributable to a situation the
+// policy mishandles rather than to a task it has not seen.
+const all = process.argv.includes('--regimes')
+  ? fixtures.regimes
+  : process.argv.includes('--families')
+    ? [...fixtures.goals, ...fixtures.families]
+    : fixtures.goals;
 const goals = only.length > 0 ? all.filter((g) => only.includes(g.id)) : all;
 if (goals.length === 0) {
   console.error(`no goals matched --goals=${only.join(',')}; available: ${all.map((g) => g.id).join(', ')}`);
@@ -117,6 +123,7 @@ for (const [label, env] of MATRIX[mode]) {
       goal: g.id,
       size: g.size ?? 'unknown',
       family: g.family ?? 'unknown',
+      regime: g.regime ?? 'unknown',
       state,
       dispatches: sum('dispatches'),
       // The term nothing bounded before, and the one the architecture is meant

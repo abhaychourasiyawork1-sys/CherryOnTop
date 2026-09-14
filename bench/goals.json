@@ -1,10 +1,16 @@
 {
   "repo": ".",
   "_metrics": [
-    "cost", "turns", "inputTokens", "outputTokens", "cacheReadTokens",
-    "wallSeconds", "success", "verification"
+    "cost",
+    "turns",
+    "inputTokens",
+    "outputTokens",
+    "cacheReadTokens",
+    "wallSeconds",
+    "success",
+    "verification"
   ],
-  "_note": "`goals` is the frozen baseline population — do not add to it, or a later comparison stops being matched against the recorded baseline. New task families go in `families`, which is off unless --families is passed.",
+  "_note": "`goals` is the frozen baseline population \u2014 do not add to it, or a later comparison stops being matched against the recorded baseline. New task families go in `families`, which is off unless --families is passed.",
   "goals": [
     {
       "id": "global-review",
@@ -112,6 +118,225 @@
       "family": "multi-file",
       "goal": "Thread a `reason` string through publishStepOutcome so a failed step records why",
       "rubric": "the reason reaches the event payload and the CLI renders it"
+    }
+  ],
+  "_regimes_note": "`regimes` is off unless --regimes is passed, for the same reason `families` is: adding to the default set would silently change what \"the baseline\" means. Each regime names a *shape of economic situation*, not a kind of work \u2014 the same architecture has to handle all of them without a pathway for any, and the point of grouping by regime rather than by task family is that a regression is attributable to a situation the policy mishandles rather than to a task it has not seen.",
+  "regimes": [
+    {
+      "id": "rich-anchored-edit",
+      "size": "small",
+      "family": "implementation",
+      "regime": "information-rich",
+      "goal": "Add a `--limit <n>` flag to `org tokens` in src/cli/commands/tokens.ts that caps the printed rows",
+      "rubric": "the flag exists in that file, caps output, and nothing outside src/cli changed",
+      "expectation": "Everything needed is named. Extra context is pure waste: a larger prompt here buys nothing and costs the whole prefix on every turn."
+    },
+    {
+      "id": "rich-anchored-doc",
+      "size": "small",
+      "family": "documentation",
+      "regime": "information-rich",
+      "goal": "Document the exported functions of src/decision/trust.ts in a comment block at the top of that file",
+      "rubric": "every export named accurately, no other file touched",
+      "expectation": "One file, named. Selection should send that file and its direct neighbours and stop."
+    },
+    {
+      "id": "rich-anchored-test",
+      "size": "small",
+      "family": "test-authoring",
+      "regime": "information-rich",
+      "goal": "Add a unit test for signalGap in src/decision/trajectory.ts covering the clamped upper bound",
+      "rubric": "a passing test that exercises signalGap(2, 0) === 1",
+      "expectation": "The file and its test are both named by convention. The test file is the neighbour lexical matching never finds."
+    },
+    {
+      "id": "poor-unanchored-audit",
+      "size": "large",
+      "family": "investigation",
+      "regime": "information-poor",
+      "goal": "Find every place this runtime divides by a value that could be zero, and say which are actually reachable",
+      "rubric": "concrete file:line findings with reachability argued, nothing modified",
+      "expectation": "No anchors and no lexical purchase. Uncertainty must widen selection rather than prune it; pruning here is what sends an agent grepping for twenty turns."
+    },
+    {
+      "id": "poor-unanchored-question",
+      "size": "medium",
+      "family": "investigation",
+      "regime": "information-poor",
+      "goal": "Is there anywhere a failure is swallowed without being recorded? Answer with evidence.",
+      "rubric": "a concrete yes/no per candidate site, nothing modified",
+      "expectation": "The goal's words match almost nothing. A confident narrow selection would be confidently wrong."
+    },
+    {
+      "id": "poor-vague-improvement",
+      "size": "medium",
+      "family": "investigation",
+      "regime": "information-poor",
+      "goal": "Make the slowest part of the test suite faster without weakening any assertion",
+      "rubric": "a measured before/after, and no assertion removed or loosened",
+      "expectation": "The target is not in the goal; it has to be measured. Any context chosen from the goal's words is chosen from nothing."
+    },
+    {
+      "id": "hidden-schema-consumer",
+      "size": "medium",
+      "family": "multi-file",
+      "regime": "hidden-dependency",
+      "goal": "Add a `supersededBy` column to the knowledge table in src/db/schema.ts",
+      "rubric": "schema, migration and every reader updated; existing tests still pass",
+      "expectation": "Omitted context is expensive to rediscover: the migration, the store's row mapper and the query all have to move together, and none is named."
+    },
+    {
+      "id": "hidden-event-consumer",
+      "size": "medium",
+      "family": "multi-file",
+      "regime": "hidden-dependency",
+      "goal": "Rename the `economic.decision` event type to `economic.intervention`",
+      "rubric": "every publisher and every subscriber updated; no dangling string literal",
+      "expectation": "A string literal crossing three modules. Structural edges find the publishers; only a search finds the subscribers."
+    },
+    {
+      "id": "hidden-config-default",
+      "size": "small",
+      "family": "configuration",
+      "regime": "hidden-dependency",
+      "goal": "Change the default context token budget and make every test that asserts the old default pass",
+      "rubric": "the default changed, and no test was weakened to accommodate it",
+      "expectation": "The dependent tests are the hidden half, and they are exactly what a test-of relationship surfaces."
+    },
+    {
+      "id": "trap-broad-review",
+      "size": "large",
+      "family": "investigation",
+      "regime": "exploration-trap",
+      "goal": "Review src/decision for logic that cannot be reached, and prove each finding",
+      "rubric": "each claim proven by argument from the code, no false positives",
+      "expectation": "Genuinely productive exploration. A stuck-detector that counts searches stops exactly this run; one that compares repetition against information gain does not."
+    },
+    {
+      "id": "trap-wide-grep",
+      "size": "medium",
+      "family": "investigation",
+      "regime": "exploration-trap",
+      "goal": "List every module that reads an ORG_* environment variable directly rather than through src/config",
+      "rubric": "a complete list with no false entries",
+      "expectation": "A wide, shallow, terminating search. Each step finds something new, so repetition stays low even as exploration stays high."
+    },
+    {
+      "id": "trap-no-such-thing",
+      "size": "medium",
+      "family": "investigation",
+      "regime": "exploration-trap",
+      "goal": "Find the retry-with-exponential-backoff implementation and document its jitter policy",
+      "rubric": "concludes it does not exist, with evidence, rather than inventing one",
+      "expectation": "The real trap: there is nothing to find. Repetition rises and information gain does not, which is the signal that separates this from the two above."
+    },
+    {
+      "id": "strategy-wrong-layer",
+      "size": "medium",
+      "family": "debugging",
+      "regime": "strategy-failure",
+      "goal": "Make `org tokens` report cache-hit dispatches separately from zero-token ones",
+      "rubric": "the distinction is real in the output, and the fix is in the layer that owns it",
+      "expectation": "A recovery opportunity. The obvious fix is in the CLI and the real one is in the query; the facts gathered about the CLI survive the change of approach."
+    },
+    {
+      "id": "strategy-wrong-cause",
+      "size": "medium",
+      "family": "debugging",
+      "regime": "strategy-failure",
+      "goal": "The economic boundary sometimes returns nothing on a struggling run. Find out why and fix it if it is wrong.",
+      "rubric": "the actual cause named, or a reasoned 'this is correct behaviour'",
+      "expectation": "Several plausible causes \u2014 cadence, screen, fallback. Each ruled out is a hypothesis that must not be replayed and evidence that must not be re-gathered."
+    },
+    {
+      "id": "strategy-wrong-tool",
+      "size": "medium",
+      "family": "refactor",
+      "regime": "strategy-failure",
+      "goal": "Deduplicate the two token-estimation helpers without changing any estimate",
+      "rubric": "one definition, identical estimates, every caller updated",
+      "expectation": "The first merge changes an estimate and fails a test. The retry keeps everything learned about the callers and drops only the merge strategy."
+    },
+    {
+      "id": "budget-broad-under-cap",
+      "size": "large",
+      "family": "investigation",
+      "regime": "hard-budget",
+      "goal": "Audit every module in src/ for missing error handling and report the ten most serious",
+      "rubric": "ten real findings, ranked, with the ranking argued",
+      "expectation": "More work than budget. Success is triage, and a run that spends everything on a thorough tenth of the tree has failed."
+    },
+    {
+      "id": "budget-many-files",
+      "size": "large",
+      "family": "multi-file",
+      "regime": "hard-budget",
+      "goal": "Add a one-line header comment to every file in src/db/queries saying what it owns",
+      "rubric": "every file in that directory has an accurate header",
+      "expectation": "Bounded, wide and shallow. The budget is spent on breadth, and context selection must not spend it on depth."
+    },
+    {
+      "id": "budget-deep-single",
+      "size": "medium",
+      "family": "debugging",
+      "regime": "hard-budget",
+      "goal": "Work out why the context planner selects a migration file for the goal 'find bugs', and fix it if it is wrong",
+      "rubric": "the cause named \u2014 lexical matching on a filename \u2014 and a reasoned fix or a reasoned refusal",
+      "expectation": "Narrow and deep on a small budget. The opposite triage to the two above, from the same architecture."
+    },
+    {
+      "id": "shared-parallel-docs",
+      "size": "large",
+      "family": "documentation",
+      "regime": "shared-information",
+      "goal": "Write a README for each of src/decision, src/evidence and src/recovery describing what it owns",
+      "rubric": "three accurate READMEs, each naming its own modules",
+      "expectation": "Three branches, one understanding of how the layers fit together. Acquiring it once and sharing it is the saving; three sandboxes rediscovering it is the waste."
+    },
+    {
+      "id": "shared-parallel-tests",
+      "size": "large",
+      "family": "test-authoring",
+      "regime": "shared-information",
+      "goal": "Add a determinism test to each of src/decision/utility.ts, budget.ts and trust.ts",
+      "rubric": "three tests, each asserting the same input gives the same output",
+      "expectation": "Independent writes, identical information need. Nothing orders these branches, so serializing them would be the wrong call for the right-sounding reason."
+    },
+    {
+      "id": "shared-write-conflict",
+      "size": "medium",
+      "family": "multi-file",
+      "regime": "shared-information",
+      "goal": "Add both a `--since` and a `--until` filter to `org tokens`",
+      "rubric": "both flags work together and neither overwrote the other",
+      "expectation": "Two pieces of work that look independent and write the same file. Latency saved is not worth a tree neither branch expected."
+    },
+    {
+      "id": "novel-translation",
+      "size": "medium",
+      "family": "novel-prose",
+      "regime": "novel",
+      "goal": "Rewrite every code comment in src/k8s that assumes familiarity with Kubernetes so a reader without it can follow",
+      "rubric": "accurate, no jargon left unexplained, no behaviour changed",
+      "expectation": "Not a coding task in any sense the runtime models. Nothing may branch on that."
+    },
+    {
+      "id": "novel-inventory",
+      "size": "large",
+      "family": "novel-inventory",
+      "regime": "novel",
+      "goal": "Produce a table of every npm dependency, its licence, and whether anything in src/ actually imports it",
+      "rubric": "every dependency listed with a correct import verdict",
+      "expectation": "Mechanical, wide, and about the dependency tree rather than the source. No anchor, no structural edge, and still tractable."
+    },
+    {
+      "id": "novel-judgement",
+      "size": "small",
+      "family": "novel-argument",
+      "regime": "novel",
+      "goal": "Should the recovery success model be calibrated from run history rather than a constant? Argue both sides and recommend one.",
+      "rubric": "both sides argued from this codebase, one recommendation, no code changed",
+      "expectation": "The output is an argument, not a change. Validation cannot be a test run, which is exactly what the ladder has to handle without a special case."
     }
   ]
 }
