@@ -25,6 +25,7 @@ import { evaluateFallback } from '../decision/fallback.js';
 import { evaluateHistoricalEvidence } from '../evidence/reuse.js';
 import { parseRuntimeMode } from '../config/efficiency.js';
 import { actionCandidate, ACTION_KINDS } from '../decision/actions.js';
+import { buildCandidates } from '../context/candidates.js';
 import { taskEconomicsFor } from '../efficiency/task-economics.js';
 import type { KnowledgeItem } from '../evidence/types.js';
 
@@ -125,6 +126,45 @@ describe('no universal stuck threshold', () => {
       }
     }
     expect(offenders).toEqual([]);
+  });
+});
+
+describe('uncertainty widens generation, not only selection', () => {
+  const REPO = [
+    { path: 'src/core/client.ts', symbols: ['connect'], imports: [] },
+    { path: 'src/core/schema.ts', symbols: ['Table'], imports: [] },
+    { path: 'src/a.ts', symbols: ['a'], imports: ['./core/client.js', './core/schema.js'] },
+    { path: 'src/b.ts', symbols: ['b'], imports: ['./core/client.js'] },
+    { path: 'src/c.ts', symbols: ['c'], imports: ['./core/schema.js'] },
+  ];
+  const candidates = (goal: string, anchors: string[] = []) => buildCandidates({
+    entries: REPO, goal, anchors,
+    taskFit: { verificationNeed: 0.5, investigationLikelihood: 0.8, readOnly: true },
+  });
+
+  it('still produces candidates for a goal that names nothing and matches nothing', () => {
+    // Relaxing a marginal test over an empty candidate set changes nothing.
+    // Widening has to happen where the candidates are made, or it does not
+    // happen at all.
+    expect(candidates('review this and find problems').length).toBeGreaterThan(0);
+  });
+
+  it('reaches for what the repository depends on, since nothing points anywhere else', () => {
+    const found = candidates('review this and find problems').map((c) => c.path);
+    expect(found).toContain('src/core/client.ts');
+  });
+
+  it('believes it barely, so the selector widens rather than pruning on it', () => {
+    for (const candidate of candidates('review this and find problems')) {
+      // "Much of the repository depends on this" is a fact about the
+      // repository, not about the goal.
+      expect(candidate.confidenceScore).toBeLessThan(0.5);
+    }
+  });
+
+  it('stops reaching the moment the goal does point somewhere', () => {
+    const anchored = candidates('fix src/a.ts', ['src/a.ts']);
+    expect(anchored.every((c) => !c.relationships.some((r) => r.startsWith('depended-on-by:')))).toBe(true);
   });
 });
 

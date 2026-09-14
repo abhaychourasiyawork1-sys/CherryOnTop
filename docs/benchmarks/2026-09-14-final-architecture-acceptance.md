@@ -72,13 +72,24 @@ signal that would settle it.
 
 Stated plainly because an audit that only lists wins is an advertisement.
 
-- **The information-poor regime is not fixed.** `Review the codebase and find
-  bugs` still finds two candidates against this repository, of which the best is
+- **The information-poor regime is addressed but unmeasured.** It was the
+  largest gap the plan left: `Review the codebase and find bugs` found two
+  candidates against this repository, the best of which was
   `0006_groovy_bug.sql` — matched on the word "bug" in a migration filename. The
-  economic layer prices candidates well; it cannot price candidates that were
-  never generated. Structural relevance is measured *from* anchors, so a goal
-  with no anchors gets no structural seeds. **Nothing in this plan changed
-  that**, and it is the most concrete known gap.
+  economic layer prices candidates well and cannot price candidates that were
+  never generated.
+
+  The cause was that "uncertainty widens" was implemented in the *selector*,
+  which relaxes a marginal test — and relaxing a test over an empty candidate
+  set changes nothing. Widening now happens in *generation*: with no anchors,
+  structural relevance is seeded from import-graph centrality, which is the one
+  kind of structural evidence that needs no anchor. The broad goal now yields
+  227 candidates and surfaces `src/db/client.ts`, `src/db/schema.ts`,
+  `src/server/trpc.ts`.
+
+  **Whether this helps is unmeasured.** It is a larger prompt, and a larger
+  prompt is a cost. The `information-poor` regime is precisely what would settle
+  it. Recorded here as a change with a rationale, not as a win.
 
 - **Context selection got larger, not smaller, on the medium goal shape.** 15
   selections → 32. Partly a root-cause fix that was correct, partly the tree

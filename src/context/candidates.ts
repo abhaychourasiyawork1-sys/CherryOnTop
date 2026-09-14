@@ -271,11 +271,53 @@ function taskFitScore(role: ArtifactRole, fit: CandidateInput['taskFit']): numbe
 
 /** Strong evidence is evidence a person put there or the compiler enforces.
  *  A lexical brush-past is neither. */
-function confidenceScore(kinds: { anchored: boolean; structural: boolean; lexical: number }): number {
+function confidenceScore(kinds: {
+  anchored: boolean; structural: boolean; lexical: number; central?: boolean;
+}): number {
   if (kinds.anchored) return 1;
   if (kinds.structural) return 0.7;
   if (kinds.lexical >= PATH_WEIGHT) return 0.5;
-  return kinds.lexical > 0 ? 0.3 : 0;
+  if (kinds.lexical > 0) return 0.3;
+  // Centrality is real evidence and weak evidence. "Everything imports this" is
+  // a fact about the repository rather than about the goal, so it earns a place
+  // in the candidate set and almost no confidence — which is what makes the
+  // selector's confidence floor fire and widen, rather than pruning a set it
+  // should not be pruning.
+  return kinds.central ? CENTRALITY_CONFIDENCE : 0;
+}
+
+/** How much a file nothing in the goal points at, but much of the repository
+ *  depends on, deserves to be believed. Deliberately below every policy's
+ *  confidence floor. */
+const CENTRALITY_CONFIDENCE = 0.25;
+
+/** How much of the repository depends on each file, on [0,1].
+ *
+ *  In-degree over the maximum in-degree. Crude on purpose: this is a tie-break
+ *  among files the goal says nothing about, not a claim about importance.
+ *
+ *  It exists because of a gap the economic layer could not close. Structural
+ *  relevance is measured *from anchors* — "what does the compiler tie to the
+ *  file the goal named?" — so a goal that names nothing gets no structural
+ *  seeds, and a goal with no lexical purchase either gets a candidate set of
+ *  almost nothing. Pricing candidates well cannot help when there are no
+ *  candidates to price.
+ *
+ *  Centrality is the one kind of structural evidence that needs no anchor. It
+ *  says nothing about the goal and something true about the repository, which
+ *  is exactly the right strength of claim for a run that has no idea where to
+ *  look: it is better than an alphabetical list and far weaker than an import
+ *  edge to a named file. */
+function centralityOf(edges: DependencyEdges, entries: RepoEntry[]): Map<string, number> {
+  const inDegree = new Map<string, number>();
+  let max = 0;
+  for (const entry of entries) {
+    const count = edges.importedBy.get(entry.path)?.size ?? 0;
+    inDegree.set(entry.path, count);
+    if (count > max) max = count;
+  }
+  if (max === 0) return new Map();
+  return new Map([...inDegree].map(([path, count]) => [path, count / max]));
 }
 
 /** The one place that knows how a candidate becomes text, so the selector's
@@ -350,6 +392,14 @@ export function buildCandidates(input: CandidateInput): ContextCandidate[] {
   // measured from. A relationship to nothing in particular is not a
   // relationship.
   const anchored = new Set(unique.filter((e) => anchorHit(e, input.anchors)).map((e) => e.path));
+  // Uncertainty has to widen *generation*, not only selection. The selector
+  // already relaxes its marginal test below the confidence floor — but relaxing
+  // a test over an empty candidate set changes nothing, which is precisely what
+  // happened to a goal naming no file and matching no word.
+  //
+  // Only when there is nothing anchored: with an anchor in hand, adjacency to it
+  // is far better evidence, and mixing centrality in would dilute it.
+  const centrality = anchored.size === 0 ? centralityOf(edges, unique) : new Map<string, number>();
   const byStem = new Map<string, string[]>();
   for (const entry of unique) {
     const key = stem(entry.path);
@@ -381,7 +431,13 @@ export function buildCandidates(input: CandidateInput): ContextCandidate[] {
     }
 
     const lexical = lexicalScore(entry, goalTerms);
-    const structural = isAnchor ? 0 : Math.min(1, relationships.length * 0.5);
+    const adjacency = isAnchor ? 0 : Math.min(1, relationships.length * 0.5);
+    const central = centrality.get(entry.path) ?? 0;
+    if (central > 0) relationships.push(`depended-on-by:${edges.importedBy.get(entry.path)?.size ?? 0}`);
+    // Adjacency to something named, or — when nothing was named — how much of
+    // the repository depends on this. Never both: the second only exists when
+    // the first cannot.
+    const structural = isAnchor ? 0 : Math.max(adjacency, central);
     if (!isAnchor && structural === 0 && lexical === 0) continue;
 
     const role = artifactRole(entry.path);
@@ -409,7 +465,14 @@ export function buildCandidates(input: CandidateInput): ContextCandidate[] {
       lexicalScore: lexical,
       structuralScore: isAnchor ? 1 : structural,
       taskFitScore: taskFitScore(role, input.taskFit),
-      confidenceScore: confidenceScore({ anchored: isAnchor, structural: structural > 0, lexical }),
+      confidenceScore: confidenceScore({
+        anchored: isAnchor,
+        // Adjacency to a named file is strong; centrality is not, and calling
+        // the second "structural" would launder it into the first.
+        structural: adjacency > 0,
+        lexical,
+        central: central > 0,
+      }),
       reuseScore: reused.has(entry.path) ? 1 : 0,
       relationships,
       materialization: 'inventory',

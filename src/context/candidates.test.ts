@@ -116,8 +116,41 @@ describe('buildCandidates', () => {
     expect(paths('fix the invoice rendering')).toContain('src/billing/invoice.ts');
   });
 
-  it('produces nothing for a goal that matches nothing', () => {
-    expect(paths('xyzzy plugh')).toEqual([]);
+  it('falls back to what the repository depends on when the goal points at nothing', () => {
+    // The defect this replaces: a goal naming no file and matching no word
+    // produced an empty candidate set, and the selector's "uncertainty widens"
+    // rule then relaxed a test over nothing. Widening has to happen at
+    // *generation*, or it does not happen at all.
+    const found = paths('xyzzy plugh');
+    expect(found.length).toBeGreaterThan(0);
+    expect(found).toContain('src/auth/store.ts');
+  });
+
+  it('marks such a candidate as weak evidence, so the floor fires and the selector widens', () => {
+    const central = build('xyzzy plugh', []).find((c) => c.path === 'src/auth/store.ts')!;
+    // "Everything imports this" is a fact about the repository, not about the
+    // goal. It earns a place in the set and almost no confidence.
+    expect(central.confidenceScore).toBeLessThan(0.3);
+    expect(central.relationships.some((r) => r.startsWith('depended-on-by:'))).toBe(true);
+  });
+
+  it('still produces nothing when the repository has no dependencies either', () => {
+    const isolated = [
+      { path: 'a.ts', symbols: [], imports: [] },
+      { path: 'b.ts', symbols: [], imports: [] },
+    ];
+    expect(buildCandidates({
+      entries: isolated, goal: 'xyzzy plugh', anchors: [],
+      taskFit: { verificationNeed: 0.5, investigationLikelihood: 0.5, readOnly: false },
+    })).toEqual([]);
+  });
+
+  it('does not mix centrality in once something is anchored', () => {
+    // With an anchor in hand, adjacency to it is far better evidence, and
+    // diluting it with "much of the repo depends on this" would rank a popular
+    // unrelated module beside the file the goal named.
+    const anchored = build('fix src/auth/session.ts', ['src/auth/session.ts']);
+    expect(anchored.every((c) => !c.relationships.some((r) => r.startsWith('depended-on-by:')))).toBe(true);
   });
 
   it('offers relationships as L2 evidence and a bare match as L1', () => {

@@ -34,6 +34,7 @@ Commit: `3699290` · 150 test files · 1697 unit tests · 12 integration · 1 e2
 | 21 | L3 is priced, never materialized, by the selector | `context/candidates.ts`, `selector.ts` | `candidates.test.ts` ("never renders a full artifact"), `selector.test.ts` ("full-artifact requests") |
 | 22 | Selection is economic, not only relevance ranking | `context/selector.ts` | `selector.test.ts` ("the economic gate") |
 | 23 | Uncertainty widens selection rather than pruning | `context/selector.ts` | `selector.test.ts` ("suspends the gate while widening") |
+| 23b | Uncertainty widens *generation*, not only selection | `context/candidates.ts` (centrality seeding) | `candidates.test.ts` ("falls back to what the repository depends on"), `architecture/invariants.test.ts` |
 | 24 | Provide-now-vs-discover-later is priced | `efficiency/information-economics.ts` | `information-economics.test.ts` |
 | 25 | Optimization overhead is inside expected cost | `efficiency/information-economics.ts`, `decision/utility.ts` | `information-economics.test.ts` ("the optimizer charges itself") |
 | 26 | Reactive acquisition is one artifact, bounded, re-priced | `context/evidence-actions.ts` | `evidence-actions.test.ts` ("the bounds that stop this becoming expensive") |
@@ -120,6 +121,7 @@ at the call site that exposed it.
 | Defect | Found by | Fix |
 |---|---|---|
 | `explorationAvoided` scored a lexically-matched file at zero — "the agent already knows about it", which is false | the economic gate in `selector.ts` | `context/scoring.ts`: separate "is it needed?" from "would finding it cost anything?". Anchors and structural neighbours score exactly as before. |
+| "Uncertainty widens" was applied to selection while the candidate set was empty, so it widened nothing | the frozen baseline receipts | `context/candidates.ts`: centrality seeding when nothing is anchored. Widening now happens where the candidates are made. |
 | Workstream ordering stated from the producing side was detected but applied backwards | `workstreams.test.ts` | directed ordering edges built once; pairwise conflict left to write-path overlap alone |
 | `tombstoneFor` recorded a named hypothesis without invalidating it | `five-layer.test.ts` | naming a hypothesis now invalidates it and removes it from what the next attempt inherits |
 | A safety violation attributed to a rejected candidate was invisible to the fallback | `degradation.test.ts` | reason-code check matches `rejected:<id>:safety_violation` too |
@@ -133,7 +135,7 @@ at the call site that exposed it.
 |---|---|
 | The paid matched benchmark | Not run. [Report](../benchmarks/2026-09-14-full-architecture-baseline-comparison.md) says what is measured and what is not. |
 | Policy tuning | None, and none is justified without the above. [Log](../benchmarks/2026-09-14-policy-tuning-log.md). |
-| The information-poor regime | **Not fixed.** A goal with no anchors gets no structural seeds, because structural relevance is measured *from* anchors. `Review the codebase and find bugs` still finds two candidates. Candidate generation is the limit; nothing in this plan changed it. The most concrete known gap. |
+| The information-poor regime | **Addressed after the plan, unmeasured.** A goal with no anchors now seeds structural relevance from import-graph centrality — the one kind of structural evidence that needs no anchor. `Review the codebase and find bugs` goes from 2 candidates to 227 and now surfaces the most-depended-on modules instead of a migration filename. Whether it *helps* is a question for the paid run. |
 | Live V3 validation | The ladder stops at V2 — this runtime cannot re-run a repository's suite from inside the daemon. Recorded as `V3:no_verifier` rather than left to be inferred. |
 | Workstream scheduling in delegation | `planWorkstreams` and `schedulingCandidates` are built and tested; `delegateToChildren` does not yet build a plan from its children. The decision layer is ready for it. |
 | Cross-run knowledge writing | The store, reuse pricing and candidate source exist and are wired for *reading*. Nothing writes a `KnowledgeItem` at the end of a run yet, so `memoryNetValue` will read zero until something does. |
