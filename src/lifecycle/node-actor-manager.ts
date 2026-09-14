@@ -64,6 +64,10 @@ import { dispatchContextFor, warmRepoInventory } from '../context/dispatch-conte
 import { recordDispatchUsage, turnsForNode } from '../db/queries/tokens.js';
 import { shouldRetryWithoutModel } from '../execution/tokens.js';
 import { readOnlyPlanningGrant, investigativeExecuteGrant } from './dispatch-helpers.js';
+import { evaluateBoundary, forgetNode, isIntervention } from './economic-runtime.js';
+import { requestEvidenceAtBoundary, renderAcquiredEvidence } from '../context/evidence-actions.js';
+import type { ActionDecision } from '../decision/actions.js';
+import type { EconomicState } from '../decision/state.js';
 import { memory } from '../db/schema.js';
 
 // In-process actor registry. It is lost on a daemon restart, which is why every
@@ -383,6 +387,123 @@ function publishContextReceipt(db: Db, nodeId: string, receipt: DispatchReceipt)
     });
   } catch (err) {
     console.error(`Failed to record the context plan for node ${nodeId}:`, err);
+  }
+}
+
+/** The economic control plane, asked once, at the moment before a dispatch is
+ *  built.
+ *
+ *  This is the *existing* execution boundary — the point where the goal, the
+ *  context and the grant are assembled — not a new one. That matters: the plan
+ *  this implements forbids a live context channel into a running sandbox, and
+ *  the reason is that a boundary which already exists costs nothing to reuse
+ *  while a new one has to be kept alive between turns.
+ *
+ *  Returns the text to prepend to the next dispatch, or empty. Empty is the
+ *  overwhelmingly common answer and is a genuine no-op: the dispatch that
+ *  follows is byte-identical to the one that would have happened without any of
+ *  this.
+ *
+ *  Total. Every failure path returns empty rather than throwing, because this
+ *  sits on the path to a dispatch and an optimizer that can fail a dispatch by
+ *  failing to optimize is worse than no optimizer. */
+async function economicBoundary(
+  db: Db,
+  input: {
+    nodeId: string; goal: string; worktreePath: string;
+    fullArtifactRequests?: DispatchReceipt['fullArtifactRequests'];
+  },
+): Promise<string> {
+  if (efficiencyMode() !== 'enabled') return '';
+  try {
+    const revision = repoHead(input.worktreePath) ?? undefined;
+    const { decision, state, cycle } = evaluateBoundary(db, {
+      nodeId: input.nodeId, goal: input.goal, repositoryRevision: revision,
+      fullArtifactRequests: input.fullArtifactRequests,
+    });
+
+    // Recorded whether or not anything was decided: what the orchestrator cost
+    // is the number that decides whether it was worth building, and a cost only
+    // recorded when it acted would make it look free exactly when it is not.
+    if (cycle.cost.tokens > 0) publishOrchestrationCost(db, input.nodeId, cycle.cost, decision);
+    if (!isIntervention(decision)) return '';
+
+    return await carryOut(db, decision!, state, input);
+  } catch (err) {
+    console.error(`The economic boundary failed for node ${input.nodeId}; the dispatch proceeds unchanged:`, err);
+    return '';
+  }
+}
+
+/** The only intervention that changes what a dispatch is handed today.
+ *
+ *  Everything else the decision layer can choose — validating, recovering,
+ *  narrowing, scheduling — is carried out by machinery that lands in later
+ *  tasks. Until then those decisions are *recorded* and not acted on, which is
+ *  the honest behaviour: a decision nobody can carry out must not be quietly
+ *  reported as carried out, and must certainly not stop the run. */
+async function carryOut(
+  db: Db,
+  decision: ActionDecision,
+  state: EconomicState,
+  input: { nodeId: string; goal: string; worktreePath: string },
+): Promise<string> {
+  const { action } = decision;
+  const path = typeof action.metadata.path === 'string' ? action.metadata.path : null;
+  if (action.kind !== 'acquire_evidence' || !path) return '';
+
+  const result = await requestEvidenceAtBoundary({
+    state,
+    worktreePath: input.worktreePath,
+    repositoryRevision: state.repositoryRevision,
+    request: {
+      candidateId: path,
+      evidenceLevel: 'L3',
+      expectedBenefit: action.expectedTokenBenefit,
+      acquisitionCost: action.tokenCost,
+      qualityRisk: action.qualityRisk,
+      reasonCodes: decision.reasonCodes,
+    },
+  });
+
+  publishEvidenceOutcome(db, input.nodeId, path, result.acquired, result.tokens, result.reasonCodes);
+  if (!result.acquired || !result.content) return '';
+  publishProgress(db, input.nodeId, `Sending ${path} rather than letting the agent go and find it`);
+  return renderAcquiredEvidence(path, result.content);
+}
+
+function publishOrchestrationCost(
+  db: Db,
+  nodeId: string,
+  cost: { tokens: number; latencyMs: number; reason: string },
+  decision: ActionDecision | undefined,
+): void {
+  try {
+    const now = new Date().toISOString();
+    const payload = {
+      ...cost,
+      decisionId: decision?.decisionId ?? null,
+      stateVersion: decision?.stateVersion ?? null,
+      action: decision?.action.kind ?? null,
+      reasonCodes: decision?.reasonCodes ?? [],
+    };
+    const id = appendEvent(db, { nodeId, type: 'economic.decision', payload, createdAt: now });
+    publish({ id, nodeId, type: 'economic.decision', payload, createdAt: now });
+  } catch (err) {
+    console.error(`Failed to record the orchestration cost for node ${nodeId}:`, err);
+  }
+}
+
+function publishEvidenceOutcome(
+  db: Db, nodeId: string, path: string, acquired: boolean, tokens: number, reasonCodes: string[],
+): void {
+  try {
+    const now = new Date().toISOString();
+    const payload = { path, acquired, tokens, reasonCodes };
+    const id = appendEvent(db, { nodeId, type: 'economic.evidence', payload, createdAt: now });
+    publish({ id, nodeId, type: 'economic.evidence', payload, createdAt: now });
+  } catch (err) {
+    console.error(`Failed to record the evidence outcome for node ${nodeId}:`, err);
   }
 }
 
@@ -1238,9 +1359,18 @@ function productionMachine(db: Db, nodeId: string) {
         const goalWithHandoff = envelopeText
           ? `${envelopeText}\n\n${goalWithConstraints}`
           : goalWithConstraints;
+        // The economic boundary. Asked once, here, at the point the dispatch is
+        // assembled — and answering "nothing to do" leaves `goalForDispatch`
+        // byte-identical to what it would have been, which is what makes
+        // CONTINUE a true no-op rather than a no-op with a comment.
+        const acquired = await economicBoundary(db, {
+          nodeId, goal: input.goal, worktreePath,
+          fullArtifactRequests: repoContext?.receipt.fullArtifactRequests,
+        });
+        const goalWithEvidence = acquired ? `${goalWithHandoff}\n\n${acquired}` : goalWithHandoff;
         const goalForDispatch = repoContext
-          ? withRepoContext(goalWithHandoff, repoContext.content)
-          : goalWithHandoff;
+          ? withRepoContext(goalWithEvidence, repoContext.content)
+          : goalWithEvidence;
 
         // Reset per attempt: the fallback retry below re-runs the dispatch, and
         // its stream is the one whose rows the observations belong to.
@@ -1420,6 +1550,10 @@ function recordOutcomeInMemory(db: Db, nodeId: string, succeeded: boolean, now: 
  *  Total, like every other recorder here: this runs on the terminal transition,
  *  and a node must not be left un-finalized because measuring it failed. */
 function recordEfficiency(db: Db, nodeId: string, outcome: EfficiencyOutcome): void {
+  // Said explicitly rather than left to a timeout: the control plane keeps a
+  // little working memory per node, and a daemon that runs for weeks must not
+  // accumulate one entry for every node it has ever seen.
+  forgetNode(nodeId);
   try {
     const record = ledger.finishTask(nodeId, outcome);
     insertMemoryRow(db, 'efficiency_record', nodeId, record, nodeId);

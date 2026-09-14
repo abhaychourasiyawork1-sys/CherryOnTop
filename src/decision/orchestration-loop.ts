@@ -79,6 +79,14 @@ export interface DecisionCycleInput {
   weights?: UtilityWeights;
   /** Injected so a cycle is reproducible in a test. Production omits it. */
   nowMs?: () => number;
+  /** Candidates the caller already holds and the deep path cannot derive.
+   *
+   *  The registry in `deep-path.ts` is for sources that are a property of the
+   *  process; this is for ones that are a property of *this boundary* — the
+   *  context selection just made, the workstream plan just built. Threading them
+   *  through rather than stashing them somewhere a registered source could find
+   *  them is what keeps a candidate tied to the state it was computed against. */
+  additionalCandidates?: ActionCandidate[];
 }
 
 /** Runs one cycle.
@@ -136,7 +144,7 @@ export function runDecisionCycle(
       };
     }
 
-    const candidates = evaluateDeepPath(state);
+    const candidates = [...evaluateDeepPath(state), ...(input.additionalCandidates ?? [])];
     const decision = chooseEconomicAction({ state, candidates, weights: input.weights });
     // A cycle that chose to continue found nothing actionable, whatever the
     // screen suspected — so it counts as quiet for the backoff. Otherwise a

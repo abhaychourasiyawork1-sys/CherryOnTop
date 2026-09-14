@@ -81,6 +81,22 @@ export function turnsForNode(db: Db, nodeId: string): number {
     .reduce((sum, row) => sum + ((row.value as StoredValue).usage?.numTurns ?? 0), 0);
 }
 
+/** Tokens this node has already billed, across every dispatch recorded for it.
+ *
+ *  Node-scoped for the same reason `turnsForNode` is: it feeds decisions about
+ *  *this* node's next dispatch, and a parent must not be judged to have spent
+ *  what its children spent under their own budgets. Input plus output and
+ *  nothing else — cache reads are a slice of input, and adding them would count
+ *  the same tokens twice. */
+export function tokensForNode(db: Db, nodeId: string): number {
+  return db.select().from(memory).where(eq(memory.kind, KIND)).all()
+    .filter((row) => row.nodeId === nodeId)
+    .reduce((sum, row) => {
+      const usage = (row.value as StoredValue).usage;
+      return sum + (usage?.inputTokens ?? 0) + (usage?.outputTokens ?? 0);
+    }, 0);
+}
+
 export function tokensByRole(db: Db, caseId?: string): { rows: RoleTokenRow[]; planCacheHits: number; resultCacheHits: number } {
   const all = db.select().from(memory).where(eq(memory.kind, KIND)).all();
   const scope = caseId ? new Set(subtreeNodeIds(db, caseId)) : null;

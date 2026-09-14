@@ -2,7 +2,7 @@ import { describe, it, expect, afterEach } from 'vitest';
 import { existsSync, unlinkSync } from 'node:fs';
 import { createDb } from '../client.js';
 import { insertNode } from './nodes.js';
-import { recordDispatchUsage, tokensByRole, policyVersionsSeen } from './tokens.js';
+import { recordDispatchUsage, tokensByRole, tokensForNode, policyVersionsSeen } from './tokens.js';
 
 const DB = './test-tokens.db';
 afterEach(() => { for (const s of ['', '-journal', '-wal', '-shm']) if (existsSync(DB + s)) unlinkSync(DB + s); });
@@ -96,5 +96,27 @@ describe('policyVersionsSeen', () => {
       createdAt: '2026-09-13T00:00:00.000Z',
     });
     expect(policyVersionsSeen(db)).toEqual([]);
+  });
+});
+
+describe('tokensForNode', () => {
+  const t = '2026-09-08T00:00:00.000Z';
+
+  it('sums input and output across a node’s dispatches', () => {
+    const db = createDb(DB);
+    recordDispatchUsage(db, {
+      nodeId: 'n1', role: 'execute', model: null, createdAt: t, costUsd: 0,
+      usage: { inputTokens: 100, outputTokens: 20, cacheReadTokens: 900, cacheCreationTokens: 0, numTurns: 3 },
+    });
+    recordDispatchUsage(db, { nodeId: 'n1', role: 'plan', model: null, usage: usage(50, 5), costUsd: 0, createdAt: t });
+    // Cache reads are a slice of input; counting them would bill the same
+    // tokens twice.
+    expect(tokensForNode(db, 'n1')).toBe(175);
+  });
+
+  it('counts nothing for another node', () => {
+    const db = createDb(DB);
+    recordDispatchUsage(db, { nodeId: 'n1', role: 'execute', model: null, usage: usage(100, 20), costUsd: 0, createdAt: t });
+    expect(tokensForNode(db, 'n2')).toBe(0);
   });
 });
