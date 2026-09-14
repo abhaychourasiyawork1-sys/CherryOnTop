@@ -3,7 +3,7 @@ import { existsSync, unlinkSync } from 'node:fs';
 import { createDb } from '../db/client.js';
 import {
   putKnowledge, queryKnowledge, getKnowledge, invalidateKnowledge,
-  recordConflict, resolveConflict, listConflicts, MAX_QUERY_LIMIT,
+  recordConflict, recordContradiction, resolveConflict, listConflicts, MAX_QUERY_LIMIT,
   type PutKnowledgeInput,
 } from './store.js';
 
@@ -203,5 +203,53 @@ describe('conflicts are recorded, not resolved', () => {
     resolveConflict(db, conflict.id);
     expect(listConflicts(db)).toEqual([]);
     expect(listConflicts(db, { includeResolved: true }).map((c) => c.resolved)).toEqual([true]);
+  });
+});
+
+describe('recording a contradiction', () => {
+  const at = '2026-09-20T00:00:00.000Z';
+
+  it('keeps the disagreement open while serving the claim with precedence', () => {
+    const db = createDb(DB);
+    const old = put(db, { id: 'old', revision: 'rev-0', content: 'reads the cookie first', validated: true });
+    const current = put(db, { id: 'current', revision: 'rev-1', content: 'reads the store first' });
+
+    const { conflict, preferred } = recordContradiction(db, {
+      items: [old, current], reason: 'two runs disagree', currentRevision: 'rev-1', at,
+    });
+
+    // Evidence about the tree as it stands outranks evidence about the tree as
+    // it was — even evidence that was checked.
+    expect(preferred?.id).toBe('current');
+    // And the conflict stays open: precedence is a working assumption, not an
+    // answer to which claim is true.
+    expect(conflict.resolved).toBe(false);
+    expect(listConflicts(db).map((c) => c.id)).toEqual([conflict.id]);
+  });
+
+  it('retires the loser rather than deleting it', () => {
+    const db = createDb(DB);
+    const old = put(db, { id: 'old', revision: 'rev-0', content: 'a' });
+    const current = put(db, { id: 'current', revision: 'rev-1', content: 'b' });
+    recordContradiction(db, { items: [old, current], reason: 'r', currentRevision: 'rev-1', at });
+
+    expect(queryKnowledge(db, { repository: REPO, limit: 10 }).map((i) => i.id)).toEqual(['current']);
+    // Still readable, because what was believed is how a contradiction gets
+    // diagnosed rather than merely observed.
+    expect(getKnowledge(db, 'old')!.invalidatedAt).toBe(at);
+  });
+
+  it('calls two checked claims disagreeing the worst case', () => {
+    const db = createDb(DB);
+    const a = put(db, { id: 'a', content: 'x', validated: true });
+    const b = put(db, { id: 'b', content: 'y', validated: true, revision: 'rev-2' });
+    const { conflict } = recordContradiction(db, { items: [a, b], reason: 'r', at });
+    expect(conflict.severity).toBe('high');
+  });
+
+  it('invents no winner from an empty set', () => {
+    const db = createDb(DB);
+    const { preferred } = recordContradiction(db, { items: [], reason: 'r', at });
+    expect(preferred).toBeNull();
   });
 });

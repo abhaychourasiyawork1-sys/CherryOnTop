@@ -215,6 +215,41 @@ export function planWorkstreams(input: PlanWorkstreamsInput): WorkstreamPlan {
   };
 }
 
+/** Everything that cannot proceed if this branch fails, transitively.
+ *
+ *  The distinction this exists to draw: a branch that failed takes down what
+ *  depended on its *output*, and nothing else. Two branches that merely needed
+ *  to understand the same module are unrelated — one failing says nothing about
+ *  the other, and cancelling it would throw away work that was going fine.
+ *
+ *  That is why information dependencies contribute no ordering edges: they
+ *  would make every branch on a shared-context goal a dependent of every other,
+ *  and one failure would cancel the lot. */
+export function dependentsOf(nodes: WorkstreamNode[], failedId: string): string[] {
+  const normalized = nodes.map(normalize);
+  const known = new Set(normalized.map((node) => node.id));
+  const waits = orderingEdges(normalized, known);
+
+  const fallen = new Set<string>([failedId]);
+  // Repeat until nothing new falls: a dependent of a dependent is also lost,
+  // and the graph is small enough that a fixed point is cheaper than a
+  // traversal nobody can read.
+  for (let round = 0; round < normalized.length; round++) {
+    let grew = false;
+    for (const node of normalized) {
+      if (fallen.has(node.id)) continue;
+      if ([...waits.get(node.id)!].some((id) => fallen.has(id))) {
+        fallen.add(node.id);
+        grew = true;
+      }
+    }
+    if (!grew) break;
+  }
+
+  fallen.delete(failedId);
+  return [...fallen].sort();
+}
+
 /** What running a group concurrently costs in coordination.
  *
  *  Every branch beyond the first pays for its own context, and branches that

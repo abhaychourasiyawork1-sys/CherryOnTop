@@ -24,6 +24,7 @@ import { and, eq, isNull, desc } from 'drizzle-orm';
 import type { Db } from '../db/client.js';
 import { knowledge, evidenceConflicts } from '../db/schema.js';
 import { clamp01 } from '../efficiency/policy-types.js';
+import { resolveByPrecedence } from '../execution/conflicts.js';
 import type { EvidenceConflict, KnowledgeItem, KnowledgeQuery } from './types.js';
 
 export type { EvidenceConflict, KnowledgeItem, KnowledgeQuery };
@@ -196,6 +197,55 @@ export function recordConflict(
     createdAt: input.createdAt ?? new Date().toISOString(),
   }).run();
   return conflict;
+}
+
+/** Records a contradiction between stored items, and says which one this store
+ *  will serve in the meantime.
+ *
+ *  Two separate acts, deliberately. Recording is a statement that they cannot
+ *  both be right; superseding is a working assumption about which to believe.
+ *  The loser is retired rather than deleted, so the disagreement stays
+ *  diagnosable — and the conflict row stays unresolved, because precedence is
+ *  not an answer to which claim is *true*.
+ *
+ *  Precedence itself lives in `execution/conflicts.ts`: it is the same rule
+ *  whether the claims came from two branches of one run or from two runs a month
+ *  apart, and a second copy here would eventually disagree with the first. */
+export function recordContradiction(
+  db: Db,
+  input: { items: KnowledgeItem[]; reason: string; currentRevision?: string; at?: string },
+): { conflict: EvidenceConflict; preferred: KnowledgeItem | null } {
+  const at = input.at ?? new Date().toISOString();
+  const { preferred, superseded } = resolveByPrecedence(
+    input.items.map((item) => ({
+      id: item.id,
+      subject: [...item.sourcePaths, ...item.sourceSymbols].sort().join(',') || item.id,
+      content: item.content,
+      revision: item.revision,
+      validated: item.validated,
+      workstreamId: item.id,
+      createdAt: item.createdAt,
+    })),
+    input.currentRevision,
+  );
+
+  const conflict = recordConflict(db, {
+    evidenceIds: input.items.map((item) => item.id),
+    reason: input.reason,
+    severity: input.items.filter((item) => item.validated).length >= 2 ? 'high' : 'medium',
+    createdAt: at,
+  });
+
+  db.transaction((tx) => {
+    for (const loser of superseded) {
+      tx.update(knowledge).set({ invalidatedAt: at }).where(eq(knowledge.id, loser.id)).run();
+    }
+  });
+
+  return {
+    conflict,
+    preferred: preferred ? input.items.find((item) => item.id === preferred.id) ?? null : null,
+  };
 }
 
 export function resolveConflict(db: Db, id: string): void {
