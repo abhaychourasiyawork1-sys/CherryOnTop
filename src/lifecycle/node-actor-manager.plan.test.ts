@@ -217,7 +217,7 @@ describe('the planning dispatch', () => {
     expect(calls[0].goal).toContain('unrelated.ts');
   });
 
-  it('computes the selection but does not use it in shadow mode', async () => {
+  it('computes the selection but does not use it under Baseline', async () => {
     process.env.ORG_EFFICIENCY_MODE = 'shadow';
     const db = createDb(TEST_DB);
     const calls = await runDelegating(db, tmpRepo(), '[]');

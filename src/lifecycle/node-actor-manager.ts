@@ -41,7 +41,7 @@ import type { Authority } from '../schemas/node-contract.js';
 import type { ToolGrant, RuntimeAdapter, StructuredEvent } from '../adapters/adapter.js';
 import { setNodeSnapshot, clearNodeSnapshot } from '../db/queries/nodes.js';
 import { insertDodItems, listDodForNode, setDodState } from '../db/queries/dod.js';
-import { dispatchOptionsFor, planCacheTtlHours, repoMapTokenBudget, rolePromptsEnabled, efficiencyMode, resultCacheTtlHours, type DispatchRole } from '../config/efficiency.js';
+import { dispatchOptionsFor, planCacheTtlHours, repoMapTokenBudget, rolePromptsEnabled, runtimeMode, resultCacheTtlHours, type DispatchRole } from '../config/efficiency.js';
 import { routeModel } from '../intelligence/model-router.js';
 import { assessDecomposition } from '../intelligence/decompose.js';
 import { repoHead, repoDirty } from '../execution/git-state.js';
@@ -65,6 +65,7 @@ import { recordDispatchUsage, turnsForNode } from '../db/queries/tokens.js';
 import { shouldRetryWithoutModel } from '../execution/tokens.js';
 import { readOnlyPlanningGrant, investigativeExecuteGrant } from './dispatch-helpers.js';
 import { evaluateBoundary, forgetNode, isIntervention } from './economic-runtime.js';
+import { evaluateFallback, mustBlockAction } from '../decision/fallback.js';
 import { requestEvidenceAtBoundary, renderAcquiredEvidence } from '../context/evidence-actions.js';
 import type { ActionDecision } from '../decision/actions.js';
 import type { EconomicState } from '../decision/state.js';
@@ -414,7 +415,7 @@ async function economicBoundary(
     fullArtifactRequests?: DispatchReceipt['fullArtifactRequests'];
   },
 ): Promise<string> {
-  if (efficiencyMode() !== 'enabled') return '';
+  if (runtimeMode() !== 'full') return '';
   try {
     const revision = repoHead(input.worktreePath) ?? undefined;
     const { decision, state, cycle } = evaluateBoundary(db, {
@@ -427,6 +428,20 @@ async function economicBoundary(
     // recorded when it acted would make it look free exactly when it is not.
     if (cycle.cost.tokens > 0) publishOrchestrationCost(db, input.nodeId, cycle.cost, decision);
     if (!isIntervention(decision)) return '';
+
+    // The last gate before anything is acted on. A decision that is not
+    // confident enough for what it would spend, or that rests on signals that
+    // were not there, does what Baseline would have done — which is nothing —
+    // rather than getting its own reduced-aggression path.
+    const fallback = evaluateFallback({
+      state,
+      decision,
+      faults: cycle.cost.reason === 'decision_engine_error' ? ['decision_engine_error'] : [],
+    });
+    if (fallback.mode === 'baseline') {
+      publishFallback(db, input.nodeId, fallback.reason, mustBlockAction(fallback));
+      return '';
+    }
 
     return await carryOut(db, decision!, state, input);
   } catch (err) {
@@ -491,6 +506,22 @@ function publishOrchestrationCost(
     publish({ id, nodeId, type: 'economic.decision', payload, createdAt: now });
   } catch (err) {
     console.error(`Failed to record the orchestration cost for node ${nodeId}:`, err);
+  }
+}
+
+/** Why the control plane stood down.
+ *
+ *  Recorded rather than silent: "Full Architecture fell back on 30% of tasks"
+ *  and "on which" is the difference between a benchmark result that can be
+ *  acted on and one that can only be reported. */
+function publishFallback(db: Db, nodeId: string, reason: string, blocked: boolean): void {
+  try {
+    const now = new Date().toISOString();
+    const payload = { reason, blocked };
+    const id = appendEvent(db, { nodeId, type: 'economic.fallback', payload, createdAt: now });
+    publish({ id, nodeId, type: 'economic.fallback', payload, createdAt: now });
+  } catch (err) {
+    console.error(`Failed to record the fallback for node ${nodeId}:`, err);
   }
 }
 
@@ -561,8 +592,7 @@ function recordUsage(
  *  dispatch. */
 function modelChoiceFor(db: Db, nodeId: string, role: DispatchRole, goal: string): string | undefined {
   const configured = dispatchOptionsFor(role).model;
-  const mode = efficiencyMode();
-  if (mode === 'disabled') return configured;
+  const mode = runtimeMode();
   try {
     const node = getNode(db, nodeId);
     const assessment = assessDecomposition(goal);
@@ -573,8 +603,12 @@ function modelChoiceFor(db: Db, nodeId: string, role: DispatchRole, goal: string
       budgetUsd: node?.contract.authority.budget_usd ?? 0,
       spentUsd: getCostForNodes(db, [nodeId]),
     });
+    // Recorded in *both* modes, and applied in only one. This is what the
+    // retired `shadow` mode was actually for — knowing what routing would have
+    // chosen on a Baseline run — and it turns out to need a memory row rather
+    // than a third product mode.
     insertMemoryRow(db, 'model_route', role, { ...route, mode }, nodeId);
-    return mode === 'shadow' ? configured : route.model;
+    return mode === 'baseline' ? configured : route.model;
   } catch (err) {
     console.error(`Failed to route a model for node ${nodeId}:`, err);
     return configured;
@@ -664,27 +698,26 @@ async function synthesizeChildren(db: Db, nodeId: string, goal: string): Promise
   const decision = decideIntegration(children);
   if (decision.kind === 'nothing') return '';
 
-  // `disabled` synthesizes unconditionally, as this branch always did. `shadow`
-  // records what the decision would have been and then synthesizes anyway, so
-  // the run stays comparable to a baseline one.
-  const mode = efficiencyMode();
-  if (mode !== 'disabled') {
-    insertMemoryRow(db, 'integration_decision', decision.kind, {
-      kind: decision.kind,
-      reason: decision.kind === 'synthesize' ? decision.reason : null,
-      applied: mode === 'enabled',
-    }, nodeId);
-  }
-  if (mode === 'enabled' && (decision.kind === 'return_child' || decision.kind === 'merge')) {
+  // Recorded in both modes and acted on in one. Baseline synthesizes
+  // unconditionally, as this branch always did, and still writes down what the
+  // decision would have been — which is what makes a matched comparison
+  // readable afterwards.
+  const mode = runtimeMode();
+  insertMemoryRow(db, 'integration_decision', decision.kind, {
+    kind: decision.kind,
+    reason: decision.kind === 'synthesize' ? decision.reason : null,
+    applied: mode === 'full',
+  }, nodeId);
+  if (mode === 'full' && (decision.kind === 'return_child' || decision.kind === 'merge')) {
     ledger.recordAvoided(nodeId, 'synthesize');
     publishProgress(db, nodeId, decision.kind === 'merge'
       ? `Combined ${children.length} agents' results directly — no extra model call was needed`
       : "One agent answered this; returning its answer rather than paying to reword it");
     return decision.text;
   }
-  // Stripping the envelopes is part of the change, so only an enabled run does
-  // it. A shadow run sends the reports exactly as a baseline run would.
-  const synthesisChildren = mode === 'enabled' && decision.kind === 'synthesize' ? decision.children : children;
+  // Stripping the envelopes is part of the change, so only a Full run does it.
+  // A Baseline run sends the reports exactly as it always did.
+  const synthesisChildren = mode === 'full' && decision.kind === 'synthesize' ? decision.children : children;
 
   const credentials = checkCredentials(os.homedir(), process.env.ANTHROPIC_API_KEY);
   if (!credentials.ok) return '';

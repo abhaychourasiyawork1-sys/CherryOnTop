@@ -10,7 +10,7 @@
  *  says so, but every signal it fires on is named in the decision breakdown, so
  *  a wrong call is visible rather than mysterious. */
 
-import { efficiencyMode } from '../config/efficiency.js';
+import { runtimeMode } from '../config/efficiency.js';
 
 export interface Decomposition {
   complexity: 'low' | 'medium' | 'high';
@@ -83,7 +83,7 @@ export function assessDecomposition(goal: string): Decomposition {
   // `bench/run.mjs efficiency` compares exactly this change against exactly the
   // behaviour it replaces. The signals below are recorded either way, so a
   // shadow run's decision rows still show what the new rule would have done.
-  const applied = efficiencyMode() === 'enabled';
+  const applied = runtimeMode() === 'full';
   const explicit = EXPLICIT_SPLIT.test(goal);
   const coherent = !explicit && workTypes <= 1 && conjunctions === 0;
   const splitScore = coherent && applied ? score - breadth * 2 : score;

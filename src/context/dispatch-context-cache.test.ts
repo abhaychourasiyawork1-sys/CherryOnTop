@@ -138,10 +138,12 @@ describe('dispatchContextFor — modes, stability and failing upward', () => {
     expect(context.receipt.dropped.length).toBeGreaterThan(0);
   });
 
-  it('computes the receipt but dispatches the full map in shadow', () => {
+  it('computes the receipt but dispatches the full map under Baseline', () => {
     const db = createDb(DB);
     const dir = tmpRepo();
     process.env.ORG_REPO_MAP_TOKENS = '6000';
+    // 'shadow' is a retired alias that resolves to Baseline; asserting on it
+    // here is what stops the alias from quietly changing meaning.
     process.env.ORG_EFFICIENCY_MODE = 'shadow';
 
     const context = dispatchContextFor(db, dir, 'fix the session refresh bug')!;
