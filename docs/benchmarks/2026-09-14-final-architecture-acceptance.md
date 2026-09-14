@@ -2,17 +2,20 @@
 
 ## The decision
 
-**The implementation is complete and the architecture goal is unproven.**
+**The implementation is complete. The architecture goal is unproven, and the one
+paid measurement taken so far points the wrong way.**
 
-Those are two different statements and both are true. Every mechanism the plan
-specifies exists, is tested, and is wired into the runtime. Whether it achieves
-what it was built to achieve — fewer tokens per successful task at equal quality
-— has not been measured, because measuring it costs real money that is not the
-implementer's to spend.
+Every mechanism the plan specifies exists, is tested, and is wired into the
+runtime. The single matched pair that was run — `typo-fix`, authorised
+explicitly — showed Full Architecture taking six times the turns, 5.7× the
+cache-read tokens and 90% more money than Baseline. `n=1`, in a comparison
+confounded by a switch that covers more than the economic layer, so it is a
+direction rather than a verdict. It is still the only direction there is.
 
 Presenting this as a success would be the specific dishonesty the plan warns
 against: *"do not label a token reduction as success when the quality floor or
-successful-task metric is not satisfied."* Neither has been measured at all.
+successful-task metric is not satisfied."* There has been no token reduction to
+mislabel.
 
 ## Against the acceptance contract
 
@@ -22,10 +25,25 @@ successful-task metric is not satisfied."* Neither has been measured at all.
 | quality ↔ or ↑ | **not measured** |
 | latency ↔ or acceptably ↑ | **not measured** |
 | success rate ↔ or ↑ | **not measured** |
-| orchestration overhead justified | **measured: yes** — 0.007% of task spend on a healthy run, 0.107% when it fully evaluates |
+| orchestration overhead justified | **measured: yes** — 1.98% of spend on the live pair; 0.007%/0.107% on fixtures |
 
-One of five. The one that could be settled without a model call was settled; the
-four that need the paid run are open.
+One of five. And the live pair says the tokens did not go to the control plane —
+they went to the agent working harder, which points at the context it was given
+rather than at the orchestrator watching it.
+
+## The live finding
+
+On `typo-fix`, the Full arm was handed ~403 estimated context tokens and took 18
+turns; the Baseline arm was handed the whole repository map and took 3. If that
+is the mechanism — and the component telemetry across more goals is what would
+say — then the selected context for a tiny anchored edit is *too small*, and the
+saving on the prompt was repaid many times over in turns. It is precisely the
+failure this repository's own documentation warns about.
+
+That has a specific consequence for the change made after the plan: widening
+candidate generation for unanchored goals makes prompts *larger*, in the
+direction this result suggests is wanted — but it applies only where nothing is
+anchored, and `typo-fix` is anchored. It does not address this.
 
 ## Proven
 
@@ -109,21 +127,29 @@ Stated plainly because an audit that only lists wins is an advertisement.
 
 ## The narrowest next step
 
-Not "tune the policy" and not "build the missing mechanisms". Both would be
-guessing.
+Not "tune the policy". One sample names a direction, and tuning from it would
+break the first rule in the tuning log.
+
+**Re-run the smoke pair on the current commit.** It ran at `8b9de76`, before the
+two defects it exposed were fixed, so it could not compute a success rate and
+therefore could not compute the primary metric at all:
 
 ```bash
-node bench/run.mjs efficiency --goals=typo-fix --label=econ-smoke
+node bench/run.mjs efficiency --goals=typo-fix --label=econ-smoke-2
 ```
 
-One goal, both arms. The smallest thing that produces a real paired number, and
-enough to tell whether the harness, the isolation, the economic records and the
-acceptance gate all work end to end against a live cluster — which is itself
-unproven. Then the frozen population, then the regimes.
+Then the frozen population, which is the smallest sample the harness will say
+anything about beyond direction:
 
-If that run shows a regression, the attribution table in the [comparison
-report](2026-09-14-full-architecture-baseline-comparison.md) names which module
-to look at for each component of the spend.
+```bash
+node bench/run.mjs efficiency --label=econ-full
+```
+
+If the regression holds across those seven, the attribution table in the
+[comparison report](2026-09-14-full-architecture-baseline-comparison.md) names
+which module to look at — and on the evidence so far it will be
+`context/selector.ts`, because the tokens went to the agent rather than to the
+orchestrator.
 
 ## Files
 
