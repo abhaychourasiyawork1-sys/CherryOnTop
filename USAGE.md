@@ -209,7 +209,7 @@ the next `org daemon` restart — the same contract as `ORG_RUNNER_IMAGE`.
 | `ORG_RESULT_CACHE_TTL_HOURS` | `24` | How long a finished **read-only** dispatch's answer may be served again, for the same goal against the same committed HEAD under the same model and grant; `0` disables result reuse |
 | `ORG_REPO_MAP_TOKENS` | `6000` | **Ceiling** — not a target — on the repository context prefixed onto a dispatch; `0` disables it |
 | `ORG_ROLE_PROMPTS` | on | Role-scoped system prompts (below); `off`/`0`/`false`/`no` disable |
-| `ORG_EFFICIENCY_MODE` | `enabled` | `enabled` \| `shadow` \| `disabled` — see **Rollout** below |
+| `ORG_EFFICIENCY_MODE` | Full Architecture | `disabled` selects Baseline; anything else selects Full Architecture — see **Rollout** below |
 | `ORG_MODEL_FAST` | `haiku` | Model for the fast tier |
 | `ORG_MODEL_STANDARD` | *(none — runtime default)* | Model for the standard tier |
 | `ORG_MODEL_DEEP` | *(none — off)* | Model for the deep tier. Unset means routing never tiers **up** |
@@ -416,19 +416,28 @@ ignores the envelope request, or emits something malformed, degrades to exactly 
 merge.
 
 **Rollout.** `ORG_EFFICIENCY_MODE` is one switch over context selection, conditional
-synthesis and model routing together:
+synthesis, model routing and the economic control plane together. There are exactly **two
+runtime modes**:
 
-- `disabled` — the behaviour before this work: the full repository map on every dispatch,
-  unconditional synthesis, fixed per-role models.
-- `shadow` — every decision is computed and recorded (`context.receipt` events with
-  `applied: false`, `model_route` and `integration_decision` memory rows) but **not acted
-  on**, so the run stays byte-comparable to a `disabled` one. This is how you see what the
-  change would do before taking it.
-- `enabled` (default) — the decisions are acted on.
+- **Baseline** (`disabled`, `off`, `0`, `false`, `baseline`) — the behaviour before this
+  work: the full repository map on every dispatch, unconditional synthesis, fixed per-role
+  models, and no decisions made from the state of a run.
+- **Full Architecture** (anything else, including unset — the default) — the decisions are
+  acted on.
+
+Every decision is *recorded* in both modes, whether or not it is acted on: `context.receipt`
+events carry `applied`, and `model_route` and `integration_decision` memory rows say what
+routing and synthesis would have chosen. Reading what a Baseline run *would* have done does
+not require running in a special mode.
+
+`shadow` used to be a third mode and is now an alias for Baseline — which is exactly what a
+shadow run dispatched as, so a deployment that set it keeps the behaviour it had. A shadow's
+whole value is being inert, and a product mode cannot be: it is one more thing an operator
+can be running and one more combination to test. The inert recording facility lives in
+`src/learning/shadow.ts`, which is not reachable from configuration at all.
 
 Because it is a single switch, it is also the A/B knob: `node bench/run.mjs efficiency`
-runs the fixed goal set with it `enabled` and `disabled`. **That dispatches real, paid model
-calls.**
+runs the fixed goal set in both modes. **That dispatches real, paid model calls.**
 
 **The objective.** Not the smallest initial prompt — the **cheapest successful execution**.
 The acceptance metrics are all per *success*: `costPerSuccess`, `turnsPerSuccess`,
