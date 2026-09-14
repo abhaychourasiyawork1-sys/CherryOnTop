@@ -22,12 +22,17 @@ import {
 import { taskEconomicsFor } from './task-economics.js';
 import type { TaskVerdict } from '../intelligence/task-judge.js';
 import { repoMapTokenBudget, taskSpendCapUsd, dispatchOptionsFor, contextPlannerEnabled } from '../config/efficiency.js';
+import { policyVersion, CONTEXT_POLICY_VERSION, EXECUTION_POLICY_VERSION } from './policy-version.js';
 
-/** Bumped by hand when a weight below changes. Recorded with every measured
- *  dispatch, so two policy generations in one database are distinguishable
- *  rather than averaged into an uninterpretable middle. */
-export const CONTEXT_POLICY_VERSION = 'ctx-1';
-export const EXECUTION_POLICY_VERSION = 'exec-1';
+/** The generation identifiers live in `policy-version.ts` and are re-exported
+ *  here, where every existing caller reads them from.
+ *
+ *  They moved because the composite version has to name them *and* the
+ *  architecture *and* the decision engine, and defining them here while
+ *  composing them there made the two modules import each other — a cycle that
+ *  happens to work under ESM hoisting and stops working the first time either
+ *  side needs a value at module scope. */
+export { CONTEXT_POLICY_VERSION, EXECUTION_POLICY_VERSION };
 
 /** The most of the context budget that choosing it may itself cost. Optimization
  *  without a budget of its own is how an optimizer ends up more expensive than
@@ -111,10 +116,16 @@ export function executionPolicyFor(signals: TaskEconomicsSignals): ExecutionPoli
  *  so. Two generations in one database have to be distinguishable, or a
  *  comparison across them averages two different systems into one number that
  *  describes neither. */
-export function currentPolicyVersions(): { context: string; execution: string } {
+export function currentPolicyVersions(): { context: string; execution: string; policy: string } {
+  const context = contextPlannerEnabled() ? CONTEXT_POLICY_VERSION : 'lexical';
   return {
-    context: contextPlannerEnabled() ? CONTEXT_POLICY_VERSION : 'lexical',
+    context,
     execution: EXECUTION_POLICY_VERSION,
+    // The composite that also names the architecture and the decision engine.
+    // Recorded beside the two component versions rather than instead of them:
+    // the components are what a person reads, and the composite is what a
+    // comparison joins on.
+    policy: policyVersion({ contextVersion: context }).id,
   };
 }
 

@@ -386,6 +386,10 @@ function publishContextReceipt(db: Db, nodeId: string, receipt: DispatchReceipt)
       estimatedTokens: receipt.selectedTokens,
       contextPolicyVersion: receipt.policyVersion ?? null,
       executionPolicyVersion: EXECUTION_POLICY_VERSION,
+      // The composite: architecture, policy generation and decision engine
+      // together. Without it two runs of different engine generations average
+      // into a number describing neither.
+      policyVersion: currentPolicyVersions().policy,
     });
   } catch (err) {
     console.error(`Failed to record the context plan for node ${nodeId}:`, err);

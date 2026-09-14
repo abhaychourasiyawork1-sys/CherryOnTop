@@ -113,6 +113,10 @@ export interface EfficiencyInput {
    *  averaged into an uninterpretable middle. */
   contextPolicyVersion: string | null;
   executionPolicyVersion: string | null;
+  /** Architecture, policy generation and decision engine, composed. The join
+   *  key a comparison groups on — two runs of different engine generations
+   *  average into a number describing neither. */
+  policyVersion: string | null;
   /** Files with any evidence tying them to the goal, and how many were sent. */
   contextCandidates: number;
   contextSelected: number;
@@ -237,6 +241,7 @@ export const EMPTY_TOTALS = {
 export const EMPTY_ATTRIBUTION = {
   contextPolicyVersion: null as string | null,
   executionPolicyVersion: null as string | null,
+  policyVersion: null as string | null,
   stopReason: null as string | null,
 };
 

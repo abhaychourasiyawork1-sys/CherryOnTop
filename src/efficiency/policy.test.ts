@@ -159,3 +159,35 @@ describe('executionPolicyForGoal', () => {
     delete process.env.ORG_MAX_TURNS_EXECUTE;
   });
 });
+
+describe('the policy generation a run reports', () => {
+  afterEach(() => {
+    delete process.env.ORG_CONTEXT_PLANNER;
+    delete process.env.ORG_EFFICIENCY_MODE;
+  });
+
+  it('names the component versions and a composite to join on', () => {
+    const versions = currentPolicyVersions();
+    expect(versions.context).toBe(CONTEXT_POLICY_VERSION);
+    expect(versions.execution).toBe(EXECUTION_POLICY_VERSION);
+    // The components are what a person reads; the composite is what a
+    // comparison joins on.
+    expect(versions.policy).toContain(versions.context);
+    expect(versions.policy).toContain(versions.execution);
+  });
+
+  it('says so when the planner is off, rather than reporting a generation it is not running', () => {
+    process.env.ORG_CONTEXT_PLANNER = 'off';
+    const versions = currentPolicyVersions();
+    expect(versions.context).toBe('lexical');
+    expect(versions.policy).toContain('lexical');
+  });
+
+  it('distinguishes the two arms', () => {
+    process.env.ORG_EFFICIENCY_MODE = 'disabled';
+    const baseline = currentPolicyVersions().policy;
+    process.env.ORG_EFFICIENCY_MODE = 'enabled';
+    const full = currentPolicyVersions().policy;
+    expect(baseline).not.toBe(full);
+  });
+});

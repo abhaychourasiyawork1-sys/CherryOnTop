@@ -58,6 +58,9 @@ export interface EfficiencyLedger {
     estimatedTokens: number;
     contextPolicyVersion?: string | null;
     executionPolicyVersion?: string | null;
+    /** The composite generation identifier: architecture, policy and engine
+     *  together. What a comparison joins on. */
+    policyVersion?: string | null;
     overheadUsd?: number;
   }): void;
   /** How the run was going when it last passed the guard, and why it stopped if
@@ -187,6 +190,7 @@ export function createEfficiencyLedger(
       t.optimizationOverheadUsd += Math.max(0, plan.overheadUsd ?? 0);
       if (plan.contextPolicyVersion) task.attribution.contextPolicyVersion = plan.contextPolicyVersion;
       if (plan.executionPolicyVersion) task.attribution.executionPolicyVersion = plan.executionPolicyVersion;
+      if (plan.policyVersion) task.attribution.policyVersion = plan.policyVersion;
     },
 
     recordTrajectory(taskId, trajectory) {
