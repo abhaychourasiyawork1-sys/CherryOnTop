@@ -4,12 +4,22 @@ import { randomUUID } from 'node:crypto';
 import { createDb } from '../db/client.js';
 import { memory } from '../db/schema.js';
 import { createEfficiencyLedger, loadEfficiencyRecords, EFFICIENCY_EVENT } from './ledger.js';
+import type { EconomicDecisionLedgerEntry } from './metrics.js';
+import type { BusEvent } from '../events/bus.js';
 import { subscribeAll } from '../events/bus.js';
 import { ZERO_USAGE } from '../execution/tokens.js';
 
 const usage = (input: number, output: number, cacheRead = 0) => ({
   ...ZERO_USAGE, inputTokens: input, outputTokens: output, cacheReadTokens: cacheRead,
 });
+
+/** A ledger with its own captured bus, so a test can assert what it did *not*
+ *  publish as well as what it did. */
+function fixture() {
+  const events: BusEvent[] = [];
+  const ledger = createEfficiencyLedger(() => 1000, (event) => { events.push(event); });
+  return { ledger, events };
+}
 
 /** A clock the test drives, so elapsed time is asserted rather than slept for. */
 function fakeClock(start = 1000) {
@@ -246,5 +256,172 @@ describe('optimization attribution', () => {
     // would make failing look cheap.
     expect(failure.costPerSuccessfulTask).toBeNull();
     expect(failure.turnsPerSuccessfulTask).toBeNull();
+  });
+});
+
+describe('prediction against outcome', () => {
+  const entry = (over: Partial<EconomicDecisionLedgerEntry> = {}): EconomicDecisionLedgerEntry => ({
+    decisionId: 'd1',
+    stateVersion: 4,
+    action: 'acquire_evidence',
+    predicted: { tokenDelta: 5_000, qualityDelta: 0, latencyDelta: 0, successProbability: 0.8 },
+    orchestrationCost: 124,
+    ...over,
+  });
+
+  it('records a decision at the moment it was made, before anything is known', () => {
+    const { ledger } = fixture();
+    ledger.startTask('t');
+    ledger.recordDecision('t', entry());
+    const [recorded] = ledger.decisions('t');
+    expect(recorded.predicted.tokenDelta).toBe(5_000);
+    expect(recorded.actual).toBeUndefined();
+    expect(recorded.regret).toBeUndefined();
+  });
+
+  it('does not touch the bus while doing it — this runs on the path to a dispatch', () => {
+    const { ledger, events } = fixture();
+    ledger.startTask('t');
+    ledger.recordDecision('t', entry());
+    ledger.recordDuplication('t', 100);
+    ledger.recordMemoryValue('t', -50);
+    ledger.recordSpend('t', 'evidence', 400);
+    expect(events).toHaveLength(0);
+  });
+
+  it('counts one decision once, however often the boundary is reached', () => {
+    const { ledger } = fixture();
+    ledger.startTask('t');
+    ledger.recordDecision('t', entry());
+    ledger.recordDecision('t', entry());
+    const record = ledger.finishTask('t', 'success');
+    expect(record.decisionCycles).toBe(1);
+  });
+
+  it('separates cycles that intervened from cycles that looked and continued', () => {
+    const { ledger } = fixture();
+    ledger.startTask('t');
+    ledger.recordDecision('t', entry({ decisionId: 'a', action: 'continue' }));
+    ledger.recordDecision('t', entry({ decisionId: 'b', action: 'validate' }));
+    const record = ledger.finishTask('t', 'success');
+    expect(record.decisionCycles).toBe(2);
+    expect(record.interventions).toBe(1);
+  });
+
+  it('charges what deciding cost, beside what the task cost rather than inside it', () => {
+    const { ledger } = fixture();
+    ledger.startTask('t');
+    ledger.recordDecision('t', entry({ decisionId: 'a' }));
+    ledger.recordDecision('t', entry({ decisionId: 'b' }));
+    const record = ledger.finishTask('t', 'success');
+    expect(record.orchestrationTokens).toBe(248);
+    expect(record.totalTokens).toBe(0);
+  });
+
+  it('reconciles an outcome onto the decision that predicted it', () => {
+    const { ledger } = fixture();
+    ledger.startTask('t');
+    ledger.recordDecision('t', entry());
+    ledger.reconcileDecision('t', 'd1', { tokenDelta: 3_000, qualityDelta: 0, latencyDelta: 0, succeeded: true });
+    const [recorded] = ledger.decisions('t');
+    expect(recorded.actual?.tokenDelta).toBe(3_000);
+    // Prediction error, not counterfactual regret: it expected to save 5,000
+    // and saved 3,000.
+    expect(recorded.regret).toBe(2_000);
+  });
+
+  it('reports a negative error when a decision did better than it promised', () => {
+    const { ledger } = fixture();
+    ledger.startTask('t');
+    ledger.recordDecision('t', entry());
+    ledger.reconcileDecision('t', 'd1', { tokenDelta: 9_000, qualityDelta: 0, latencyDelta: 0, succeeded: true });
+    expect(ledger.decisions('t')[0].regret).toBe(-4_000);
+  });
+
+  it('leaves an unreconciled decision out of the rate rather than crediting it zero', () => {
+    const { ledger } = fixture();
+    ledger.startTask('t');
+    ledger.recordDecision('t', entry({ decisionId: 'checked' }));
+    ledger.recordDecision('t', entry({ decisionId: 'never-checked' }));
+    ledger.reconcileDecision('t', 'checked', { tokenDelta: 1, qualityDelta: 0, latencyDelta: 0, succeeded: true });
+    const record = ledger.finishTask('t', 'success');
+    expect(record.interventions).toBe(2);
+    expect(record.reconciledInterventions).toBe(1);
+    expect(record.beneficialInterventionRate).toBe(1);
+  });
+
+  it('counts an intervention beneficial only when it actually saved something', () => {
+    const { ledger } = fixture();
+    ledger.startTask('t');
+    ledger.recordDecision('t', entry({ decisionId: 'good' }));
+    ledger.recordDecision('t', entry({ decisionId: 'bad' }));
+    ledger.reconcileDecision('t', 'good', { tokenDelta: 2_000, qualityDelta: 0, latencyDelta: 0, succeeded: true });
+    ledger.reconcileDecision('t', 'bad', { tokenDelta: -500, qualityDelta: 0, latencyDelta: 0, succeeded: false });
+    const record = ledger.finishTask('t', 'success');
+    expect(record.beneficialInterventionRate).toBe(0.5);
+  });
+
+  it('ignores a second reconciliation for one decision', () => {
+    const { ledger } = fixture();
+    ledger.startTask('t');
+    ledger.recordDecision('t', entry());
+    const actual = { tokenDelta: 1_000, qualityDelta: 0, latencyDelta: 0, succeeded: true };
+    ledger.reconcileDecision('t', 'd1', actual);
+    ledger.reconcileDecision('t', 'd1', actual);
+    expect(ledger.finishTask('t', 'success').reconciledInterventions).toBe(1);
+  });
+
+  it('ignores a reconciliation for a decision it never saw, rather than inventing a prediction', () => {
+    const { ledger } = fixture();
+    ledger.startTask('t');
+    ledger.reconcileDecision('t', 'from-a-previous-daemon', {
+      tokenDelta: 9_999, qualityDelta: 0, latencyDelta: 0, succeeded: true,
+    });
+    const record = ledger.finishTask('t', 'success');
+    expect(record.reconciledInterventions).toBe(0);
+    expect(record.totalRegret).toBe(0);
+  });
+});
+
+describe('the other things the control plane spends', () => {
+  it('records duplicated information as a share of the task', () => {
+    const { ledger } = fixture();
+    ledger.startTask('t');
+    ledger.recordDispatch('t', {
+      role: 'execute', usage: { inputTokens: 900, outputTokens: 100, cacheReadTokens: 0, cacheCreationTokens: 0, numTurns: 1 },
+      costUsd: 0.01, ms: 10,
+    });
+    ledger.recordDuplication('t', 250);
+    expect(ledger.finishTask('t', 'success').duplicationRatio).toBeCloseTo(0.25);
+  });
+
+  it('lets memory report a negative net value, because that is the result worth seeing', () => {
+    const { ledger } = fixture();
+    ledger.startTask('t');
+    ledger.recordMemoryValue('t', 800);
+    ledger.recordMemoryValue('t', -1_000);
+    expect(ledger.finishTask('t', 'success').memoryNetValue).toBe(-200);
+  });
+
+  it('keeps the spend buckets apart', () => {
+    const { ledger } = fixture();
+    ledger.startTask('t');
+    ledger.recordSpend('t', 'evidence', 400);
+    ledger.recordSpend('t', 'validation', 2_000);
+    ledger.recordSpend('t', 'exploration', 9_000);
+    const record = ledger.finishTask('t', 'success');
+    expect(record.evidenceTokens).toBe(400);
+    expect(record.validationTokens).toBe(2_000);
+    expect(record.explorationTokens).toBe(9_000);
+  });
+
+  it('never records a negative spend', () => {
+    const { ledger } = fixture();
+    ledger.startTask('t');
+    ledger.recordSpend('t', 'evidence', -100);
+    ledger.recordDuplication('t', -100);
+    const record = ledger.finishTask('t', 'success');
+    expect(record.evidenceTokens).toBe(0);
+    expect(record.duplicatedInformationTokens).toBe(0);
   });
 });

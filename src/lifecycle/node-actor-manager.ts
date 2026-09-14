@@ -432,6 +432,27 @@ async function economicBoundary(
     // is the number that decides whether it was worth building, and a cost only
     // recorded when it acted would make it look free exactly when it is not.
     if (cycle.cost.tokens > 0) publishOrchestrationCost(db, input.nodeId, cycle.cost, decision);
+    // Recorded at the moment it was made, before anything is known about how it
+    // went — the only point at which a prediction is a prediction rather than a
+    // description of what happened.
+    if (decision) {
+      try {
+        ledger.recordDecision(input.nodeId, {
+          decisionId: decision.decisionId,
+          stateVersion: decision.stateVersion,
+          action: decision.action.kind,
+          predicted: {
+            tokenDelta: decision.action.expectedTokenBenefit - decision.action.tokenCost,
+            qualityDelta: decision.action.expectedQualityBenefit - decision.action.qualityRisk,
+            latencyDelta: decision.action.expectedLatencyBenefit - decision.action.latencyCost,
+            successProbability: 1 - decision.action.failureRisk,
+          },
+          orchestrationCost: cycle.cost.tokens,
+        });
+      } catch (err) {
+        console.error(`Failed to record the decision for node ${input.nodeId}:`, err);
+      }
+    }
     if (!isIntervention(decision)) return '';
 
     // The last gate before anything is acted on. A decision that is not
