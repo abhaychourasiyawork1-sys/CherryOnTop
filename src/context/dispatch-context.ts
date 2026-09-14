@@ -30,6 +30,7 @@ import { contextPlannerEnabled } from '../config/efficiency.js';
 import { contextPolicyFor, CONTEXT_POLICY_VERSION } from '../efficiency/policy.js';
 import { extractAnchors, taskEconomicsFor } from '../efficiency/task-economics.js';
 import type { ContextPolicy, TaskEconomicsSignals } from '../efficiency/policy-types.js';
+import { initialEconomicState, type EconomicState } from '../decision/state.js';
 
 const CHARS_PER_TOKEN = 4;
 
@@ -92,6 +93,11 @@ export interface DispatchReceipt {
   policyVersion?: string;
   /** True when the structural planner ran; false on the lexical fallback. */
   structural?: boolean;
+  /** Files the selection judged worth *opening*, best first — as distinct from
+   *  the paths it described. Never materialized here: this is the request that
+   *  `context/evidence-actions.ts` prices again and fulfils at an execution
+   *  boundary, if it is still worth it by then. */
+  fullArtifactRequests?: Array<{ path: string; tokens: number; expectedNetValue: number }>;
 }
 
 export interface DispatchContext {
@@ -113,7 +119,57 @@ export interface DispatchContextInput {
    *  again keeps the prompt prefix identical, which is what the provider's
    *  cache is keyed on. */
   previouslySelected?: Iterable<string>;
+  /** What the run currently knows. Supplied by the lifecycle once a task is
+   *  under way; absent on the first selection and in the deterministic
+   *  benchmark, where it is derived from the goal's own signals instead. */
+  state?: EconomicState;
 }
+
+/** A state to price context against when the caller has none yet.
+ *
+ *  Derived from the pre-task signals the planner already computed rather than
+ *  invented: what we can tell about a goal before doing it *is* an estimate of
+ *  how much we do not know about it, and that is precisely what the economics
+ *  need. `totalTokenBudget` is the dispatch's own turn allowance priced at the
+ *  discovery model's per-turn rate, because the question "is this file worth
+ *  its tokens?" is asked against what the *task* may spend, not against what
+ *  the prompt may hold.
+ *
+ *  Conservative by construction: `orchestrationConfidence` is the signals'
+ *  own confidence, so a goal we do not understand produces a state that widens
+ *  rather than prunes. */
+export function stateFromSignals(signals: TaskEconomicsSignals, policy: ContextPolicy): EconomicState {
+  const doubt = Math.min(1, Math.max(0, 1 - signals.confidence));
+  const base = initialEconomicState({
+    goal: '',
+    // A dispatch's token budget is not its context budget. Estimated from the
+    // context allowance the policy granted, which already scales with breadth
+    // and doubt — the one number available here that tracks how large the task
+    // was judged to be.
+    totalTokenBudget: Math.max(policy.tokenBudget, 1) * TASK_TO_CONTEXT_BUDGET_RATIO,
+    validationRequired: signals.verificationNeed > 0,
+  });
+  return {
+    ...base,
+    uncertainty: {
+      target: doubt,
+      structural: signals.hasExplicitAnchors ? doubt * 0.5 : doubt,
+      behavioral: signals.investigationLikelihood,
+      validation: signals.verificationNeed,
+    },
+    trajectory: { ...base.trajectory, orchestrationConfidence: signals.confidence },
+  };
+}
+
+/** How much larger a task's whole token budget is than the context handed to
+ *  one of its dispatches.
+ *
+ *  A stand-in, and named so it can be replaced by a measurement: the recorded
+ *  runs in this repository spent on the order of 10^5-10^6 tokens against a
+ *  context allowance in the low thousands. Twenty is deliberately at the
+ *  conservative end of that range — overstating it would make every file look
+ *  worth including, which is the behaviour the planner exists to stop. */
+const TASK_TO_CONTEXT_BUDGET_RATIO = 20;
 
 /** The same rough conversion the rest of the repo-map path sizes itself with. */
 export function estimateTokens(text: string): number {
@@ -317,13 +373,19 @@ export function selectStructuralContext(input: DispatchContextInput): DispatchCo
     previouslySelected: input.previouslySelected,
   });
 
+  // The run's own state when the lifecycle has one, and the goal's pre-task
+  // signals when it does not. Either way the selection is priced against
+  // *something* real rather than against a ranking alone.
+  const state = input.state ?? stateFromSignals(signals, policy);
+
   const selection = selectContext({
     candidates,
     // The selector budgets in tokens and the skeleton was measured in
     // characters; converting here rather than passing the raw policy keeps the
     // ceiling honest, because what is left after the skeleton is what there is.
     policy: { ...policy, tokenBudget: Math.floor(remainingChars / CHARS_PER_TOKEN) },
-    scorer: createContextScorer(),
+    scorer: createContextScorer(state),
+    state,
   });
 
   const lines = selection.selected.map((candidate) => renderAt(candidate, candidate.selectedLevel));
@@ -348,6 +410,11 @@ export function selectStructuralContext(input: DispatchContextInput): DispatchCo
       confidence: selection.confidence,
       policyVersion: CONTEXT_POLICY_VERSION,
       structural: true,
+      // Only for what actually made it into the render: a file dropped for room
+      // is not a file worth opening, and offering it would be the budget
+      // ceiling leaking back out as an acquisition request.
+      fullArtifactRequests: selection.fullArtifactRequests
+        .filter((request) => selectedSet.has(request.path)),
     },
   };
 }

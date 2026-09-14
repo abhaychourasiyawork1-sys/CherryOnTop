@@ -16,6 +16,8 @@
  *  turns — not by resembling the goal. Resemblance is a weak proxy for that,
  *  which is why it is one term of several rather than the whole score. */
 import type { ContextCandidate } from './candidates.js';
+import type { EconomicState } from '../decision/state.js';
+import { clamp01 } from '../efficiency/policy-types.js';
 
 export interface ContextScoreSignals {
   /** The goal named it. */
@@ -32,9 +34,20 @@ export interface ContextScoreSignals {
   /** A sibling dispatch on this commit already has it, so including it keeps
    *  the prompt prefix — and therefore the provider's cache — intact. */
   reuseValue: number;
+  /** How much of the run's *current* doubt this would remove. The one term that
+   *  is not a property of the candidate alone: the same file is worth more to a
+   *  run that does not know where it is working than to one that does. Zero
+   *  when no state is supplied, which is what keeps a stateless selection
+   *  scoring exactly as it did before this term existed. */
+  uncertaintyReduction: number;
   /** Charged against everything above. Negative-signed at the point of use, so
    *  the weight itself stays a positive number and the table reads uniformly. */
   contextCost: number;
+  /** Also charged. Context is not free of downside: a file that sends the agent
+   *  somewhere irrelevant costs turns, and one that crowds out the file it
+   *  actually needed costs the task. Small, and never zero, so that "more
+   *  context is always safer" cannot be an unexamined assumption. */
+  qualityRisk: number;
 }
 
 export interface ContextScorer {
@@ -54,24 +67,44 @@ export const DEFAULT_SCORE_WEIGHTS: ContextScoreSignals = {
   confidence: 2,
   expectedExplorationAvoided: 4,
   reuseValue: 1.5,
+  // Weighted beside structural relevance: "this run does not know where it is
+  // working" is evidence of the same order as "the compiler ties this to
+  // something the goal named", and stronger than resemblance.
+  uncertaintyReduction: 2.5,
   contextCost: 0.5,
+  qualityRisk: 1,
 };
 
 /** Roughly how much search a candidate saves, on [0,1].
  *
- *  Deterministic and deliberately crude. A file the goal named outright saves
- *  nothing — the agent was going to open it first anyway. A file the goal did
- *  *not* name but the compiler ties to one it did is the expensive case: the
- *  agent has to discover it, and discovering it means greps and reads across
- *  several turns, each re-reading the whole conversation prefix. That is the
- *  asymmetry the selector is built to exploit. */
+ *  Two independent questions, multiplied — which is the fix that made this
+ *  usable as an economic probability rather than only as a ranking term:
+ *
+ *   - **Is it needed?** Its own confidence, which is exactly "how much does the
+ *     evidence tying this to the goal deserve to be believed".
+ *   - **Would finding it cost anything?** A file the goal named outright is
+ *     free to find: the agent opens it first whatever we do. Everything else
+ *     has to be *discovered*, and discovering it means greps and reads across
+ *     several turns, each re-reading the whole conversation prefix. That
+ *     asymmetry is what the selector is built to exploit.
+ *
+ *  The earlier form multiplied confidence by `structuralScore`, which made a
+ *  file matched only on the goal's own words score exactly zero — i.e. "the
+ *  agent already knows about it", which is false. Harmless while this was one
+ *  weighted term among several (lexical candidates earned their place through
+ *  `anchorRelevance` instead); actively wrong the moment the same number became
+ *  the probability in a rediscovery-cost calculation, where it priced every
+ *  lexical match at nothing and dropped it. Anchors and structural neighbours
+ *  score exactly what they scored before. */
 export function explorationAvoided(candidate: ContextCandidate): number {
-  if (candidate.relationships.includes('anchor')) return 0.1;
-  const structural = candidate.structuralScore * candidate.confidenceScore;
+  const anchored = candidate.relationships.includes('anchor');
+  // Not zero for an anchor: being named still leaves the agent a read to do,
+  // and 0.1 is what that has always been priced at here.
+  const searchCost = anchored ? 0.1 : 1;
   // A test relationship is the most reliably-needed neighbour of all: work that
   // changes code changes its test, and nothing lexical ever finds it.
   const tested = candidate.relationships.some((r) => r.startsWith('test-of:') || r.startsWith('tested-by:'));
-  return Math.min(1, structural + (tested ? 0.3 : 0));
+  return Math.min(1, candidate.confidenceScore * searchCost + (tested ? 0.3 : 0));
 }
 
 /** How much of the context budget one candidate eats, on [0,1]. Scaled against
@@ -81,12 +114,38 @@ function normalizedCost(candidate: ContextCandidate): number {
   return Math.min(1, candidate.estimatedTokens / 100);
 }
 
+/** How much of the run's current doubt this candidate speaks to.
+ *
+ *  Generic on both sides: which *kind* of doubt against which *kind* of
+ *  artifact, never which file. A test speaks to whether the result is correct;
+ *  everything else speaks to where and how the code works. Weighted by how
+ *  likely the agent was to need it at all, because doubt a candidate cannot
+ *  reach is doubt it does not reduce. */
+export function uncertaintyReduction(candidate: ContextCandidate, state?: EconomicState): number {
+  if (!state) return 0;
+  const covers = candidate.relationships.some((r) => r.startsWith('test-of:') || r.startsWith('tested-by:'));
+  const doubt = covers
+    ? Math.max(state.uncertainty.validation, state.uncertainty.behavioral)
+    : Math.max(state.uncertainty.structural, state.uncertainty.target);
+  return clamp01(doubt * candidate.confidenceScore);
+}
+
+/** The downside of including something.
+ *
+ *  Rises with size and falls with confidence: a large file we are unsure about
+ *  is the worst case — it costs the most and is the most likely to point the
+ *  agent somewhere it did not need to go. */
+export function contextQualityRisk(candidate: ContextCandidate): number {
+  return clamp01(normalizedCost(candidate) * (1 - candidate.confidenceScore));
+}
+
 /** The score, term by term. Exported because a receipt that says "score 7.2"
  *  explains nothing, and one that says which term produced the 7.2 explains
  *  everything. */
 export function contributions(
   candidate: ContextCandidate,
   weights: ContextScoreSignals = DEFAULT_SCORE_WEIGHTS,
+  state?: EconomicState,
 ): ContextScoreSignals & { total: number } {
   const terms: ContextScoreSignals = {
     // Lexical evidence saturates: a file matching six goal words is not three
@@ -97,16 +156,25 @@ export function contributions(
     confidence: weights.confidence * candidate.confidenceScore,
     expectedExplorationAvoided: weights.expectedExplorationAvoided * explorationAvoided(candidate),
     reuseValue: weights.reuseValue * candidate.reuseScore,
+    uncertaintyReduction: weights.uncertaintyReduction * uncertaintyReduction(candidate, state),
     contextCost: weights.contextCost * normalizedCost(candidate),
+    qualityRisk: weights.qualityRisk * contextQualityRisk(candidate),
   };
   const total =
     terms.anchorRelevance + terms.structuralRelevance + terms.taskFit + terms.confidence
-    + terms.expectedExplorationAvoided + terms.reuseValue - terms.contextCost;
+    + terms.expectedExplorationAvoided + terms.reuseValue + terms.uncertaintyReduction
+    - terms.contextCost - terms.qualityRisk;
   return { ...terms, total };
 }
 
-export function createContextScorer(): ContextScorer {
-  return { score: (candidate, signals) => contributions(candidate, signals).total };
+/** A scorer bound to a state, or to none.
+ *
+ *  The state is bound at construction rather than threaded through `score`
+ *  because the selector ranks a whole candidate set against one state, and a
+ *  per-call parameter would let two candidates in one selection be scored
+ *  against different worlds. */
+export function createContextScorer(state?: EconomicState): ContextScorer {
+  return { score: (candidate, signals) => contributions(candidate, signals, state).total };
 }
 
 /** Value per token — what "is this worth its room?" actually asks.

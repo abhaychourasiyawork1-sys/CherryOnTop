@@ -32,9 +32,10 @@ function tracked(worktreePath: string): string[] | null {
  *  One pass for both: the read is the expensive part of the whole scan, and
  *  doing it twice to answer two questions about the same bytes is the kind of
  *  cost nobody notices until a repository has ten thousand files in it. */
-function scanFile(worktreePath: string, file: string): { symbols: string[]; imports: string[] } {
+function scanFile(worktreePath: string, file: string): { symbols: string[]; imports: string[]; bytes: number } {
   try {
-    const lines = readFileSync(join(worktreePath, file), 'utf8').split('\n');
+    const contents = readFileSync(join(worktreePath, file), 'utf8');
+    const lines = contents.split('\n');
     const symbols: string[] = [];
     const imports = new Set<string>();
     for (const line of lines) {
@@ -43,9 +44,12 @@ function scanFile(worktreePath: string, file: string): { symbols: string[]; impo
       const dependency = IMPORT.exec(line);
       if (dependency?.[1] && imports.size < 60) imports.add(dependency[1]);
     }
-    return { symbols, imports: [...imports] };
+    // Free: the scan already holds the file. It is what lets a candidate price
+    // its full-artifact level (L3) without anything reading the file a second
+    // time to find out how big it is.
+    return { symbols, imports: [...imports], bytes: contents.length };
   } catch {
-    return { symbols: [], imports: [] };
+    return { symbols: [], imports: [], bytes: 0 };
   }
 }
 
@@ -63,6 +67,12 @@ export interface RepoEntry {
    *  nothing", and every consumer treats it as the absence of evidence rather
    *  than as evidence of absence. */
   imports?: string[];
+  /** Size of the file on disk, in characters. Optional for exactly the same
+   *  reason as `imports`, and read for free off a scan that already held the
+   *  contents: it is what lets a context candidate *price* its full-artifact
+   *  level without anything opening the file to find out how big it is.
+   *  Absent means "not priceable", and an unpriceable level is never offered. */
+  bytes?: number;
 }
 
 /** Every tracked file with its symbols, unbudgeted. Empty on any failure, the
@@ -73,8 +83,8 @@ export function buildRepoInventory(worktreePath: string): RepoEntry[] {
   if (!files) return [];
   return files.map((path) => {
     if (!SOURCE_EXT.test(path)) return { path, symbols: [], imports: [] };
-    const { symbols, imports } = scanFile(worktreePath, path);
-    return { path, symbols, imports };
+    const { symbols, imports, bytes } = scanFile(worktreePath, path);
+    return { path, symbols, imports, bytes };
   });
 }
 

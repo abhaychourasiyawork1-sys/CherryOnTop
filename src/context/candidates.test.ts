@@ -1,5 +1,8 @@
 import { describe, it, expect } from 'vitest';
-import { buildCandidates, buildDependencyEdges, resolveImport, artifactRole } from './candidates.js';
+import {
+  buildCandidates, buildDependencyEdges, resolveImport, artifactRole,
+  renderAt, tokensAt, offersFullArtifact, materializationFor, EVIDENCE_LADDER,
+} from './candidates.js';
 import type { RepoEntry } from '../intelligence/repo-map.js';
 
 const ENTRIES: RepoEntry[] = [
@@ -158,5 +161,83 @@ describe('buildCandidates', () => {
       taskFit: { verificationNeed: 0.5, investigationLikelihood: 0.5, readOnly: false },
     });
     expect(doubled.filter((c) => c.path === 'src/auth/session.ts')).toHaveLength(1);
+  });
+});
+
+describe('evidence levels L0 to L3', () => {
+  const shape = {
+    path: 'src/auth/session.ts',
+    symbols: ['refreshSession', 'expireSession'],
+    relationships: ['imports:src/auth/store.ts', 'tested-by:src/auth/session.test.ts'],
+    fullArtifactTokens: 900,
+  };
+
+  it('names four levels, cheapest first', () => {
+    expect(EVIDENCE_LADDER).toEqual(['L0', 'L1', 'L2', 'L3']);
+  });
+
+  it('prices each level above the one below it', () => {
+    const prices = EVIDENCE_LADDER.map((level) => tokensAt(shape, level));
+    for (let i = 1; i < prices.length; i++) expect(prices[i]).toBeGreaterThan(prices[i - 1]);
+  });
+
+  it('renders metadata, structural and focused evidence distinctly', () => {
+    expect(renderAt(shape, 'L0')).toBe('  src/auth/session.ts');
+    expect(renderAt(shape, 'L1')).toContain('refreshSession');
+    expect(renderAt(shape, 'L1')).not.toContain('imports:');
+    expect(renderAt(shape, 'L2')).toContain('imports:src/auth/store.ts');
+  });
+
+  it('prices the full artifact from the size the inventory already knew', () => {
+    expect(tokensAt(shape, 'L3')).toBe(900);
+  });
+
+  it('never renders a full artifact — this module does not read files', () => {
+    expect(renderAt(shape, 'L3')).toBe(renderAt(shape, 'L2'));
+  });
+
+  it('does not offer a level it cannot price', () => {
+    const unsized = { ...shape, fullArtifactTokens: undefined };
+    expect(offersFullArtifact(unsized)).toBe(false);
+    expect(offersFullArtifact(shape)).toBe(true);
+    // And asking anyway gets the honest L2 price, never an invented file size.
+    expect(tokensAt(unsized, 'L3')).toBe(tokensAt(unsized, 'L2'));
+  });
+
+  it('never prices a full artifact below its own description', () => {
+    expect(tokensAt({ ...shape, fullArtifactTokens: 1 }, 'L3')).toBeGreaterThanOrEqual(tokensAt(shape, 'L2'));
+  });
+
+  it('says that materializing L3 is a file read whatever the candidate claims', () => {
+    expect(materializationFor({ materialization: 'inventory' }, 'L2')).toBe('inventory');
+    expect(materializationFor({ materialization: 'inventory' }, 'L3')).toBe('read-file');
+  });
+});
+
+describe('buildCandidates and evidence levels', () => {
+  const entries = [
+    { path: 'src/auth/session.ts', symbols: ['refreshSession'], imports: [], bytes: 4000 },
+    { path: 'src/auth/store.ts', symbols: ['readStore'], imports: [] },
+  ];
+
+  it('offers the full-artifact level exactly when the scan recorded a size', () => {
+    const built = buildCandidates({
+      entries, goal: 'fix refreshSession in src/auth/session.ts', anchors: ['session.ts'],
+      taskFit: { verificationNeed: 0.5, investigationLikelihood: 0.3, readOnly: false },
+    });
+    const sized = built.find((c) => c.path === 'src/auth/session.ts')!;
+    expect(sized.evidenceLevel).toBe('L3');
+    expect(sized.fullArtifactTokens).toBe(1000);
+  });
+
+  it('keeps estimatedTokens at the cheap inventory price, never the file price', () => {
+    const built = buildCandidates({
+      entries, goal: 'fix refreshSession in src/auth/session.ts', anchors: ['session.ts'],
+      taskFit: { verificationNeed: 0.5, investigationLikelihood: 0.3, readOnly: false },
+    });
+    const sized = built.find((c) => c.path === 'src/auth/session.ts')!;
+    // Including a candidate must never accidentally price in a file read nobody
+    // asked for.
+    expect(sized.estimatedTokens).toBeLessThan(100);
   });
 });

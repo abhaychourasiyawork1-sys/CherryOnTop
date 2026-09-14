@@ -6,6 +6,7 @@ import { contextPolicyFor } from '../efficiency/policy.js';
 import { taskEconomicsFor } from '../efficiency/task-economics.js';
 import type { ContextPolicy } from '../efficiency/policy-types.js';
 import type { RepoEntry } from '../intelligence/repo-map.js';
+import { initialEconomicState, normalizeEconomicState, type EconomicState } from '../decision/state.js';
 
 const scorer = createContextScorer();
 const policy = (over: Partial<ContextPolicy> = {}): ContextPolicy =>
@@ -155,5 +156,126 @@ describe('selectContext — end to end over a real inventory', () => {
   it('is deterministic for one goal against one tree', () => {
     expect(run('Fix the refresh bug in src/auth/session.ts'))
       .toEqual(run('Fix the refresh bug in src/auth/session.ts'));
+  });
+});
+
+describe('selectContext — the economic gate', () => {
+  const state = (over: Partial<EconomicState> = {}): EconomicState => {
+    const base = initialEconomicState({ goal: 'g', totalTokenBudget: 50_000 });
+    return normalizeEconomicState({
+      ...base,
+      uncertainty: { target: 0.5, structural: 0.5, behavioral: 0.5, validation: 0.5 },
+      trajectory: { ...base.trajectory, orchestrationConfidence: 1 },
+      ...over,
+    });
+  };
+
+  const withState = (candidates: ContextCandidate[], p = policy(), s = state()) =>
+    selectContext({ candidates, policy: p, scorer: createContextScorer(s), state: s });
+
+  it('takes a candidate whose rediscovery cost exceeds what handing it over costs', () => {
+    const neighbour = candidate({
+      path: 'src/b.ts', structuralScore: 1, confidenceScore: 0.7,
+      relationships: ['imported-by:src/a.ts'],
+    });
+    expect(withState([neighbour]).selected.map((c) => c.path)).toContain('src/b.ts');
+  });
+
+  /** Scores well — the goal's words are all over it — and has no confidence
+   *  behind it at all, so the agent was never going to need it. High relevance,
+   *  zero expected saving: exactly the candidate a ranking admits and an
+   *  economic test refuses, which is what makes it the fixture that isolates
+   *  the gate from the marginal-value test above. */
+  const plausibleButUseless = () => candidate({
+    path: 'src/noise.ts', lexicalScore: 4, structuralScore: 0, confidenceScore: 0,
+    taskFitScore: 1, estimatedTokens: 10,
+  });
+
+  it('refuses a candidate that costs more than it is expected to save', () => {
+    const result = withState([plausibleButUseless()], policy({ tokenBudget: 50_000, confidenceFloor: 0 }));
+    expect(result.selected).toHaveLength(0);
+    expect(result.dropped.map((c) => c.path)).toContain('src/noise.ts');
+    // Refused on value, not on room.
+    expect(result.truncated).toBe(false);
+  });
+
+  it('suspends the gate while widening, because a goal we do not understand is exactly where pruning is unreliable', () => {
+    const weak = plausibleButUseless();
+    const pruned = withState([weak], policy({ tokenBudget: 50_000, confidenceFloor: 0 }));
+    const widened = withState([weak], policy({ tokenBudget: 50_000, confidenceFloor: 0.9 }));
+    expect(pruned.selected).toHaveLength(0);
+    expect(widened.selected).toHaveLength(1);
+  });
+
+  it('selects exactly as it did before the economics when no state is supplied', () => {
+    const mixed = [
+      candidate({ path: 'src/good.ts', structuralScore: 1, confidenceScore: 0.7, relationships: ['imports:src/x.ts'] }),
+      candidate({ path: 'src/mid.ts', lexicalScore: 2, confidenceScore: 0.5 }),
+    ];
+    const stateless = selectContext({ candidates: mixed, policy: policy(), scorer });
+    expect(stateless.fullArtifactRequests).toEqual([]);
+    expect(stateless.selected.map((c) => c.path)).toEqual(['src/good.ts', 'src/mid.ts']);
+  });
+
+  it('values the same candidate more when the run knows less', () => {
+    const c = candidate({ path: 'src/a.ts', structuralScore: 1, confidenceScore: 0.7, relationships: ['imports:src/x.ts'] });
+    const sure = state({ uncertainty: { target: 0, structural: 0, behavioral: 0, validation: 0 } });
+    const lost = state({ uncertainty: { target: 1, structural: 1, behavioral: 1, validation: 1 } });
+    expect(withState([c], policy(), lost).selected[0].score)
+      .toBeGreaterThan(withState([c], policy(), sure).selected[0].score);
+  });
+});
+
+describe('selectContext — full-artifact requests', () => {
+  const s = normalizeEconomicState({
+    ...initialEconomicState({ goal: 'g', totalTokenBudget: 50_000 }),
+    uncertainty: { target: 0.8, structural: 0.8, behavioral: 0.8, validation: 0.8 },
+  });
+
+  const openable = candidate({
+    path: 'src/auth/session.ts', structuralScore: 1, confidenceScore: 1,
+    relationships: ['tested-by:src/auth/session.test.ts'], evidenceLevel: 'L3',
+    fullArtifactTokens: 400,
+  });
+
+  const run = (candidates: ContextCandidate[], p = policy({ tokenBudget: 5000 })) =>
+    selectContext({ candidates, policy: p, scorer: createContextScorer(s), state: s });
+
+  it('marks a file worth opening without charging the render budget for it', () => {
+    const result = run([openable]);
+    expect(result.fullArtifactRequests.map((r) => r.path)).toEqual(['src/auth/session.ts']);
+    // The prompt still carries a description, not four hundred tokens of file.
+    expect(result.estimatedTokens).toBeLessThan(100);
+    expect(result.selected[0].selectedLevel).not.toBe('L3');
+  });
+
+  it('does not request a file too large to be worth opening', () => {
+    const huge = { ...openable, fullArtifactTokens: 5_000_000 };
+    expect(run([huge]).fullArtifactRequests).toEqual([]);
+  });
+
+  it('never requests a candidate that did not make the selection', () => {
+    const refused = candidate({
+      path: 'src/noise.ts', lexicalScore: 4, structuralScore: 0, confidenceScore: 0,
+      taskFitScore: 1, estimatedTokens: 10, fullArtifactTokens: 100,
+    });
+    expect(run([refused], policy({ tokenBudget: 50_000, confidenceFloor: 0 })).fullArtifactRequests).toEqual([]);
+  });
+
+  it('never requests a file whose size is unknown', () => {
+    expect(run([{ ...openable, fullArtifactTokens: undefined }]).fullArtifactRequests).toEqual([]);
+  });
+
+  it('orders requests by value, then by path, deterministically', () => {
+    const a = { ...openable, key: 'src/a.ts', path: 'src/a.ts', fullArtifactTokens: 300 };
+    const b = { ...openable, key: 'src/b.ts', path: 'src/b.ts', fullArtifactTokens: 300 };
+    const forward = run([a, b]).fullArtifactRequests.map((r) => r.path);
+    const reversed = run([b, a]).fullArtifactRequests.map((r) => r.path);
+    expect(forward).toEqual(reversed);
+    expect(forward).toEqual(['src/a.ts', 'src/b.ts']);
+  });
+
+  it('reports how the selected level is produced', () => {
+    expect(run([openable]).selected[0].materialization).toBe('inventory');
   });
 });

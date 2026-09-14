@@ -28,16 +28,28 @@
  *  what looking costs. */
 import type { RepoEntry } from '../intelligence/repo-map.js';
 
-/** How much of a file is on offer.
+/** How much of a file is on offer. Four explicit levels, cheapest first.
  *
- *   - `L0` — the path alone.
- *   - `L1` — path and top-level symbols. What the current selector renders.
- *   - `L2` — L1 plus the file's direct relationships, so the agent can navigate
- *     outward without a search.
- *   - `L3` — the file's contents. Never materialized by this module; the level
- *     exists so a selector can say "this one is worth opening" and a caller can
- *     act on it, rather than the question being unaskable. */
+ *   - `L0` — **metadata**: the path alone. Four tokens that can still save a
+ *     search, which is why the selector demotes to it rather than dropping.
+ *   - `L1` — **structural**: path and top-level symbols.
+ *   - `L2` — **focused**: L1 plus the file's direct relationships, so the agent
+ *     can navigate outward without a search.
+ *   - `L3` — **full artifact**: the file's contents.
+ *
+ *  L3 is *priced* here and never *materialized* here. That separation is the
+ *  point: deciding whether something is worth opening must not cost what opening
+ *  it costs. The price comes from `RepoEntry.bytes`, which the inventory scan
+ *  already knows because it already read the file; a candidate whose size is
+ *  unknown simply does not offer the level, because an unpriceable option
+ *  cannot be compared with a priced one. A selector that chooses L3 is making a
+ *  *request*, which `context/evidence-actions.ts` fulfils at an execution
+ *  boundary. */
 export type EvidenceLevel = 'L0' | 'L1' | 'L2' | 'L3';
+
+/** The ladder, cheapest first. One definition, so the selector's escalation and
+ *  the candidate's own `evidenceLevel` cannot disagree about the order. */
+export const EVIDENCE_LADDER: readonly EvidenceLevel[] = ['L0', 'L1', 'L2', 'L3'];
 
 export interface ContextCandidate {
   /** Stable identity across dispatches on one commit: the path. */
@@ -51,6 +63,11 @@ export interface ContextCandidate {
   /** The richest level this candidate has evidence for. The selector may hand
    *  over less when the budget says so; it never invents more. */
   evidenceLevel: EvidenceLevel;
+  /** What the whole file would cost, when that is knowable. Absent means the
+   *  inventory did not record a size — a binary, a file the scan skipped, a row
+   *  cached before sizes were recorded — and an unpriceable level is never
+   *  offered. */
+  fullArtifactTokens?: number;
   estimatedTokens: number;
   lexicalScore: number;
   structuralScore: number;
@@ -62,10 +79,22 @@ export interface ContextCandidate {
    *  into L2 evidence and into the receipt, so a strange selection can be read
    *  rather than guessed at. */
   relationships: string[];
-  /** How the evidence at this level is produced. `inventory` means "already in
-   *  hand, costs nothing to include"; `read-file` means a real read, which is
-   *  why no L3 candidate is ever produced without being asked for. */
+  /** How evidence up to `L2` is produced. `inventory` means "already in hand,
+   *  costs nothing to include". `L3` is always a real read whatever this says —
+   *  see `materializationFor`. */
   materialization: 'inventory' | 'read-file';
+}
+
+/** How a given level of a given candidate would be produced.
+ *
+ *  Levels up to L2 render from the inventory already in memory. L3 is a file
+ *  read, always, and saying so in one place is what stops a caller assuming a
+ *  selection is free because the candidate said `inventory`. */
+export function materializationFor(
+  candidate: Pick<ContextCandidate, 'materialization'>,
+  level: EvidenceLevel,
+): 'inventory' | 'read-file' {
+  return level === 'L3' ? 'read-file' : candidate.materialization;
 }
 
 const CHARS_PER_TOKEN = 4;
@@ -261,14 +290,33 @@ export function renderAt(
   const symbols = candidate.symbols.length > 0 ? `: ${candidate.symbols.join(', ')}` : '';
   if (level === 'L1') return `  ${candidate.path}${symbols}`;
   const related = candidate.relationships.length > 0 ? ` [${candidate.relationships.join(', ')}]` : '';
+  // L3 renders as L2 and no further. This module promised never to read a file,
+  // and a caller that selected L3 has selected a *request* to be fulfilled at an
+  // execution boundary — what it gets in the meantime is the best description
+  // available, which is exactly L2.
   return `  ${candidate.path}${symbols}${related}`;
 }
 
+/** What handing this candidate over at this level would cost.
+ *
+ *  L3 is the file itself, priced from the size the inventory recorded. When
+ *  that is unknown the level is not on offer, and asking for its price gets the
+ *  L2 price rather than an invented one — a caller that also checks
+ *  `offersFullArtifact` will not ask, and one that does not must not receive a
+ *  guess that understates a whole file. */
 export function tokensAt(
-  candidate: Pick<ContextCandidate, 'path' | 'symbols' | 'relationships'>,
+  candidate: Pick<ContextCandidate, 'path' | 'symbols' | 'relationships' | 'fullArtifactTokens'>,
   level: EvidenceLevel,
 ): number {
-  return estimateTokens(renderAt(candidate, level));
+  if (level === 'L3' && Number.isFinite(candidate.fullArtifactTokens)) {
+    return Math.max(estimateTokens(renderAt(candidate, 'L2')), candidate.fullArtifactTokens as number);
+  }
+  return estimateTokens(renderAt(candidate, level === 'L3' ? 'L2' : level));
+}
+
+/** Whether the full-artifact level is genuinely available for this candidate. */
+export function offersFullArtifact(candidate: Pick<ContextCandidate, 'fullArtifactTokens'>): boolean {
+  return Number.isFinite(candidate.fullArtifactTokens) && (candidate.fullArtifactTokens as number) > 0;
 }
 
 export function estimateTokens(text: string): number {
@@ -337,16 +385,27 @@ export function buildCandidates(input: CandidateInput): ContextCandidate[] {
     if (!isAnchor && structural === 0 && lexical === 0) continue;
 
     const role = artifactRole(entry.path);
-    // L2 buys relationships, and only a file that has some can spend it.
-    const evidenceLevel: EvidenceLevel = relationships.length > (isAnchor ? 1 : 0) ? 'L2' : 'L1';
-    const shape = { path: entry.path, symbols: entry.symbols, relationships };
+    // L2 buys relationships, and only a file that has some can spend it. L3 is
+    // offered whenever the inventory knows the file's size — offering it is not
+    // choosing it, and the selector still has to find the increment worth
+    // paying for.
+    const fullArtifactTokens = Number.isFinite(entry.bytes) && (entry.bytes as number) > 0
+      ? Math.ceil((entry.bytes as number) / CHARS_PER_TOKEN)
+      : undefined;
+    const described: EvidenceLevel = relationships.length > (isAnchor ? 1 : 0) ? 'L2' : 'L1';
+    const evidenceLevel: EvidenceLevel = fullArtifactTokens === undefined ? described : 'L3';
+    const shape = { path: entry.path, symbols: entry.symbols, relationships, fullArtifactTokens };
 
     candidates.push({
       key: entry.path,
       path: entry.path,
       symbols: entry.symbols,
       evidenceLevel,
-      estimatedTokens: tokensAt(shape, evidenceLevel),
+      fullArtifactTokens,
+      // What it costs at the level its *description* supports — the cheap,
+      // inventory-only view. L3's price is carried separately so that including
+      // a candidate never accidentally prices in a file read nobody asked for.
+      estimatedTokens: tokensAt(shape, described),
       lexicalScore: lexical,
       structuralScore: isAnchor ? 1 : structural,
       taskFitScore: taskFitScore(role, input.taskFit),
