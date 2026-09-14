@@ -222,3 +222,41 @@ describe('recovery competes rather than taking a privileged path', () => {
     expect(candidate.metadata.retainedEvidenceIds).toEqual(evaluation.retainedEvidenceIds);
   });
 });
+
+describe('a named hypothesis is invalidated, not merely noted', () => {
+  const evaluation = () => evaluateRecovery({ state: state(), failureSignature: FAILURE });
+
+  it('records it as invalidated, so the next attempt cannot believe it again', () => {
+    // A tombstone that describes what the attempt believed and does nothing to
+    // stop the next attempt believing it has not done its one job.
+    const tombstone = tombstoneFor({
+      id: 't1', evaluation: evaluation(), failureSignature: FAILURE, tokensSpent: 1,
+      hypothesisIds: ['fact:src/a.ts'],
+    });
+    expect(tombstone.invalidatedEvidenceIds).toContain('fact:src/a.ts');
+  });
+
+  it('removes it from what the next attempt inherits', () => {
+    const tombstone = tombstoneFor({
+      id: 't1', evaluation: evaluation(), failureSignature: FAILURE, tokensSpent: 1,
+      hypothesisIds: ['fact:src/a.ts'],
+    });
+    expect(tombstone.retainedEvidenceIds).not.toContain('fact:src/a.ts');
+  });
+
+  it('honours the ruling on the next evaluation', () => {
+    const tombstone = tombstoneFor({
+      id: 't1', evaluation: evaluation(), failureSignature: FAILURE, tokensSpent: 1,
+      hypothesisIds: ['fact:src/a.ts'],
+    });
+    const next = evaluateRecovery({ state: state(), failureSignature: FAILURE, tombstones: [tombstone] });
+    expect(next.retainedEvidenceIds).not.toContain('fact:src/a.ts');
+  });
+
+  it('falls back to what the evaluation itself invalidated when nothing is named', () => {
+    const tombstone = tombstoneFor({
+      id: 't1', evaluation: evaluation(), failureSignature: FAILURE, tokensSpent: 1,
+    });
+    expect(tombstone.hypothesisIds).toEqual(evaluation().invalidatedEvidenceIds);
+  });
+});

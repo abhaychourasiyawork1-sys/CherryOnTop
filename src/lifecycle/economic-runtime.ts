@@ -42,6 +42,7 @@ import {
 } from '../decision/orchestration-loop.js';
 import { actionCandidate, type ActionCandidate, type ActionDecision } from '../decision/actions.js';
 import { registerCandidateSource, historicalEvidenceSource } from '../decision/deep-path.js';
+import { evaluateRecovery, recoveryCandidate, type RecoveryTombstone } from '../recovery/engine.js';
 import { queryKnowledge } from '../evidence/store.js';
 import { evaluateHistoricalEvidence } from '../evidence/reuse.js';
 import { repoIdentity } from '../execution/git-state.js';
@@ -70,6 +71,10 @@ interface NodeMemory {
   cadence: OrchestrationCadence;
   previous: ExecutionSnapshot;
   sequence: number;
+  /** What previous attempts on this node ruled out. Held per node and discarded
+   *  with it: a tombstone is only about the run that produced it, and one run's
+   *  dead end says nothing about another's. */
+  tombstones: RecoveryTombstone[];
 }
 
 const memory = new Map<string, NodeMemory>();
@@ -77,7 +82,7 @@ const memory = new Map<string, NodeMemory>();
 function memoryFor(nodeId: string): NodeMemory {
   let entry = memory.get(nodeId);
   if (!entry) {
-    entry = { cadence: INITIAL_CADENCE, previous: EMPTY_SNAPSHOT, sequence: 0 };
+    entry = { cadence: INITIAL_CADENCE, previous: EMPTY_SNAPSHOT, sequence: 0, tombstones: [] };
     memory.set(nodeId, entry);
   }
   return entry;
@@ -94,6 +99,31 @@ export function forgetNode(nodeId: string): void {
  *  failing assertion rather than an incident. */
 export function trackedNodeCount(): number {
   return memory.size;
+}
+
+/** Records what an attempt ruled out, so the next one does not walk the same
+ *  dead end — or pay again for what the first established. */
+export function recordRecoveryAttempt(nodeId: string, tombstone: RecoveryTombstone): void {
+  memoryFor(nodeId).tombstones.push(tombstone);
+}
+
+export function recoveryHistory(nodeId: string): RecoveryTombstone[] {
+  return [...(memory.get(nodeId)?.tombstones ?? [])];
+}
+
+/** How this run is currently failing, in the stable form the trajectory
+ *  fingerprint uses. Null when it is not failing in any one identifiable way —
+ *  in which case there is no retry to evaluate, only work to continue. */
+function failureSignatureOf(snapshot: ExecutionSnapshot): string | null {
+  if (snapshot.failureSignatures.length === 0) return null;
+  // The most frequent signature: a run dying three ways has a dominant problem,
+  // and retrying against "whatever failed last" would re-target on noise.
+  const counts = new Map<string, number>();
+  for (const signature of snapshot.failureSignatures) {
+    counts.set(signature, (counts.get(signature) ?? 0) + 1);
+  }
+  return [...counts.entries()]
+    .sort(([a, countA], [b, countB]) => countB - countA || (a < b ? -1 : 1))[0][0];
 }
 
 /** The run's own tool stream, as the events table holds it. */
@@ -284,10 +314,29 @@ export function evaluateBoundary(db: Db, input: ExecutionBoundaryInput): Boundar
   const entry = memoryFor(input.nodeId);
   const cycle = runDecisionCycle(state, {
     cadence: entry.cadence,
-    additionalCandidates: evidenceCandidates(input, state),
+    additionalCandidates: [
+      ...evidenceCandidates(input, state),
+      ...recoveryCandidates(state, entry),
+    ],
   });
   entry.cadence = cycle.cadence;
   return { decision: cycle.decision, state, cycle };
+}
+
+/** Retrying, as a comparable action — and one that knows what the previous
+ *  attempt established.
+ *
+ *  The generic `deep:recover` candidate the deep path builds from state signals
+ *  alone is a reasonable estimate and knows nothing about what has already been
+ *  ruled out. This one does, which is what makes a second attempt cheaper than
+ *  the first rather than a repeat of it. Both are offered; the engine takes
+ *  whichever prices better, and on a node with history that is this one. */
+function recoveryCandidates(state: EconomicState, entry: NodeMemory): ActionCandidate[] {
+  const failureSignature = failureSignatureOf(entry.previous);
+  if (!failureSignature) return [];
+  const evaluation = evaluateRecovery({ state, failureSignature, tombstones: entry.tombstones });
+  if (!evaluation.justified) return [];
+  return [recoveryCandidate(evaluation, state)];
 }
 
 /** The selector's "this one is worth opening" verdicts, as comparable actions.

@@ -160,7 +160,13 @@ export function evaluateRecovery(input: EvaluateRecoveryInput): RecoveryEvaluati
   };
 }
 
-/** The record this attempt leaves behind for the next one. */
+/** The record this attempt leaves behind for the next one.
+ *
+ *  A hypothesis the caller names here is *invalidated*, not merely noted.
+ *  Recording it in `hypothesisIds` alone would produce a tombstone that
+ *  describes what the attempt believed and does nothing to stop the next
+ *  attempt believing it — which is the one job a tombstone has. Naming it also
+ *  removes it from what the next attempt inherits, for the same reason. */
 export function tombstoneFor(input: {
   id: string;
   evaluation: RecoveryEvaluation;
@@ -168,11 +174,14 @@ export function tombstoneFor(input: {
   tokensSpent: number;
   hypothesisIds?: string[];
 }): RecoveryTombstone {
+  const named = [...new Set(input.hypothesisIds ?? [])];
+  const invalidated = [...new Set([...input.evaluation.invalidatedEvidenceIds, ...named])].sort();
+  const dead = new Set(invalidated);
   return {
     id: input.id,
-    hypothesisIds: [...new Set(input.hypothesisIds ?? input.evaluation.invalidatedEvidenceIds)],
-    retainedEvidenceIds: [...input.evaluation.retainedEvidenceIds],
-    invalidatedEvidenceIds: [...input.evaluation.invalidatedEvidenceIds],
+    hypothesisIds: named.length > 0 ? named : [...input.evaluation.invalidatedEvidenceIds],
+    retainedEvidenceIds: input.evaluation.retainedEvidenceIds.filter((id) => !dead.has(id)),
+    invalidatedEvidenceIds: invalidated,
     failureSignature: input.failureSignature,
     tokensSpent: Math.max(0, input.tokensSpent),
   };
