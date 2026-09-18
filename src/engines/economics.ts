@@ -6,11 +6,17 @@ export interface EconomicsInput {
   verificationCost: number;
   riskPenalty: number;
   threshold: number;
+  /** Additional surplus required beyond the legacy break-even threshold. */
+  minimumMargin?: number;
 }
 
 export interface EconomicsResult {
   score: number;
   delegate: boolean;
+  /** Score surplus over the legacy threshold. */
+  margin: number;
+  /** Threshold including the configured surplus requirement. */
+  breakEvenThreshold: number;
   breakdown: EconomicsInput;
 }
 
@@ -26,12 +32,19 @@ export interface EconomicsResult {
 // 0.29999999999999993 against a threshold of 0.3 — which meant every goal of
 // that shape silently refused to delegate and did the work itself. The
 // tolerance is far below any difference the weights can meaningfully express.
-const TOLERANCE = 1e-9;
-
 export function scoreDelegation(input: EconomicsInput): EconomicsResult {
   const totalCost = input.modelCost + input.latencyCost + input.coordinationCost + input.verificationCost;
   const score = input.estimatedValue - totalCost - input.riskPenalty;
-  return { score, delegate: score >= input.threshold - TOLERANCE, breakdown: input };
+  const margin = score - input.threshold;
+  const minimumMargin = Math.max(0, input.minimumMargin ?? 0);
+  const breakEvenThreshold = input.threshold + minimumMargin;
+  return {
+    score,
+    margin,
+    breakEvenThreshold,
+    delegate: margin + Number.EPSILON >= minimumMargin,
+    breakdown: input,
+  };
 }
 
 /** The single change that would have produced the opposite decision.
