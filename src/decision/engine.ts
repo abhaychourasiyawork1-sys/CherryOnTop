@@ -111,7 +111,7 @@ export function decideExecutionPath(input: ExecutionPathInput): DecisionReceipt 
   const taskSignals = taskEconomicsFor(input.goal);
   const fastPath = classifyFastPath({
     goal: input.goal,
-    taskClass: input.goal.match(/\\b(?:typo|rename|bump|comment|whitespace|formatting|lint|changelog|version)\\b/i)
+    taskClass: input.goal.match(/\b(?:typo|rename|bump|comment|whitespace|formatting|lint|changelog|version)\b/i)
       ? 'trivial_edit'
       : 'implementation',
     complexity: input.complexity,
