@@ -7,6 +7,55 @@ describe('scoreDelegation', () => {
       estimatedValue: 1, modelCost: 0.1, latencyCost: 0.1,
       coordinationCost: 0.1, verificationCost: 0.1, riskPenalty: 0.1, threshold: 0.3,
     });
+
+  it('does not delegate on a negligible margin', () => {
+    const result = scoreDelegation({
+      estimatedValue: 0.701,
+      modelCost: 0.1,
+      latencyCost: 0.05,
+      coordinationCost: 0.15,
+      verificationCost: 0.1,
+      riskPenalty: 0,
+      threshold: 0.3,
+      minimumMargin: 0.01,
+    });
+
+    expect(result.score).toBeCloseTo(0.301, 5);
+    expect(result.margin).toBeCloseTo(0.001, 5);
+    expect(result.breakEvenThreshold).toBeCloseTo(0.31, 5);
+    expect(result.delegate).toBe(false);
+  });
+
+  it('delegates when the economic margin clears the floor', () => {
+    const result = scoreDelegation({
+      estimatedValue: 0.72,
+      modelCost: 0.1,
+      latencyCost: 0.05,
+      coordinationCost: 0.15,
+      verificationCost: 0.1,
+      riskPenalty: 0,
+      threshold: 0.3,
+      minimumMargin: 0.01,
+    });
+
+    expect(result.margin).toBeCloseTo(0.02, 5);
+    expect(result.delegate).toBe(true);
+  });
+
+  it('keeps old behavior when no margin floor is configured', () => {
+    const result = scoreDelegation({
+      estimatedValue: 1,
+      modelCost: 0,
+      latencyCost: 0,
+      coordinationCost: 0,
+      verificationCost: 0,
+      riskPenalty: 0,
+      threshold: 0.5,
+    });
+
+    expect(result.delegate).toBe(true);
+  });
+});
     expect(result.score).toBeCloseTo(0.5, 5); // 1 - 0.4 - 0.1
   });
 
