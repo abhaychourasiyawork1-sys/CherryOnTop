@@ -17,6 +17,8 @@
  *   3. **Economics last**, and always against a named alternative.
  */
 import { decideExecution, type DecideExecutionInput } from '../engines/decide-execution.js';
+import { classifyFastPath } from '../efficiency/fast-path.js';
+import { extractAnchors, taskEconomicsFor } from '../efficiency/task-economics.js';
 import { routeModel, type ModelRouteInput } from '../intelligence/model-router.js';
 import { decideIntegration } from '../intelligence/integrate-results.js';
 import { planEvidence, type EvidenceCandidate } from '../execution/evidence-planner.js';
@@ -103,8 +105,34 @@ export function decideExecutionPath(input: ExecutionPathInput): DecisionReceipt 
     });
   }
 
-  // Everything below is the existing economics, unchanged — this only puts its
-  // answer in the common shape.
+  // Deterministic cheap work should enter the existing model directly. This is
+  // deliberately after hard/free gates and before delegation economics: the
+  // fast path is an execution shortcut, never a way around authority or reuse.
+  const taskSignals = taskEconomicsFor(input.goal);
+  const fastPath = classifyFastPath({
+    goal: input.goal,
+    taskClass: input.goal.match(/\\b(?:typo|rename|bump|comment|whitespace|formatting|lint|changelog|version)\\b/i)
+      ? 'trivial_edit'
+      : 'implementation',
+    complexity: input.complexity,
+    worthSplitting: input.worthSplitting ?? taskSignals.breadth > 0.6,
+    anchors: extractAnchors(input.goal),
+  });
+  if (fastPath.eligible) {
+    return receipt({
+      chosen: 'RUN_MODEL',
+      fastPath: true,
+      confidence: fastPath.confidence,
+      reason: `fast path: ${fastPath.reason}`,
+      estimate: input.dispatch,
+      alternatives: [{
+        type: 'SPAWN_AGENT',
+        reason: 'delegation is unnecessary for a single anchored low-complexity task',
+        estimate: { tokens: input.dispatch.tokens * 2, latencyMs: input.dispatch.latencyMs, costUsd: input.dispatch.costUsd * 2 },
+      }],
+    });
+  }
+
   const decision = decideExecution(input);
   const score = decision.breakdown.score ?? 0;
   const threshold = decision.breakdown.threshold ?? 0;
