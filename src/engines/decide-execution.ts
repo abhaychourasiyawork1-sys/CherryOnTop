@@ -31,6 +31,8 @@ export interface DecideExecutionResult {
 // child costs about the same whatever it was asked to do.
 const VALUE_BY_COMPLEXITY: Record<DecideExecutionInput['complexity'], number> = { low: 0.2, medium: 0.7, high: 1.2 };
 const THRESHOLD = 0.3;
+/** Delegation must clear break-even by real surplus; near-threshold fan-out is not free. */
+export const DELEGATION_MIN_MARGIN = 0.05;
 
 /** The least a single agent needs to be worth dispatching at all — below this a
  *  sandbox costs more to start than the work it could do inside it. Was
@@ -48,6 +50,7 @@ function defaultEconomicsInput(complexity: DecideExecutionInput['complexity']): 
     // A complex goal handed to a child is likelier to come back wrong.
     riskPenalty: complexity === 'high' ? 0.2 : 0,
     threshold: THRESHOLD,
+    minimumMargin: DELEGATION_MIN_MARGIN,
   };
 }
 
