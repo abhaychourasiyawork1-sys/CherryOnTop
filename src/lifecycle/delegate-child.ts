@@ -3,6 +3,9 @@ import { ZERO_USAGE } from '../execution/tokens.js';
 import type { Authority } from '../schemas/node-contract.js';
 import { effectiveAuthority } from '../engines/authority.js';
 import { MIN_AGENT_BUDGET_USD } from '../engines/decide-execution.js';
+import { planWorkstreams, dependentsOf, type WorkstreamNode, type WorkstreamPlan } from '../execution/workstreams.js';
+import { extractAnchors } from '../efficiency/task-economics.js';
+import { assessDecomposition } from '../intelligence/decompose.js';
 
 export interface DelegateInput {
   parentId: string;
@@ -101,15 +104,61 @@ export interface DelegateChildDeps {
   recordCommitment: (childId: string, goal: string) => void;
   startChild: (childId: string, goal: string) => void;
   waitForChild: (childId: string) => Promise<{ succeeded: boolean }>;
+  /** What the work graph said and what it cost. Optional: a deployment with no
+   *  telemetry sink schedules exactly the same, it just says nothing about it. */
+  recordSchedule?: (schedule: DelegationSchedule) => void;
 }
 
-/** Hands each subgoal to its own child and runs them together.
+/** The subgoals, as a graph the scheduler can reason about.
+ *
+ *  A planner hands back sentences, not a DAG, so the structure has to be read
+ *  back out of them. Only one thing is inferred, and it is the one that is a
+ *  correctness failure rather than a cost: two subgoals that will *write* the
+ *  same file. `planWorkstreams` puts those in different groups; everything else
+ *  stays in one group and runs together, which is what a fan-out was already
+ *  doing.
+ *
+ *  Read-only subgoals ("review X", "audit Y") contribute their anchors as
+ *  *information* dependencies instead — two branches reading one module is not
+ *  a conflict, it is the duplication `sharedEvidenceIds` exists to name.
+ *
+ *  ponytail: anchors are a heuristic for write paths; a planner that emitted
+ *  explicit file claims per subgoal would replace this whole function. */
+export function workstreamNodesFor(subgoals: string[]): WorkstreamNode[] {
+  return subgoals.map((goal, index) => {
+    const anchors = extractAnchors(goal);
+    const readOnly = assessDecomposition(goal).investigative;
+    return {
+      id: String(index),
+      inputDependencies: [],
+      informationDependencies: anchors,
+      outputDependencies: [],
+      validationDependencies: [],
+      writePaths: readOnly ? [] : anchors,
+    };
+  });
+}
+
+export interface DelegationSchedule {
+  plan: WorkstreamPlan;
+  /** Children never started because something they depended on failed, with the
+   *  reason. Empty on a clean fan-out. */
+  cancelled: { goal: string; reason: string }[];
+}
+
+/** Hands each subgoal to its own child and runs them on the schedule the work
+ *  graph allows.
  *
  *  Previously this created one child carrying the parent's goal verbatim, so a
  *  delegating organization was a chain of identical clones, each re-deciding the
  *  same question one generation down. With a real split, siblings work in
  *  parallel on different things — which is the only version of this that is
- *  worth the coordination cost the economics engine charges for it. */
+ *  worth the coordination cost the economics engine charges for it.
+ *
+ *  What changed after that: the fan-out was an unconditional `Promise.all` over
+ *  every planned child, which starts two children writing the same file at the
+ *  same moment and keeps paying for children whose prerequisite has already
+ *  failed. Groups run in order; within a group, concurrently. */
 export async function delegateToChildren(
   input: DelegateInput,
   deps: DelegateChildDeps,
@@ -141,28 +190,67 @@ export async function delegateToChildren(
     };
   }
 
-  const children = subgoals.map((goal) => {
-    const childId = deps.createChildNode(input.parentId, goal, subgoals.length, input.approvedBudgetUsd);
-    deps.recordCommitment(childId, goal);
-    // Before the child starts, not after: the envelope is what its first
-    // dispatch reads, and a child that started first would read nothing.
-    deps.recordEnvelope?.(childId, goal, input.approvedBudgetUsd ?? 0);
-    deps.startChild(childId, goal);
-    return { childId, goal };
-  });
+  const nodes = workstreamNodesFor(subgoals);
+  const plan = planWorkstreams({ nodes });
+  deps.recordSchedule?.({ plan, cancelled: [] });
 
-  // Siblings run concurrently — waiting for each in turn would make a fan-out
-  // take as long as a chain, which is the thing it exists to avoid.
-  const results = await Promise.all(
-    children.map(async (child) => ({ ...child, ...(await deps.waitForChild(child.childId)) })),
-  );
+  const results: { childId: string; goal: string; succeeded: boolean }[] = [];
+  const failedIds: string[] = [];
+  const cancelled: { goal: string; reason: string }[] = [];
+  // Everything downstream of something that already failed. Recomputed as
+  // failures land rather than once at the end, because the point is to not pay
+  // for the child at all.
+  const doomed = new Map<string, string>();
+
+  for (const group of plan.parallelGroups) {
+    const runnable = group.filter((id) => {
+      const reason = doomed.get(id);
+      if (!reason) return true;
+      cancelled.push({ goal: subgoals[Number(id)], reason });
+      return false;
+    });
+    if (runnable.length === 0) continue;
+
+    // Siblings in one group run concurrently — waiting for each in turn would
+    // make a fan-out take as long as a chain, which is the thing it exists to
+    // avoid. Siblings in *different* groups do not, because the plan put them
+    // apart for a reason.
+    const started = runnable.map((id) => {
+      const goal = subgoals[Number(id)];
+      const childId = deps.createChildNode(input.parentId, goal, subgoals.length, input.approvedBudgetUsd);
+      deps.recordCommitment(childId, goal);
+      // Before the child starts, not after: the envelope is what its first
+      // dispatch reads, and a child that started first would read nothing.
+      deps.recordEnvelope?.(childId, goal, input.approvedBudgetUsd ?? 0);
+      deps.startChild(childId, goal);
+      return { id, childId, goal };
+    });
+
+    const settled = await Promise.all(
+      started.map(async (child) => ({ ...child, ...(await deps.waitForChild(child.childId)) })),
+    );
+
+    for (const child of settled) {
+      results.push({ childId: child.childId, goal: child.goal, succeeded: child.succeeded });
+      if (child.succeeded) continue;
+      failedIds.push(child.id);
+      for (const dependent of dependentsOf(nodes, child.id)) {
+        if (!doomed.has(dependent)) doomed.set(dependent, `depends on the failed piece: ${child.goal}`);
+      }
+    }
+  }
+
+  if (cancelled.length > 0) deps.recordSchedule?.({ plan, cancelled });
 
   const failed = results.filter((result) => !result.succeeded);
+  const notes = cancelled.length > 0
+    ? ` ${cancelled.length} further ${cancelled.length === 1 ? 'piece was' : 'pieces were'} not started because what ${cancelled.length === 1 ? 'it' : 'they'} depended on failed.`
+    : '';
   return {
-    succeeded: failed.length === 0,
-    message: failed.length === 0
+    succeeded: failed.length === 0 && cancelled.length === 0,
+    message: failed.length === 0 && cancelled.length === 0
       ? `All ${results.length} delegated pieces completed`
-      : `${failed.length} of ${results.length} delegated pieces did not succeed: ${failed.map((f) => f.goal).join('; ')}`,
+      : `${failed.length} of ${results.length} delegated pieces did not succeed: ${failed.map((f) => f.goal).join('; ')}.${notes}`,
     events: [],
     usage: { ...ZERO_USAGE },
   };

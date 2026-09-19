@@ -41,7 +41,8 @@ import {
   type OrchestrationCadence, type OrchestrationCycleResult,
 } from '../decision/orchestration-loop.js';
 import { actionCandidate, type ActionCandidate, type ActionDecision } from '../decision/actions.js';
-import { registerCandidateSource, historicalEvidenceSource } from '../decision/deep-path.js';
+import { registerCandidateSource, historicalEvidenceSource, stateDerivedCandidates } from '../decision/deep-path.js';
+import { allocateBudget } from '../decision/budget.js';
 import { evaluateRecovery, recoveryCandidate, type RecoveryTombstone } from '../recovery/engine.js';
 import { queryKnowledge } from '../evidence/store.js';
 import { evaluateHistoricalEvidence } from '../evidence/reuse.js';
@@ -75,6 +76,13 @@ interface NodeMemory {
    *  with it: a tombstone is only about the run that produced it, and one run's
    *  dead end says nothing about another's. */
   tombstones: RecoveryTombstone[];
+  /** Set when this turn's decision was a justified `recover` and it was
+   *  actually carried out (the failed strategy tombstoned, a pivot pointer
+   *  handed to the next dispatch). Read once by the spend guard's stall check
+   *  and cleared — the whole reason it exists: a stall STOP and a justified
+   *  pivot can describe the exact same state, and the pivot must get the turn
+   *  it was priced for rather than the guard undoing it in the same breath. */
+  recoveredThisTurn: boolean;
 }
 
 const memory = new Map<string, NodeMemory>();
@@ -82,10 +90,29 @@ const memory = new Map<string, NodeMemory>();
 function memoryFor(nodeId: string): NodeMemory {
   let entry = memory.get(nodeId);
   if (!entry) {
-    entry = { cadence: INITIAL_CADENCE, previous: EMPTY_SNAPSHOT, sequence: 0, tombstones: [] };
+    entry = {
+      cadence: INITIAL_CADENCE, previous: EMPTY_SNAPSHOT, sequence: 0, tombstones: [],
+      recoveredThisTurn: false,
+    };
     memory.set(nodeId, entry);
   }
   return entry;
+}
+
+/** Marks that this node's decision cycle just carried out a justified
+ *  `recover`. Exported for `carryOut` alone — everywhere else reads the flag,
+ *  never sets it. */
+export function markRecovered(nodeId: string): void {
+  memoryFor(nodeId).recoveredThisTurn = true;
+}
+
+/** Reads and clears the flag in one step: a pivot buys the *next* dispatch
+ *  attempt a pass on the stall guard, not every attempt from here on. */
+export function consumeRecoveryFlag(nodeId: string): boolean {
+  const entry = memory.get(nodeId);
+  if (!entry?.recoveredThisTurn) return false;
+  entry.recoveredThisTurn = false;
+  return true;
 }
 
 /** Called when a node reaches a terminal state. Exported so the lifecycle can
@@ -310,17 +337,53 @@ export interface BoundaryOutcome {
  *  points keeps "the state a decision was made against" and "the decision"
  *  inseparable, which is what makes a ledger entry checkable afterwards. */
 export function evaluateBoundary(db: Db, input: ExecutionBoundaryInput): BoundaryOutcome {
-  const state = economicStateFor(db, input);
+  const unreserved = economicStateFor(db, input);
   const entry = memoryFor(input.nodeId);
-  const cycle = runDecisionCycle(state, {
-    cadence: entry.cadence,
-    additionalCandidates: [
-      ...evidenceCandidates(input, state),
-      ...recoveryCandidates(state, entry),
-    ],
-  });
+  const additionalCandidates = [
+    ...evidenceCandidates(input, unreserved),
+    ...recoveryCandidates(unreserved, entry),
+  ];
+  const state = withReserves(unreserved, additionalCandidates);
+  const cycle = runDecisionCycle(state, { cadence: entry.cadence, additionalCandidates });
   entry.cadence = cycle.cadence;
   return { decision: cycle.decision, state, cycle };
+}
+
+/** Holds back what proving and retrying would cost, when there is something to
+ *  prove or something to retry — and nothing otherwise.
+ *
+ *  `allocateBudget` has been able to compute this since it was written and had
+ *  no caller, so `resources.recoveryReserve` was `0` on every production state.
+ *  Everything downstream that reads it — `utility.ts`, which excludes the
+ *  reserve from what any non-recovery action may afford, and
+ *  `evidence-actions.ts`, which floors exploration at it — was therefore
+ *  enforcing a reserve of nothing. That is the gap Section 5's "the
+ *  verification reserve cannot be consumed by ordinary exploration" names.
+ *
+ *  Conditional on purpose, which is what keeps it compatible with this
+ *  runtime's stated default that **holding nothing back is the default**: the
+ *  buckets are filled from opportunities that exist *right now*. A task with no
+ *  validation requirement and no failure behind it proposes neither candidate,
+ *  both buckets come back zero, and the allocation is exactly what it was
+ *  before this function existed. When the run starts failing, or has something
+ *  unproven, the reserve appears — and disappears again when the reason does,
+ *  without anything having to remember to release it.
+ *
+ *  The candidates are the deep path's own, imported rather than restated: a
+ *  reserve priced on a different estimate from the one the engine ranks with
+ *  would fund a validation the engine would never choose. */
+function withReserves(state: EconomicState, additional: ActionCandidate[]): EconomicState {
+  const opportunities = [...stateDerivedCandidates(state), ...additional];
+  const allocation = allocateBudget({ state, opportunities });
+  // One number, because `utility.ts` reads one. Both buckets are money the run
+  // must not spend on looking around: the distinction between them matters to
+  // whoever reads the allocation, not to what exploration may afford.
+  const reserve = allocation.recoveryReserve + allocation.validation;
+  if (reserve <= 0) return state;
+  return normalizeEconomicState({
+    ...state,
+    resources: { ...state.resources, recoveryReserve: reserve },
+  });
 }
 
 /** Retrying, as a comparable action — and one that knows what the previous
@@ -336,7 +399,12 @@ function recoveryCandidates(state: EconomicState, entry: NodeMemory): ActionCand
   if (!failureSignature) return [];
   const evaluation = evaluateRecovery({ state, failureSignature, tombstones: entry.tombstones });
   if (!evaluation.justified) return [];
-  return [recoveryCandidate(evaluation, state)];
+  const candidate = recoveryCandidate(evaluation, state);
+  // Carried in metadata rather than recomputed: `carryOut` needs the same
+  // signature to tombstone the strategy it is about to rule out, and asking a
+  // failure it has already been evaluated against a second time would be
+  // another read of `entry.previous` after this turn has already moved on.
+  return [{ ...candidate, metadata: { ...candidate.metadata, failureSignature } }];
 }
 
 /** The selector's "this one is worth opening" verdicts, as comparable actions.

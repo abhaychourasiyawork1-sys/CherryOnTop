@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import {
+import { delegationEstimate,
   hardGates, decideExecutionPath, decideEvidence, decideSynthesis, decideModel,
 } from './engine.js';
 import { EMPTY_FRONTIER, updateFrontier } from '../context/frontier.js';
@@ -235,5 +235,22 @@ describe('receipts', () => {
       goal: 'g', authority: authority(), spentUsd: 0, complexity: 'medium', worthSplitting: false, dispatch,
     });
     expect(scored.alternatives.length).toBeGreaterThan(0);
+  });
+});
+
+describe('delegationEstimate', () => {
+  it('scales with the children actually planned, not a flat doubling', () => {
+    const dispatch = { tokens: 1000, latencyMs: 10_000, costUsd: 0.10 };
+    // plan + 2 children + synthesize = 4 dispatches; plan + 4 + synthesize = 6.
+    expect(delegationEstimate(dispatch, 2).tokens).toBe(4000);
+    expect(delegationEstimate(dispatch, 4).tokens).toBe(6000);
+    expect(delegationEstimate(dispatch, 4).costUsd).toBeCloseTo(0.60);
+  });
+
+  it('does not sum concurrent children into the wall clock', () => {
+    const dispatch = { tokens: 1000, latencyMs: 10_000, costUsd: 0.10 };
+    // Four children run at once. plan -> child -> synthesize, whatever k is.
+    expect(delegationEstimate(dispatch, 4).latencyMs).toBe(30_000);
+    expect(delegationEstimate(dispatch, 2).latencyMs).toBe(30_000);
   });
 });

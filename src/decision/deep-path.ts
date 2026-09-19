@@ -77,7 +77,7 @@ const STATE_DERIVED_CONFIDENCE_CEILING = 0.8;
  *  (the model-fallback path), and stop covering the same ground (what the spend
  *  guard's stall branch fires on). Expressing them as candidates rather than as
  *  branches is what makes them comparable with everything else. */
-function stateDerivedCandidates(state: EconomicState): ActionCandidate[] {
+export function stateDerivedCandidates(state: EconomicState): ActionCandidate[] {
   const out: ActionCandidate[] = [];
   const remaining = state.resources.remainingTokens;
 

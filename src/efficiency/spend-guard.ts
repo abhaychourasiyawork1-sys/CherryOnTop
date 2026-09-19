@@ -34,6 +34,15 @@ export interface SpendGuardState {
    *  Null only when the answer is GREEN — "everything is fine" needs no
    *  explanation. */
   reason: string | null;
+  /** Whether this STOP is a hard resource exhaustion (money or turns genuinely
+   *  gone — nothing left to spend on any alternative, recovery included) or the
+   *  stall heuristic (spend and turns past what the task needed, no progress to
+   *  show). Only the first is unconditional. The second is exactly the case a
+   *  justified pivot exists for: the run is not out of anything, it is stuck —
+   *  and a caller that can offer recovery a turn first should, rather than
+   *  reading every STOP as the same "nothing more to try" verdict. Meaningless
+   *  outside `state === 'STOP'`, where it is always `false`. */
+  hard: boolean;
 }
 
 export interface SpendGuardInput {
@@ -89,19 +98,20 @@ export function evaluateSpendGuard(input: SpendGuardInput): SpendGuardState {
 
   const capped = spendCapUsd > 0;
   const share = capped ? spentUsd / spendCapUsd : 0;
-  const stop = (reason: string): SpendGuardState => ({ state: 'STOP', spentUsd, spendCapUsd, reason });
+  const stop = (reason: string, hard: boolean): SpendGuardState => ({ state: 'STOP', spentUsd, spendCapUsd, reason, hard });
 
   // Money first, always. Turns remaining do not buy anything when there is
-  // nothing left to buy it with.
+  // nothing left to buy it with — hard, because there is nothing left for a
+  // recovery attempt to spend either.
   if (capped && spentUsd >= spendCapUsd) {
-    return stop(`Spend cap reached — $${spentUsd.toFixed(2)} of $${spendCapUsd.toFixed(2)}.`);
+    return stop(`Spend cap reached — $${spentUsd.toFixed(2)} of $${spendCapUsd.toFixed(2)}.`, true);
   }
 
   // And turns second, even with money left: when a runtime reports no cost at
   // all this is the only bound there is, and an unbounded turn loop is the one
-  // term whose price grows superlinearly.
+  // term whose price grows superlinearly. Hard for the same reason.
   if (hardTurnCap > 0 && turns >= hardTurnCap) {
-    return stop(`Turn cap reached — ${turns} of ${hardTurnCap} turns.`);
+    return stop(`Turn cap reached — ${turns} of ${hardTurnCap} turns.`, true);
   }
 
   // The stall. Real money spent, past the point the task was judged to need,
@@ -109,6 +119,10 @@ export function evaluateSpendGuard(input: SpendGuardInput): SpendGuardState {
   // nowhere: searching without acting, or repeating a failure. Only where
   // spend is actually being measured: a guard that fires on missing telemetry
   // fires on every runtime that does not report cost.
+  //
+  // Not hard: the task is stuck, not out of resources. This is exactly the
+  // shape a pivot exists for, and a caller that can offer recovery a turn
+  // before treating this as final should — see `hard`'s doc comment.
   const stalled = capped
     && share >= STALL_SPEND_SHARE
     && softTurnTarget > 0 && turns >= softTurnTarget
@@ -116,29 +130,31 @@ export function evaluateSpendGuard(input: SpendGuardInput): SpendGuardState {
   if (stalled && exploration >= STALL_EXPLORATION) {
     return stop(
       `No progress after ${turns} turns and $${spentUsd.toFixed(2)} — the trajectory is searching, not working.`,
+      false,
     );
   }
   if (stalled && repeatedFailure >= STALL_REPEATED_FAILURE) {
     return stop(
       `No progress after ${turns} turns and $${spentUsd.toFixed(2)} — the same call is failing over and over.`,
+      false,
     );
   }
 
   if (capped && share >= RED_SHARE) {
-    return { state: 'RED', spentUsd, spendCapUsd, reason: `${Math.round(share * 100)}% of the spend cap is gone.` };
+    return { state: 'RED', spentUsd, spendCapUsd, reason: `${Math.round(share * 100)}% of the spend cap is gone.`, hard: false };
   }
   if (hardTurnCap > 0 && turns >= hardTurnCap * RED_SHARE) {
-    return { state: 'RED', spentUsd, spendCapUsd, reason: `${turns} of ${hardTurnCap} turns used.` };
+    return { state: 'RED', spentUsd, spendCapUsd, reason: `${turns} of ${hardTurnCap} turns used.`, hard: false };
   }
   if (capped && share >= AMBER_SHARE) {
-    return { state: 'AMBER', spentUsd, spendCapUsd, reason: `${Math.round(share * 100)}% of the spend cap is gone.` };
+    return { state: 'AMBER', spentUsd, spendCapUsd, reason: `${Math.round(share * 100)}% of the spend cap is gone.`, hard: false };
   }
   if (softTurnTarget > 0 && turns > softTurnTarget) {
     return {
       state: 'AMBER', spentUsd, spendCapUsd,
-      reason: `Past the ${softTurnTarget}-turn target this task was judged to need.`,
+      reason: `Past the ${softTurnTarget}-turn target this task was judged to need.`, hard: false,
     };
   }
 
-  return { state: 'GREEN', spentUsd, spendCapUsd, reason: null };
+  return { state: 'GREEN', spentUsd, spendCapUsd, reason: null, hard: false };
 }

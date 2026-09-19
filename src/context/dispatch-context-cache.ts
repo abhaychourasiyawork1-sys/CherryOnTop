@@ -52,6 +52,31 @@ export function warmRepoInventory(db: Db, worktreePath: string): void {
   repoInventoryFor(db, worktreePath);
 }
 
+/** What siblings on one commit have already been shown, keyed by that commit.
+ *
+ *  A fan-out's children are dispatched within seconds of each other against the
+ *  same tree, and each one independently re-scores the repository from its own
+ *  subgoal. Two children investigating the same module select overlapping files
+ *  and rediscover the same thing — the `shared-information` regime's measured
+ *  regression. Feeding the earlier selection in as `previouslySelected` makes
+ *  the selector prefer paths a sibling already paid for, which both keeps the
+ *  prompt prefix stable (the provider's cache is keyed on it) and stops the
+ *  second child from reading its way to the same answer.
+ *
+ *  Process-local and unbounded-in-principle; bounded in practice by how many
+ *  commits one daemon process sees. It is a hint, never a correctness input:
+ *  losing it costs tokens, never an answer.
+ *
+ *  ponytail: in-memory map, per process. If daemons ever shard, this wants to
+ *  be the `knowledge` table keyed by (repository, revision). */
+const siblingSelections = new Map<string, Set<string>>();
+
+/** Forgets one commit's shared selections. Called when nothing else will run
+ *  against that tree. */
+export function forgetSiblingSelections(head: string): void {
+  siblingSelections.delete(head);
+}
+
 /** The part of the repository this goal is about, bounded by the configured
  *  ceiling. Null when there is nothing to say — the caller then dispatches the
  *  bare goal, exactly as before selection existed. */
@@ -65,8 +90,21 @@ export function dispatchContextFor(db: Db, worktreePath: string, goal: string): 
   const entries = repoInventoryFor(db, worktreePath);
   if (!entries) return null;
 
+  // Keyed on the committed revision, so a sibling's selection is only ever
+  // offered to a dispatch looking at the same tree.
+  const head = repoHead(worktreePath);
+  const shared = head ? (siblingSelections.get(head) ?? new Set<string>()) : undefined;
+
   try {
-    const context = selectDispatchContext({ goal, entries, tokenBudget });
+    const context = selectDispatchContext({
+      goal, entries, tokenBudget,
+      previouslySelected: shared,
+    });
+    if (head && context.receipt.selected.length > 0) {
+      const seen = siblingSelections.get(head) ?? new Set<string>();
+      for (const path of context.receipt.selected) seen.add(path);
+      siblingSelections.set(head, seen);
+    }
     // `disabled` is the behaviour this branch shipped with: the whole inventory
     // rendered to the ceiling, on every dispatch. `shadow` runs selection and
     // publishes its receipt — so a deployment can see what it would have

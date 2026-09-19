@@ -68,6 +68,42 @@ export interface ExecutionPathInput extends SafetyInput, DecideExecutionInput {
   dispatch: DispatchEstimate;
   /** Outstanding questions. A closed frontier means the work is already done. */
   frontier?: KnowledgeFrontier;
+  /** How many children a fan-out would actually create. Absent means "as many
+   *  as this node's authority allows", which is the number the planner is
+   *  handed as its ceiling. */
+  plannedChildCount?: number;
+}
+
+/** What a fan-out costs, as a function of how wide it is.
+ *
+ *  A flat "×2" was the old answer, and it was wrong in both directions: it
+ *  priced a four-way split as a two-way one, and it charged the same for a
+ *  two-way split whatever the node's allowance was. Three terms, all of them
+ *  real dispatches somebody pays for:
+ *
+ *   - the planning run that produces the subgoals,
+ *   - k children,
+ *   - the synthesis run that combines their answers.
+ *
+ *  Latency is *not* k times a dispatch: children run concurrently, so the wall
+ *  clock is plan + one child + synthesis. Summing children there is the mistake
+ *  that makes every fan-out look slower than it is. */
+export function delegationEstimate(dispatch: DispatchEstimate, childCount: number): DispatchEstimate {
+  const children = Math.max(1, Math.floor(childCount));
+  const dispatches = children + 2;
+  return {
+    tokens: dispatch.tokens * dispatches,
+    // plan -> (children, in parallel) -> synthesize.
+    latencyMs: dispatch.latencyMs * 3,
+    costUsd: dispatch.costUsd * dispatches,
+  };
+}
+
+/** How wide the fan-out would be: what the caller planned, else what this
+ *  node's agent allowance permits. Clamped at one, because a delegation that
+ *  creates no children is not a delegation. */
+function plannedChildren(input: ExecutionPathInput): number {
+  return Math.max(1, Math.floor(input.plannedChildCount ?? input.authority.max_child_count ?? 1));
 }
 
 /** Reuse, spawn, run, wait or stop — the top-level shape of a node's work. */
@@ -127,13 +163,7 @@ export function decideExecutionPath(input: ExecutionPathInput): DecisionReceipt 
     return receipt({
       chosen: 'SPAWN_AGENT', confidence,
       reason: `the goal comes apart and delegation scores ${score.toFixed(2)} against ${threshold}`,
-      // A fan-out is the dispatch cost times the children, plus the parent's own
-      // planning and synthesis. Two children is the default cap.
-      estimate: {
-        tokens: input.dispatch.tokens * 2,
-        latencyMs: input.dispatch.latencyMs,
-        costUsd: input.dispatch.costUsd * 2,
-      },
+      estimate: delegationEstimate(input.dispatch, plannedChildren(input)),
       alternatives: [dispatchAlternative],
     });
   }
@@ -147,7 +177,7 @@ export function decideExecutionPath(input: ExecutionPathInput): DecisionReceipt 
     alternatives: [{
       type: 'SPAWN_AGENT',
       reason: 'split the goal across agents',
-      estimate: { tokens: input.dispatch.tokens * 2, latencyMs: input.dispatch.latencyMs, costUsd: input.dispatch.costUsd * 2 },
+      estimate: delegationEstimate(input.dispatch, plannedChildren(input)),
     }],
   });
 }

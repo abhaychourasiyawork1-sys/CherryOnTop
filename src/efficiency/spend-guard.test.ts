@@ -89,6 +89,49 @@ describe('evaluateSpendGuard — a high turn count is not a verdict', () => {
   });
 });
 
+describe('evaluateSpendGuard — hard vs. stall STOP', () => {
+  // The distinction a caller needs to act on: a hard STOP means there is
+  // nothing left for any alternative, recovery included, to spend — it must be
+  // unconditional. A stall STOP means the task is stuck, not out of resources,
+  // which is exactly the situation a justified pivot exists for. Collapsing
+  // both into one undifferentiated STOP is what let a documented regression
+  // happen: the guard stopping a task whose failed strategy a recovery
+  // evaluation would have judged worth retrying.
+  it('marks the spend-cap STOP hard', () => {
+    const g = guard({ spentUsd: 10 });
+    expect(g.state).toBe('STOP');
+    expect(g.hard).toBe(true);
+  });
+
+  it('marks the turn-cap STOP hard', () => {
+    const g = guard({ turns: 45, hardTurnCap: 45 });
+    expect(g.state).toBe('STOP');
+    expect(g.hard).toBe(true);
+  });
+
+  it('marks the searching-not-working stall STOP as not hard', () => {
+    const stalled = { turns: 30, hardTurnCap: 60, spentUsd: 6, progressSignal: 0, explorationSignal: 0.95 };
+    const g = guard(stalled);
+    expect(g.state).toBe('STOP');
+    expect(g.hard).toBe(false);
+  });
+
+  it('marks the repeated-failure stall STOP as not hard', () => {
+    const looping = {
+      turns: 30, hardTurnCap: 60, spentUsd: 6, progressSignal: 0, explorationSignal: 0, repeatedFailureSignal: 0.9,
+    };
+    const g = guard(looping);
+    expect(g.state).toBe('STOP');
+    expect(g.hard).toBe(false);
+  });
+
+  it('leaves `hard` false on every non-STOP state', () => {
+    expect(guard().hard).toBe(false);
+    expect(guard({ spentUsd: 6.5 }).hard).toBe(false);
+    expect(guard({ spentUsd: 9 }).hard).toBe(false);
+  });
+});
+
 describe('evaluateSpendGuard — totality', () => {
   it('answers something safe for nonsense input rather than throwing', () => {
     const g = evaluateSpendGuard({

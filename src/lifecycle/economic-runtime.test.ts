@@ -10,7 +10,10 @@ import { appendEvent, listEventsForNode } from '../db/queries/events.js';
 import { recordDispatchUsage } from '../db/queries/tokens.js';
 import { insertDodItems, listDodForNode, setDodState } from '../db/queries/dod.js';
 import { startNodeActor } from './node-actor-manager.js';
-import { economicStateFor, evaluateBoundary, forgetNode, trackedNodeCount, isIntervention } from './economic-runtime.js';
+import {
+  economicStateFor, evaluateBoundary, forgetNode, trackedNodeCount, isIntervention,
+  markRecovered, consumeRecoveryFlag,
+} from './economic-runtime.js';
 import type { ExecuteStepInput, ExecuteStepResult } from '../execution/execute-step.js';
 import { ZERO_USAGE } from '../execution/tokens.js';
 import { actionCandidate } from '../decision/actions.js';
@@ -255,6 +258,35 @@ describe('evaluateBoundary', () => {
     forgetNode(id);
   });
 
+  it('holds nothing back on a quiet run, and holds back a reserve once there is something to retry', () => {
+    // Invariant #29 says holding nothing back is the default; Section 5 says
+    // the verification reserve cannot be spent on exploration. Both are true,
+    // and which one applies is a property of the run rather than a setting.
+    const db = createDb(TEST_DB);
+    const quiet = seedNode(db, tmpRepo());
+    const calm = evaluateBoundary(db, { nodeId: quiet, goal: GOAL });
+    expect(calm.state.resources.recoveryReserve).toBe(0);
+    forgetNode(quiet);
+
+    const failing = seedNode(db, tmpRepo());
+    for (let i = 0; i < 6; i++) {
+      recordToolCall(db, failing, 'Bash', { command: 'npm test' }, true, 'error: checkout is not a function');
+    }
+    // Real spend, so there is a budget to reserve out of.
+    recordDispatchUsage(db, {
+      nodeId: failing, role: 'execute', model: 'sonnet',
+      usage: { inputTokens: 2_000, outputTokens: 500, cacheCreationTokens: 0, cacheReadTokens: 0 },
+      costUsd: 0.05, turns: 4, startupMs: 0, createdAt: new Date().toISOString(),
+    });
+    const pressured = evaluateBoundary(db, { nodeId: failing, goal: GOAL });
+    expect(pressured.state.resources.recoveryReserve).toBeGreaterThan(0);
+    // And it is bounded by what the opportunities actually ask for, never the
+    // whole remaining budget.
+    expect(pressured.state.resources.recoveryReserve)
+      .toBeLessThan(pressured.state.resources.remainingTokens);
+    forgetNode(failing);
+  });
+
   it('forgets a node so a long-lived daemon does not accumulate one entry per run', () => {
     const db = createDb(TEST_DB);
     const before = trackedNodeCount();
@@ -280,6 +312,33 @@ describe('isIntervention', () => {
       decisionId: 'd', stateVersion: 1, utility: 1, reasonCodes: [], confidence: 1,
       action: actionCandidate({ id: 'e', kind: 'acquire_evidence', capability: 'evidence.read-file' }),
     })).toBe(true);
+  });
+});
+
+describe('the recovery flag', () => {
+  // This is the bridge between `carryOutRecovery` (node-actor-manager.ts) and
+  // the spend guard's stall check (node-actor-manager.ts's dispatch()): a
+  // pivot this turn must buy the very next dispatch attempt a pass on a stall
+  // STOP describing the same stuck state, and only that one attempt — not
+  // every attempt from here on, and not a different node's.
+  it('is unset until a recovery is carried out', () => {
+    expect(consumeRecoveryFlag('flag-1')).toBe(false);
+    forgetNode('flag-1');
+  });
+
+  it('is set by markRecovered and read exactly once', () => {
+    markRecovered('flag-2');
+    expect(consumeRecoveryFlag('flag-2')).toBe(true);
+    expect(consumeRecoveryFlag('flag-2')).toBe(false);
+    forgetNode('flag-2');
+  });
+
+  it('does not leak across nodes', () => {
+    markRecovered('flag-3a');
+    expect(consumeRecoveryFlag('flag-3b')).toBe(false);
+    expect(consumeRecoveryFlag('flag-3a')).toBe(true);
+    forgetNode('flag-3a');
+    forgetNode('flag-3b');
   });
 });
 

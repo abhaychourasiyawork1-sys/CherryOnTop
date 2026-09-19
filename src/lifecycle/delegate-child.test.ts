@@ -187,3 +187,75 @@ describe('childAuthority', () => {
     expect(childAuthority(parent, 0).budget_usd).toBeCloseTo(12.5);
   });
 });
+
+describe('delegateToChildren scheduling', () => {
+  it('serializes two children that would write the same file', async () => {
+    // The bug: an unconditional Promise.all over every planned child starts two
+    // siblings editing src/auth.ts in the same instant. Last writer wins,
+    // silently.
+    const order: string[] = [];
+    const deps = {
+      createChildNode: (_p: string, goal: string) => `c:${goal}`,
+      recordCommitment: () => {},
+      startChild: (id: string) => { order.push(`start:${id}`); },
+      waitForChild: async (id: string) => {
+        await new Promise((r) => setTimeout(r, 1));
+        order.push(`done:${id}`);
+        return { succeeded: true };
+      },
+    };
+    const result = await delegateToChildren(
+      { parentId: 'p', goal: 'g', subgoals: ['fix the bug in src/auth.ts', 'add a guard to src/auth.ts'] },
+      deps,
+    );
+    expect(result.succeeded).toBe(true);
+    // Not interleaved: the first finishes before the second starts.
+    expect(order).toEqual([
+      'start:c:fix the bug in src/auth.ts',
+      'done:c:fix the bug in src/auth.ts',
+      'start:c:add a guard to src/auth.ts',
+      'done:c:add a guard to src/auth.ts',
+    ]);
+  });
+
+  it('still runs children touching different files together', async () => {
+    const started: string[] = [];
+    let inFlight = 0;
+    let maxInFlight = 0;
+    await delegateToChildren(
+      { parentId: 'p', goal: 'g', subgoals: ['fix src/a.ts', 'fix src/b.ts'] },
+      {
+        createChildNode: (_p, goal) => `c:${goal}`,
+        recordCommitment: () => {},
+        startChild: (id) => { started.push(id); },
+        waitForChild: async () => {
+          maxInFlight = Math.max(maxInFlight, ++inFlight);
+          await new Promise((r) => setTimeout(r, 1));
+          inFlight--;
+          return { succeeded: true };
+        },
+      },
+    );
+    expect(started).toHaveLength(2);
+    expect(maxInFlight).toBe(2);
+  });
+
+  it('records the plan it scheduled against', async () => {
+    const schedules: unknown[] = [];
+    await delegateToChildren(
+      { parentId: 'p', goal: 'g', subgoals: ['review src/a.ts', 'review src/a.ts and src/b.ts'] },
+      {
+        createChildNode: (_p, goal) => `c:${goal}`,
+        recordCommitment: () => {},
+        startChild: () => {},
+        waitForChild: async () => ({ succeeded: true }),
+        recordSchedule: (s) => { schedules.push(s); },
+      },
+    );
+    // Read-only siblings are not a write conflict — they run together, and the
+    // module they both need is named as shared rather than rediscovered twice.
+    const first = schedules[0] as { plan: { parallelGroups: string[][]; sharedEvidenceIds: string[] } };
+    expect(first.plan.parallelGroups).toEqual([['0', '1']]);
+    expect(first.plan.sharedEvidenceIds).toContain('src/a.ts');
+  });
+});
