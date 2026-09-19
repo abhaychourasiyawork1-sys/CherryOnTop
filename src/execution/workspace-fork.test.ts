@@ -2,7 +2,7 @@ import { describe, it, expect, afterEach } from 'vitest';
 import { mkdtempSync, writeFileSync, readFileSync, existsSync, rmSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, relative } from 'node:path';
 import { forkWorkspace, isFork } from './workspace-fork.js';
 
 const made: string[] = [];
@@ -87,6 +87,22 @@ describe('forking a workspace', () => {
     const fork = forkWorkspace(base, 'HEAD', 'child-1')!;
     expect(isFork(base, fork.path)).toBe(true);
     expect(isFork(base, base)).toBe(false);
+    fork.release();
+  });
+
+  it('places the fork inside the base repo rather than beside it in the OS temp directory', () => {
+    // A pod's hostPath volume resolves against whatever the cluster's node
+    // actually has mounted — for the kind cluster this runtime deploys to,
+    // that is $HOME (via `/host`), never the OS temp directory. `basePath` is
+    // always somewhere the cluster can already see it (`org run` refuses any
+    // repo outside $HOME), so nesting the fork inside `basePath` inherits
+    // that visibility; a sibling directory elsewhere in the OS temp
+    // directory does not, and that is why a child's pod hangs in
+    // ContainerCreating forever today.
+    const base = repo();
+    const fork = forkWorkspace(base, 'HEAD', 'child-1')!;
+    const rel = relative(base, fork.path);
+    expect(rel.startsWith('..')).toBe(false);
     fork.release();
   });
 });

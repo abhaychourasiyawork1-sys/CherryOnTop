@@ -13,7 +13,6 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
-import { tmpdir } from 'node:os';
 import { createHash } from 'node:crypto';
 
 export interface WorkspaceFork {
@@ -34,12 +33,21 @@ function git(args: string[], cwd: string): string | null {
   }
 }
 
-/** A directory name nobody else will pick, derived from what the fork is *of*
- *  rather than from a clock — so two calls for the same base and revision in
- *  the same run do not collide and do not multiply. */
+/** Where a fork lives, relative to nothing but what it is *of* — so two calls
+ *  for the same base and revision in the same run do not collide and do not
+ *  multiply.
+ *
+ *  Nested inside `basePath` rather than the OS temp directory: a child's pod
+ *  gets this path as a `hostPath` volume, and the kind cluster this runtime
+ *  deploys to only bind-mounts `$HOME` into the node (see `src/k8s/kind.ts`).
+ *  `org run` already refuses any `--repo` outside `$HOME`, so `basePath` is
+ *  always somewhere the cluster can see — a fork under the OS temp directory
+ *  is not, and the child's pod hangs in `ContainerCreating` forever waiting on
+ *  a mount that can never resolve. `bench/lib/isolation.mjs` hit this same
+ *  class of bug for goal worktrees and fixed it the same way. */
 function forkPath(basePath: string, revision: string, label: string): string {
   const name = createHash('sha256').update(`${basePath}\0${revision}\0${label}`).digest('hex').slice(0, 16);
-  return join(tmpdir(), `org-fork-${name}`);
+  return join(basePath, '.org-forks', `org-fork-${name}`);
 }
 
 /** Forks `basePath` at `revision` into an isolated worktree.
@@ -84,5 +92,5 @@ export function releaseFork(basePath: string, path: string): void {
 /** Whether a path is an isolated fork rather than the base itself. The check a
  *  caller makes before letting a child write. */
 export function isFork(basePath: string, path: string): boolean {
-  return path !== basePath && path.startsWith(join(tmpdir(), 'org-fork-'));
+  return path !== basePath && path.startsWith(join(basePath, '.org-forks') + '/');
 }
