@@ -60,6 +60,7 @@ import { judgeTask } from '../intelligence/task-judge.js';
 import { evaluateSpendGuard, type SpendGuardState } from '../efficiency/spend-guard.js';
 import { summarizeExecutionTrajectory, executionSnapshot, UNKNOWN_PROGRESS } from '../efficiency/progress-signals.js';
 import { executionPolicyForGoal, effectiveTurnCap, currentPolicyVersions, EXECUTION_POLICY_VERSION } from '../efficiency/policy.js';
+import { activePolicyChanges } from '../learning/policy-experiments.js';
 import { templateFor, pruneTemplate } from '../intelligence/execution-templates.js';
 import type { TaskClass } from '../intelligence/task-judge.js';
 import { decideExecutionPath, type DecisionReceipt } from '../decision/engine.js';
@@ -1139,7 +1140,7 @@ function trajectorySignals(db: Db, nodeId: string): {
 function evaluateTaskSpend(db: Db, nodeId: string, node: ReturnType<typeof getNode>): SpendGuardState {
   try {
     const budgetUsd = node?.contract.authority.budget_usd ?? 0;
-    const policy = executionPolicyForGoal(node?.contract.goal ?? '');
+    const policy = executionPolicyForGoal(node?.contract.goal ?? '', undefined, activePolicyChanges(db));
     const trajectory = trajectorySignals(db, nodeId);
     const guard = evaluateSpendGuard({
       spentUsd: getCostForNodes(db, [nodeId]),
@@ -1587,7 +1588,7 @@ function productionMachine(db: Db, nodeId: string) {
         // and stays the outer bound — an operator who sets one means it, and
         // `undefined` is the documented "uncapped", which this must not
         // quietly re-impose a cap on top of.
-        const execPolicy = executionPolicyForGoal(input.goal, verdict);
+        const execPolicy = executionPolicyForGoal(input.goal, verdict, activePolicyChanges(db));
         const hardTurnCap = effectiveTurnCap(execOpts.maxTurns, execPolicy);
         // Built once, out here rather than inside runOnce: the fallback retry
         // below calls runOnce a second time with the same goal, and a goal

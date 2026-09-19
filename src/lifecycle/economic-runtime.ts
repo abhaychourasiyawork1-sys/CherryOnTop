@@ -31,6 +31,7 @@ import type { StructuredEvent } from '../adapters/adapter.js';
 import { executionSnapshot } from '../efficiency/progress-signals.js';
 import { compareTrajectory, EMPTY_SNAPSHOT, type ExecutionSnapshot } from '../decision/trajectory.js';
 import { executionPolicyForGoal } from '../efficiency/policy.js';
+import { activePolicyChanges } from '../learning/policy-experiments.js';
 import { taskEconomicsFor } from '../efficiency/task-economics.js';
 import { judgeTask } from '../intelligence/task-judge.js';
 import {
@@ -234,7 +235,10 @@ export interface ExecutionBoundaryInput {
 export function economicStateFor(db: Db, input: ExecutionBoundaryInput): EconomicState {
   const entry = memoryFor(input.nodeId);
   const signals = taskEconomicsFor(input.goal, judgeTask(input.goal));
-  const policy = executionPolicyForGoal(input.goal);
+  // Validated learning, applied to the economic inputs and nothing else. Empty
+  // until a policy candidate has actually cleared its promotion gate, which is
+  // the deterministic fallback this whole subsystem is built around.
+  const policy = executionPolicyForGoal(input.goal, undefined, activePolicyChanges(db));
 
   const consumedTokens = tokensForNode(db, input.nodeId);
   const turns = turnsForNode(db, input.nodeId);

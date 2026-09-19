@@ -275,8 +275,8 @@ describe('evaluateBoundary', () => {
     // Real spend, so there is a budget to reserve out of.
     recordDispatchUsage(db, {
       nodeId: failing, role: 'execute', model: 'sonnet',
-      usage: { inputTokens: 2_000, outputTokens: 500, cacheCreationTokens: 0, cacheReadTokens: 0 },
-      costUsd: 0.05, turns: 4, startupMs: 0, createdAt: new Date().toISOString(),
+      usage: { inputTokens: 2_000, outputTokens: 500, cacheCreationTokens: 0, cacheReadTokens: 0, numTurns: 4 },
+      costUsd: 0.05, createdAt: new Date().toISOString(),
     });
     const pressured = evaluateBoundary(db, { nodeId: failing, goal: GOAL });
     expect(pressured.state.resources.recoveryReserve).toBeGreaterThan(0);

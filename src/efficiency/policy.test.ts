@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import { contextPolicyFor, executionPolicyFor, executionPolicyForGoal, effectiveTurnCap, currentPolicyVersions, CONTEXT_POLICY_VERSION, EXECUTION_POLICY_VERSION } from './policy.js';
+import { calibrate, contextPolicyFor, executionPolicyFor, executionPolicyForGoal, effectiveTurnCap, currentPolicyVersions, CONTEXT_POLICY_VERSION, EXECUTION_POLICY_VERSION } from './policy.js';
 import { normalizeTaskSignals, UNKNOWN_SIGNALS } from './task-signals.js';
 import { taskEconomicsFor } from './task-economics.js';
 import type { TaskEconomicsSignals } from './policy-types.js';
@@ -189,5 +189,35 @@ describe('the policy generation a run reports', () => {
     process.env.ORG_EFFICIENCY_MODE = 'enabled';
     const full = currentPolicyVersions().policy;
     expect(baseline).not.toBe(full);
+  });
+});
+
+describe('calibrate', () => {
+  const base = executionPolicyFor(taskEconomicsFor('fix the expiry bug in src/auth/session.ts'));
+
+  it('is the identity when nothing has been validated', () => {
+    expect(calibrate(base, undefined)).toEqual(base);
+    expect(calibrate(base, {})).toEqual(base);
+  });
+
+  it('moves an economic input a validated candidate names', () => {
+    expect(calibrate(base, { contextBudget: 0.8 }).contextBudget)
+      .toBeLessThan(base.contextBudget);
+  });
+
+  it('refuses to move a circuit breaker', () => {
+    // The two an operator configured. A learning loop that can widen its own
+    // breaker has no breaker.
+    const wider = calibrate(base, { hardTurnCap: 2, spendCapUsd: 2, optimizationBudget: 2 });
+    expect(wider.hardTurnCap).toBe(base.hardTurnCap);
+    expect(wider.spendCapUsd).toBe(base.spendCapUsd);
+    expect(wider.optimizationBudget).toBe(base.optimizationBudget);
+  });
+
+  it('bounds a multiplier so repeated calibration cannot reach zero', () => {
+    expect(calibrate(base, { contextBudget: 0.001 }).contextBudget)
+      .toBeCloseTo(base.contextBudget * 0.5);
+    expect(calibrate(base, { contextBudget: 1000 }).contextBudget)
+      .toBeCloseTo(base.contextBudget * 2);
   });
 });

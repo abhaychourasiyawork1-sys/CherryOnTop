@@ -139,6 +139,36 @@ export function effectiveTurnCap(configured: number | undefined, policy: Executi
   return configured === undefined ? undefined : Math.min(configured, policy.hardTurnCap);
 }
 
+/** Fields a learned calibration may move, and nothing else.
+ *
+ *  Deliberately a list of *economic inputs*. `hardTurnCap` and `spendCapUsd`
+ *  are circuit breakers an operator configured — a learning loop that can widen
+ *  its own breaker has no breaker — and `optimizationBudget` bounds what the
+ *  optimizer may spend deciding, which it must not be able to raise for itself.
+ *  `lessons.ts`'s `UNLEARNABLE` covers the safety constraints; this covers the
+ *  ones that are merely this module's to defend. */
+const CALIBRATABLE = ['contextBudget', 'softTurnTarget', 'explorationTolerance', 'confidenceRequirement'] as const;
+
+/** Applies validated multipliers to the economic inputs of a policy.
+ *
+ *  Identity when there is nothing validated to apply, which is the common case
+ *  and the deterministic fallback every caller already behaves correctly under.
+ *  `normalizeExecutionPolicy` runs afterwards regardless, so a calibration
+ *  cannot produce a policy the normalizer would have rejected. */
+export function calibrate(policy: ExecutionPolicy, changes?: Record<string, number>): ExecutionPolicy {
+  if (!changes) return policy;
+  const applied: Record<string, number> = { ...policy };
+  for (const field of CALIBRATABLE) {
+    const multiplier = changes[field];
+    if (typeof multiplier !== 'number' || !Number.isFinite(multiplier) || multiplier <= 0) continue;
+    // Bounded both ways. A multiplier that can halve a budget repeatedly is a
+    // multiplier that can reach zero, and a run with no context budget is not a
+    // calibrated run, it is a broken one.
+    applied[field] = applied[field] * Math.min(2, Math.max(0.5, multiplier));
+  }
+  return normalizeExecutionPolicy(applied as unknown as ExecutionPolicy);
+}
+
 /** The execution policy for a goal, and the failure story for it.
  *
  *  The runtime's two callers — the turn budget and the spend guard — both sit
@@ -150,9 +180,13 @@ export function effectiveTurnCap(configured: number | undefined, policy: Executi
  *  `verdict` is the classification the chokepoint already computed. Judging the
  *  goal twice gives the same answer — both are pure — but paying twice for an
  *  answer in hand is the habit this subsystem exists to break. */
-export function executionPolicyForGoal(goal: string, verdict?: TaskVerdict): ExecutionPolicy {
+export function executionPolicyForGoal(
+  goal: string,
+  verdict?: TaskVerdict,
+  calibration?: Record<string, number>,
+): ExecutionPolicy {
   try {
-    return executionPolicyFor(taskEconomicsFor(goal, verdict));
+    return calibrate(executionPolicyFor(taskEconomicsFor(goal, verdict)), calibration);
   } catch (err) {
     console.error('Falling back to the fixed execution policy:', err);
     return normalizeExecutionPolicy({
