@@ -63,14 +63,14 @@ import { executionPolicyForGoal, effectiveTurnCap, currentPolicyVersions, EXECUT
 import { activePolicyChanges } from '../learning/policy-experiments.js';
 import { templateFor, pruneTemplate } from '../intelligence/execution-templates.js';
 import type { TaskClass } from '../intelligence/task-judge.js';
-import { decideExecutionPath, type DecisionReceipt } from '../decision/engine.js';
+import { decideExecutionPath, authorizeExecution, type DecisionReceipt } from '../decision/engine.js';
 import { withRepoContext } from '../intelligence/repo-map.js';
 import { dispatchContextFor, warmRepoInventory } from '../context/dispatch-context-cache.js';
 import { recordDispatchUsage, turnsForNode } from '../db/queries/tokens.js';
 import { shouldRetryWithoutModel } from '../execution/tokens.js';
 import { readOnlyPlanningGrant, investigativeExecuteGrant } from './dispatch-helpers.js';
 import {
-  evaluateBoundary, forgetNode, isIntervention, registerEvidenceSources,
+  evaluateBoundary, economicStateFor, forgetNode, isIntervention, registerEvidenceSources,
   markRecovered, consumeRecoveryFlag, recordRecoveryAttempt,
 } from './economic-runtime.js';
 import { tombstoneFor } from '../recovery/engine.js';
@@ -1408,6 +1408,46 @@ async function planSubgoals(db: Db, nodeId: string, goal: string, maxChildren: n
   }
 }
 
+/** One dispatch, as a unit of account for the delegate-vs-self comparison.
+ *
+ *  Not a forecast, and deliberately not presented as one. The two candidates
+ *  are multiples of this number, so what the comparison needs is for it to be
+ *  the *same* for both and proportional to what this node may actually spend —
+ *  not for it to predict a bill nothing has yet produced. The node has not
+ *  dispatched anything at this point, so there is no measurement to use.
+ *
+ *  Derived by dividing the task's own token budget by the widest plan it could
+ *  fund (k children plus the planning and synthesis runs). A node that can
+ *  afford four children therefore prices one dispatch at a sixth of its budget,
+ *  which is what it would actually get if it used all of them.
+ *
+ *  Total: a unit that cannot be derived falls back to zero, and two candidates
+ *  both costing nothing rank on their non-token terms rather than failing. */
+function unitDispatchFor(db: Db, nodeId: string, goal: string, maxChildren: number) {
+  try {
+    const budget = economicStateFor(db, { nodeId, goal }).resources.totalTokenBudget;
+    const dispatches = Math.max(1, Math.floor(maxChildren)) + 2;
+    const tokens = Math.max(0, Math.round(budget / dispatches));
+    return {
+      tokens,
+      // The measured startup-to-answer time of a dispatch in this repository's
+      // recorded runs, rounded. Latency is a tie-break term here rather than a
+      // headline, so a stand-in is honest as long as it is named as one.
+      latencyMs: ASSUMED_DISPATCH_LATENCY_MS,
+      costUsd: 0,
+    };
+  } catch (err) {
+    console.error(`Could not price a dispatch for node ${nodeId}:`, err);
+    return { tokens: 0, latencyMs: ASSUMED_DISPATCH_LATENCY_MS, costUsd: 0 };
+  }
+}
+
+/** ponytail: a constant standing in for a measurement. Replace with the median
+ *  wall clock of this role's recorded dispatches once the ledger is queried for
+ *  it; the delegate-vs-self comparison is the only caller, and latency is its
+ *  weakest term. */
+const ASSUMED_DISPATCH_LATENCY_MS = 120_000;
+
 function productionMachine(db: Db, nodeId: string) {
   return nodeMachine.provide({
     actors: {
@@ -1415,19 +1455,61 @@ function productionMachine(db: Db, nodeId: string) {
       decideExecution: fromPromise(async ({ input }: { input: { goal: string; complexity: NodeMachineContext['complexity']; worthSplitting?: boolean; signals?: Record<string, number> } }) => {
         const node = getNode(db, nodeId);
         if (!node) throw new Error(`Node ${nodeId} not found when deciding execution`);
-        const result = decideExecution({
+        const economics = decideExecution({
           goal: input.goal,
           authority: node.contract.authority,
           complexity: input.complexity ?? 'low',
           worthSplitting: input.worthSplitting,
           signals: input.signals,
         });
+        // Delegation is the most expensive action the runtime has and was the
+        // last one still authorized outside the Action Market. It now passes
+        // through the same ranking as everything else — so a fan-out cannot be
+        // started on a run the economic state already knows is out of budget,
+        // under a hard stop, or holding a recovery reserve it would consume.
+        //
+        // Full mode only, deliberately. The baseline arm of a comparison must
+        // keep the behaviour it was measured with, or the A/B is measuring the
+        // harness. `authorizeExecution` honours `decideExecution`'s verdict
+        // either way; what the market adds is the veto.
+        const authorized = authorizeExecution({
+          state: economicStateFor(db, { nodeId, goal: input.goal }),
+          economics,
+          plannedChildCount: node.contract.authority.max_child_count,
+          // A unit of account, not a forecast. Both candidates are multiples of
+          // it, so the comparison depends on it being the *same* for both
+          // rather than on it being right — and dividing the task's own budget
+          // by the widest plan it could fund keeps it proportional to what this
+          // node may actually spend.
+          dispatch: unitDispatchFor(db, nodeId, input.goal, node.contract.authority.max_child_count),
+        });
+        const result = runtimeMode() === 'full'
+          ? { ...economics, outcome: authorized.outcome }
+          : economics;
+
         const decidedAt = new Date().toISOString();
         insertDecision(db, {
           id: randomUUID(), nodeId, type: 'execution_decision',
-          outcome: result.outcome, breakdown: result.breakdown,
+          outcome: result.outcome, breakdown: {
+            ...result.breakdown,
+            // What the market did with it, in the durable record rather than
+            // only in a log line: a benchmark attributing a delegation
+            // regression needs to see whether the market vetoed, a gate fired,
+            // or the economics simply declined.
+            ...(runtimeMode() === 'full' ? {
+              market_authorized: authorized.outcome === 'DELEGATE' ? 1 : 0,
+              market_vetoed: economics.outcome === 'DELEGATE' && authorized.outcome !== 'DELEGATE' ? 1 : 0,
+              market_utility: authorized.decision?.utility ?? 0,
+            } : {}),
+          },
           createdAt: decidedAt,
         });
+        if (authorized.gate) {
+          insertMemoryRow(db, 'execution_gate', authorized.gate, { outcome: authorized.outcome }, nodeId);
+        }
+        if (runtimeMode() === 'full' && economics.outcome === 'DELEGATE' && authorized.outcome !== 'DELEGATE') {
+          publishProgress(db, nodeId, 'Splitting this would cost more than doing it directly — doing it directly');
+        }
         // Also an event, so a watching transcript can narrate *why* a node did
         // what it did as it happens. The decisions table stays the durable
         // record; this is the live notification of the same fact.

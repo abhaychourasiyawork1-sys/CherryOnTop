@@ -17,7 +17,7 @@
  *   3. **Economics last**, and always against a named alternative.
  */
 import { randomUUID } from 'node:crypto';
-import { decideExecution, type DecideExecutionInput } from '../engines/decide-execution.js';
+import { decideExecution, type DecideExecutionInput, type DecideExecutionResult } from '../engines/decide-execution.js';
 import { routeModel, type ModelRouteInput } from '../intelligence/model-router.js';
 import { decideIntegration } from '../intelligence/integrate-results.js';
 import { planEvidence, type EvidenceCandidate } from '../execution/evidence-planner.js';
@@ -300,6 +300,8 @@ export function decideModel(input: ModelInput): DecisionReceipt {
 // ---------------------------------------------------------------------------
 
 import { normalizeActionCandidate, actionCandidate, type ActionCandidate, type ActionDecision } from './actions.js';
+import { clamp01 } from '../efficiency/policy-types.js';
+import type { DecisionOutcome } from '../schemas/decision.js';
 import { evaluateActionUtility, type UtilityWeights, type UtilityEvaluation } from './utility.js';
 import { assessDecisionTrust, trustAdjusted, type TrustAssessment } from './trust.js';
 import type { EconomicState } from './state.js';
@@ -456,4 +458,236 @@ function compareRanked(a: Ranked, b: Ranked): number {
 
 function randomDecisionId(): string {
   return `dec-${randomUUID()}`;
+}
+
+// ---------------------------------------------------------------------------
+// The execution chokepoint
+// ---------------------------------------------------------------------------
+
+/** Whether to do the work or split it, authorized by the Action Market rather
+ *  than by `decideExecution` alone.
+ *
+ *  This is the gap the architecture audit left open, and it is the one that
+ *  mattered: delegation is the single most expensive thing the runtime can do,
+ *  and it was the one expensive action that never passed through the common
+ *  ranking. `decideExecution` scored delegation against its own threshold and
+ *  the lifecycle acted on that score directly, so a fan-out could be authorized
+ *  on a run that the economic state already knew was out of budget, out of
+ *  quality headroom, or under a hard stop — because none of those facts were in
+ *  the arithmetic that decided it.
+ *
+ *  What this does **not** do is re-decide delegation. `decideExecution` remains
+ *  the estimate source and its verdict is honoured: if it says the goal does not
+ *  come apart, no delegate candidate is offered at all. What the market adds is
+ *  the veto — the budget, reserve, quality-floor and hard-stop checks every
+ *  other expensive action already passed through.
+ *
+ *  Three gates run before the economics and cannot be bought past, because they
+ *  are authority rather than value:
+ *
+ *   - no spawn authority, or no agent allowance — the node may not grow an
+ *     organization however good the economics look;
+ *   - not enough budget to fund a child *and* this node's own planning and
+ *     synthesis — which is an escalation to a person, not a cheaper plan;
+ *   - `decideExecution` having already concluded the goal is one unit of work.
+ *
+ *  Only when delegation is genuinely on the table do two candidates go to the
+ *  market, and they are deliberately expressed in the same unit so they are
+ *  comparable:
+ *
+ *   - **self** — doing k pieces of work one after another in this node's own
+ *     sandbox: k dispatches of tokens, k dispatches of wall clock.
+ *   - **delegate** — plan, k concurrent children, synthesize: k+2 dispatches of
+ *     tokens, 3 of wall clock.
+ *
+ *  So delegation always costs two extra dispatches in tokens and buys k-3
+ *  dispatches of wall clock. That is the real trade and the reason a two-way
+ *  split almost never pays: it costs four dispatches to save nothing. The
+ *  utility weights, the recovery reserve and the quality floor decide the rest,
+ *  in the same arithmetic that decides everything else. */
+export interface ExecutionAuthorizationInput {
+  state: EconomicState;
+  /** The estimate source. Its verdict gates whether a delegate candidate is
+   *  offered; it does not authorize one. */
+  economics: DecideExecutionResult;
+  /** One dispatch, as a unit of account. Both candidates are multiples of it,
+   *  so the comparison does not depend on it being a good forecast — only on it
+   *  being the same for both. */
+  dispatch: DispatchEstimate;
+  /** How many children a fan-out would actually create. */
+  plannedChildCount: number;
+  weights?: UtilityWeights;
+}
+
+export interface ExecutionAuthorization {
+  outcome: DecisionOutcome;
+  /** The market's receipt. Null when a hard gate decided, because a gate is not
+   *  a ranking and presenting one as a ranking would invent a comparison
+   *  nobody made. */
+  decision: ActionDecision | null;
+  /** Which gate fired, when one did. */
+  gate?: string;
+}
+
+/** Candidates for the delegate-vs-self choice, priced at the margin.
+ *
+ *  **Marginal, not absolute**, and that is the whole of the design. Every other
+ *  candidate in this runtime is an increment — read this file, run that test,
+ *  retry differently — and `utility.ts` prices `tokenCost` against what is left
+ *  to spend. Handing it the absolute cost of a whole task makes both options
+ *  score as though they would consume the budget, which rejects the expensive
+ *  one on `insufficient_budget` and drives the cheap one negative. The
+ *  comparison then never happens: the market falls through to its `continue`
+ *  fallback and delegation becomes unreachable at every width.
+ *
+ *  So self-execution is the **null option** and carries no cost at all — it is
+ *  the thing that happens if nobody decides anything — and delegation carries
+ *  only what splitting *adds*:
+ *
+ *   - it pays for the planning and synthesis dispatches, which exist only
+ *     because the work was split;
+ *   - it buys the wall clock of all but the longest child, net of those two
+ *     extra runs;
+ *   - it risks a child coming back with the wrong thing.
+ *
+ *  This is deliberately the same shape `execution/workstreams.ts` already uses
+ *  for `parallelize` against `serialize`, and for the same reason: a scheduler
+ *  that only ever proposes the fast option has not made a decision.
+ *
+ *  Exported so a benchmark can price the same choice offline from a recorded
+ *  state without starting a runtime. */
+export function executionCandidates(input: {
+  economics: DecideExecutionResult;
+  dispatch: DispatchEstimate;
+  plannedChildCount: number;
+}): ActionCandidate[] {
+  const children = Math.max(1, Math.floor(input.plannedChildCount));
+  const breakdown = input.economics.breakdown;
+  const score = breakdown.score ?? 0;
+  const threshold = breakdown.threshold ?? 0;
+
+  // What splitting adds, and nothing that both options pay. The k children's
+  // own dispatches are excluded on purpose: doing those k pieces of work is the
+  // task, and this node pays for them whether it does them itself or hands them
+  // out.
+  const extraDispatches = 2;
+  const coordinationTokens = Math.max(0, input.dispatch.tokens) * extraDispatches;
+  // Serial k dispatches against plan + one child + synthesis. Negative for a
+  // narrow split, which is the honest answer: a two-way split costs two extra
+  // runs to save nothing.
+  const latencySaved = Math.max(0, input.dispatch.latencyMs) * (children - (extraDispatches + 1));
+
+  const self = actionCandidate({
+    id: 'execution:self',
+    // Not a new verb. Doing the work in this node's own sandbox *is* the
+    // healthy default the vocabulary already calls `continue`.
+    kind: 'continue',
+    capability: 'execution.self',
+    // The null option, and it spends nothing extra: doing the work here is what
+    // happens if nobody authorizes anything else.
+    confidence: 1,
+    metadata: { children, source: 'decide-execution' },
+  });
+
+  const delegate = actionCandidate({
+    id: 'execution:delegate',
+    kind: 'parallelize',
+    capability: 'execution.delegate',
+    // Coordination *is* the token cost here — a planner and a synthesizer are
+    // dispatches nobody would buy if the work were not being split. Stated
+    // once, as coordination: `utility.ts` sums `tokenCost + coordinationCost`,
+    // so setting both would charge the same two dispatches twice.
+    coordinationCost: coordinationTokens,
+    latencyCost: latencySaved < 0 ? -latencySaved : 0,
+    expectedLatencyBenefit: Math.max(0, latencySaved),
+    // The existing economics' own margin, carried as a *quality* benefit
+    // because that is what it measures and because that is the term the
+    // arithmetic reads. `decideExecution`'s `estimatedValue` is the value of
+    // handing work to a child, and its whole content is that a goal too broad
+    // for one agent is likelier to come back complete if it is split.
+    //
+    // Deliberately not `expectedProgress`: nothing in `utility.ts` scores that
+    // field, so the economics' verdict would have been computed, recorded and
+    // then silently ignored — the quietest possible way for a decision layer
+    // to stop working.
+    expectedQualityBenefit: clamp01(score - threshold),
+    // A child can come back with the wrong thing, and the more of them there
+    // are the likelier that is. `riskPenalty` is the existing model's own word
+    // for the same fact on a complex goal.
+    failureRisk: clamp01((children - 1) * 0.1 + (breakdown.riskPenalty ?? 0)),
+    qualityRisk: clamp01(breakdown.riskPenalty ?? 0),
+    confidence: clamp01(0.5 + Math.abs(score - threshold)),
+    metadata: {
+      children, source: 'decide-execution',
+      estimate: delegationEstimate(input.dispatch, children),
+    },
+  });
+
+  return [self, delegate];
+}
+
+export function authorizeExecution(input: ExecutionAuthorizationInput): ExecutionAuthorization {
+  const { economics } = input;
+  const breakdown = economics.breakdown;
+
+  // Authority, not value. Each of these is a rule the node is subject to, and a
+  // score that could move one is not a boundary.
+  if (economics.outcome === 'ESCALATE') {
+    return { outcome: 'ESCALATE', decision: null, gate: 'budget-floor' };
+  }
+  if (breakdown.reason_no_spawn_authority) {
+    return { outcome: 'SELF_EXECUTE', decision: null, gate: 'no-spawn-authority' };
+  }
+  if (breakdown.reason_no_agent_allowance) {
+    return { outcome: 'SELF_EXECUTE', decision: null, gate: 'no-agent-allowance' };
+  }
+  if (breakdown.reason_single_unit_of_work) {
+    return { outcome: 'SELF_EXECUTE', decision: null, gate: 'single-unit-of-work' };
+  }
+  // The estimate source says the goal does not come apart well enough to be
+  // worth offering. Honoured rather than re-litigated: the market's job is to
+  // veto an expensive action, not to propose one its own estimator rejected.
+  if (economics.outcome !== 'DELEGATE') {
+    return { outcome: 'SELF_EXECUTE', decision: null, gate: 'economics-declined' };
+  }
+
+  const candidates = executionCandidates(input);
+  const delegate = candidates.find((candidate) => candidate.kind === 'parallelize')!;
+
+  // The market **vetoes**; it does not re-decide. That distinction is the whole
+  // contract, and getting it wrong in the other direction was tempting: a
+  // ranking here would be a second delegation economics competing with
+  // `decideExecution`'s, and the two would drift — which is precisely what the
+  // architecture forbids.
+  //
+  // So `decideExecution` remains the only thing that decides *whether splitting
+  // is worthwhile*, and what the market adds is the set of checks it never
+  // had: is this affordable, does it survive the recovery reserve, does it
+  // clear the quality floor, is the run under a hard stop, does it need an
+  // approval. Those are exactly `evaluateActionUtility`'s hard constraints, and
+  // they are the reason a fan-out could previously start on a run the economic
+  // state already knew was over.
+  const veto = evaluateActionUtility(delegate, input.state, input.weights);
+
+  // Ranked anyway, and recorded. The comparison is not authoritative yet — a
+  // benchmark needs to show that the market's ordering beats `decideExecution`'s
+  // threshold before anything is allowed to act on it — but a receipt nobody
+  // can attribute a regression with is a receipt that was not worth writing.
+  const decision = chooseEconomicAction({
+    state: input.state,
+    candidates,
+    weights: input.weights,
+  });
+
+  if (!veto.allowed) {
+    return {
+      outcome: 'SELF_EXECUTE',
+      decision,
+      gate: veto.reasonCodes.find((code) =>
+        code === 'hard_stop' || code === 'safety_violation' || code === 'requires_approval'
+        || code === 'quality_floor' || code === 'insufficient_budget') ?? 'vetoed',
+    };
+  }
+
+  return { outcome: 'DELEGATE', decision };
 }
