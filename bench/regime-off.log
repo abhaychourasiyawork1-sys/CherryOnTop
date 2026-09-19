@@ -1,0 +1,26 @@
+=== regime-runner: off (port 7816) — 24 goals, 10 already done ===
+skip (already recorded): rich-anchored-edit
+skip (already recorded): rich-anchored-doc
+skip (already recorded): rich-anchored-test
+skip (already recorded): poor-unanchored-audit
+skip (already recorded): poor-unanchored-question
+skip (already recorded): poor-vague-improvement
+skip (already recorded): hidden-schema-consumer
+skip (already recorded): hidden-event-consumer
+skip (already recorded): hidden-config-default
+skip (already recorded): trap-broad-review
+{"goal":"trap-wide-grep","state":"COMPLETE","costUsd":0.2711,"turns":6}
+{"goal":"trap-no-such-thing","state":"COMPLETE","costUsd":0.3443,"turns":14}
+{"goal":"strategy-wrong-layer","state":"COMPLETE","costUsd":0.3051,"turns":15}
+{"goal":"strategy-wrong-cause","state":"COMPLETE","costUsd":0.8067,"turns":23}
+{"goal":"strategy-wrong-tool","state":"COMPLETE","costUsd":0.3087,"turns":17}
+{"goal":"budget-broad-under-cap","state":"COMPLETE","costUsd":0.9839,"turns":39}
+{"goal":"budget-many-files","state":"COMPLETE","costUsd":0.1559,"turns":5}
+{"goal":"budget-deep-single","state":"COMPLETE","costUsd":0.4991,"turns":17}
+{"goal":"shared-parallel-docs","state":"COMPLETE","costUsd":0.1984,"turns":9}
+{"goal":"shared-parallel-tests","state":"COMPLETE","costUsd":0.3678,"turns":13}
+{"goal":"shared-write-conflict","state":"COMPLETE","costUsd":0.248,"turns":13}
+{"goal":"novel-translation","state":"COMPLETE","costUsd":0.436,"turns":23}
+{"goal":"novel-inventory","state":"COMPLETE","costUsd":0.265,"turns":6}
+{"goal":"novel-judgement","state":"COMPLETE","costUsd":0.3523,"turns":15}
+=== regime-runner: off done ===

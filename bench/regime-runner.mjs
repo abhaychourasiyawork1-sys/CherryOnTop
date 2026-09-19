@@ -8,7 +8,8 @@
 // Usage: node bench/regime-runner.mjs <on|off> <outfile.jsonl>
 import { execFileSync } from 'node:child_process';
 import { readFileSync, appendFileSync, existsSync, readFileSync as rf } from 'node:fs';
-import { isolationFor, classifyFailure, MAX_ENVIRONMENT_RETRIES } from './compare.mjs';
+import { isolationFor, classifyFailure, dispatchFlags, dispatchConfig, MAX_ENVIRONMENT_RETRIES } from './compare.mjs';
+import { classifyValidity } from './lib/validity.mjs';
 import { materializeGoalWorktree, releaseGoalWorktree } from './lib/isolation.mjs';
 
 const label = process.argv[2];
@@ -48,7 +49,11 @@ if (existsSync(outfile)) {
   }
 }
 
+const dispatch = dispatchConfig();
 console.log(`=== regime-runner: ${label} (port ${isolation.port}) — ${goals.length} goals, ${done.size} already done ===`);
+console.log(`dispatch: max-children=${dispatch.maxChildren} budget=$${dispatch.budgetUsd} spend-cap=$${dispatch.taskSpendCapUsd}`);
+if (!dispatch.delegationReachable) console.log('  NOTE: delegation is NOT reachable this run.');
+if (!dispatch.spendGuardEngaged) console.log('  NOTE: the spend guard is NOT engaged this run.');
 sh('org', ['daemon', 'stop'], env);
 sh('org', ['daemon', 'start'], env);
 
@@ -73,7 +78,7 @@ for (const g of goals) {
   let row;
   try {
     const started = Date.now();
-    const launched = runGoal(() => sh('org', ['run', g.goal, '--repo', worktree.path], env), `${label}:${g.id}`);
+    const launched = runGoal(() => sh('org', ['run', g.goal, '--repo', worktree.path, ...dispatchFlags()], env), `${label}:${g.id}`);
     if (!launched.ok) {
       row = { arm: label, goal: g.id, regime: g.regime, size: g.size, state: 'UNRUNNABLE', failureScope: launched.verdict.scope, failureKind: launched.verdict.kind, repositoryRevision, economic: [] };
     } else {
@@ -105,7 +110,15 @@ for (const g of goals) {
   } finally {
     releaseGoalWorktree(process.cwd(), worktree.path);
   }
-  appendFileSync(outfile, JSON.stringify(row) + '\n');
-  console.log(JSON.stringify({ goal: row.goal, state: row.state, costUsd: row.costUsd, turns: row.turns }));
+  // Classified at the moment it is written, not when it is read back. A row
+  // that reached disk without its validity class is a row somebody will later
+  // average into a headline number.
+  const verdict = classifyValidity(row, { repositoryRevision });
+  appendFileSync(outfile, JSON.stringify({ ...row, ...verdict }) + '\n');
+  console.log(JSON.stringify({
+    goal: row.goal, state: row.state, validity: verdict.validity,
+    costUsd: row.costUsd, turns: row.turns,
+    ...(verdict.validity === 'VALID' ? {} : { reason: verdict.reason }),
+  }));
 }
 console.log(`=== regime-runner: ${label} done ===`);

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import {
+import { dispatchFlags, dispatchConfig,
   pairRuns, pairKeyOf, pairedDifference, signTestP, describeEvidence,
   isolationFor, isolationConflict, classifyFailure, runMetadata, validateMetadata,
   MAX_ENVIRONMENT_RETRIES,
@@ -282,5 +282,31 @@ describe('metadata is what makes a result repeatable', () => {
   it('sorts what it records, so two runs of one experiment produce one file', () => {
     expect(metadata().goalIds).toEqual(['add-test', 'typo-fix']);
     expect(metadata().policyVersions[0]).toContain('baseline');
+  });
+});
+
+describe('dispatch flags', () => {
+  it('reaches delegation only when both the children and the budget allow it', () => {
+    // The defect this exists to stop: `org run` defaults --max-children to 0,
+    // so a benchmark that sets nothing measures a runtime with delegation,
+    // the spend guard and the execution veto all switched off — and reports
+    // it as though it had exercised them.
+    expect(dispatchFlags({})).toEqual([]);
+    expect(dispatchConfig({}).delegationReachable).toBe(false);
+    expect(dispatchConfig({ ORG_BENCH_MAX_CHILDREN: '3' }).delegationReachable).toBe(false);
+    expect(dispatchConfig({ ORG_BENCH_MAX_CHILDREN: '3', ORG_BENCH_BUDGET_USD: '0.5' }).delegationReachable).toBe(false);
+    expect(dispatchConfig({ ORG_BENCH_MAX_CHILDREN: '3', ORG_BENCH_BUDGET_USD: '5' }).delegationReachable).toBe(true);
+  });
+
+  it('builds the flags every arm is dispatched with', () => {
+    expect(dispatchFlags({ ORG_BENCH_MAX_CHILDREN: '3', ORG_BENCH_BUDGET_USD: '5' }))
+      .toEqual(['--spawn', '--max-children', '3', '--budget', '5']);
+  });
+
+  it('reports the spend guard as disengaged unless a cap is set', () => {
+    // The hard-budget regime's cap was never set in the 2026-09-17 run, so the
+    // guard was never engaged and the regime tested nothing.
+    expect(dispatchConfig({}).spendGuardEngaged).toBe(false);
+    expect(dispatchConfig({ ORG_TASK_SPEND_CAP_USD: '4' }).spendGuardEngaged).toBe(true);
   });
 });

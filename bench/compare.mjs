@@ -201,6 +201,51 @@ export function classifyFailure(text) {
   return { retryable: false, kind: 'product_failure', scope: 'product' };
 }
 
+/** The `org run` flags a goal is dispatched with.
+ *
+ *  Delegation, the budget floor and the spend cap are all **off by default** in
+ *  the CLI — `--max-children` defaults to 0, which means no spawn authority,
+ *  which means the delegate path is never reached. A benchmark that does not
+ *  set them measures a runtime with delegation, the spend guard and the
+ *  Action Market's execution veto all disabled, and reports the result as
+ *  though it had exercised them. That is exactly what the 2026-09-17 run did:
+ *  the hard-budget regime never engaged a cap, because nothing set one.
+ *
+ *  So the flags are read from the environment and applied identically to every
+ *  arm, and the values used are recorded in the manifest. Unset means the old
+ *  behaviour, so an existing invocation is unchanged.
+ *
+ *  - `ORG_BENCH_MAX_CHILDREN` — `--max-children`, and `--spawn` with it.
+ *  - `ORG_BENCH_BUDGET_USD`   — `--budget`. Must clear MIN_AGENT_BUDGET_USD*2
+ *                                (i.e. $1) or every split escalates instead.
+ *  - `ORG_TASK_SPEND_CAP_USD` — read by the runtime itself, not a flag; listed
+ *                                here so the manifest records it. */
+export function dispatchFlags(env = process.env) {
+  const flags = [];
+  const children = Number(env.ORG_BENCH_MAX_CHILDREN);
+  if (Number.isFinite(children) && children > 0) {
+    flags.push('--spawn', '--max-children', String(Math.floor(children)));
+  }
+  const budget = Number(env.ORG_BENCH_BUDGET_USD);
+  if (Number.isFinite(budget) && budget > 0) {
+    flags.push('--budget', String(budget));
+  }
+  return flags;
+}
+
+/** What those flags were, for the manifest. A run that cannot say whether
+ *  delegation was even reachable cannot be compared with one that can. */
+export function dispatchConfig(env = process.env) {
+  return {
+    maxChildren: Number(env.ORG_BENCH_MAX_CHILDREN) || 0,
+    budgetUsd: Number(env.ORG_BENCH_BUDGET_USD) || 0,
+    taskSpendCapUsd: Number(env.ORG_TASK_SPEND_CAP_USD) || 0,
+    delegationReachable: (Number(env.ORG_BENCH_MAX_CHILDREN) || 0) > 0
+      && (Number(env.ORG_BENCH_BUDGET_USD) || 0) >= 1,
+    spendGuardEngaged: (Number(env.ORG_TASK_SPEND_CAP_USD) || 0) > 0,
+  };
+}
+
 /** The most times one goal may be retried before it is recorded as unrunnable.
  *
  *  Two: enough for a transient token refresh or a scheduling hiccup, few enough
@@ -226,6 +271,10 @@ export function runMetadata(input) {
     provider: input.provider ?? null,
     models: input.models ?? null,
     runnerImage: input.runnerImage ?? null,
+    /** Whether delegation and the spend guard were reachable at all. A run
+     *  with `delegationReachable: false` says nothing about delegation, and a
+     *  report that omits this reads as though it did. */
+    dispatch: input.dispatch ?? dispatchConfig(),
     // The composite policy identifiers seen in the records. More than one
     // generation means the comparison is not one comparison.
     policyVersions: [...new Set(input.policyVersions ?? [])].sort(),

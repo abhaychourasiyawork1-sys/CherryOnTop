@@ -15,7 +15,7 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { summarizeEconomicRun, compareArms, renderComparison } from './metrics/economic.mjs';
 import {
   isolationFor, classifyFailure, runMetadata, validateMetadata,
-  pairRuns, pairedDifference, MAX_ENVIRONMENT_RETRIES,
+  pairRuns, pairedDifference, dispatchFlags, dispatchConfig, MAX_ENVIRONMENT_RETRIES,
 } from './compare.mjs';
 import { materializeGoalWorktree, releaseGoalWorktree } from './lib/isolation.mjs';
 import { partitionByValidity, renderValidity } from './lib/validity.mjs';
@@ -127,6 +127,16 @@ const MAX_POLLS = 360; // 30 minutes
 
 const TERMINAL_STATES = ['COMPLETE', 'FAILED', 'CANCELLED'];
 
+const dispatch = dispatchConfig();
+console.log(`dispatch: max-children=${dispatch.maxChildren} budget=$${dispatch.budgetUsd} spend-cap=$${dispatch.taskSpendCapUsd}`);
+if (!dispatch.delegationReachable) {
+  console.log('  NOTE: delegation is NOT reachable this run (needs ORG_BENCH_MAX_CHILDREN>0 and ORG_BENCH_BUDGET_USD>=1).');
+  console.log('        Nothing below says anything about delegation, the work-graph scheduler, or the execution veto.');
+}
+if (!dispatch.spendGuardEngaged) {
+  console.log('  NOTE: the spend guard is NOT engaged (needs ORG_TASK_SPEND_CAP_USD>0). The hard-budget regime will not test a cap.');
+}
+
 const results = [];
 
 // Each arm gets its own port and database. Two arms sharing a SQLite file is
@@ -153,7 +163,7 @@ for (const [label, knob] of MATRIX[mode]) {
     try {
       const started = Date.now();
       const launched = runGoal(
-        () => sh('org', ['run', g.goal, '--repo', worktree.path], env),
+        () => sh('org', ['run', g.goal, '--repo', worktree.path, ...dispatchFlags()], env),
         `${mode}:${label}:${g.id}`,
       );
       if (!launched.ok) {
@@ -353,6 +363,7 @@ const metadata = runMetadata({
   runnerImage: process.env.ORG_RUNNER_IMAGE ?? 'cherryontop-runner:local',
   policyVersions: results.flatMap((r) => (r.economic ?? []).map((e) => e.policyVersion)).filter(Boolean),
   arms: Object.values(isolation),
+  dispatch,
 });
 
 const reproducible = validateMetadata(metadata);
