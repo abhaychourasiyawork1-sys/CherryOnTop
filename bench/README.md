@@ -84,6 +84,52 @@ the direction.
 Per-pair percentages are averaged rather than the percentage of the totals
 taken, so one enormous goal does not decide the headline for six small ones.
 
+## Validity: which rows are evidence about the product
+
+Before anything is summed, every row is classified by `bench/lib/validity.mjs`
+into one of six classes, and **only `VALID` rows reach the statistics**:
+
+| class | means | example |
+|---|---|---|
+| `VALID` | real evidence, including a real failure | the runtime tried and did not fix the bug |
+| `INVALID_INFRA` | the cluster, network or machine stopped it | `ImagePullBackOff`, `ECONNREFUSED`, out of disk |
+| `INVALID_ENV` | credentials, quota, or a different environment fingerprint | expired token, 429, a run from another runner image |
+| `INVALID_TELEMETRY` | the ledger describes something impossible | $2.00 recorded against tokens that cannot cost that |
+| `INVALID_SNAPSHOT` | it ran against a different revision than the manifest | a worktree that did not carry the expected commit |
+| `ABORTED` | somebody stopped it | `CANCELLED` |
+
+Two of these did not exist before and each corresponds to a real defect in the
+2026-09-17 paid run:
+
+- **`INVALID_TELEMETRY`.** That run produced a row reporting $2.00 against four
+  turns, and it went undetected into the headline number. `telemetryAnomaly()`
+  now rejects a cost no quantity of the tokens reported alongside it could
+  produce, money spent against zero tokens, and dispatches that ran for no
+  turns. It is an arithmetic impossibility check, not an invoice audit.
+- **`INVALID_SNAPSHOT`.** Arms are expected to start from one immutable
+  revision. A row that did not is not evidence about this comparison however
+  clean its numbers look — and it is checked *before* telemetry, so the report
+  names the real problem rather than a symptom of it.
+
+`INVALID_INFRA` and `INVALID_ENV` were one bucket (`environment`) before. They
+are split because the fixes are different people's jobs: a report that says
+"eleven environment failures" when nine were an unschedulable cluster sends the
+wrong person looking.
+
+A failed *task* is `VALID`. That is the whole point of separating validity from
+success: the runtime genuinely failing a goal is a result, not noise.
+
+**Nothing is dropped silently.** The run prints a `=== validity ===` block, the
+totals carry an `excluded` count per arm, and the stored `<label>.json` keeps
+every row with its class attached. "Nine of twelve runs were valid" and "nine
+runs" are different statements, and only the first one is honest. When no row is
+valid, the harness says so outright rather than printing a comparison of
+nothing.
+
+Policy promotion consumes the same classes: `src/learning/policy-experiments.ts`
+counts invalid observations and then excludes them, so a telemetry artifact
+cannot promote a policy.
+
 ## The acceptance contract
 
 A strong win, checked by `bench/metrics/economic.mjs`:

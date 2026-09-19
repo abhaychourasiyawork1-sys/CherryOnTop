@@ -17,6 +17,8 @@ import {
   isolationFor, classifyFailure, runMetadata, validateMetadata,
   pairRuns, pairedDifference, MAX_ENVIRONMENT_RETRIES,
 } from './compare.mjs';
+import { materializeGoalWorktree, releaseGoalWorktree } from './lib/isolation.mjs';
+import { partitionByValidity, renderValidity } from './lib/validity.mjs';
 
 const mode = process.argv[2];
 // `--goals=a,b` runs a subset. The full matrix is 7 goals x 2 arms, and the
@@ -137,85 +139,121 @@ for (const [label, knob] of MATRIX[mode]) {
   console.log(`\n=== ${mode}: ${label} (port ${isolation[label].port}) ===`);
   sh('org', ['daemon', 'stop'], env); // restart so env is recaptured
   sh('org', ['daemon', 'start'], env);
+  if (!repositoryRevision) {
+    throw new Error('could not resolve the current revision (`git rev-parse HEAD` failed) — cannot isolate goal dispatches without one.');
+  }
   for (const g of goals) {
-    const started = Date.now();
-    const launched = runGoal(() => sh('org', ['run', g.goal], env), `${mode}:${label}:${g.id}`);
-    if (!launched.ok) {
-      // Recorded rather than thrown: one unrunnable goal must not take down the
-      // other six, and a report that omits it reads as a claim about all seven.
-      results.push({
-        arm: label, goal: g.id, size: g.size ?? 'unknown', family: g.family ?? 'unknown',
-        regime: g.regime ?? 'unknown', state: 'UNRUNNABLE',
-        failureScope: launched.verdict.scope, failureKind: launched.verdict.kind,
-        repositoryRevision, environmentFingerprint, economic: [],
-      });
-      console.log(JSON.stringify({ goal: g.id, state: 'UNRUNNABLE', ...launched.verdict }));
-      continue;
-    }
-    const out = launched.value;
-    const id = (out.match(/Root node created: (\S+)/) || [])[1];
-    if (!id) {
-      throw new Error(
-        `[${mode}:${label}:${g.id}] could not find "Root node created: <id>" in \`org run\` output — aborting rather than polling forever.\nOutput was:\n${out}`,
+    // Every goal, in every arm, forks from the exact same commit into its own
+    // worktree — never the live working tree, and never a worktree any other
+    // goal or arm also writes to. This is the invariant a real paid run
+    // violated (§4 of the 2026-09-17 report): dispatching directly against
+    // the shared tree let 48 goals' edits pile on top of each other with zero
+    // isolation between them.
+    const worktree = materializeGoalWorktree(process.cwd(), repositoryRevision, `${label}:${g.id}`);
+    try {
+      const started = Date.now();
+      const launched = runGoal(
+        () => sh('org', ['run', g.goal, '--repo', worktree.path], env),
+        `${mode}:${label}:${g.id}`,
       );
-    }
-    let state = '';
-    let polls = 0;
-    while (!TERMINAL_STATES.includes(state)) {
-      if (polls++ >= MAX_POLLS) {
+      if (!launched.ok) {
+        // Recorded rather than thrown: one unrunnable goal must not take down the
+        // other six, and a report that omits it reads as a claim about all seven.
+        results.push({
+          arm: label, goal: g.id, size: g.size ?? 'unknown', family: g.family ?? 'unknown',
+          regime: g.regime ?? 'unknown', state: 'UNRUNNABLE',
+          failureScope: launched.verdict.scope, failureKind: launched.verdict.kind,
+          repositoryRevision, environmentFingerprint, economic: [],
+        });
+        console.log(JSON.stringify({ goal: g.id, state: 'UNRUNNABLE', ...launched.verdict }));
+        continue;
+      }
+      const out = launched.value;
+      const id = (out.match(/Root node created: (\S+)/) || [])[1];
+      if (!id) {
         throw new Error(
-          `[${mode}:${label}:${g.id}] node ${id} did not reach a terminal state (${TERMINAL_STATES.join('/')}) after ${MAX_POLLS} polls — aborting rather than hanging forever. Last state seen: ${state || '(none — id not found in \`org tree\`)'}`,
+          `[${mode}:${label}:${g.id}] could not find "Root node created: <id>" in \`org run\` output — aborting rather than polling forever.\nOutput was:\n${out}`,
         );
       }
-      await new Promise((r) => setTimeout(r, 5000));
-      const line = sh('org', ['tree'], env).split('\n').find((l) => l.startsWith(id));
-      state = (line || '').trim().split(/\s+/)[1] || '';
+      let state = '';
+      let polls = 0;
+      while (!TERMINAL_STATES.includes(state)) {
+        if (polls++ >= MAX_POLLS) {
+          throw new Error(
+            `[${mode}:${label}:${g.id}] node ${id} did not reach a terminal state (${TERMINAL_STATES.join('/')}) after ${MAX_POLLS} polls — aborting rather than hanging forever. Last state seen: ${state || '(none — id not found in \`org tree\`)'}`,
+          );
+        }
+        await new Promise((r) => setTimeout(r, 5000));
+        const line = sh('org', ['tree'], env).split('\n').find((l) => l.startsWith(id));
+        state = (line || '').trim().split(/\s+/)[1] || '';
+      }
+      // `inputTokens` alone is the wrong headline. A measured dispatch reported
+      // 22-46 input tokens against 1.77M cache-read: the bill is the conversation
+      // prefix re-read every turn, so a comparison on input tokens compares two
+      // rounding errors. Everything the provider actually billed is reported.
+      // `--economic` adds what the control plane decided, predicted and cost.
+      // Asked for here and nowhere else: a bare `--json` keeps the shape every
+      // other caller already parses.
+      const tokens = JSON.parse(sh('org', ['tokens', id, '--json', '--economic'], env));
+      const sum = (field) => tokens.rows.reduce((acc, r) => acc + (r[field] ?? 0), 0);
+      const row = {
+        goal: g.id,
+        size: g.size ?? 'unknown',
+        family: g.family ?? 'unknown',
+        regime: g.regime ?? 'unknown',
+        state,
+        dispatches: sum('dispatches'),
+        // The term nothing bounded before, and the one the architecture is meant
+        // to move: cost inside a dispatch grows superlinearly in turns, because
+        // the whole conversation prefix is re-read on every one.
+        turns: sum('turns'),
+        inputTokens: sum('inputTokens'),
+        outputTokens: sum('outputTokens'),
+        cacheReadTokens: sum('cacheReadTokens'),
+        costUsd: Number(sum('costUsd').toFixed(4)),
+        planCacheHits: tokens.planCacheHits ?? 0,
+        resultCacheHits: tokens.resultCacheHits ?? 0,
+        wallSeconds: Number(((Date.now() - started) / 1000).toFixed(0)),
+        models: tokens.rows.map((r) => `${r.role}:${r.model}`).join(' '),
+        rubric: g.rubric,
+        // Everything that has to match for two runs to be the same experiment.
+        // Recorded per row so pairing is a property of the data rather than an
+        // assumption made afterwards.
+        repositoryRevision,
+        provider: process.env.ANTHROPIC_API_KEY ? 'anthropic-api-key' : 'anthropic-oauth',
+        environmentFingerprint,
+      };
+      results.push({ arm: label, ...row, economic: tokens.economic ?? [] });
+      console.log(JSON.stringify(row));
+    } finally {
+      // Always, whether the goal completed, was recorded UNRUNNABLE, or this
+      // aborted with a thrown error: a leaked worktree is a smaller failure
+      // than a leaked worktree that later gets reused and silently carries
+      // one goal's edits into another's dispatch.
+      releaseGoalWorktree(process.cwd(), worktree.path);
     }
-    // `inputTokens` alone is the wrong headline. A measured dispatch reported
-    // 22-46 input tokens against 1.77M cache-read: the bill is the conversation
-    // prefix re-read every turn, so a comparison on input tokens compares two
-    // rounding errors. Everything the provider actually billed is reported.
-    // `--economic` adds what the control plane decided, predicted and cost.
-    // Asked for here and nowhere else: a bare `--json` keeps the shape every
-    // other caller already parses.
-    const tokens = JSON.parse(sh('org', ['tokens', id, '--json', '--economic'], env));
-    const sum = (field) => tokens.rows.reduce((acc, r) => acc + (r[field] ?? 0), 0);
-    const row = {
-      goal: g.id,
-      size: g.size ?? 'unknown',
-      family: g.family ?? 'unknown',
-      regime: g.regime ?? 'unknown',
-      state,
-      dispatches: sum('dispatches'),
-      // The term nothing bounded before, and the one the architecture is meant
-      // to move: cost inside a dispatch grows superlinearly in turns, because
-      // the whole conversation prefix is re-read on every one.
-      turns: sum('turns'),
-      inputTokens: sum('inputTokens'),
-      outputTokens: sum('outputTokens'),
-      cacheReadTokens: sum('cacheReadTokens'),
-      costUsd: Number(sum('costUsd').toFixed(4)),
-      planCacheHits: tokens.planCacheHits ?? 0,
-      resultCacheHits: tokens.resultCacheHits ?? 0,
-      wallSeconds: Number(((Date.now() - started) / 1000).toFixed(0)),
-      models: tokens.rows.map((r) => `${r.role}:${r.model}`).join(' '),
-      rubric: g.rubric,
-      // Everything that has to match for two runs to be the same experiment.
-      // Recorded per row so pairing is a property of the data rather than an
-      // assumption made afterwards.
-      repositoryRevision,
-      provider: process.env.ANTHROPIC_API_KEY ? 'anthropic-api-key' : 'anthropic-oauth',
-      environmentFingerprint,
-    };
-    results.push({ arm: label, ...row, economic: tokens.economic ?? [] });
-    console.log(JSON.stringify(row));
   }
 }
+// Which rows are evidence about the product, and which are evidence about the
+// harness. Done before anything is summed: a comparison that averages an
+// unschedulable cluster or an impossible cost row into its headline number is
+// not a comparison, and the previous harness had no way to tell.
+const partition = partitionByValidity(results, {
+  repositoryRevision,
+  environmentFingerprint,
+});
+console.log('\n=== validity ===');
+console.log(renderValidity(partition));
+const valid = partition.valid;
+if (valid.length === 0) {
+  console.error('No valid rows. Nothing below describes the product — fix the harness and re-run.');
+}
+
 // One table, both arms, and the deltas — so the answer is readable without
 // re-deriving it from the log above.
-const arms = [...new Set(results.map((r) => r.arm))];
+const arms = [...new Set(valid.map((r) => r.arm))];
 const totals = arms.map((arm) => {
-  const rows = results.filter((r) => r.arm === arm);
+  const rows = valid.filter((r) => r.arm === arm);
   const add = (field) => rows.reduce((acc, r) => acc + r[field], 0);
   return {
     arm,
@@ -227,6 +265,9 @@ const totals = arms.map((arm) => {
     cacheReadTokens: add('cacheReadTokens'),
     costUsd: Number(add('costUsd').toFixed(4)),
     wallSeconds: add('wallSeconds'),
+    // Carried into the totals rather than only printed above, so a stored
+    // result file cannot be read later as if every attempted goal counted.
+    excluded: partition.invalid.filter((r) => r.arm === arm).length,
   };
 });
 
@@ -280,7 +321,7 @@ if (baselineArg) {
 // beside it, and every component of the spend so a regression can be attributed
 // rather than only observed.
 if (arms.length === 2) {
-  const armRecords = (arm) => results.filter((r) => r.arm === arm).flatMap((r) => r.economic ?? []);
+  const armRecords = (arm) => valid.filter((r) => r.arm === arm).flatMap((r) => r.economic ?? []);
   // `on` is the Full Architecture arm in every matrix row, and `off` is
   // Baseline — named for the knob rather than the architecture, which is why
   // they are re-labelled here rather than relied on positionally elsewhere.
@@ -324,7 +365,9 @@ if (!reproducible.reproducible) {
 // Paired differences, goal by goal. The honest form of the comparison: a mean
 // over unpaired runs of different goals is a number nothing produced.
 if (arms.length === 2) {
-  const rowsFor = (arm) => results.filter((r) => r.arm === arm && r.state !== 'UNRUNNABLE')
+  // Valid rows only. Pairing an infrastructure failure against a real run
+  // produces a difference that describes the cluster.
+  const rowsFor = (arm) => valid.filter((r) => r.arm === arm)
     .map((r) => ({ ...r, billedTokens: r.inputTokens + r.outputTokens }));
   const { pairs, reasons } = pairRuns(rowsFor(arms[1]), rowsFor(arms[0]));
   console.log('\n=== paired differences (full architecture minus baseline) ===');
@@ -343,5 +386,13 @@ if (arms.length === 2) {
 }
 
 const out = new URL(`./${label}.json`, import.meta.url);
-writeFileSync(out, JSON.stringify({ mode, label, metadata, reproducible, results, totals }, null, 2));
+// Every row is stored, classified — not only the valid ones. A stored file
+// that silently omitted what it excluded would be the same defect one layer
+// down.
+writeFileSync(out, JSON.stringify({
+  mode, label, metadata, reproducible,
+  validity: partition.counts,
+  results: partition.rows,
+  totals,
+}, null, 2));
 console.log(`Raw rows written to bench/${label}.json`);
