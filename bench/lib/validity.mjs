@@ -113,6 +113,25 @@ export function classifyValidity(row, expected = {}) {
   const anomaly = telemetryAnomaly(row);
   if (anomaly) return { validity: 'INVALID_TELEMETRY', reason: anomaly };
 
+  // A node that reached a terminal state having dispatched nothing and spent
+  // nothing did not *do* the task badly — it never ran it. Reading that as a
+  // product failure is how a missing cluster, an unschedulable Job or an image
+  // that will not pull gets recorded as "the runtime could not fix the bug",
+  // and it is the one infrastructure failure that does not surface as a launch
+  // exception: `org run` succeeds, the node is created, and it dies later.
+  //
+  // Arithmetic, not judgement: no dispatches, no turns and no tokens is not a
+  // description of work.
+  const ranNothing = (row.dispatches ?? 0) === 0 && (row.turns ?? 0) === 0
+    && (row.inputTokens ?? 0) === 0 && (row.outputTokens ?? 0) === 0
+    && (row.cacheReadTokens ?? 0) === 0 && (row.costUsd ?? 0) === 0;
+  if (ranNothing && row.state !== 'COMPLETE') {
+    return {
+      validity: 'INVALID_INFRA',
+      reason: `reached ${row.state ?? 'an unknown state'} without dispatching anything`,
+    };
+  }
+
   // A FAILED state is a real result about the product and belongs in the
   // statistics. That is the whole point of separating validity from success.
   return { validity: 'VALID', reason: row.state === 'FAILED' ? 'a real product failure' : 'ok' };

@@ -119,6 +119,38 @@ wrong person looking.
 A failed *task* is `VALID`. That is the whole point of separating validity from
 success: the runtime genuinely failing a goal is a result, not noise.
 
+One exception, and it was found by running the harness rather than by reading
+it: a node that reached a terminal state having **dispatched nothing** never ran
+the task at all. With no cluster available `org run` succeeds, the node is
+created, and it dies later — so the launch-exception path never sees it and it
+lands as `FAILED`. Reading that as "the runtime could not fix the bug" is the
+most expensive kind of wrong row to have in a mean, so zero dispatches, zero
+turns, zero tokens and zero cost on a non-`COMPLETE` row is `INVALID_INFRA`. A
+`COMPLETE` row with the same counters is a cache hit and stays `VALID`.
+
+## Making the mechanisms reachable
+
+`org run` defaults `--max-children` to **0**, which means no spawn authority,
+which means the delegate path is never entered. A benchmark that sets nothing
+measures a runtime with delegation, the work-graph scheduler and the Action
+Market's execution veto all switched off — and reports the numbers as though it
+had exercised them. `ORG_TASK_SPEND_CAP_USD` is the same story: unset, the spend
+guard never engages, which is why the 2026-09-17 `hard-budget` regime tested no
+cap at all.
+
+| variable | effect | note |
+|---|---|---|
+| `ORG_BENCH_MAX_CHILDREN` | adds `--spawn --max-children <n>` | 0 means delegation is unreachable |
+| `ORG_BENCH_BUDGET_USD` | adds `--budget <usd>` | must be **≥ $1**, or every split escalates instead of running |
+| `ORG_TASK_SPEND_CAP_USD` | read by the runtime | 0 means the spend guard never engages |
+
+Both runners print what they resolved **before spending anything**, and say
+outright when delegation is unreachable or the guard is disengaged. The values
+are recorded in the manifest under `dispatch`, so a stored result can be read
+later without guessing whether delegation was even possible.
+
+See `docs/benchmarks/BENCHMARK-PROMPT.md` for the full one-shot procedure.
+
 **Nothing is dropped silently.** The run prints a `=== validity ===` block, the
 totals carry an `excluded` count per arm, and the stored `<label>.json` keeps
 every row with its class attached. "Nine of twelve runs were valid" and "nine

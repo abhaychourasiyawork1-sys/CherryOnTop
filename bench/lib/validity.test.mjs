@@ -101,3 +101,30 @@ describe('partitionByValidity', () => {
     expect(renderValidity(partition)).toContain('NOTHING VALID');
   });
 });
+
+describe('a node that never ran', () => {
+  it('is infrastructure, not a product failure', () => {
+    // Observed live: with no cluster available, `org run` succeeds, the node is
+    // created, and it dies without dispatching. The two-bucket classifier and
+    // the launch-exception path both miss it, so it read as "the runtime tried
+    // and failed" — the most expensive kind of wrong row to have in a mean.
+    const verdict = classifyValidity({
+      state: 'FAILED', dispatches: 0, turns: 0,
+      inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, costUsd: 0,
+    });
+    expect(verdict.validity).toBe('INVALID_INFRA');
+    expect(verdict.reason).toContain('without dispatching');
+  });
+
+  it('still counts a failure that actually ran as a product result', () => {
+    expect(classifyValidity(ok({ state: 'FAILED' })).validity).toBe('VALID');
+  });
+
+  it('does not reclassify a genuinely free completion', () => {
+    // A cache hit completes having dispatched nothing, and that is a success.
+    expect(classifyValidity({
+      state: 'COMPLETE', dispatches: 0, turns: 0,
+      inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, costUsd: 0,
+    }).validity).toBe('VALID');
+  });
+});
