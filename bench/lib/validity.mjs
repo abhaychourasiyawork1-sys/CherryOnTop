@@ -79,8 +79,8 @@ export function telemetryAnomaly(row) {
   // recorded) that billed nothing. A genuinely free completion is recorded
   // with dispatches === 0 (see the "never ran" tests below), so dispatches >
   // 0 here always means something was actually attempted.
-  if (dispatches > 0 && turns > 0 && cost === 0 && tokens === 0) {
-    return `${dispatches} dispatch${dispatches === 1 ? '' : 'es'} and ${turns} turn${turns === 1 ? '' : 's'} recorded with zero cost and zero tokens`;
+  if (dispatches > 0 && turns > 0 && cost <= NEGLIGIBLE_USD && tokens === 0) {
+    return `${dispatches} dispatches and ${turns} turns recorded with zero cost and zero tokens`;
   }
   return null;
 }
@@ -132,7 +132,8 @@ export function classifyValidity(row, expected = {}) {
   // description of work.
   const ranNothing = (row.dispatches ?? 0) === 0 && (row.turns ?? 0) === 0
     && (row.inputTokens ?? 0) === 0 && (row.outputTokens ?? 0) === 0
-    && (row.cacheReadTokens ?? 0) === 0 && (row.costUsd ?? 0) === 0;
+    && (row.cacheReadTokens ?? 0) === 0 && (row.cacheCreationTokens ?? 0) === 0
+    && (row.costUsd ?? 0) <= NEGLIGIBLE_USD;
   if (ranNothing && row.state !== 'COMPLETE') {
     return {
       validity: 'INVALID_INFRA',

@@ -266,6 +266,14 @@ export function modelsOf(tokens) {
   return (tokens.rows ?? []).map((r) => `${r.role}:${r.model}`).join(' ');
 }
 
+/** The third field of a row's pairing key: which credential path dispatched
+ *  it. Same duplication and same fix as `environmentFingerprintOf` — this one
+ *  was copied inline into `run.mjs` twice and `regime-runner.mjs` never set
+ *  it at all. */
+export function providerOf(env = process.env) {
+  return env.ANTHROPIC_API_KEY ? 'anthropic-api-key' : 'anthropic-oauth';
+}
+
 /** The most times one goal may be retried before it is recorded as unrunnable.
  *
  *  Two: enough for a transient token refresh or a scheduling hiccup, few enough

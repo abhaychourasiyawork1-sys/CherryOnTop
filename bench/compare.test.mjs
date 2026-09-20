@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { dispatchFlags, dispatchConfig,
   pairRuns, pairKeyOf, pairedDifference, signTestP, describeEvidence,
   isolationFor, isolationConflict, classifyFailure, runMetadata, validateMetadata,
-  environmentFingerprintOf, modelsOf,
+  environmentFingerprintOf, modelsOf, providerOf,
   MAX_ENVIRONMENT_RETRIES,
 } from './compare.mjs';
 
@@ -336,5 +336,15 @@ describe('modelsOf', () => {
 
   it('is empty for a node with no dispatches', () => {
     expect(modelsOf({ rows: [] })).toBe('');
+  });
+});
+
+describe('providerOf', () => {
+  it('is the third pairing-key field regime-runner.mjs never computed', () => {
+    // Same bug class as environmentFingerprintOf: run.mjs set this inline in
+    // two places, regime-runner.mjs set it nowhere, so pairKeyOf's exact
+    // match on `provider` failed silently for every row it resumed.
+    expect(providerOf({})).toBe('anthropic-oauth');
+    expect(providerOf({ ANTHROPIC_API_KEY: 'sk-ant-x' })).toBe('anthropic-api-key');
   });
 });

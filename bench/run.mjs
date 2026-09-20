@@ -16,7 +16,7 @@ import { summarizeEconomicRun, compareArms, renderComparison } from './metrics/e
 import {
   isolationFor, classifyFailure, runMetadata, validateMetadata,
   pairRuns, pairedDifference, dispatchFlags, dispatchConfig, MAX_ENVIRONMENT_RETRIES,
-  environmentFingerprintOf, modelsOf,
+  environmentFingerprintOf, modelsOf, providerOf,
 } from './compare.mjs';
 import { materializeGoalWorktree, releaseGoalWorktree } from './lib/isolation.mjs';
 import { partitionByValidity, renderValidity } from './lib/validity.mjs';
@@ -227,7 +227,7 @@ for (const [label, knob] of MATRIX[mode]) {
         // Recorded per row so pairing is a property of the data rather than an
         // assumption made afterwards.
         repositoryRevision,
-        provider: process.env.ANTHROPIC_API_KEY ? 'anthropic-api-key' : 'anthropic-oauth',
+        provider: providerOf(),
         environmentFingerprint,
       };
       results.push({ arm: label, ...row, economic: tokens.economic ?? [] });
@@ -355,7 +355,7 @@ const metadata = runMetadata({
   repositoryRevision,
   repositoryDirty,
   nodeVersion: process.version,
-  provider: process.env.ANTHROPIC_API_KEY ? 'anthropic-api-key' : 'anthropic-oauth',
+  provider: providerOf(),
   models: [...new Set(results.map((r) => r.models).filter(Boolean))].join(' | '),
   runnerImage: process.env.ORG_RUNNER_IMAGE ?? 'cherryontop-runner:local',
   policyVersions: results.flatMap((r) => (r.economic ?? []).map((e) => e.policyVersion)).filter(Boolean),

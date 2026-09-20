@@ -10,7 +10,7 @@ import { execFileSync } from 'node:child_process';
 import { readFileSync, appendFileSync, existsSync, readFileSync as rf } from 'node:fs';
 import {
   isolationFor, classifyFailure, dispatchFlags, dispatchConfig, MAX_ENVIRONMENT_RETRIES,
-  environmentFingerprintOf, modelsOf,
+  environmentFingerprintOf, modelsOf, providerOf,
 } from './compare.mjs';
 import { classifyValidity } from './lib/validity.mjs';
 import { materializeGoalWorktree, releaseGoalWorktree } from './lib/isolation.mjs';
@@ -106,9 +106,11 @@ for (const g of goals) {
           arm: label, goal: g.id, regime: g.regime, size: g.size, family: g.family ?? 'unknown', state, nodeId: id,
           dispatches: sum('dispatches'), turns: sum('turns'), inputTokens: sum('inputTokens'),
           outputTokens: sum('outputTokens'), cacheReadTokens: sum('cacheReadTokens'),
-          costUsd: Number(sum('costUsd').toFixed(4)), wallSeconds: Number(((Date.now() - started) / 1000).toFixed(0)),
+          costUsd: Number(sum('costUsd').toFixed(4)),
+          planCacheHits: tokens.planCacheHits ?? 0, resultCacheHits: tokens.resultCacheHits ?? 0,
+          wallSeconds: Number(((Date.now() - started) / 1000).toFixed(0)),
           rubric: g.rubric, repositoryRevision, environmentFingerprint, models: modelsOf(tokens),
-          provider: process.env.ANTHROPIC_API_KEY ? 'anthropic-api-key' : 'anthropic-oauth',
+          provider: providerOf(),
           economic: tokens.economic ?? [],
         };
       }

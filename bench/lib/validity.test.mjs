@@ -159,4 +159,30 @@ describe('a node that never ran', () => {
       inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, costUsd: 0,
     }).validity).toBe('VALID');
   });
+
+  it('is not fooled by real cache-creation activity into looking like it never ran', () => {
+    // ranNothing's zero-check used to omit cacheCreationTokens, even though
+    // telemetryAnomaly's own token total three lines above it includes that
+    // field. A row reporting only cache-creation tokens (no read, no
+    // input/output, zero recorded dispatches/turns) reached
+    // INVALID_INFRA/"without dispatching anything" despite the ledger
+    // showing real, billable activity.
+    const verdict = classifyValidity({
+      state: 'FAILED', dispatches: 0, turns: 0,
+      inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 5_000, costUsd: 0,
+    });
+    expect(verdict.validity).toBe('VALID');
+  });
+
+  it('still catches nothing happening when only the cost is a rounding artifact', () => {
+    // A row that never dispatched but reports $0.001 instead of an exact $0
+    // — plausible rounding noise — satisfied neither ranNothing (costUsd ===
+    // 0 exactly) nor telemetryAnomaly's cost-vs-tokens check (needs cost >
+    // NEGLIGIBLE_USD), and fell through to VALID.
+    const verdict = classifyValidity({
+      state: 'FAILED', dispatches: 0, turns: 0,
+      inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, costUsd: 0.001,
+    });
+    expect(verdict.validity).toBe('INVALID_INFRA');
+  });
 });

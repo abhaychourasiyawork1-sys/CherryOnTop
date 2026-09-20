@@ -1,7 +1,7 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { mkdtempSync, writeFileSync, readFileSync, existsSync, rmSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
-import { tmpdir } from 'node:os';
+import { tmpdir, homedir } from 'node:os';
 import { join, relative } from 'node:path';
 import { forkWorkspace, isFork } from './workspace-fork.js';
 
@@ -90,19 +90,31 @@ describe('forking a workspace', () => {
     fork.release();
   });
 
-  it('places the fork inside the base repo rather than beside it in the OS temp directory', () => {
+  it('places the fork under the home directory rather than the OS temp directory', () => {
     // A pod's hostPath volume resolves against whatever the cluster's node
     // actually has mounted — for the kind cluster this runtime deploys to,
-    // that is $HOME (via `/host`), never the OS temp directory. `basePath` is
-    // always somewhere the cluster can already see it (`org run` refuses any
-    // repo outside $HOME), so nesting the fork inside `basePath` inherits
-    // that visibility; a sibling directory elsewhere in the OS temp
-    // directory does not, and that is why a child's pod hangs in
-    // ContainerCreating forever today.
+    // that is $HOME (via `/host`), never the OS temp directory.
     const base = repo();
     const fork = forkWorkspace(base, 'HEAD', 'child-1')!;
-    const rel = relative(base, fork.path);
+    const rel = relative(homedir(), fork.path);
     expect(rel.startsWith('..')).toBe(false);
+    fork.release();
+  });
+
+  it('never makes the base repo look dirty to itself while a fork is alive', () => {
+    // A fork nested *inside* basePath's own working tree — the first fix
+    // tried — makes `git status --porcelain` on basePath report the fork as
+    // an untracked entry for as long as it exists. repoDirty() (src/
+    // execution/git-state.ts) gates the plan-cache and dependency-cache on
+    // exactly that check, so a live sibling fork would silently disable
+    // caching for the node that owns it. Anchoring forks under the home
+    // directory instead — never inside any target repo's own tree — avoids
+    // this by construction, for CherryOnTop's own checkout and for any
+    // arbitrary `--repo` a real user points the runtime at.
+    const base = repo();
+    const fork = forkWorkspace(base, 'HEAD', 'child-1')!;
+    const status = execFileSync('git', ['status', '--porcelain'], { cwd: base, encoding: 'utf8' });
+    expect(status.trim()).toBe('');
     fork.release();
   });
 });
