@@ -1,0 +1,61 @@
+{
+  "seed": 43,
+  "order": [
+    {
+      "instance_id": "astropy__astropy-14309",
+      "arm_order": [
+        "cherryontop",
+        "direct"
+      ]
+    },
+    {
+      "instance_id": "django__django-15252",
+      "arm_order": [
+        "direct",
+        "cherryontop"
+      ]
+    },
+    {
+      "instance_id": "mwaskom__seaborn-3187",
+      "arm_order": [
+        "cherryontop",
+        "direct"
+      ]
+    },
+    {
+      "instance_id": "pallets__flask-5014",
+      "arm_order": [
+        "direct",
+        "cherryontop"
+      ]
+    },
+    {
+      "instance_id": "psf__requests-1142",
+      "arm_order": [
+        "direct",
+        "cherryontop"
+      ]
+    },
+    {
+      "instance_id": "pydata__xarray-6744",
+      "arm_order": [
+        "cherryontop",
+        "direct"
+      ]
+    },
+    {
+      "instance_id": "scikit-learn__scikit-learn-14710",
+      "arm_order": [
+        "direct",
+        "cherryontop"
+      ]
+    },
+    {
+      "instance_id": "sympy__sympy-17139",
+      "arm_order": [
+        "direct",
+        "cherryontop"
+      ]
+    }
+  ]
+}
