@@ -38,6 +38,25 @@ describe('telemetryAnomaly', () => {
   it('does not flag a row that spent almost nothing', () => {
     expect(telemetryAnomaly({ dispatches: 0, turns: 0, costUsd: 0.001 })).toBeNull();
   });
+
+  it('catches a real dispatch that billed nothing', () => {
+    // The 2026-09-20 paid run's signature for an auth token expiring
+    // mid-dispatch: a real attempt (dispatches and turns both recorded) that
+    // billed zero cost and zero tokens. `ranNothing` in classifyValidity only
+    // catches dispatches === 0, so this slipped through as a genuine product
+    // FAILED and into the primary statistics.
+    expect(telemetryAnomaly(ok({
+      dispatches: 1, turns: 1, costUsd: 0,
+      inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0,
+    }))).toContain('zero cost and zero tokens');
+  });
+
+  it('does not flag a genuinely free completion that never dispatched', () => {
+    expect(telemetryAnomaly(ok({
+      dispatches: 0, turns: 0, costUsd: 0,
+      inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0,
+    }))).toBeNull();
+  });
 });
 
 describe('classifyValidity', () => {
@@ -77,6 +96,19 @@ describe('classifyValidity', () => {
 
   it('marks a cancelled run aborted rather than failed', () => {
     expect(classifyValidity(ok({ state: 'CANCELLED' })).validity).toBe('ABORTED');
+  });
+
+  it('does not read an auth-rejected dispatch as a real product failure', () => {
+    // Observed live: an oauth token expired mid-benchmark, and every dispatch
+    // after that failed in ~8 seconds with dispatches: 1, turns: 1 and
+    // nothing billed. classifyValidity's ranNothing path only fires when
+    // dispatches === 0, so this reached VALID/"a real product failure" and
+    // sat in the same statistics as goals that actually ran.
+    const verdict = classifyValidity(ok({
+      state: 'FAILED', dispatches: 1, turns: 1, costUsd: 0,
+      inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0,
+    }));
+    expect(verdict.validity).toBe('INVALID_TELEMETRY');
   });
 });
 

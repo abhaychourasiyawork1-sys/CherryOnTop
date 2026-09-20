@@ -8,7 +8,10 @@
 // Usage: node bench/regime-runner.mjs <on|off> <outfile.jsonl>
 import { execFileSync } from 'node:child_process';
 import { readFileSync, appendFileSync, existsSync, readFileSync as rf } from 'node:fs';
-import { isolationFor, classifyFailure, dispatchFlags, dispatchConfig, MAX_ENVIRONMENT_RETRIES } from './compare.mjs';
+import {
+  isolationFor, classifyFailure, dispatchFlags, dispatchConfig, MAX_ENVIRONMENT_RETRIES,
+  environmentFingerprintOf, modelsOf,
+} from './compare.mjs';
 import { classifyValidity } from './lib/validity.mjs';
 import { materializeGoalWorktree, releaseGoalWorktree } from './lib/isolation.mjs';
 
@@ -33,6 +36,7 @@ if (!repositoryRevision) {
   console.error('could not resolve the current revision (`git rev-parse HEAD` failed) — cannot isolate goal dispatches without one.');
   process.exit(2);
 }
+const environmentFingerprint = environmentFingerprintOf();
 
 const fixtures = JSON.parse(readFileSync(new URL('./goals.json', import.meta.url)));
 const goals = fixtures.regimes;
@@ -80,12 +84,12 @@ for (const g of goals) {
     const started = Date.now();
     const launched = runGoal(() => sh('org', ['run', g.goal, '--repo', worktree.path, ...dispatchFlags()], env), `${label}:${g.id}`);
     if (!launched.ok) {
-      row = { arm: label, goal: g.id, regime: g.regime, size: g.size, state: 'UNRUNNABLE', failureScope: launched.verdict.scope, failureKind: launched.verdict.kind, repositoryRevision, economic: [] };
+      row = { arm: label, goal: g.id, regime: g.regime, size: g.size, state: 'UNRUNNABLE', failureScope: launched.verdict.scope, failureKind: launched.verdict.kind, repositoryRevision, environmentFingerprint, economic: [] };
     } else {
       const out = launched.value;
       const id = (out.match(/Root node created: (\S+)/) || [])[1];
       if (!id) {
-        row = { arm: label, goal: g.id, regime: g.regime, size: g.size, state: 'UNRUNNABLE', failureScope: 'product', failureKind: 'no-node-id', repositoryRevision, economic: [] };
+        row = { arm: label, goal: g.id, regime: g.regime, size: g.size, state: 'UNRUNNABLE', failureScope: 'product', failureKind: 'no-node-id', repositoryRevision, environmentFingerprint, economic: [] };
       } else {
         let state = '';
         let polls = 0;
@@ -103,7 +107,9 @@ for (const g of goals) {
           dispatches: sum('dispatches'), turns: sum('turns'), inputTokens: sum('inputTokens'),
           outputTokens: sum('outputTokens'), cacheReadTokens: sum('cacheReadTokens'),
           costUsd: Number(sum('costUsd').toFixed(4)), wallSeconds: Number(((Date.now() - started) / 1000).toFixed(0)),
-          rubric: g.rubric, repositoryRevision, economic: tokens.economic ?? [],
+          rubric: g.rubric, repositoryRevision, environmentFingerprint, models: modelsOf(tokens),
+          provider: process.env.ANTHROPIC_API_KEY ? 'anthropic-api-key' : 'anthropic-oauth',
+          economic: tokens.economic ?? [],
         };
       }
     }

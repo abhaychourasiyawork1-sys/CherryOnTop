@@ -16,6 +16,7 @@ import { summarizeEconomicRun, compareArms, renderComparison } from './metrics/e
 import {
   isolationFor, classifyFailure, runMetadata, validateMetadata,
   pairRuns, pairedDifference, dispatchFlags, dispatchConfig, MAX_ENVIRONMENT_RETRIES,
+  environmentFingerprintOf, modelsOf,
 } from './compare.mjs';
 import { materializeGoalWorktree, releaseGoalWorktree } from './lib/isolation.mjs';
 import { partitionByValidity, renderValidity } from './lib/validity.mjs';
@@ -92,11 +93,7 @@ const git = (args) => {
 const startedAt = new Date().toISOString();
 const repositoryRevision = git(['rev-parse', 'HEAD']);
 const repositoryDirty = (git(['status', '--porcelain']) ?? 'unknown') !== '';
-const environmentFingerprint = [
-  process.version,
-  process.env.ORG_K8S_NAMESPACE ?? 'org-exec',
-  process.env.ORG_RUNNER_IMAGE ?? 'cherryontop-runner:local',
-].join('/');
+const environmentFingerprint = environmentFingerprintOf();
 
 /** One goal, run once, with environment failures retried and product failures
  *  recorded.
@@ -224,7 +221,7 @@ for (const [label, knob] of MATRIX[mode]) {
         planCacheHits: tokens.planCacheHits ?? 0,
         resultCacheHits: tokens.resultCacheHits ?? 0,
         wallSeconds: Number(((Date.now() - started) / 1000).toFixed(0)),
-        models: tokens.rows.map((r) => `${r.role}:${r.model}`).join(' '),
+        models: modelsOf(tokens),
         rubric: g.rubric,
         // Everything that has to match for two runs to be the same experiment.
         // Recorded per row so pairing is a property of the data rather than an

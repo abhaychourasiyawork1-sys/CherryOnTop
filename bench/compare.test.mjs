@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { dispatchFlags, dispatchConfig,
   pairRuns, pairKeyOf, pairedDifference, signTestP, describeEvidence,
   isolationFor, isolationConflict, classifyFailure, runMetadata, validateMetadata,
+  environmentFingerprintOf, modelsOf,
   MAX_ENVIRONMENT_RETRIES,
 } from './compare.mjs';
 
@@ -308,5 +309,32 @@ describe('dispatch flags', () => {
     // guard was never engaged and the regime tested nothing.
     expect(dispatchConfig({}).spendGuardEngaged).toBe(false);
     expect(dispatchConfig({ ORG_TASK_SPEND_CAP_USD: '4' }).spendGuardEngaged).toBe(true);
+  });
+});
+
+describe('environmentFingerprintOf', () => {
+  it('is the same shape run.mjs and regime-runner.mjs both need to pair a row', () => {
+    // 2026-09-20: regime-runner.mjs never computed this at all, so every row
+    // it wrote failed pairKeyOf's match against run.mjs's rows and reported
+    // as "unmatched" even when the same goal, revision and environment ran in
+    // both. One function, imported by both scripts, so they cannot drift
+    // apart again.
+    const fp = environmentFingerprintOf({ ORG_K8S_NAMESPACE: 'ns', ORG_RUNNER_IMAGE: 'img:tag' });
+    expect(fp).toBe(`${process.version}/ns/img:tag`);
+  });
+
+  it('defaults the namespace and runner image the same way the daemon does', () => {
+    expect(environmentFingerprintOf({})).toBe(`${process.version}/org-exec/cherryontop-runner:local`);
+  });
+});
+
+describe('modelsOf', () => {
+  it('renders one role:model token per row, the same format run.mjs writes', () => {
+    expect(modelsOf({ rows: [{ role: 'execute', model: 'sonnet' }, { role: 'plan', model: 'haiku' }] }))
+      .toBe('execute:sonnet plan:haiku');
+  });
+
+  it('is empty for a node with no dispatches', () => {
+    expect(modelsOf({ rows: [] })).toBe('');
   });
 });

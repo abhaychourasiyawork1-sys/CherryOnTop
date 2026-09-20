@@ -246,6 +246,26 @@ export function dispatchConfig(env = process.env) {
   };
 }
 
+/** The fingerprint `pairKeyOf` matches an `on` row against an `off` row with.
+ *  One function so `run.mjs` and `regime-runner.mjs` compute it identically —
+ *  they used to duplicate it, and the resumable one-arm variant fell out of
+ *  sync and never computed it at all, so every row it wrote reported as
+ *  unmatched even when the same goal, revision and environment ran in both. */
+export function environmentFingerprintOf(env = process.env) {
+  return [
+    process.version,
+    env.ORG_K8S_NAMESPACE ?? 'org-exec',
+    env.ORG_RUNNER_IMAGE ?? 'cherryontop-runner:local',
+  ].join('/');
+}
+
+/** The other half of a row's pairing key: which roles and models actually
+ *  dispatched, from an `org tokens --json` response. Same duplication and
+ *  same fix as `environmentFingerprintOf`. */
+export function modelsOf(tokens) {
+  return (tokens.rows ?? []).map((r) => `${r.role}:${r.model}`).join(' ');
+}
+
 /** The most times one goal may be retried before it is recorded as unrunnable.
  *
  *  Two: enough for a transient token refresh or a scheduling hiccup, few enough

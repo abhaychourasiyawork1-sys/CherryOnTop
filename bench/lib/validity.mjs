@@ -74,6 +74,14 @@ export function telemetryAnomaly(row) {
   const turns = row.turns ?? 0;
   if (dispatches > 0 && turns === 0 && tokens > 0) return `${dispatches} dispatches recorded with zero turns`;
   if (turns > 0 && dispatches === 0) return `${turns} turns recorded with no dispatch behind them`;
+  // The mirror of the first check, and the signature an auth token expiring
+  // mid-dispatch leaves behind: a real attempt (dispatches and turns both
+  // recorded) that billed nothing. A genuinely free completion is recorded
+  // with dispatches === 0 (see the "never ran" tests below), so dispatches >
+  // 0 here always means something was actually attempted.
+  if (dispatches > 0 && turns > 0 && cost === 0 && tokens === 0) {
+    return `${dispatches} dispatch${dispatches === 1 ? '' : 'es'} and ${turns} turn${turns === 1 ? '' : 's'} recorded with zero cost and zero tokens`;
+  }
   return null;
 }
 
