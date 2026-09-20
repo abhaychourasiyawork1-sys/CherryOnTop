@@ -1,5 +1,7 @@
 {
   "dataset": "princeton-nlp/SWE-bench_Verified",
+  "grading_dataset": "SWE-bench/SWE-bench_Verified",
+  "grading_dataset_note": "Same 500 instances, same instance_ids and base_commits (verified by direct comparison before any grading ran) — the installed swebench harness (5.0.2) requires the 'image' column only present under the SWE-bench org's own hosted copy, not princeton-nlp's. The sample drawn below is unaffected; only Step 7 grading points at this dataset name.",
   "seed": 42,
   "stratification": "one instance per distinct repository (not population-proportional; see draw_sample.py docstring)",
   "smoke": [
