@@ -40,6 +40,7 @@ import { subtreeNodeIds } from '../db/queries/nodes.js';
 import { allowedTools, isReadOnly } from '../engines/enforce-tools.js';
 import type { Authority } from '../schemas/node-contract.js';
 import { forkWorkspace, type WorkspaceFork } from '../execution/workspace-fork.js';
+import { toContainerPath } from '../k8s/kind.js';
 import type { ToolGrant, RuntimeAdapter, StructuredEvent } from '../adapters/adapter.js';
 import { setNodeSnapshot, clearNodeSnapshot } from '../db/queries/nodes.js';
 import { insertDodItems, listDodForNode, setDodState } from '../db/queries/dod.js';
@@ -207,7 +208,16 @@ export function realDelegateDeps(db: Db, parentId?: string): DelegateChildDeps {
       if (siblingCount > 1 && !isReadOnly(authority) && parent.repoPath) {
         const fork = forkWorkspace(parent.repoPath, 'HEAD', id);
         if (fork) {
-          repoPath = fork.path;
+          // fork.path is a real host path (workspace-fork.ts anchors forks
+          // under $HOME, outside any repo). node.repoPath must be the
+          // container-relative form -- the same invariant run.ts establishes
+          // for the root node's --repo -- or the child's own Job hostPath
+          // resolves to a path the kind node's filesystem cannot see and its
+          // pod hangs in ContainerCreating forever (confirmed empirically:
+          // repeated FailedMount events). integrateFork() is unaffected: it
+          // reads fork.path from the WorkspaceFork object in `forks`, not
+          // from this translated repoPath.
+          repoPath = toContainerPath(fork.path);
           forks.set(id, fork);
         }
       }
