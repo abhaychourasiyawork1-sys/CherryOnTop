@@ -16,6 +16,7 @@ import { buildRepoInventory, renderRepoMap, type RepoEntry } from '../intelligen
 import { repoHead } from '../execution/git-state.js';
 import { repoMapTokenBudget, runtimeMode } from '../config/efficiency.js';
 import { selectDispatchContext, estimateTokens, type DispatchContext } from './dispatch-context.js';
+import type { ContextPolicy, TaskEconomicsSignals } from '../efficiency/policy-types.js';
 
 /** The inventory for this worktree's committed HEAD, built once and reused.
  *
@@ -80,7 +81,16 @@ export function forgetSiblingSelections(head: string): void {
 /** The part of the repository this goal is about, bounded by the configured
  *  ceiling. Null when there is nothing to say — the caller then dispatches the
  *  bare goal, exactly as before selection existed. */
-export function dispatchContextFor(db: Db, worktreePath: string, goal: string): DispatchContext | null {
+export function dispatchContextFor(
+  db: Db,
+  worktreePath: string,
+  goal: string,
+  /** The signals and ceiling the dispatch snapshot already derived. Absent
+   *  means derive them here, which is what every pre-snapshot caller did — the
+   *  point of passing them is that the selector and the strategy gate reason
+   *  from one answer rather than two. */
+  prepared?: { signals?: TaskEconomicsSignals; policy?: ContextPolicy },
+): DispatchContext | null {
   // Read the budget before touching git: when context is switched off there is
   // nothing to look up and nothing to build, so do not fork a subprocess to key
   // a cache nobody will read.
@@ -99,6 +109,8 @@ export function dispatchContextFor(db: Db, worktreePath: string, goal: string): 
     const context = selectDispatchContext({
       goal, entries, tokenBudget,
       previouslySelected: shared,
+      ...(prepared?.signals ? { signals: prepared.signals } : {}),
+      ...(prepared?.policy ? { policy: prepared.policy } : {}),
     });
     if (head && context.receipt.selected.length > 0) {
       const seen = siblingSelections.get(head) ?? new Set<string>();

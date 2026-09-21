@@ -57,9 +57,10 @@ import { buildAgentEnvelope, renderEnvelope, EnvelopeError } from '../intelligen
 import { putAgentEnvelope, getAgentEnvelope } from '../db/queries/envelopes.js';
 import { scopeOf } from '../context/types.js';
 import { judgeTask } from '../intelligence/task-judge.js';
+import { prepareDispatch, type DispatchPreparation } from '../decision/dispatch-preparation.js';
 import { evaluateSpendGuard, type SpendGuardState } from '../efficiency/spend-guard.js';
 import { summarizeExecutionTrajectory, executionSnapshot, UNKNOWN_PROGRESS } from '../efficiency/progress-signals.js';
-import { executionPolicyForGoal, effectiveTurnCap, currentPolicyVersions, EXECUTION_POLICY_VERSION } from '../efficiency/policy.js';
+import { executionPolicyForGoal, calibrate, effectiveTurnCap, currentPolicyVersions, EXECUTION_POLICY_VERSION } from '../efficiency/policy.js';
 import { activePolicyChanges } from '../learning/policy-experiments.js';
 import { templateFor, pruneTemplate } from '../intelligence/execution-templates.js';
 import type { TaskClass } from '../intelligence/task-judge.js';
@@ -1602,7 +1603,19 @@ function productionMachine(db: Db, nodeId: string) {
         // `judgeTask` is the cheap, dispatch-free classification the template,
         // the utility record and the grant below all key on — computed once,
         // up front, so nothing here can disagree about what kind of goal this is.
-        const verdict = judgeTask(input.goal);
+        // One snapshot, built here at the safe execution boundary, and read
+        // everywhere below. Before this, the goal was judged here, judged again
+        // inside `executionPolicyForGoal`, and judged a third time inside the
+        // context selector — three derivations that could disagree about what
+        // kind of task this is.
+        const prep: DispatchPreparation = prepareDispatch({
+          goal: input.goal,
+          authority: node!.contract.authority,
+          toolGrant: grantOf(node!.contract.authority),
+          ...(node?.repoPath ? { repository: node.repoPath } : {}),
+          requiredChecks: node?.contract.definition_of_done ?? [],
+        });
+        const verdict = prep.verdict;
         // Investigating is reading, not editing — and an unrestricted grant
         // does not just permit editing, it also keeps the Task tool, which is
         // how a single dispatch spawns its own background subagents. Narrowed
@@ -1670,13 +1683,18 @@ function productionMachine(db: Db, nodeId: string) {
         // and stays the outer bound — an operator who sets one means it, and
         // `undefined` is the documented "uncapped", which this must not
         // quietly re-impose a cap on top of.
-        const execPolicy = executionPolicyForGoal(input.goal, verdict, activePolicyChanges(db));
+        // The snapshot's policy, recalibrated by whatever the learning loop has
+        // promoted. `calibrate` is the only step that cannot live in the
+        // snapshot, because a promotion can land between snapshot and dispatch.
+        const execPolicy = calibrate(prep.executionPolicy, activePolicyChanges(db));
         const hardTurnCap = effectiveTurnCap(execOpts.maxTurns, execPolicy);
         // Built once, out here rather than inside runOnce: the fallback retry
         // below calls runOnce a second time with the same goal, and a goal
         // carrying two copies of the context is the thing this is meant to
         // avoid. No context (disabled, not a repo, scan failed) → the bare goal.
-        const repoContext = dispatchContextFor(db, worktreePath, input.goal);
+        const repoContext = dispatchContextFor(db, worktreePath, input.goal, {
+          signals: prep.economics, policy: prep.contextPolicy,
+        });
         if (repoContext) publishContextReceipt(db, nodeId, repoContext.receipt);
 
         // Constraints are instructions, not boundaries — the interface says so
