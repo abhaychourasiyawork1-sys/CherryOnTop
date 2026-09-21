@@ -26,7 +26,7 @@ import { buildPlanPrompt, parseSubgoals } from '../intelligence/plan.js';
 import { buildSynthesisPrompt, type ChildReport } from '../intelligence/synthesize.js';
 import { decideIntegration } from '../intelligence/integrate-results.js';
 import { answerOf } from '../db/queries/answers.js';
-import { recordRunOutcome, getRuntimeStats, recordStrategyOutcome } from '../db/queries/memory.js';
+import { recordRunOutcome, getRuntimeStats, recordStrategyOutcome, listMemory } from '../db/queries/memory.js';
 import { getCostForNodes } from '../db/queries/stats.js';
 import { resolveCredentials, checkCredentials } from '../execution/credentials.js';
 import { sandboxLimiter, maxConcurrentFromEnv, CRITICAL_PATH } from '../execution/dispatch-limit.js';
@@ -61,6 +61,8 @@ import { prepareDispatch, type DispatchPreparation } from '../decision/dispatch-
 import { decideStrategy } from '../decision/strategy-gate.js';
 import { strategyPriorFor } from '../decision/strategy-memory.js';
 import { observationFrom } from '../learning/hierarchical.js';
+import { buildCounterfactualObservation } from '../learning/counterfactual.js';
+import type { ExecutionStrategy } from '../decision/strategy-gate.js';
 import { policyVersion } from '../efficiency/policy-version.js';
 import { evaluateSpendGuard, type SpendGuardState } from '../efficiency/spend-guard.js';
 import { summarizeExecutionTrajectory, executionSnapshot, UNKNOWN_PROGRESS } from '../efficiency/progress-signals.js';
@@ -1535,6 +1537,16 @@ function productionMachine(db: Db, nodeId: string) {
           strategy: strategy.strategy,
           evidence: strategy.evidence,
           outcome: result.outcome,
+          // What this decision *predicted*, so the terminal transition can put
+          // the measurement beside it. Absent for a hard gate, which is the
+          // signal that there is no counterfactual to record.
+          ...(strategy.receipt.gate ? {} : {
+            predicted: {
+              costUsd: strategy.receipt.estimate.costUsd,
+              latencyMs: strategy.receipt.estimate.latencyMs,
+              successProbability: strategy.evidence.historicalPrior?.expectedSuccess ?? strategy.receipt.confidence,
+            },
+          }),
         }, nodeId);
 
         const decidedAt = new Date().toISOString();
@@ -1994,6 +2006,35 @@ function recordStrategyLearning(db: Db, nodeId: string, completed: boolean, now:
     const last = verdicts.at(-1)?.payload as { passed?: boolean; level?: string } | undefined;
     const delegated = listNodes(db).some((child) => child.parentId === nodeId);
 
+    const costUsd = getCostForNodes(db, [nodeId]);
+    const latencyMs = Date.parse(now) - Date.parse(node.createdAt);
+    const validated = completed && last?.passed === true;
+
+    // What the decision predicted, beside what it cost. Recorded only for a
+    // decision a *score* made: a hard gate predicted nothing, and a prediction
+    // error for it would manufacture evidence that arithmetic went wrong when
+    // none ran. The actual side is telemetry, never the estimate that produced
+    // the prediction — comparing an estimate to itself always reports perfect
+    // accuracy.
+    const decided = listMemory(db, 'strategy_decision').filter((row) => row.nodeId === nodeId).at(-1);
+    const decision = decided?.value as { strategy?: string; predicted?: Record<string, number> } | undefined;
+    if (decision?.strategy) {
+      const observation = buildCounterfactualObservation({
+        chosen: decision.strategy as ExecutionStrategy,
+        alternative: decision.strategy === 'MANAGED' ? 'SERIAL_DELEGATED' : 'MANAGED',
+        predictedCostUsd: decision.predicted?.costUsd ?? 0,
+        predictedLatencyMs: decision.predicted?.latencyMs ?? 0,
+        predictedSuccessProbability: decision.predicted?.successProbability ?? 0.5,
+        actualCostUsd: costUsd,
+        actualLatencyMs: latencyMs,
+        actualSucceeded: validated,
+        validationLevel: (last?.level as 'V0' | 'V1' | 'V2' | 'V3') ?? 'V0',
+        recoveryCount: Math.max(0, verdicts.length - 1),
+        scored: decision.predicted !== undefined,
+      });
+      if (observation) insertMemoryRow(db, 'strategy_counterfactual', decision.strategy, observation, nodeId);
+    }
+
     recordStrategyOutcome(db, {
       id: randomUUID(), nodeId, createdAt: now,
       observation: observationFrom({
@@ -2002,13 +2043,13 @@ function recordStrategyLearning(db: Db, nodeId: string, completed: boolean, now:
         taskShape: prep.taskShape,
         ...(node.repoPath ? { repository: node.repoPath } : {}),
         ...(node.repoPath ? { exactPattern: `${node.repoPath}@${prep.taskShape}` } : {}),
-        validated: completed && last?.passed === true,
+        validated,
         // Quality against the run's own contract rather than against a baseline
         // this process cannot see. A paired benchmark supplies the real delta;
         // this is the honest zero until it does.
         qualityDelta: 0,
-        costUsd: getCostForNodes(db, [nodeId]),
-        latencyMs: Date.parse(now) - Date.parse(node.createdAt),
+        costUsd,
+        latencyMs,
         // Each extra verdict is an attempt that had to be recovered from.
         recoveryCount: Math.max(0, verdicts.length - 1),
         validationLevel: (last?.level as 'V0' | 'V1' | 'V2' | 'V3') ?? 'V0',
