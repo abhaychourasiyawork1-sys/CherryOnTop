@@ -1514,40 +1514,49 @@ function productionMachine(db: Db, nodeId: string) {
         // instead of a `delegated` boolean. Serial and parallel delegation are
         // different strategies with different costs and different failure
         // modes, and a boolean cannot tell them apart.
-        const strategyPreparation = prepareDispatch({
-          goal: input.goal,
-          authority: node.contract.authority,
-          toolGrant: grantOf(node.contract.authority),
-          ...(node.repoPath ? { repository: node.repoPath } : {}),
-          requiredChecks: node.contract.definition_of_done ?? [],
-        });
-        const strategy = decideStrategy({
-          preparation: strategyPreparation,
-          // What history says, shrunk toward broader evidence. Carried rather
-          // than obeyed: the economics still decide, and a prior built on two
-          // runs of this exact shape must not outvote thirty of the class.
-          prior: strategyPriorFor(db, {
-            preparation: strategyPreparation, policyVersion: policyVersion(),
-          }),
-          spentUsd: getCostForNodes(db, [nodeId]),
-          dispatch: unitDispatchFor(db, nodeId, input.goal, node.contract.authority.max_child_count),
-          plannedChildCount: node.contract.authority.max_child_count,
-        });
-        insertMemoryRow(db, 'strategy_decision', strategy.strategy, {
-          strategy: strategy.strategy,
-          evidence: strategy.evidence,
-          outcome: result.outcome,
-          // What this decision *predicted*, so the terminal transition can put
-          // the measurement beside it. Absent for a hard gate, which is the
-          // signal that there is no counterfactual to record.
-          ...(strategy.receipt.gate ? {} : {
-            predicted: {
-              costUsd: strategy.receipt.estimate.costUsd,
-              latencyMs: strategy.receipt.estimate.latencyMs,
-              successProbability: strategy.evidence.historicalPrior?.expectedSuccess ?? strategy.receipt.confidence,
-            },
-          }),
-        }, nodeId);
+        // Wrapped, and the wrapping is the point: everything from here to the
+        // memory row is *optimizer*, and an optimizer that can fail a task by
+        // failing to optimize is worse than no optimizer. A throw here leaves
+        // the decision above exactly as it was.
+        try {
+          const strategyPreparation = prepareDispatch({
+            goal: input.goal,
+            authority: node.contract.authority,
+            toolGrant: grantOf(node.contract.authority),
+            ...(node.repoPath ? { repository: node.repoPath } : {}),
+            requiredChecks: node.contract.definition_of_done ?? [],
+          });
+          const strategy = decideStrategy({
+            preparation: strategyPreparation,
+            // What history says, shrunk toward broader evidence. Carried rather
+            // than obeyed: the economics still decide, and a prior built on two
+            // runs of this exact shape must not outvote thirty of the class.
+            prior: strategyPriorFor(db, {
+              preparation: strategyPreparation, policyVersion: policyVersion(),
+            }),
+            spentUsd: getCostForNodes(db, [nodeId]),
+            dispatch: unitDispatchFor(db, nodeId, input.goal, node.contract.authority.max_child_count),
+            plannedChildCount: node.contract.authority.max_child_count,
+          });
+          insertMemoryRow(db, 'strategy_decision', strategy.strategy, {
+            strategy: strategy.strategy,
+            evidence: strategy.evidence,
+            outcome: result.outcome,
+            // What this decision *predicted*, so the terminal transition can put
+            // the measurement beside it. Absent for a hard gate, which is the
+            // signal that there is no counterfactual to record.
+            ...(strategy.receipt.gate ? {} : {
+              predicted: {
+                costUsd: strategy.receipt.estimate.costUsd,
+                latencyMs: strategy.receipt.estimate.latencyMs,
+                successProbability: strategy.evidence.historicalPrior?.expectedSuccess ?? strategy.receipt.confidence,
+              },
+            }),
+          }, nodeId);
+        } catch (err) {
+          console.error(`Failed to name the execution strategy for node ${nodeId}:`, err);
+        }
+
 
         const decidedAt = new Date().toISOString();
         insertDecision(db, {
@@ -1558,10 +1567,6 @@ function productionMachine(db: Db, nodeId: string) {
             // only in a log line: a benchmark attributing a delegation
             // regression needs to see whether the market vetoed, a gate fired,
             // or the economics simply declined.
-            strategy_managed: strategy.strategy === 'MANAGED' ? 1 : 0,
-            strategy_serial_delegated: strategy.strategy === 'SERIAL_DELEGATED' ? 1 : 0,
-            strategy_parallel_delegated: strategy.strategy === 'PARALLEL_DELEGATED' ? 1 : 0,
-            strategy_deterministic: strategy.evidence.deterministic ? 1 : 0,
             ...(runtimeMode() === 'full' ? {
               market_authorized: authorized.outcome === 'DELEGATE' ? 1 : 0,
               market_vetoed: economics.outcome === 'DELEGATE' && authorized.outcome !== 'DELEGATE' ? 1 : 0,
