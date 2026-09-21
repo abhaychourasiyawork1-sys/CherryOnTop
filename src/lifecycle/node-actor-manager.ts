@@ -58,6 +58,7 @@ import { putAgentEnvelope, getAgentEnvelope } from '../db/queries/envelopes.js';
 import { scopeOf } from '../context/types.js';
 import { judgeTask } from '../intelligence/task-judge.js';
 import { prepareDispatch, type DispatchPreparation } from '../decision/dispatch-preparation.js';
+import { decideStrategy } from '../decision/strategy-gate.js';
 import { evaluateSpendGuard, type SpendGuardState } from '../efficiency/spend-guard.js';
 import { summarizeExecutionTrajectory, executionSnapshot, UNKNOWN_PROGRESS } from '../efficiency/progress-signals.js';
 import { executionPolicyForGoal, calibrate, effectiveTurnCap, currentPolicyVersions, EXECUTION_POLICY_VERSION } from '../efficiency/policy.js';
@@ -1488,6 +1489,30 @@ function productionMachine(db: Db, nodeId: string) {
           ? { ...economics, outcome: authorized.outcome }
           : economics;
 
+        // The named strategy for this dispatch, from the same snapshot and the
+        // same economics. Recorded rather than authoritative: the outcome above
+        // is still what routes the machine, and this names *which* of the three
+        // strategies that outcome is so learning can measure the real thing
+        // instead of a `delegated` boolean. Serial and parallel delegation are
+        // different strategies with different costs and different failure
+        // modes, and a boolean cannot tell them apart.
+        const strategy = decideStrategy({
+          preparation: prepareDispatch({
+            goal: input.goal,
+            authority: node.contract.authority,
+            toolGrant: grantOf(node.contract.authority),
+            requiredChecks: node.contract.definition_of_done ?? [],
+          }),
+          spentUsd: getCostForNodes(db, [nodeId]),
+          dispatch: unitDispatchFor(db, nodeId, input.goal, node.contract.authority.max_child_count),
+          plannedChildCount: node.contract.authority.max_child_count,
+        });
+        insertMemoryRow(db, 'strategy_decision', strategy.strategy, {
+          strategy: strategy.strategy,
+          evidence: strategy.evidence,
+          outcome: result.outcome,
+        }, nodeId);
+
         const decidedAt = new Date().toISOString();
         insertDecision(db, {
           id: randomUUID(), nodeId, type: 'execution_decision',
@@ -1497,6 +1522,10 @@ function productionMachine(db: Db, nodeId: string) {
             // only in a log line: a benchmark attributing a delegation
             // regression needs to see whether the market vetoed, a gate fired,
             // or the economics simply declined.
+            strategy_managed: strategy.strategy === 'MANAGED' ? 1 : 0,
+            strategy_serial_delegated: strategy.strategy === 'SERIAL_DELEGATED' ? 1 : 0,
+            strategy_parallel_delegated: strategy.strategy === 'PARALLEL_DELEGATED' ? 1 : 0,
+            strategy_deterministic: strategy.evidence.deterministic ? 1 : 0,
             ...(runtimeMode() === 'full' ? {
               market_authorized: authorized.outcome === 'DELEGATE' ? 1 : 0,
               market_vetoed: economics.outcome === 'DELEGATE' && authorized.outcome !== 'DELEGATE' ? 1 : 0,

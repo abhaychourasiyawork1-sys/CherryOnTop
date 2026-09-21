@@ -29,6 +29,17 @@ import {
 } from './types.js';
 
 export * from './types.js';
+// One import point for the whole decision layer, the way `types.js` indexes the
+// economic state. The strategy gate composes *into* this vocabulary rather than
+// competing with it: it calls `decideExecutionPath` for the economic stage and
+// returns the same receipt.
+export {
+  decideStrategy, deterministicEvidence, sanitizeClassification, strategyReceipt,
+} from './strategy-gate.js';
+export type {
+  ExecutionStrategy, StrategyDecision, StrategyEvidence, StrategyPrior,
+  StrategyClassification, StrategyClassifier, DecideStrategyInput,
+} from './strategy-gate.js';
 
 /** What a dispatch is expected to cost, from the ledger rather than a guess.
  *  Passed in so the engine never reaches for a database. */
