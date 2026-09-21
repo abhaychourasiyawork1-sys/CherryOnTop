@@ -337,3 +337,20 @@ The plan this architecture came from cites an 18/18 run showing medium-task
 cost +42.3%, turns +31.1%, cache-read +31.6%. **No artifact in this repository
 records that run.** It is quoted as the motivation, not as evidence, and
 nothing here should be read as having reproduced it.
+
+## Capability reachability
+
+`node bench/capability-regimes.mjs` (after `npm run build`) prints the
+architectural capability matrix and exits non-zero if any regime became
+unreachable. It reports three facts that must never be collapsed into one:
+
+```text
+reachable — the runtime can still produce this action  (deterministic, proved here)
+exercised — a run actually took it                     (proved by a paid benchmark)
+measured  — taking it changed the outcome              (proved by a *paired* benchmark)
+```
+
+A capability a benchmark never activated is not evidence the capability is
+unneeded. `src/architecture/capability-regimes.ts` owns the matrix and
+`src/architecture/capability-regimes.test.ts` fails with the name of whichever
+regime disappeared.
