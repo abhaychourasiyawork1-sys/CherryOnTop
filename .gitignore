@@ -9,6 +9,8 @@ test-results/
 .org/
 .worktrees/
 .bench/worktrees/
+.bench/terminal-bench-repo/
+.bench/tmp/
 .swebench/
 node_modules
 bench/last-run.json

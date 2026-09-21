@@ -1,0 +1,74 @@
+{
+  "dataset": "princeton-nlp/SWE-bench_Verified",
+  "grading_dataset": "SWE-bench/SWE-bench_Verified",
+  "seed": 2026,
+  "excluded_prior_instance_ids": [
+    "astropy__astropy-14309",
+    "django__django-13512",
+    "django__django-15252",
+    "mwaskom__seaborn-3187",
+    "pallets__flask-5014",
+    "psf__requests-1142",
+    "pydata__xarray-6744",
+    "scikit-learn__scikit-learn-14710",
+    "sphinx-doc__sphinx-9698",
+    "sympy__sympy-17139"
+  ],
+  "stratification": "A1/A2: <15 min fix (distinct repos); A3: 15 min - 1 hour; A4: 1-4 hours / >4 hours union. One instance per distinct repository across all four slots.",
+  "tier_a": [
+    {
+      "slot": "A1",
+      "purpose": "Simple. The orchestration-tax case",
+      "instance_id": "django__django-15315",
+      "repo": "django/django",
+      "base_commit": "652c68ffeebd510a6f59e1b56b3e007d07683ad8",
+      "difficulty": "<15 min fix",
+      "problem_statement_chars": 793,
+      "fail_to_pass_count": 1,
+      "pass_to_pass_count": 33
+    },
+    {
+      "slot": "A2",
+      "purpose": "Simple, different repository",
+      "instance_id": "astropy__astropy-7336",
+      "repo": "astropy/astropy",
+      "base_commit": "732d89c2940156bdc0e200bb36dc38b5e424bcba",
+      "difficulty": "<15 min fix",
+      "problem_statement_chars": 1572,
+      "fail_to_pass_count": 1,
+      "pass_to_pass_count": 339
+    },
+    {
+      "slot": "A3",
+      "purpose": "Hard",
+      "instance_id": "sympy__sympy-23262",
+      "repo": "sympy/sympy",
+      "base_commit": "fdc707f73a65a429935c01532cd3970d3355eab6",
+      "difficulty": "15 min - 1 hour",
+      "problem_statement_chars": 1033,
+      "fail_to_pass_count": 1,
+      "pass_to_pass_count": 61
+    },
+    {
+      "slot": "A4",
+      "purpose": "Hardest available (>1 hour (1-4 hours / >4 hours union))",
+      "instance_id": "scikit-learn__scikit-learn-25102",
+      "repo": "scikit-learn/scikit-learn",
+      "base_commit": "f9a1cf072da9d7375d6c2163f68a6038b13b310f",
+      "difficulty": "1-4 hours",
+      "problem_statement_chars": 2534,
+      "fail_to_pass_count": 2,
+      "pass_to_pass_count": 59
+    }
+  ],
+  "tier_a_smoke": {
+    "slot": "A0-smoke",
+    "instance_id": "pydata__xarray-6461",
+    "repo": "pydata/xarray",
+    "base_commit": "851dadeb0338403e5021c3fbe80cbc9127ee672d",
+    "difficulty": "<15 min fix",
+    "problem_statement_chars": 986,
+    "fail_to_pass_count": 1,
+    "pass_to_pass_count": 247
+  }
+}
