@@ -6,6 +6,7 @@ import { MIN_AGENT_BUDGET_USD } from '../engines/decide-execution.js';
 import { planWorkstreams, dependentsOf, type WorkstreamNode, type WorkstreamPlan } from '../execution/workstreams.js';
 import { extractAnchors } from '../efficiency/task-economics.js';
 import { assessDecomposition } from '../intelligence/decompose.js';
+import { validateDelegationPlan, type DelegationValidationResult } from '../decision/delegation-validator.js';
 
 export interface DelegateInput {
   parentId: string;
@@ -23,6 +24,10 @@ export interface DelegateInput {
   /** The goals to hand out, one per child. Empty means the planner could not
    *  split the goal. */
   subgoals?: string[];
+  /** The parent's own authority, so the plan can be checked against it before
+   *  any child exists. Absent means the structural checks that need it are
+   *  skipped — every pre-validator caller behaves exactly as before. */
+  authority?: Authority;
   /** How many children this node already created. Delegation is a one-time act:
    *  if a fan-out came back with any piece unfinished, the machine's retry used
    *  to re-plan and create a *second* full set of children — duplicating the
@@ -107,6 +112,8 @@ export interface DelegateChildDeps {
   /** What the work graph said and what it cost. Optional: a deployment with no
    *  telemetry sink schedules exactly the same, it just says nothing about it. */
   recordSchedule?: (schedule: DelegationSchedule) => void;
+  /** Why a plan was funded or refused. Optional, for the same reason. */
+  recordPlanValidation?: (validation: DelegationValidationResult) => void;
 }
 
 /** The subgoals, as a graph the scheduler can reason about.
@@ -191,6 +198,34 @@ export async function delegateToChildren(
   }
 
   const nodes = workstreamNodesFor(subgoals);
+
+  // Checked before authority is allocated and before any child exists, because
+  // every way a plan is bad is cheap to detect now and expensive to discover
+  // after k sandboxes have started. An invalid plan is not a failed
+  // delegation — it is a goal to do directly.
+  if (input.authority) {
+    const validation = validateDelegationPlan(
+      { goal: input.goal, authority: input.authority },
+      {
+        subgoals: subgoals.map((goal, index) => ({
+          id: String(index), goal,
+          writePaths: nodes[index].writePaths,
+          dependencies: nodes[index].inputDependencies,
+        })),
+      },
+    );
+    deps.recordPlanValidation?.(validation);
+    if (!validation.valid) {
+      return {
+        succeeded: false,
+        notDelegatable: true,
+        message: `The split this goal produced is not worth funding (${validation.reasons.join(', ')}), so the agent is doing it directly.`,
+        events: [],
+        usage: { ...ZERO_USAGE },
+      };
+    }
+  }
+
   const plan = planWorkstreams({ nodes });
   deps.recordSchedule?.({ plan, cancelled: [] });
 

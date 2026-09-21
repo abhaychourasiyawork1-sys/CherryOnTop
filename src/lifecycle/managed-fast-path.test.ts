@@ -14,6 +14,7 @@ import { createActor, fromPromise } from 'xstate';
 import { nodeMachine } from './node-machine.js';
 import { ZERO_USAGE } from '../execution/tokens.js';
 import type { ExecuteStepResult } from '../execution/execute-step.js';
+import type { IntelligenceBundle } from '../intelligence/coordinator.js';
 import { prepareDispatch } from '../decision/dispatch-preparation.js';
 import { decideStrategy, type StrategyClassifier } from '../decision/strategy-gate.js';
 import { decideExecution } from '../engines/decide-execution.js';
@@ -88,7 +89,7 @@ describe('managed fast path — the lifecycle', () => {
     const verdict = judgeTask(TINY_GOAL);
     const machine = nodeMachine.provide({
       actors: {
-        assessUncertainty: fromPromise(async () => ({
+        assessUncertainty: fromPromise(async (): Promise<IntelligenceBundle> => ({
           sufficientContext: true,
           complexity: verdict.decomposition.complexity,
           worthSplitting: verdict.decomposition.worthSplitting,

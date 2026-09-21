@@ -172,6 +172,17 @@ export function realDelegateDeps(db: Db, parentId?: string): DelegateChildDeps {
         console.error(`Failed to record the delegation schedule for node ${parentId}:`, err);
       }
     },
+    // Why a fan-out was funded or refused, in the durable record. A plan
+    // rejected silently is a delegation capability that looks like it
+    // disappeared.
+    recordPlanValidation: (validation) => {
+      if (!parentId) return;
+      try {
+        insertMemoryRow(db, 'delegation_plan_validation', validation.valid ? 'valid' : 'rejected', validation, parentId);
+      } catch (err) {
+        console.error(`Failed to record the delegation plan verdict for node ${parentId}:`, err);
+      }
+    },
     createChildNode: (parentId, goal, siblingCount, approvedBudgetUsd) => {
       const parent = getNode(db, parentId);
       if (!parent) throw new Error(`Parent node ${parentId} not found`);
@@ -1579,6 +1590,9 @@ function productionMachine(db: Db, nodeId: string) {
             parentId: nodeId, goal: input.goal, subgoals,
             existingChildren,
             approvedBudgetUsd: input.approvedBudgetUsd,
+            // So the plan is checked against what this node may actually
+            // authorize, before a single child node exists.
+            ...(node ? { authority: node.contract.authority } : {}),
           }, realDelegateDeps(db, nodeId));
 
           // The root owes an answer, not a tally of its children.
