@@ -83,3 +83,30 @@ which was checked during task selection and found to state a Terminal-Bench
 figure the actual Anthropic announcement page does not contain, which is
 why the system card PDF was fetched and read directly instead of trusting
 the aggregator.
+
+## Mid-run product bug found and fixed (rule 13)
+
+During the main run, `astropy__astropy-7336` delegated (its first fan-out
+this session) and the child's pod hung in `ContainerCreating` forever,
+confirmed via `kubectl describe pod` as a repeating `FailedMount` on the
+`workspace` hostPath volume. Root cause, traced through
+`src/lifecycle/node-actor-manager.ts`'s `createChildNode()`,
+`src/execution/workspace-fork.ts`, and `src/k8s/kind.ts`: a forked child's
+workspace lives at a real host path under `$HOME` (`~/.org-forks/...`),
+but the kind cluster only bind-mounts `$HOME` into the node at `/host` --
+every other `--repo` path is translated through `toContainerPath()` before
+it reaches a Job manifest (`src/cli/commands/run.ts`), but the forked
+child's path was assigned to `node.repoPath` untranslated. The first
+occurrence self-recovered (parent reached `COMPLETE` after the child was
+eventually marked `FAILED` -- real `PARTIAL_DELEGATION_RECOVERY` evidence,
+kept in the report); the retry hit the identical, reproducible failure.
+
+Per rule 13: stopped, fixed
+(`toContainerPath(fork.path)` before the assignment, commit `2e8e01a`),
+verified with `npm run typecheck` + the full unit suite (170 files / 2013
+tests, including `node-actor-manager.fork-isolation.test.ts`) before
+rebuilding, restarted the daemon on the new build, cleaned the stranded
+node/pod/worktrees, and restarted `astropy-7336` from scratch. All Tier A
+and Tier B cherryontop runs from this point on ran under revision
+`2e8e01a` or later; runs before it are labelled with their own recorded
+revision in the results JSONL, not silently reattributed.
