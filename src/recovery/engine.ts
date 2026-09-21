@@ -216,3 +216,39 @@ export function recoveryCandidate(
     },
   });
 }
+
+/** Whether trying *this* strategy again could possibly help.
+ *
+ *  Separate from `evaluateRecovery`, and the separation is the point. That one
+ *  asks whether retrying is worth the money; this one asks whether the retry is
+ *  a different attempt at all. A run that failed the same way twice under the
+ *  same strategy and made no progress in between is not recovering — it is
+ *  paying for the same sandbox to reach the same wall, and the measured version
+ *  of that was three full dispatches into one identical refusal.
+ *
+ *  What it does *not* do is stop recovery. A new strategy after an identical
+ *  failure is exactly the right move, and this returns true for it. The rule is
+ *  "not the same idea again", never "not again". */
+export interface StrategyRetryInput {
+  currentStrategy: string;
+  /** Strategies already attempted on this task, in order. */
+  previousStrategies: string[];
+  /** How this attempt died, fingerprinted the way `trajectory.ts` does it. */
+  failureSignature: string;
+  previousFailureSignatures: string[];
+  /** How far the failed attempt got, on [0,1]. Progress is what makes a repeat
+   *  of the same strategy a genuinely different attempt: the second one starts
+   *  somewhere the first had to reach. */
+  progress: number;
+}
+
+/** Below this, the attempt established nothing the next one can build on. */
+const MEANINGFUL_PROGRESS = 0.05;
+
+export function strategyRetryAllowed(input: StrategyRetryInput): boolean {
+  const sameStrategy = input.previousStrategies.includes(input.currentStrategy);
+  const sameFailure = input.previousFailureSignatures.includes(input.failureSignature);
+  // Same idea, same wall, nothing gained. The only combination that is refused.
+  if (sameStrategy && sameFailure && input.progress <= MEANINGFUL_PROGRESS) return false;
+  return true;
+}

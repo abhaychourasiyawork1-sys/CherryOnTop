@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { createActor, fromPromise, waitFor } from 'xstate';
-import { nodeMachine } from './node-machine.js';
+import { nodeMachine, type ValidationVerdict } from './node-machine.js';
 import type { ExecuteStepResult } from '../execution/execute-step.js';
 import type { IntelligenceBundle } from '../intelligence/coordinator.js';
 import type { DecideExecutionResult } from '../engines/decide-execution.js';
@@ -69,8 +69,32 @@ describe('nodeMachine', () => {
     expect(actor.getSnapshot().context.lastDecision?.breakdown.score).toBe(0.42);
   });
 
-  it('retries execution when the step fails, then lands in FAILED at the retry cap', async () => {
+  it('stops retrying once the same strategy has hit the same wall with nothing gained', async () => {
+    // The attempt cap bounds how many identical retries happen; it does not
+    // stop the first of them being pointless. A second attempt that is the same
+    // strategy, against the same failure, from the same standstill is not an
+    // attempt — it is another sandbox bought to reach the same wall.
     const actor = createActor(machineWithMocks({ executeStep: { succeeded: false } }), { input: { nodeId: 'n1', goal: 'test' } });
+    actor.start();
+    actor.send({ type: 'START' });
+    await vi.waitFor(() => expect(actor.getSnapshot().value).toBe('FAILED'));
+    expect(actor.getSnapshot().context.executionAttempts).toBe(1);
+  });
+
+  it('keeps retrying while each attempt dies a different way, up to the cap', async () => {
+    // A run working through three distinct problems is making progress, and
+    // counting those against it would stop exactly the run about to succeed.
+    let attempt = 0;
+    const machine = machineWithMocks({ executeStep: { succeeded: false } }).provide({
+      actors: {
+        validate: fromPromise(async (): Promise<ValidationVerdict> => ({
+          level: 'V1', passed: false, confidence: 0.5, tokens: 0, latencyMs: 0,
+          evidenceIds: [], reasonCodes: ['below_required_confidence'],
+          failureSignature: `problem_${++attempt}`,
+        })),
+      },
+    });
+    const actor = createActor(machine, { input: { nodeId: 'n1', goal: 'test' } });
     actor.start();
     actor.send({ type: 'START' });
     await vi.waitFor(() => expect(actor.getSnapshot().value).toBe('FAILED'));

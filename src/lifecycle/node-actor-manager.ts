@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { createActor, fromPromise, waitFor, type Actor } from 'xstate';
-import { nodeMachine, type NodeMachineEvent } from './node-machine.js';
+import { nodeMachine, type NodeMachineEvent, type ValidationVerdict } from './node-machine.js';
 import type { Db } from '../db/client.js';
 import { updateNodeState, getNode, insertNode, listNodes, setNodeRuntime } from '../db/queries/nodes.js';
 import { appendEvent, listEventsForNode } from '../db/queries/events.js';
@@ -2074,7 +2074,7 @@ function recordEfficiency(db: Db, nodeId: string, outcome: EfficiencyOutcome): v
  *  stops at V2 — a green check in the run's own trace. Recorded as
  *  `V3:no_verifier` rather than silently, so the ceiling is visible in the
  *  telemetry rather than inferred from its absence. */
-function runValidation(db: Db, nodeId: string, succeeded: boolean): ValidationResult {
+function runValidation(db: Db, nodeId: string, succeeded: boolean): ValidationVerdict {
   const node = getNode(db, nodeId);
   const goal = node?.contract.goal ?? '';
   // Closed *here*, not at the terminal transition, and the ordering is
@@ -2088,8 +2088,9 @@ function runValidation(db: Db, nodeId: string, succeeded: boolean): ValidationRe
   // What this particular task needs proving, and to what level. The profile
   // may raise the floor — delegated work, a wide change, a task already on its
   // second attempt — and human-named checks raise it independently.
+  const delegated = listNodes(db).some((child) => child.parentId === nodeId);
   const profile = validationProfileFor({
-    strategy: listNodes(db).some((child) => child.parentId === nodeId) ? 'SERIAL_DELEGATED' : 'MANAGED',
+    strategy: delegated ? 'SERIAL_DELEGATED' : 'MANAGED',
     economics: taskEconomicsFor(goal),
     requiredChecks: node?.contract.definition_of_done ?? [],
     // No fresh verifier: re-running a repository's suite from inside the daemon
@@ -2122,7 +2123,21 @@ function runValidation(db: Db, nodeId: string, succeeded: boolean): ValidationRe
   };
   const id = appendEvent(db, { nodeId, type: 'validation.result', payload, createdAt: now });
   publish({ id, nodeId, type: 'validation.result', payload, createdAt: now });
-  return gated;
+
+  // The strategy identity of this attempt, so the lifecycle can tell a recovery
+  // from a repeat. Without it the attempt cap bounds how many identical retries
+  // happen and nothing stops the first one being pointless.
+  const signals = trajectorySignals(db, nodeId);
+  return {
+    ...gated,
+    strategy: delegated ? 'SERIAL_DELEGATED' : 'MANAGED',
+    // What failed, in the stable form the trajectory fingerprint uses, so two
+    // attempts that died the same way are recognisable as such.
+    failureSignature: gated.passed
+      ? 'none'
+      : `validation:${gated.level}:${gated.reasonCodes.filter((code) => !code.startsWith('V')).join('|') || 'insufficient_evidence'}`,
+    progress: signals.progressSignal,
+  };
 }
 
 /** The stored verdict for this node, or a fresh one if the machine never
