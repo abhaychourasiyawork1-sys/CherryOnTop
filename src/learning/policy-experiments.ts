@@ -278,3 +278,59 @@ export function listCandidates(db: Db): PolicyCandidate[] {
 export function getCandidate(db: Db, id: string): PolicyCandidate | null {
   return listCandidates(db).find((candidate) => candidate.id === id) ?? null;
 }
+
+/** A paired strategy run, as evidence for a candidate.
+ *
+ *  The gate this closes is the one that matters most for strategy learning:
+ *  **only a validated outcome counts as a success**. A delegated run that
+ *  finished, produced nothing anyone checked, and was recorded as "succeeded"
+ *  is evidence about a process, not about a strategy — and promoting on it is
+ *  how a policy that makes runs cheaper and wronger becomes the live one.
+ *
+ *  Everything else the promotion machinery already does stays exactly as it is:
+ *  the validity classification, the comparability check, the quality floor, the
+ *  minimum observation count, and the rollback triggers. The strategy layer
+ *  proposes evidence in the existing shape; it gets no second gate of its own,
+ *  because a second gate is a second policy about what is safe to promote. */
+export interface StrategyRunArm {
+  /** Whether the run reached a *validated* terminal success. */
+  validated: boolean;
+  costUsd: number;
+  /** How good the result was, on [0,1]. Compared arm to arm, never absolute. */
+  quality: number;
+}
+
+export function observationFromStrategyRun(input: {
+  candidate: StrategyRunArm;
+  baseline: StrategyRunArm;
+  validity: ExperimentObservation['validity'];
+  policyVersion: PolicyVersion;
+}): ExperimentObservation {
+  return {
+    validity: input.validity,
+    costDeltaUsd: input.candidate.costUsd - input.baseline.costUsd,
+    qualityDelta: input.candidate.quality - input.baseline.quality,
+    // The one line this function exists for.
+    succeeded: input.candidate.validated,
+    policyVersion: input.policyVersion,
+  };
+}
+
+/** The strategy fields a candidate is allowed to tune.
+ *
+ *  Preferences and economic inputs — how much a fan-out is believed to be
+ *  worth, how readily the classifier is bought. Never a capability: a candidate
+ *  that could set `max_child_count` to zero would make delegation unreachable,
+ *  and "the benchmark stopped delegating" would then be read as evidence that
+ *  delegation was not needed. Capability availability is not a policy field and
+ *  does not appear here; `isLearnable` refuses the safety ones independently. */
+export const TUNABLE_STRATEGY_FIELDS = [
+  'strategy.delegationValue',
+  'strategy.coordinationCost',
+  'strategy.classifierThreshold',
+  'strategy.parallelPreference',
+] as const;
+
+export function isTunableStrategyField(field: string): boolean {
+  return isLearnable(field) && TUNABLE_STRATEGY_FIELDS.includes(field as typeof TUNABLE_STRATEGY_FIELDS[number]);
+}

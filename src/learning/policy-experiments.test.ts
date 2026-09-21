@@ -5,6 +5,7 @@ import { policyVersion } from '../efficiency/policy-version.js';
 import {
   draftCandidate, evaluateCandidate, summarizeEvidence, record, putCandidate,
   activePolicyChanges, MIN_VALID_OBSERVATIONS,
+  observationFromStrategyRun, isTunableStrategyField,
   type ExperimentObservation, type PolicyCandidate,
 } from './policy-experiments.js';
 
@@ -139,6 +140,109 @@ describe('recording against the store', () => {
       latest = record(db, subject.id, good({ validity: 'INVALID_INFRA', costDeltaUsd: -5 }));
     }
     expect(latest?.status).toBe('SHADOW');
+    expect(activePolicyChanges(db)).toEqual({});
+  });
+});
+
+describe('strategy candidates go through the same gate as any other', () => {
+  const baseline = policyVersion({ contextVersion: 'c1', executionVersion: 'e1' });
+
+  function strategyCandidate(over: Partial<PolicyCandidate> = {}): PolicyCandidate {
+    return {
+      ...draftCandidate({
+        name: 'prefer-serial-delegation',
+        changes: { 'strategy.delegationValue': 0.9, 'strategy.parallelPreference': 0.2 },
+        baseline,
+      }),
+      status: 'CANARY',
+      ...over,
+    };
+  }
+
+  function evidence(count: number, arm: Partial<Parameters<typeof observationFromStrategyRun>[0]['candidate']> = {}) {
+    return Array.from({ length: count }, () => observationFromStrategyRun({
+      candidate: { validated: true, costUsd: 0.1, quality: 0.8, ...arm },
+      baseline: { validated: true, costUsd: 0.2, quality: 0.8 },
+      validity: 'VALID', policyVersion: baseline,
+    }));
+  }
+
+  it('counts a run as a success only when it was validated', () => {
+    // A delegated run that finished, proved nothing, and reported success is
+    // evidence about a process — not about a strategy.
+    const unvalidated = observationFromStrategyRun({
+      candidate: { validated: false, costUsd: 0.1, quality: 0.8 },
+      baseline: { validated: true, costUsd: 0.2, quality: 0.8 },
+      validity: 'VALID', policyVersion: baseline,
+    });
+    expect(unvalidated.succeeded).toBe(false);
+  });
+
+  it('does not promote a strategy whose runs finished without validating', () => {
+    const verdict = evaluateCandidate(strategyCandidate({
+      observations: evidence(10, { validated: false }),
+    }));
+    expect(verdict.status).toBe('ROLLED_BACK');
+    expect(verdict.evidence.successRate).toBe(0);
+  });
+
+  it('promotes a strategy that is cheaper at no quality cost, after canary', () => {
+    const verdict = evaluateCandidate(strategyCandidate({ observations: evidence(10) }));
+    expect(verdict.status).toBe('PROMOTED');
+  });
+
+  it('does not promote a cheaper strategy with worse verified quality', () => {
+    const verdict = evaluateCandidate(strategyCandidate({
+      observations: evidence(10, { quality: 0.6 }),
+    }));
+    expect(verdict.status).toBe('ROLLED_BACK');
+    expect(verdict.reason).toContain('cheaper and worse');
+  });
+
+  it('rolls a promoted strategy back when it gets more expensive', () => {
+    const verdict = evaluateCandidate(strategyCandidate({
+      status: 'PROMOTED', observations: evidence(10, { costUsd: 0.4 }),
+    }));
+    expect(verdict.status).toBe('ROLLED_BACK');
+    expect(verdict.reason).toContain('cost rose');
+  });
+
+  it('rolls a promoted strategy back when its success rate falls', () => {
+    const verdict = evaluateCandidate(strategyCandidate({
+      status: 'PROMOTED',
+      observations: [...evidence(5), ...evidence(5, { validated: false })],
+    }));
+    expect(verdict.status).toBe('ROLLED_BACK');
+    expect(verdict.reason).toContain('success rate');
+  });
+
+  it('still strips safety fields from a strategy candidate', () => {
+    const candidate = draftCandidate({
+      name: 'unsafe', baseline,
+      changes: {
+        'strategy.delegationValue': 0.9,
+        'authority.budget_usd': 99,
+        allowedTools: 1,
+        spendCapUsd: 0,
+      },
+    });
+    expect(Object.keys(candidate.changes)).toEqual(['strategy.delegationValue']);
+    expect(candidate.reason).toContain('refused unlearnable fields');
+  });
+
+  it('refuses to treat capability availability as a tunable strategy field', () => {
+    // A candidate that could set the agent allowance to zero would make
+    // delegation unreachable — and "the benchmark stopped delegating" would
+    // then read as evidence that delegation was not needed.
+    expect(isTunableStrategyField('strategy.delegationValue')).toBe(true);
+    expect(isTunableStrategyField('authority.max_child_count')).toBe(false);
+    expect(isTunableStrategyField('max_child_count')).toBe(false);
+    expect(isTunableStrategyField('sandbox.isolation')).toBe(false);
+  });
+
+  it('leaves the deterministic baseline active when nothing is promoted', () => {
+    const db = createDb(TEST_DB);
+    putCandidate(db, strategyCandidate({ status: 'CANARY' }));
     expect(activePolicyChanges(db)).toEqual({});
   });
 });
