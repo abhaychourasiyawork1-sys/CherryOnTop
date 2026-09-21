@@ -154,6 +154,7 @@ export function realDelegateDeps(db: Db, parentId?: string): DelegateChildDeps {
       if (!parentId) return;
       try {
         const payload = {
+          topology: schedule.topology,
           groups: schedule.plan.parallelGroups,
           sharedEvidenceIds: schedule.plan.sharedEvidenceIds,
           informationDuplication: schedule.plan.informationDuplication,

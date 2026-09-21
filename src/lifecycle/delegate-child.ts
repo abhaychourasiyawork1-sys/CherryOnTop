@@ -98,6 +98,62 @@ export function childAuthority(
   };
 }
 
+export interface AuthorityAllocationInput {
+  parent: Authority;
+  childCount: number;
+  /** What the parent keeps for its own planning and synthesis runs. Those are
+   *  real dispatches that spend real money, and a fan-out that allocates every
+   *  dollar to children cannot afford to combine their answers. */
+  reserveBudgetUsd: number;
+}
+
+export interface AuthorityAllocationResult {
+  childBudgetsUsd: number[];
+  totalAllocatedUsd: number;
+  remainingParentBudgetUsd: number;
+}
+
+/** Child budgets under an explicit reserve.
+ *
+ *  `childAuthority` above derives the whole child contract and reserves exactly
+ *  one share of k+1 — the right default when nobody has costed the parent's own
+ *  runs. This is the same arithmetic with the reserve named outright, for the
+ *  caller that has measured what planning and synthesis will cost.
+ *
+ *  The invariant both share: children can never be allocated more than the
+ *  parent holds, whatever is passed in. A reserve wider than the budget leaves
+ *  zero for children rather than a negative share. */
+export function allocateChildAuthority(input: AuthorityAllocationInput): AuthorityAllocationResult {
+  const children = Math.max(0, Math.floor(input.childCount));
+  const budget = Math.max(0, input.parent.budget_usd);
+  const reserve = Math.min(budget, Math.max(0, input.reserveBudgetUsd));
+  const allocatable = Math.max(0, budget - reserve);
+  const each = children === 0 ? 0 : allocatable / children;
+  return {
+    childBudgetsUsd: Array.from({ length: children }, () => each),
+    totalAllocatedUsd: each * children,
+    remainingParentBudgetUsd: budget - each * children,
+  };
+}
+
+/** Delegated, and *how*.
+ *
+ *  Two separate questions, and this is the one that must not be answered by the
+ *  first. A validated plan whose branches must run in order is
+ *  `SERIAL_DELEGATED`, which is a good outcome — not a parallel run that
+ *  degraded. Parallel needs two things to be true at once: the graph has a
+ *  group with more than one branch in it, and the economic ranking actually
+ *  preferred running them together over running them in order. */
+export function delegationTopology(
+  plan: WorkstreamPlan,
+  selectedActionKinds: readonly string[],
+): 'SERIAL_DELEGATED' | 'PARALLEL_DELEGATED' {
+  const concurrent = plan.parallelGroups.some((group) => group.length > 1);
+  return concurrent && selectedActionKinds.includes('parallelize')
+    ? 'PARALLEL_DELEGATED'
+    : 'SERIAL_DELEGATED';
+}
+
 export interface DelegateChildDeps {
   /** Records what the parent addressed to this child. Optional: a deployment
    *  with no envelope store dispatches children exactly as before. */
@@ -148,6 +204,11 @@ export function workstreamNodesFor(subgoals: string[]): WorkstreamNode[] {
 
 export interface DelegationSchedule {
   plan: WorkstreamPlan;
+  /** What the graph actually allowed, once ordering and write conflicts had
+   *  their say. The strategy gate names an *intent* before the plan exists;
+   *  this is the outcome, and learning needs both to tell whether delegating
+   *  serially was the right call. */
+  topology: 'SERIAL_DELEGATED' | 'PARALLEL_DELEGATED';
   /** Children never started because something they depended on failed, with the
    *  reason. Empty on a clean fan-out. */
   cancelled: { goal: string; reason: string }[];
@@ -227,7 +288,10 @@ export async function delegateToChildren(
   }
 
   const plan = planWorkstreams({ nodes });
-  deps.recordSchedule?.({ plan, cancelled: [] });
+  // Siblings inside a group run concurrently below, so a group wider than one
+  // *is* the parallel topology rather than a preference for it.
+  const topology = delegationTopology(plan, ['parallelize']);
+  deps.recordSchedule?.({ plan, topology, cancelled: [] });
 
   const results: { childId: string; goal: string; succeeded: boolean }[] = [];
   const failedIds: string[] = [];
@@ -275,7 +339,7 @@ export async function delegateToChildren(
     }
   }
 
-  if (cancelled.length > 0) deps.recordSchedule?.({ plan, cancelled });
+  if (cancelled.length > 0) deps.recordSchedule?.({ plan, topology, cancelled });
 
   const failed = results.filter((result) => !result.succeeded);
   const notes = cancelled.length > 0
