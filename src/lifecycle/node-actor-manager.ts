@@ -26,7 +26,7 @@ import { buildPlanPrompt, parseSubgoals } from '../intelligence/plan.js';
 import { buildSynthesisPrompt, type ChildReport } from '../intelligence/synthesize.js';
 import { decideIntegration } from '../intelligence/integrate-results.js';
 import { answerOf } from '../db/queries/answers.js';
-import { recordRunOutcome, getRuntimeStats } from '../db/queries/memory.js';
+import { recordRunOutcome, getRuntimeStats, recordStrategyOutcome } from '../db/queries/memory.js';
 import { getCostForNodes } from '../db/queries/stats.js';
 import { resolveCredentials, checkCredentials } from '../execution/credentials.js';
 import { sandboxLimiter, maxConcurrentFromEnv, CRITICAL_PATH } from '../execution/dispatch-limit.js';
@@ -59,6 +59,9 @@ import { scopeOf } from '../context/types.js';
 import { judgeTask } from '../intelligence/task-judge.js';
 import { prepareDispatch, type DispatchPreparation } from '../decision/dispatch-preparation.js';
 import { decideStrategy } from '../decision/strategy-gate.js';
+import { strategyPriorFor } from '../decision/strategy-memory.js';
+import { observationFrom } from '../learning/hierarchical.js';
+import { policyVersion } from '../efficiency/policy-version.js';
 import { evaluateSpendGuard, type SpendGuardState } from '../efficiency/spend-guard.js';
 import { summarizeExecutionTrajectory, executionSnapshot, UNKNOWN_PROGRESS } from '../efficiency/progress-signals.js';
 import { executionPolicyForGoal, calibrate, effectiveTurnCap, currentPolicyVersions, EXECUTION_POLICY_VERSION } from '../efficiency/policy.js';
@@ -1509,12 +1512,20 @@ function productionMachine(db: Db, nodeId: string) {
         // instead of a `delegated` boolean. Serial and parallel delegation are
         // different strategies with different costs and different failure
         // modes, and a boolean cannot tell them apart.
+        const strategyPreparation = prepareDispatch({
+          goal: input.goal,
+          authority: node.contract.authority,
+          toolGrant: grantOf(node.contract.authority),
+          ...(node.repoPath ? { repository: node.repoPath } : {}),
+          requiredChecks: node.contract.definition_of_done ?? [],
+        });
         const strategy = decideStrategy({
-          preparation: prepareDispatch({
-            goal: input.goal,
-            authority: node.contract.authority,
-            toolGrant: grantOf(node.contract.authority),
-            requiredChecks: node.contract.definition_of_done ?? [],
+          preparation: strategyPreparation,
+          // What history says, shrunk toward broader evidence. Carried rather
+          // than obeyed: the economics still decide, and a prior built on two
+          // runs of this exact shape must not outvote thirty of the class.
+          prior: strategyPriorFor(db, {
+            preparation: strategyPreparation, policyVersion: policyVersion(),
           }),
           spentUsd: getCostForNodes(db, [nodeId]),
           dispatch: unitDispatchFor(db, nodeId, input.goal, node.contract.authority.max_child_count),
@@ -1958,6 +1969,59 @@ function closeDefinitionOfDone(db: Db, nodeId: string, state: string, now: strin
   }
 }
 
+/** One run, remembered as strategy evidence.
+ *
+ *  Keyed at every level it is evidence for — global, task class, task shape,
+ *  repository, exact pattern — so a later decision can ask the narrowest
+ *  question that still has enough evidence behind it, instead of averaging a
+ *  typo fix and a cross-module bug hunt because they shared a complexity band.
+ *
+ *  Only *validated* outcomes count as successes. A run that finished without
+ *  proving anything is evidence about the run, not about the strategy, and
+ *  recording it as a strategy success is the same laundering the validation
+ *  ladder exists to refuse — one layer further out. */
+function recordStrategyLearning(db: Db, nodeId: string, completed: boolean, now: string): void {
+  try {
+    const node = getNode(db, nodeId);
+    if (!node?.runtime) return;
+    const goal = node.contract.goal ?? '';
+    const prep = prepareDispatch({
+      goal, authority: node.contract.authority,
+      toolGrant: grantOf(node.contract.authority),
+      ...(node.repoPath ? { repository: node.repoPath } : {}),
+    });
+    const verdicts = listEventsForNode(db, nodeId).filter((row) => row.type === 'validation.result');
+    const last = verdicts.at(-1)?.payload as { passed?: boolean; level?: string } | undefined;
+    const delegated = listNodes(db).some((child) => child.parentId === nodeId);
+
+    recordStrategyOutcome(db, {
+      id: randomUUID(), nodeId, createdAt: now,
+      observation: observationFrom({
+        strategy: delegated ? 'SERIAL_DELEGATED' : 'MANAGED',
+        taskClass: prep.taskClass,
+        taskShape: prep.taskShape,
+        ...(node.repoPath ? { repository: node.repoPath } : {}),
+        ...(node.repoPath ? { exactPattern: `${node.repoPath}@${prep.taskShape}` } : {}),
+        validated: completed && last?.passed === true,
+        // Quality against the run's own contract rather than against a baseline
+        // this process cannot see. A paired benchmark supplies the real delta;
+        // this is the honest zero until it does.
+        qualityDelta: 0,
+        costUsd: getCostForNodes(db, [nodeId]),
+        latencyMs: Date.parse(now) - Date.parse(node.createdAt),
+        // Each extra verdict is an attempt that had to be recovered from.
+        recoveryCount: Math.max(0, verdicts.length - 1),
+        validationLevel: (last?.level as 'V0' | 'V1' | 'V2' | 'V3') ?? 'V0',
+        policyVersion: policyVersion(),
+      }),
+    });
+  } catch (err) {
+    // Learning must never cost a run. A missing observation is a smaller
+    // problem than a node that could not finish because recording one failed.
+    console.error(`Failed to record strategy learning for node ${nodeId}:`, err);
+  }
+}
+
 /** One run, remembered. This is the only writer of node memory: everything the
  *  organization later believes about a runtime is an aggregate of these rows,
  *  so a run that ended in any way at all has to produce exactly one. */
@@ -2202,6 +2266,7 @@ function createAndRun(db: Db, nodeId: string, goal: string, persisted: unknown):
       // on. Recording it here, at the one point that knows the verdict, is what
       // makes `evidence` more than a field that was always empty.
       recordOutcomeInMemory(db, nodeId, snapshot.value === 'COMPLETE', now);
+      recordStrategyLearning(db, nodeId, snapshot.value === 'COMPLETE', now);
       // One efficiency record per task, at the one point that knows the verdict.
       // CANCELLED is 'partial', not a failure: the work stopped because someone
       // stopped it, and counting that against the success rate would make every
