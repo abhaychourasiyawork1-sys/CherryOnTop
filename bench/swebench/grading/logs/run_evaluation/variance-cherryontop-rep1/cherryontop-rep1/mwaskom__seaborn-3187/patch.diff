@@ -1,0 +1,107 @@
+diff --git a/doc/whatsnew/v0.12.2.rst b/doc/whatsnew/v0.12.2.rst
+index 8eeb8f19..8c36e1d5 100644
+--- a/doc/whatsnew/v0.12.2.rst
++++ b/doc/whatsnew/v0.12.2.rst
+@@ -11,3 +11,5 @@ v0.12.2 (Unreleased)
+ - |Fix| Fixed a bug in :func:`histplot` with `kde=True` and `log_scale=True` where the curve was not scaled properly (:pr:`3173`).
+ 
+ - |Fix| Fixed a bug in :func:`relplot` where inner axis labels would be shown when axis sharing was disabled (:pr:`3180`).
++
++- |Fix| Fixed a bug in :func:`scatterplot` and the objects interface where numeric legends for large values (e.g. those formatted with a multiplicative or additive offset) could show incorrect labels.
+diff --git a/seaborn/_core/scales.py b/seaborn/_core/scales.py
+index 55874bf2..6585ff8a 100644
+--- a/seaborn/_core/scales.py
++++ b/seaborn/_core/scales.py
+@@ -378,11 +378,26 @@ class ContinuousBase(Scale):
+             axis.set_view_interval(vmin, vmax)
+             locs = axis.major.locator()
+             locs = locs[(vmin <= locs) & (locs <= vmax)]
+-            labels = axis.major.formatter.format_ticks(locs)
++            labels = new._get_legend_labels(axis, locs)
+             new._legend = list(locs), list(labels)
+ 
+         return new
+ 
++    def _get_legend_labels(self, axis, locs):
++        """Format tick locations as legend labels, respecting any offset."""
++        formatter = axis.major.formatter
++        if isinstance(formatter, ScalarFormatter):
++            # ScalarFormatter may fold a common multiplicative or additive
++            # offset out of the tick labels (e.g. "1", "2", "3" with an
++            # offset of "1e6" shown separately on the axis). That offset is
++            # not otherwise surfaced in the legend, so labels like "1" would
++            # misrepresent values that are actually ~1e6. Disable the offset
++            # and scientific notation so each label reflects its real value.
++            formatter = copy(formatter)
++            formatter.set_useOffset(False)
++            formatter.set_scientific(False)
++        return formatter.format_ticks(locs)
++
+     def _get_transform(self):
+ 
+         arg = self.trans
+diff --git a/seaborn/utils.py b/seaborn/utils.py
+index 2407853c..afdc6daa 100644
+--- a/seaborn/utils.py
++++ b/seaborn/utils.py
+@@ -699,6 +699,11 @@ def locator_to_legend_entries(locator, limits, dtype):
+         formatter = mpl.ticker.LogFormatter()
+     else:
+         formatter = mpl.ticker.ScalarFormatter()
++        # Avoid having levels affected by a multiplicative or additive
++        # offset that would not otherwise be shown in the legend labels
++        # (e.g. 1e6 formatted as "1" with a separate "1e6" offset).
++        formatter.set_useOffset(False)
++        formatter.set_scientific(False)
+     formatter.axis = dummy_axis()
+ 
+     # TODO: The following two lines should be replaced
+diff --git a/tests/_core/test_scales.py b/tests/_core/test_scales.py
+index c4b39f5d..55283023 100644
+--- a/tests/_core/test_scales.py
++++ b/tests/_core/test_scales.py
+@@ -21,6 +21,7 @@ from seaborn._core.properties import (
+     Alpha,
+     Color,
+     Fill,
++    PointSize,
+ )
+ from seaborn.palettes import color_palette
+ from seaborn.external.version import Version
+@@ -303,6 +304,17 @@ class TestContinuous:
+         label, = a.major.formatter.format_ticks([100])
+         assert r"10^{2}" in label
+ 
++    def test_legend_labels_no_hidden_offset(self):
++
++        # Regression test: legend labels for large values should not use
++        # a multiplicative/additive offset that is not otherwise shown,
++        # which would make the labels misrepresent the underlying data.
++        x = pd.Series([1e6, 2e6, 3e6, 4e6], name="x", dtype=float)
++        s = Continuous()._setup(x, PointSize())
++        values, labels = s._legend
++        for value, label in zip(values, labels):
++            assert float(label) == float(value)
++
+     def test_label_type_checks(self):
+ 
+         s = Continuous()
+diff --git a/tests/test_utils.py b/tests/test_utils.py
+index 02839a02..3b5985b0 100644
+--- a/tests/test_utils.py
++++ b/tests/test_utils.py
+@@ -334,6 +334,14 @@ def test_locator_to_legend_entries():
+         # Use regex as mpl switched to minus sign, not hyphen, in 3.6
+         assert re.match(f"1e.0{exp}", str_levels[i])
+ 
++    # Regression test: labels for large values should not hide a
++    # multiplicative or additive offset that is not otherwise shown
++    locator = mpl.ticker.MaxNLocator(nbins=3)
++    limits = (1_000_000, 4_000_000)
++    levels, str_levels = utils.locator_to_legend_entries(locator, limits, float)
++    for level, str_level in zip(levels, str_levels):
++        assert float(str_level) == float(level)
++
+ 
+ def test_move_legend_matplotlib_objects():
+ 

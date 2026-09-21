@@ -1,0 +1,206 @@
+{
+  "n_pairs": 8,
+  "primary_cost": {
+    "wilcoxon_statistic": 12.0,
+    "wilcoxon_p": 0.4609375,
+    "median_diff_usd": -0.0019568999999999975,
+    "bootstrap_ci_95": [
+      -0.8074724000000002,
+      0.1150161999999999
+    ],
+    "mean_diff_usd": -0.21977857499999998,
+    "n_cherryontop_cheaper": 4,
+    "n_direct_cheaper": 4,
+    "n_tied": 0
+  },
+  "co_primary_resolution": {
+    "resolve_rate_direct": 0.875,
+    "resolve_rate_direct_wilson95": [
+      0.5291051942301385,
+      0.9775830911367039
+    ],
+    "resolve_rate_cherryontop": 0.75,
+    "resolve_rate_cherryontop_wilson95": [
+      0.40926987910258916,
+      0.9285223111419724
+    ],
+    "both_resolved": 6,
+    "neither_resolved": 1,
+    "direct_only": 1,
+    "cherryontop_only": 0,
+    "mcnemar_exact_p": 1.0,
+    "non_inferior": true
+  },
+  "secondary": {
+    "cost_per_resolved_direct": 0.5327490571428571,
+    "cost_per_resolved_cherryontop": 0.48145,
+    "mean_turns_direct": 28.875,
+    "mean_turns_cherryontop": 26.125,
+    "mean_wall_direct": 215.125,
+    "mean_wall_cherryontop": 492.0,
+    "mean_tokens_direct": 2193074.5,
+    "mean_tokens_cherryontop": 1145313.25
+  },
+  "pairs": [
+    {
+      "instance_id": "astropy__astropy-14309",
+      "direct_cost": 0.5481838000000001,
+      "cherryontop_cost": 0.6632,
+      "direct_resolved": true,
+      "cherryontop_resolved": true,
+      "direct_turns": 31,
+      "cherryontop_turns": 40,
+      "direct_wall": 97,
+      "cherryontop_wall": 1511,
+      "direct_tokens": 1843369,
+      "cherryontop_tokens": 1638326
+    },
+    {
+      "instance_id": "django__django-15252",
+      "direct_cost": 2.1149851999999996,
+      "cherryontop_cost": 1.0357,
+      "direct_resolved": false,
+      "cherryontop_resolved": false,
+      "direct_turns": 62,
+      "cherryontop_turns": 34,
+      "direct_wall": 663,
+      "cherryontop_wall": 476,
+      "direct_tokens": 6110325,
+      "cherryontop_tokens": 1910613
+    },
+    {
+      "instance_id": "mwaskom__seaborn-3187",
+      "direct_cost": 0.6782828000000002,
+      "cherryontop_cost": 1.0947,
+      "direct_resolved": true,
+      "cherryontop_resolved": true,
+      "direct_turns": 32,
+      "cherryontop_turns": 51,
+      "direct_wall": 156,
+      "cherryontop_wall": 351,
+      "direct_tokens": 2136115,
+      "cherryontop_tokens": 2682597
+    },
+    {
+      "instance_id": "pallets__flask-5014",
+      "direct_cost": 0.27099059999999997,
+      "cherryontop_cost": 0.2098,
+      "direct_resolved": true,
+      "cherryontop_resolved": true,
+      "direct_turns": 14,
+      "cherryontop_turns": 17,
+      "direct_wall": 71,
+      "cherryontop_wall": 55,
+      "direct_tokens": 787019,
+      "cherryontop_tokens": 532834
+    },
+    {
+      "instance_id": "psf__requests-1142",
+      "direct_cost": 0.2322232,
+      "cherryontop_cost": 0.2895,
+      "direct_resolved": true,
+      "cherryontop_resolved": true,
+      "direct_turns": 11,
+      "cherryontop_turns": 21,
+      "direct_wall": 64,
+      "cherryontop_wall": 91,
+      "direct_tokens": 593682,
+      "cherryontop_tokens": 707887
+    },
+    {
+      "instance_id": "pydata__xarray-6744",
+      "direct_cost": 0.9690724000000002,
+      "cherryontop_cost": 0.1616,
+      "direct_resolved": true,
+      "cherryontop_resolved": false,
+      "direct_turns": 37,
+      "cherryontop_turns": 9,
+      "direct_wall": 373,
+      "cherryontop_wall": 884,
+      "direct_tokens": 2836286,
+      "cherryontop_tokens": 234035
+    },
+    {
+      "instance_id": "scikit-learn__scikit-learn-14710",
+      "direct_cost": 0.8713347999999999,
+      "cherryontop_cost": 0.412,
+      "direct_resolved": true,
+      "cherryontop_resolved": true,
+      "direct_turns": 37,
+      "cherryontop_turns": 23,
+      "direct_wall": 246,
+      "cherryontop_wall": 506,
+      "direct_tokens": 2867795,
+      "cherryontop_tokens": 993577
+    },
+    {
+      "instance_id": "sympy__sympy-17139",
+      "direct_cost": 0.15915580000000001,
+      "cherryontop_cost": 0.2195,
+      "direct_resolved": true,
+      "cherryontop_resolved": true,
+      "direct_turns": 7,
+      "cherryontop_turns": 14,
+      "direct_wall": 51,
+      "cherryontop_wall": 62,
+      "direct_tokens": 370005,
+      "cherryontop_tokens": 462637
+    }
+  ],
+  "variance_probe": {
+    "astropy__astropy-14309:direct": {
+      "costs": [
+        0.5481838000000001,
+        0.2053886,
+        1.2725622
+      ],
+      "mean": 0.6753782,
+      "sd": 0.5448382188115661
+    },
+    "astropy__astropy-14309:cherryontop": {
+      "costs": [
+        0.6632,
+        0.3552,
+        0.3913
+      ],
+      "mean": 0.4699,
+      "sd": 0.16837300852571355
+    },
+    "django__django-15252:direct": {
+      "costs": [
+        2.1149851999999996,
+        1.8567716,
+        5.056637549999999
+      ],
+      "mean": 3.0094647833333332,
+      "sd": 1.7775983287127828
+    },
+    "django__django-15252:cherryontop": {
+      "costs": [
+        1.0357,
+        0.7925,
+        0.8019
+      ],
+      "mean": 0.8767,
+      "sd": 0.13777822759783206
+    },
+    "mwaskom__seaborn-3187:direct": {
+      "costs": [
+        0.6782828000000002,
+        1.0546198,
+        0.5289072000000001
+      ],
+      "mean": 0.7539366,
+      "sd": 0.27089861118233877
+    },
+    "mwaskom__seaborn-3187:cherryontop": {
+      "costs": [
+        1.0947,
+        1.2702,
+        1.564
+      ],
+      "mean": 1.3096333333333334,
+      "sd": 0.23712204311985283
+    }
+  }
+}

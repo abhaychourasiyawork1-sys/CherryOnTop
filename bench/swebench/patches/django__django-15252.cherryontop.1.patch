@@ -1,0 +1,107 @@
+diff --git a/django/db/migrations/recorder.py b/django/db/migrations/recorder.py
+index 1a37c6b7d0..51599b985b 100644
+--- a/django/db/migrations/recorder.py
++++ b/django/db/migrations/recorder.py
+@@ -1,5 +1,5 @@
+ from django.apps.registry import Apps
+-from django.db import DatabaseError, models
++from django.db import DatabaseError, models, router
+ from django.utils.functional import classproperty
+ from django.utils.timezone import now
+ 
+@@ -56,12 +56,23 @@ class MigrationRecorder:
+             tables = self.connection.introspection.table_names(cursor)
+         return self.Migration._meta.db_table in tables
+ 
++    def is_migratable(self):
++        """
++        Return True if this connection's router allows migrations to be
++        recorded here (i.e. the Migration model is allowed to migrate).
++        """
++        return router.allow_migrate_model(self.connection.alias, self.Migration)
++
+     def ensure_schema(self):
+         """Ensure the table exists and has the correct schema."""
+         # If the table's there, that's fine - we've never changed its schema
+         # in the codebase.
+         if self.has_table():
+             return
++        # Don't create the table if the router says this connection isn't
++        # allowed to migrate the Migration model.
++        if not self.is_migratable():
++            return
+         # Make the table
+         try:
+             with self.connection.schema_editor() as editor:
+@@ -74,6 +85,8 @@ class MigrationRecorder:
+         Return a dict mapping (app_name, migration_name) to Migration instances
+         for all applied migrations.
+         """
++        if not self.is_migratable():
++            return {}
+         if self.has_table():
+             return {(migration.app, migration.name): migration for migration in self.migration_qs}
+         else:
+@@ -83,11 +96,15 @@ class MigrationRecorder:
+ 
+     def record_applied(self, app, name):
+         """Record that a migration was applied."""
++        if not self.is_migratable():
++            return
+         self.ensure_schema()
+         self.migration_qs.create(app=app, name=name)
+ 
+     def record_unapplied(self, app, name):
+         """Record that a migration was unapplied."""
++        if not self.is_migratable():
++            return
+         self.ensure_schema()
+         self.migration_qs.filter(app=app, name=name).delete()
+ 
+diff --git a/tests/migrations/test_executor.py b/tests/migrations/test_executor.py
+index ca2c03cac5..e947ae0e9a 100644
+--- a/tests/migrations/test_executor.py
++++ b/tests/migrations/test_executor.py
+@@ -776,6 +776,42 @@ class FakeMigration:
+         return 'M<%s>' % self.name
+ 
+ 
++class RecorderTests(SimpleTestCase):
++    """Tests that MigrationRecorder respects db_router allow_migrate rules."""
++
++    @mock.patch('django.db.migrations.recorder.router.allow_migrate_model', return_value=False)
++    def test_ensure_schema_not_migratable(self, allow_migrate_model):
++        recorder = MigrationRecorder(connection)
++        with mock.patch.object(recorder, 'has_table', return_value=False), \
++                mock.patch.object(connection, 'schema_editor') as schema_editor:
++            recorder.ensure_schema()
++        schema_editor.assert_not_called()
++
++    @mock.patch('django.db.migrations.recorder.router.allow_migrate_model', return_value=False)
++    def test_applied_migrations_not_migratable(self, allow_migrate_model):
++        recorder = MigrationRecorder(connection)
++        with mock.patch.object(recorder, 'has_table', return_value=True):
++            self.assertEqual(recorder.applied_migrations(), {})
++
++    @mock.patch('django.db.migrations.recorder.router.allow_migrate_model', return_value=False)
++    def test_record_applied_not_migratable(self, allow_migrate_model):
++        recorder = MigrationRecorder(connection)
++        with mock.patch.object(recorder, 'ensure_schema') as ensure_schema, \
++                mock.patch.object(type(recorder), 'migration_qs', new_callable=mock.PropertyMock) as migration_qs:
++            recorder.record_applied('app', 'name')
++        ensure_schema.assert_not_called()
++        migration_qs.assert_not_called()
++
++    @mock.patch('django.db.migrations.recorder.router.allow_migrate_model', return_value=False)
++    def test_record_unapplied_not_migratable(self, allow_migrate_model):
++        recorder = MigrationRecorder(connection)
++        with mock.patch.object(recorder, 'ensure_schema') as ensure_schema, \
++                mock.patch.object(type(recorder), 'migration_qs', new_callable=mock.PropertyMock) as migration_qs:
++            recorder.record_unapplied('app', 'name')
++        ensure_schema.assert_not_called()
++        migration_qs.assert_not_called()
++
++
+ class ExecutorUnitTests(SimpleTestCase):
+     """(More) isolated unit tests for executor methods."""
+     def test_minimize_rollbacks(self):

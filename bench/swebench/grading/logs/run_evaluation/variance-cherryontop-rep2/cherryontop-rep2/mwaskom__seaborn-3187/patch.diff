@@ -1,0 +1,92 @@
+diff --git a/doc/whatsnew/v0.12.2.rst b/doc/whatsnew/v0.12.2.rst
+index 8eeb8f19..9c5077aa 100644
+--- a/doc/whatsnew/v0.12.2.rst
++++ b/doc/whatsnew/v0.12.2.rst
+@@ -11,3 +11,5 @@ v0.12.2 (Unreleased)
+ - |Fix| Fixed a bug in :func:`histplot` with `kde=True` and `log_scale=True` where the curve was not scaled properly (:pr:`3173`).
+ 
+ - |Fix| Fixed a bug in :func:`relplot` where inner axis labels would be shown when axis sharing was disabled (:pr:`3180`).
++
++- |Fix| Fixed a bug where legend entries for semantic variables with a large scale (e.g. large integers) would show scaled-down values that omitted the multiplicative/additive offset that a :class:`matplotlib.ticker.ScalarFormatter` would otherwise display separately on an axis (:issue:`3187`).
+diff --git a/seaborn/_core/scales.py b/seaborn/_core/scales.py
+index 55874bf2..dd3c51bd 100644
+--- a/seaborn/_core/scales.py
++++ b/seaborn/_core/scales.py
+@@ -378,7 +378,14 @@ class ContinuousBase(Scale):
+             axis.set_view_interval(vmin, vmax)
+             locs = axis.major.locator()
+             locs = locs[(vmin <= locs) & (locs <= vmax)]
+-            labels = axis.major.formatter.format_ticks(locs)
++            formatter = axis.major.formatter
++            labels = formatter.format_ticks(locs)
++            if formatter.get_offset():
++                # E.g. a ScalarFormatter can format labels relative to an implicit
++                # multiplicative/additive offset that it shows separately on a real
++                # axis. That annotation has no equivalent in a legend, so use
++                # unabbreviated labels that include the offset instead of dropping it.
++                labels = [formatter.format_data(loc) for loc in locs]
+             new._legend = list(locs), list(labels)
+ 
+         return new
+diff --git a/seaborn/utils.py b/seaborn/utils.py
+index 2407853c..d55a93a5 100644
+--- a/seaborn/utils.py
++++ b/seaborn/utils.py
+@@ -707,6 +707,13 @@ def locator_to_legend_entries(locator, limits, dtype):
+     formatter.set_locs(raw_levels)
+     formatted_levels = [formatter(x) for x in raw_levels]
+ 
++    if formatter.get_offset():
++        # E.g. a ScalarFormatter can format labels relative to an implicit
++        # multiplicative/additive offset that it shows separately on a real
++        # axis. That annotation has no equivalent in a legend, so use
++        # unabbreviated labels that include the offset instead of dropping it.
++        formatted_levels = [formatter.format_data(x) for x in raw_levels]
++
+     return raw_levels, formatted_levels
+ 
+ 
+diff --git a/tests/_core/test_plot.py b/tests/_core/test_plot.py
+index e4ba99e1..43996db5 100644
+--- a/tests/_core/test_plot.py
++++ b/tests/_core/test_plot.py
+@@ -2042,6 +2042,20 @@ class TestLegend:
+         legend, = p._figure.legends
+         assert legend.get_title().get_text() == ""
+ 
++    def test_legend_numeric_value_with_offset(self, xy):
++        # https://github.com/mwaskom/seaborn/issues/3187
++        # A ScalarFormatter can show tick labels relative to an offset it
++        # otherwise draws separately on a real axis (e.g. "1e6"); the labels
++        # in a legend must reflect the real value instead of just the offset
++        # tick reading (e.g. "1").
++        s = pd.Series([2_000_000, 3_000_000, 4_000_000, 5_000_000], name="s")
++        p = Plot(**xy, color=s).add(MockMark()).plot()
++        legend, = p._figure.legends
++        labels = [t.get_text() for t in legend.get_texts()]
++        assert labels
++        for label in labels:
++            assert float(label) in s.values
++
+     def test_legendless_mark(self, xy):
+ 
+         class NoLegendMark(MockMark):
+diff --git a/tests/test_utils.py b/tests/test_utils.py
+index 02839a02..22099c35 100644
+--- a/tests/test_utils.py
++++ b/tests/test_utils.py
+@@ -334,6 +334,14 @@ def test_locator_to_legend_entries():
+         # Use regex as mpl switched to minus sign, not hyphen, in 3.6
+         assert re.match(f"1e.0{exp}", str_levels[i])
+ 
++    # Regression test for gh-3187: labels for large values must reflect the
++    # real magnitude, not the reduced value a ScalarFormatter shows relative
++    # to an offset it would otherwise draw separately on a real axis.
++    locator = mpl.ticker.MaxNLocator(nbins=3)
++    limits = (2_000_000, 5_000_000)
++    levels, str_levels = utils.locator_to_legend_entries(locator, limits, int)
++    assert [float(label) for label in str_levels] == list(levels)
++
+ 
+ def test_move_legend_matplotlib_objects():
+ 
