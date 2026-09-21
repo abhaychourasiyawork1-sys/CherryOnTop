@@ -354,3 +354,50 @@ A capability a benchmark never activated is not evidence the capability is
 unneeded. `src/architecture/capability-regimes.ts` owns the matrix and
 `src/architecture/capability-regimes.test.ts` fails with the name of whichever
 regime disappeared.
+
+## Strategy regimes
+
+`node bench/strategy-regimes.mjs` prints the strategy-regime manifest for the
+configuration the daemon is about to run under. It is the same three-column
+discipline as the capability matrix above, applied to the thing the
+architecture is actually judged on:
+
+```text
+MANAGED_SIMPLE               one dispatch, no planner, no classifier, no child, no synthesis
+MANAGED_MEDIUM               one dispatch, observed verification
+MANAGED_RISKY                a wide change that cheap evidence must not clear
+SERIAL_DELEGATED             a validated plan whose branches must run in order
+PARALLEL_DELEGATED           independent branches the economics preferred to run at once
+PARTIAL_DELEGATION_RECOVERY  one child fails, independent siblings are retained
+VALIDATION_ESCALATION        the ladder climbs, and stops at the cheapest sufficient level
+CONTEXT_EXPANSION            one artifact bought at the boundary, charged once
+```
+
+Each exercised regime reports `reachability, exercised, validity, success,
+cost, turns, inputTokens, outputTokens, cacheReadTokens, wallSeconds,
+validationLevel, recoveryCount, strategy`.
+
+**`UNREACHABLE` is not a failure.** A regime whose preconditions the
+configuration does not meet — delegation switched off, no context planner —
+is reported unreachable, because "the configuration forbade this" and "the
+product could not do this" are different claims and only one is a regression.
+Preconditions are declared in `bench/strategy-regimes.mjs` *before* the run, so
+a report cannot be rationalised afterwards into whatever the run happened to do.
+
+Rows that are invalid, or that belong to an unreachable regime, are counted and
+then excluded from policy-learning evidence — never dropped silently.
+
+The acceptance rule is unchanged:
+
+```text
+cost / successful task     ↓
+quality                    ↔ or ↑
+success                    ↔ or ↑
+latency                    ↔ or acceptably ↑
+orchestration overhead     justified by measured benefit
+```
+
+Deterministic mechanism evidence — anything from `bench/deterministic.mjs`,
+`bench/capability-regimes.mjs` or this manifest — is **not** outcome evidence.
+It shows a mechanism exists and is reachable. Only a paid, paired run shows it
+helped.
