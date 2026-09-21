@@ -33,6 +33,8 @@ const STATE_MAP: Record<string, ExecutionNodeState> = {
   EXECUTION_DECISION: 'ready',
   SELF_EXECUTE: 'running',
   DELEGATE: 'running',
+  VALIDATE: 'running',
+  // Retired in favour of VALIDATE; kept so an older run's stored state still maps.
   VERIFY: 'running',
   ESCALATE: 'blocked',
   WAIT_APPROVAL: 'blocked',

@@ -15,6 +15,7 @@ import { nodeMachine } from './node-machine.js';
 import { ZERO_USAGE } from '../execution/tokens.js';
 import type { ExecuteStepResult } from '../execution/execute-step.js';
 import type { IntelligenceBundle } from '../intelligence/coordinator.js';
+import type { ValidationResult } from '../validation/engine.js';
 import { prepareDispatch } from '../decision/dispatch-preparation.js';
 import { decideStrategy, type StrategyClassifier } from '../decision/strategy-gate.js';
 import { decideExecution } from '../engines/decide-execution.js';
@@ -84,6 +85,10 @@ describe('managed fast path — the lifecycle', () => {
       executeStep: vi.fn(async (): Promise<ExecuteStepResult> => ({
         succeeded: true, message: 'fixed', events: [], usage: { ...ZERO_USAGE },
       })),
+      validate: vi.fn(async (): Promise<ValidationResult> => ({
+        level: 'V1', passed: true, confidence: 0.5, tokens: 0, latencyMs: 0,
+        evidenceIds: ['artifact-1'], reasonCodes: ['V1:durable_outcome_produced'],
+      })),
     };
 
     const verdict = judgeTask(TINY_GOAL);
@@ -104,6 +109,7 @@ describe('managed fast path — the lifecycle', () => {
           signals: input.signals,
         })),
         executeStep: fromPromise(spies.executeStep),
+      validate: fromPromise(spies.validate),
         delegateToChild: fromPromise(async (): Promise<ExecuteStepResult> => {
           spies.createChild();
           spies.plan();
@@ -120,6 +126,8 @@ describe('managed fast path — the lifecycle', () => {
 
     expect(actor.getSnapshot().value).toBe('COMPLETE');
     expect(spies.executeStep).toHaveBeenCalledTimes(1);
+    // Validated exactly once, and validation is the only door into COMPLETE.
+    expect(spies.validate).toHaveBeenCalledTimes(1);
     expect(spies.plan).not.toHaveBeenCalled();
     expect(spies.classifier).not.toHaveBeenCalled();
     expect(spies.createChild).not.toHaveBeenCalled();

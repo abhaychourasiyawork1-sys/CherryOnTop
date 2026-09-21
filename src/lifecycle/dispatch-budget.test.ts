@@ -30,6 +30,8 @@ const { appendEvent, listEventsForNode } = await import('../db/queries/events.js
 const { startNodeActor } = await import('./node-actor-manager.js');
 const { executeStep } = await import('../execution/execute-step.js');
 const { ZERO_USAGE } = await import('../execution/tokens.js');
+import type { StructuredEvent } from '../adapters/adapter.js';
+const { successfulRunEvents, replayInto } = await import('./run-fixtures.js');
 const { recordDispatchUsage } = await import('../db/queries/tokens.js');
 
 const stub = executeStep as unknown as Mock;
@@ -69,13 +71,21 @@ function spend(db: ReturnType<typeof createDb>, nodeId: string, costUsd: number)
   });
 }
 
-const ok = { succeeded: true, message: 'done', events: [], usage: { ...ZERO_USAGE } };
+// A run that changed the file it was asked to change. Validation is the only
+// door into COMPLETE, so a fixture standing in for a successful dispatch has to
+// carry the edit a successful dispatch makes — an empty event stream describes
+// a run that reported success and produced nothing.
+const ok = {
+  succeeded: true, message: 'done',
+  events: successfulRunEvents({ editedPath: '/workspace/README.md' }),
+  usage: { ...ZERO_USAGE },
+};
 
 describe('a dispatch for a node that has spent its budget', () => {
   it('never opens a sandbox, and says why', async () => {
     const db = createDb(TEST_DB);
     const repoPath = mkdtempSync(join(tmpdir(), 'dispatch-budget-'));
-    stub.mockResolvedValue(ok);
+    stub.mockImplementation(async (input: { onEvent?: (event: StructuredEvent) => void }) => replayInto(input, ok));
 
     const id = add(db, repoPath, 1);
     spend(db, id, 1.25);           // already over, before it starts
@@ -95,7 +105,7 @@ describe('a dispatch for a node that has spent its budget', () => {
   it('still runs a node that is inside its budget, and one nobody costed', async () => {
     const db = createDb(TEST_DB);
     const repoPath = mkdtempSync(join(tmpdir(), 'dispatch-budget-'));
-    stub.mockResolvedValue(ok);
+    stub.mockImplementation(async (input: { onEvent?: (event: StructuredEvent) => void }) => replayInto(input, ok));
 
     const funded = add(db, repoPath, 5);
     spend(db, funded, 1.25);
@@ -114,7 +124,7 @@ describe('the guard at the chokepoint', () => {
   it('stops on the turn cap even when the node was never costed', async () => {
     const db = createDb(TEST_DB);
     const repoPath = mkdtempSync(join(tmpdir(), 'dispatch-budget-'));
-    stub.mockResolvedValue(ok);
+    stub.mockImplementation(async (input: { onEvent?: (event: StructuredEvent) => void }) => replayInto(input, ok));
 
     const id = add(db, repoPath, 0);
     // Turns recorded, no cost at all — the shape a runtime that reports no

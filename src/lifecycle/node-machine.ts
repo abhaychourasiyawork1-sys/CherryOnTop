@@ -3,6 +3,7 @@ import type { ExecuteStepResult } from '../execution/execute-step.js';
 import { ZERO_USAGE } from '../execution/tokens.js';
 import type { IntelligenceBundle } from '../intelligence/coordinator.js';
 import type { DecideExecutionResult } from '../engines/decide-execution.js';
+import { nextAfterValidation, type ValidationResult } from '../validation/engine.js';
 
 export interface NodeMachineContext {
   nodeId: string;
@@ -17,6 +18,9 @@ export interface NodeMachineContext {
    *  its own authority being too small. Undefined means "stay inside authority". */
   approvedBudgetUsd?: number;
   lastResult?: ExecuteStepResult;
+  /** What validation concluded about the last execution. The only thing that
+   *  may open the door to COMPLETE. */
+  lastValidation?: ValidationResult;
 }
 
 // SELF_EXECUTE/DELEGATE/DOD_MET/DOD_NOT_MET are all gone from the event union —
@@ -61,6 +65,12 @@ export const nodeMachine = setup({
     }),
     escalate: fromPromise<string, { nodeId: string; reason: string }>(async () => {
       throw new Error('escalate actor not provided');
+    }),
+    /** Buys the cheapest evidence that clears this task's contract. Injected so
+     *  the machine holds no opinion about what counts as proof, and so a
+     *  deployment with no verifier still validates — at V2, and says so. */
+    validate: fromPromise<ValidationResult, { nodeId: string; goal: string; succeeded: boolean }>(async () => {
+      throw new Error('validate actor not provided');
     }),
   },
 }).createMachine({
@@ -136,11 +146,11 @@ export const nodeMachine = setup({
       invoke: {
         src: 'executeStep',
         input: ({ context }) => ({ nodeId: context.nodeId, goal: context.goal }),
-        onDone: { target: 'VERIFY', actions: assign({ lastResult: ({ event }) => event.output }) },
-        // A dispatch failure is a verifiable outcome, not a crash: VERIFY gets a
+        onDone: { target: 'VALIDATE', actions: assign({ lastResult: ({ event }) => event.output }) },
+        // A dispatch failure is a verifiable outcome, not a crash: VALIDATE gets a
         // failed result and the loop can re-plan around it.
         onError: {
-          target: 'VERIFY',
+          target: 'VALIDATE',
           actions: assign({ lastResult: ({ event }) => ({ succeeded: false, message: String(event.error), events: [], usage: { ...ZERO_USAGE } }) }),
         },
       },
@@ -153,7 +163,7 @@ export const nodeMachine = setup({
         }),
         onDone: [
           // A goal that does not split is not a failed delegation, it is a goal
-          // to do yourself. Sending it to VERIFY instead made it a failure the
+          // to do yourself. Sending it to VALIDATE instead made it a failure the
           // machine retried — re-planning, reaching the same answer, three times
           // over, and paying for a sandbox on each pass.
           {
@@ -161,10 +171,10 @@ export const nodeMachine = setup({
             guard: ({ event }) => event.output.notDelegatable === true,
             actions: assign({ lastResult: ({ event }) => event.output }),
           },
-          { target: 'VERIFY', actions: assign({ lastResult: ({ event }) => event.output }) },
+          { target: 'VALIDATE', actions: assign({ lastResult: ({ event }) => event.output }) },
         ],
         onError: {
-          target: 'VERIFY',
+          target: 'VALIDATE',
           actions: assign({ lastResult: ({ event }) => ({ succeeded: false, message: String(event.error), events: [], usage: { ...ZERO_USAGE } }) }),
         },
       },
@@ -201,31 +211,66 @@ export const nodeMachine = setup({
         REJECTED: 'FAILED',
       },
     },
-    // VERIFY resolves itself from the execution result. Nothing external sends a
-    // DoD verdict: a delegating parent awaits its child's terminal state, so a
-    // child parked here waiting on a human would deadlock the parent. Real
-    // DoD-checking (does the result actually satisfy definition_of_done?) is a
-    // later phase; today "the step succeeded" is the whole verdict.
-    VERIFY: {
-      always: [
-        { target: 'COMPLETE', guard: ({ context }) => context.lastResult?.succeeded === true },
-        // A rate-limited dispatch is refused for a reason retrying cannot fix:
-        // the account's usage window is spent, and it does not refill between
-        // attempts a few minutes apart. Retrying anyway was a measured run
-        // burning its remaining three attempts — each a full sandbox — into
-        // the same refusal, for nothing. Straight to FAILED instead, on the
-        // first one.
-        {
-          target: 'FAILED',
-          guard: ({ context }) => context.lastResult?.rateLimited === true,
-        },
-        {
-          target: 'EXECUTION_DECISION',
-          guard: ({ context }) => (context.executionAttempts ?? 0) < MAX_EXECUTION_ATTEMPTS,
-          actions: assign({ executionAttempts: ({ context }) => (context.executionAttempts ?? 0) + 1 }),
-        },
-        { target: 'FAILED' },
-      ],
+    // The only door into COMPLETE, and the reason there is one.
+    //
+    // `EXECUTION_FINISHED` is a fact about a process; `TASK_SUCCESS` is a claim
+    // about the world. This state is where the second is bought from the first,
+    // and it can refuse: a run that finished, produced nothing durable, and
+    // cannot point at a check is not a success however cleanly it exited. The
+    // primary KPI is tokens per *successful* task, so a success count that
+    // includes runs which did not work scores an optimizer that makes runs
+    // cheaper and wronger as an improvement. That is the failure this state
+    // exists to make unreachable.
+    //
+    // Nothing external sends a verdict: a delegating parent awaits its child's
+    // terminal state, so a child parked here waiting on a human would deadlock
+    // the parent.
+    VALIDATE: {
+      invoke: {
+        src: 'validate',
+        input: ({ context }) => ({
+          nodeId: context.nodeId, goal: context.goal,
+          succeeded: context.lastResult?.succeeded === true,
+        }),
+        onDone: [
+          {
+            target: 'COMPLETE',
+            guard: ({ context, event }) => nextAfterValidation({
+              executionSucceeded: context.lastResult?.succeeded === true,
+              validation: event.output,
+              executionAttempts: context.executionAttempts ?? 0,
+              retriable: context.lastResult?.rateLimited !== true,
+            }) === 'COMPLETE',
+            actions: assign({ lastValidation: ({ event }) => event.output }),
+          },
+          {
+            target: 'EXECUTION_DECISION',
+            guard: ({ context, event }) => nextAfterValidation({
+              executionSucceeded: context.lastResult?.succeeded === true,
+              validation: event.output,
+              executionAttempts: context.executionAttempts ?? 0,
+              retriable: context.lastResult?.rateLimited !== true,
+            }) === 'RECOVER',
+            actions: assign({
+              lastValidation: ({ event }) => event.output,
+              executionAttempts: ({ context }) => (context.executionAttempts ?? 0) + 1,
+            }),
+          },
+          { target: 'FAILED', actions: assign({ lastValidation: ({ event }) => event.output }) },
+        ],
+        // Unreadable evidence must not manufacture a success. It also must not
+        // manufacture a *crash*: the run finished, and the honest reading is
+        // that we cannot say whether it worked.
+        onError: [
+          {
+            target: 'EXECUTION_DECISION',
+            guard: ({ context }) => context.lastResult?.rateLimited !== true
+              && (context.executionAttempts ?? 0) < MAX_EXECUTION_ATTEMPTS,
+            actions: assign({ executionAttempts: ({ context }) => (context.executionAttempts ?? 0) + 1 }),
+          },
+          { target: 'FAILED' },
+        ],
+      },
     },
     COMPLETE: { type: 'final' },
     FAILED: { type: 'final' },

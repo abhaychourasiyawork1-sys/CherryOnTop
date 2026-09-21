@@ -42,6 +42,9 @@ const NARRATION: Record<string, { text: string; tone: Tone }> = {
   DELEGATE: { text: 'delegating to a child node', tone: 'info' },
   ESCALATE: { text: 'escalating — this is outside its authority', tone: 'warn' },
   WAIT_APPROVAL: { text: 'waiting for your approval', tone: 'warn' },
+  VALIDATE: { text: 'validating the result', tone: 'info' },
+  // Retired in favour of VALIDATE; kept so a transcript replayed from an older
+  // run still renders rather than going blank.
   VERIFY: { text: 'verifying the result', tone: 'info' },
   COMPLETE: { text: 'complete', tone: 'good' },
   FAILED: { text: 'failed', tone: 'bad' },

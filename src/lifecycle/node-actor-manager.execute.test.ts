@@ -10,6 +10,7 @@ import { recordRunOutcome } from '../db/queries/memory.js';
 import { startNodeActor } from './node-actor-manager.js';
 import type { ExecuteStepInput, ExecuteStepResult } from '../execution/execute-step.js';
 import { ZERO_USAGE } from '../execution/tokens.js';
+import { successfulRunEvents, replayInto } from './run-fixtures.js';
 
 // The one place the three optimizations meet — repo context, role system prompt and
 // the tiered-model fallback — is the executeStep actor closure, and it dispatches
@@ -55,7 +56,13 @@ const MODEL_REJECTED = result(
   [{ type: 'result', payload: { is_error: true, result: 'model "x" is not available on your plan' } }],
   false,
 );
-const OK = result([{ type: 'result', payload: { is_error: false, result: 'fixed it' } }], true);
+// Validation is the only door into COMPLETE, so the fixture for a *successful*
+// dispatch carries what a successful dispatch produces: the edit it made and
+// the check that went green. An empty-ish stream describes a run that reported
+// success and proved nothing, which is a different test.
+const OK = result(successfulRunEvents({
+  editedPath: '/workspace/src/cart/checkout.ts', verifyCommand: 'npm test', result: 'fixed it',
+}), true);
 
 function occurrences(haystack: string, needle: string): number {
   return haystack.split(needle).length - 1;
@@ -97,7 +104,10 @@ async function runSelfExecute(codex: boolean): Promise<ExecuteStepInput[]> {
   const calls: ExecuteStepInput[] = [];
   stub.mockImplementation(async (input: ExecuteStepInput) => {
     calls.push(input);
-    return calls.length === 1 ? MODEL_REJECTED : OK;
+    // Streamed through the dispatch's own callback, the way a real run
+    // delivers them: the manager derives artifacts and observations from the
+    // stream, and validation reads those.
+    return replayInto(input, calls.length === 1 ? MODEL_REJECTED : OK);
   });
 
   const id = randomUUID();

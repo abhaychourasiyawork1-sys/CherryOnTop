@@ -313,3 +313,35 @@ describe('the floor comes from the task, bounded where it is a guess', () => {
     expect(contractFor({ verificationNeed: -5 }).qualityFloor).toBe(MINIMUM_QUALITY_FLOOR);
   });
 });
+
+describe('a durable outcome that is not a file', () => {
+  const base = { claimedSuccess: true, artifactIds: [], observedChecks: [], requiredChecks: [] };
+
+  it('accepts a finding as the durable result of an investigation', () => {
+    // An investigation's deliverable is an understanding; there is no file to
+    // point at. Holding it to "a file changed" made every task of that shape
+    // permanently unverifiable, which empties the floor of meaning as surely as
+    // letting exit code zero through does.
+    const result = validate({
+      evidence: { ...base, durableOutcomeIds: ['finding:root-cause'] },
+      contract: { qualityFloor: 0.4, requiredChecks: [], allowedUncertainty: 0.6 },
+    });
+    expect(result.level).toBe('V1');
+    expect(result.passed).toBe(true);
+    expect(result.evidenceIds).toContain('finding:root-cause');
+  });
+
+  it('still refuses a run that produced no durable outcome at all', () => {
+    const result = validate({ evidence: base });
+    expect(result.passed).toBe(false);
+    expect(result.reasonCodes).toContain('V1:no_durable_outcome');
+  });
+
+  it('counts artifacts and findings together', () => {
+    const result = validate({
+      evidence: { ...base, artifactIds: ['artifact-1'], durableOutcomeIds: ['finding:1'] },
+      contract: { qualityFloor: 0.4, requiredChecks: [], allowedUncertainty: 0.6 },
+    });
+    expect(result.evidenceIds).toEqual(['artifact-1', 'finding:1']);
+  });
+});

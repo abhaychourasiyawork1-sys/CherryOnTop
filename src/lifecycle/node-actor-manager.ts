@@ -77,8 +77,9 @@ import {
 } from './economic-runtime.js';
 import { tombstoneFor } from '../recovery/engine.js';
 import { evaluateFallback, mustBlockAction, detectFaults } from '../decision/fallback.js';
-import { validate, type ValidationEvidence } from '../validation/engine.js';
+import { validate, type ValidationEvidence, type ValidationResult } from '../validation/engine.js';
 import { contractFor } from '../validation/contract.js';
+import { validationProfileFor, contractForProfile, meetsMinimumLevel } from '../validation/profile.js';
 import { taskEconomicsFor } from '../efficiency/task-economics.js';
 import { requestEvidenceAtBoundary, renderAcquiredEvidence } from '../context/evidence-actions.js';
 import type { ActionDecision } from '../decision/actions.js';
@@ -1562,6 +1563,8 @@ function productionMachine(db: Db, nodeId: string) {
         publish({ id: decisionEventId, nodeId, type: 'decision.made', payload: decisionPayload, createdAt: decidedAt });
         return result;
       }),
+      validate: fromPromise(async ({ input }: { input: { nodeId: string; goal: string; succeeded: boolean } }) =>
+        runValidation(db, input.nodeId, input.succeeded)),
       escalate: fromPromise(async ({ input }: { input: { nodeId: string; reason: string } }) =>
         escalate(input.nodeId, input.reason, { insertApproval: (record) => insertApproval(db, record) }),
       ),
@@ -1706,6 +1709,15 @@ function productionMachine(db: Db, nodeId: string) {
           // for a report, and without this the node would finish having said
           // nothing.
           publishAnswer(db, nodeId, cached.text);
+          // The reused answer is a durable outcome of *this* node, and has to
+          // be recorded as one: validation reads artifacts, and a run that
+          // produced nothing on disk because it produced nothing at all and a
+          // run that skipped the work because the answer was already in hand
+          // must not look identical to it.
+          insertArtifact(db, {
+            id: randomUUID(), nodeId, eventId: null, createdAt: new Date().toISOString(),
+            kind: 'result', path: null, summary: `reused a prior answer to this exact question ($0.0000)`,
+          });
           // Counted as work avoided, not work done.
           recordUsage(db, {
             nodeId, role: 'execute:cache-hit', model: usedModel ?? null,
@@ -1981,7 +1993,19 @@ function recordOutcomeInMemory(db: Db, nodeId: string, succeeded: boolean, now: 
  *  table, the run's own tool stream, the definition of done. No new telemetry,
  *  which is what makes validation at V0-V2 cost nothing. */
 function validationEvidenceFor(db: Db, nodeId: string, succeeded: boolean): ValidationEvidence {
-  const artifacts = listArtifactsForNode(db, nodeId).filter((a) => a.kind !== 'result');
+  const all = listArtifactsForNode(db, nodeId);
+  const artifacts = all.filter((a) => a.kind !== 'result');
+  // An investigation's deliverable *is* its report: there is no file to point
+  // at, and treating "a file changed" as the only durable outcome made every
+  // read-only task permanently unverifiable — a task family whose floor can
+  // never be cleared is a task family whose floor stops meaning anything.
+  //
+  // Read-only only, deliberately. For work that was supposed to change
+  // something, "the agent wrote a summary" is the claim, not evidence for it,
+  // and accepting it there is the empty-patch success this whole ladder exists
+  // to refuse.
+  const readOnly = taskEconomicsFor(getNode(db, nodeId)?.contract.goal ?? '').readOnly;
+  const durableOutcomeIds = readOnly ? all.filter((a) => a.kind === 'result').map((a) => a.id) : [];
   const snapshot = executionSnapshot({
     events: listEventsForNode(db, nodeId)
       .filter((row) => row.type.startsWith('exec.'))
@@ -2003,6 +2027,7 @@ function validationEvidenceFor(db: Db, nodeId: string, succeeded: boolean): Vali
   return {
     claimedSuccess: succeeded,
     artifactIds: artifacts.map((a) => a.id),
+    durableOutcomeIds,
     observedChecks,
     requiredChecks: listDodForNode(db, nodeId).map((item) => ({
       id: item.id, text: item.text, met: item.state === 'met',
@@ -2049,34 +2074,71 @@ function recordEfficiency(db: Db, nodeId: string, outcome: EfficiencyOutcome): v
  *  stops at V2 — a green check in the run's own trace. Recorded as
  *  `V3:no_verifier` rather than silently, so the ceiling is visible in the
  *  telemetry rather than inferred from its absence. */
+function runValidation(db: Db, nodeId: string, succeeded: boolean): ValidationResult {
+  const node = getNode(db, nodeId);
+  const goal = node?.contract.goal ?? '';
+  // Closed *here*, not at the terminal transition, and the ordering is
+  // load-bearing: validation reads the definition of done, so a definition
+  // still sitting at `unverified` makes every named check look unmet and every
+  // run fail. Reversed, it launders "the process exited 0" into "the work was
+  // done". Neither is acceptable, so the checklist is ruled against what the
+  // run actually produced, immediately before the evidence is read.
+  closeDefinitionOfDone(db, nodeId, succeeded ? 'COMPLETE' : 'FAILED', new Date().toISOString());
+
+  // What this particular task needs proving, and to what level. The profile
+  // may raise the floor — delegated work, a wide change, a task already on its
+  // second attempt — and human-named checks raise it independently.
+  const profile = validationProfileFor({
+    strategy: listNodes(db).some((child) => child.parentId === nodeId) ? 'SERIAL_DELEGATED' : 'MANAGED',
+    economics: taskEconomicsFor(goal),
+    requiredChecks: node?.contract.definition_of_done ?? [],
+    // No fresh verifier: re-running a repository's suite from inside the daemon
+    // is a capability this runtime does not have. Recorded as `V3:no_verifier`
+    // rather than silently, so the ceiling is visible in the telemetry rather
+    // than inferred from its absence.
+    freshVerifierAvailable: false,
+  });
+
+  const result = validate({
+    evidence: validationEvidenceFor(db, nodeId, succeeded),
+    contract: contractForProfile(profile),
+  });
+
+  // The level floor and the confidence floor can disagree, and when they do the
+  // level wins: a task that demanded an observed check and got an artifact has
+  // not been verified, however confident the arithmetic became.
+  const levelOk = meetsMinimumLevel(profile, result.level);
+  const gated: ValidationResult = levelOk ? result : {
+    ...result, passed: false,
+    reasonCodes: [...result.reasonCodes, `below_minimum_level:${profile.minimumLevel}`],
+  };
+
+  const now = new Date().toISOString();
+  const payload = {
+    level: gated.level, passed: gated.passed, confidence: gated.confidence,
+    tokens: gated.tokens, latencyMs: gated.latencyMs,
+    evidenceIds: gated.evidenceIds, reasonCodes: gated.reasonCodes,
+    minimumLevel: profile.minimumLevel, riskReasons: profile.riskReasons,
+  };
+  const id = appendEvent(db, { nodeId, type: 'validation.result', payload, createdAt: now });
+  publish({ id, nodeId, type: 'validation.result', payload, createdAt: now });
+  return gated;
+}
+
+/** The stored verdict for this node, or a fresh one if the machine never
+ *  reached VALIDATE (a cancelled or crashed run).
+ *
+ *  Total: unreadable evidence must not manufacture a success. It also must not
+ *  manufacture a failure of the *run* — the caller downgrades to partial, which
+ *  is the honest reading of "it finished and we cannot say whether it worked". */
 function recordValidation(db: Db, nodeId: string): boolean {
   try {
-    const node = getNode(db, nodeId);
-    // From how much this task was judged to need proving, not from a global
-    // constant. A typo fix is satisfied by having produced something; a bug fix
-    // demands a green check. The signal is the one the context planner already
-    // derives, so there is one answer to "how much does this need verifying".
-    const result = validate({
-      evidence: validationEvidenceFor(db, nodeId, true),
-      contract: contractFor({
-        verificationNeed: taskEconomicsFor(node?.contract.goal ?? '').verificationNeed,
-        requiredChecks: node?.contract.definition_of_done ?? [],
-      }),
-    });
-    const now = new Date().toISOString();
-    const payload = {
-      level: result.level, passed: result.passed, confidence: result.confidence,
-      tokens: result.tokens, latencyMs: result.latencyMs,
-      evidenceIds: result.evidenceIds, reasonCodes: result.reasonCodes,
-    };
-    const id = appendEvent(db, { nodeId, type: 'validation.result', payload, createdAt: now });
-    publish({ id, nodeId, type: 'validation.result', payload, createdAt: now });
-    return result.passed;
+    const stored = listEventsForNode(db, nodeId)
+      .filter((row) => row.type === 'validation.result')
+      .at(-1);
+    if (stored) return (stored.payload as { passed?: boolean }).passed === true;
+    return runValidation(db, nodeId, true).passed;
   } catch (err) {
-    // Unreadable evidence must not manufacture a success. It also must not
-    // manufacture a failure of the *run* — the caller downgrades to partial,
-    // which is the honest reading of "it finished and we cannot say whether it
-    // worked".
     console.error(`Failed to validate node ${nodeId}:`, err);
     return false;
   }

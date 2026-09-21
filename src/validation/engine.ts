@@ -46,6 +46,14 @@ export interface ValidationEvidence {
   claimedSuccess: boolean;
   /** Ids of durable things produced: artifacts, edited files. */
   artifactIds: string[];
+  /** Durable results that are not files. A task whose product is an
+   *  understanding — a root cause, a licence inventory, a recommendation —
+   *  produces nothing on disk, and treating "a file changed" as the only
+   *  durable outcome made every investigation permanently unverifiable. That is
+   *  the same "silence is a pass" failure arrived at from the other direction:
+   *  a whole task family that can never clear its floor is a task family whose
+   *  floor stops meaning anything. */
+  durableOutcomeIds?: string[];
   /** Verifying commands observed in the trace, and whether they passed. */
   observedChecks: Array<{ id: string; command: string; passed: boolean }>;
   /** Definition-of-done items and their state. */
@@ -53,7 +61,7 @@ export interface ValidationEvidence {
 }
 
 export const NO_EVIDENCE: ValidationEvidence = {
-  claimedSuccess: false, artifactIds: [], observedChecks: [], requiredChecks: [],
+  claimedSuccess: false, artifactIds: [], durableOutcomeIds: [], observedChecks: [], requiredChecks: [],
 };
 
 /** Runs a check now. Returns null when the capability is not available, which
@@ -85,10 +93,14 @@ function assess(
         ? { available: true, passed: true, evidenceIds: ['claim:run-reported-success'], tokens: 0, latencyMs: 0, reason: 'run_claimed_success' }
         : unavailable('no_success_claim');
 
-    case 'V1':
-      return evidence.artifactIds.length > 0
-        ? { available: true, passed: true, evidenceIds: [...evidence.artifactIds], tokens: 0, latencyMs: 0, reason: 'artifacts_produced' }
-        : unavailable('no_artifacts');
+    case 'V1': {
+      // A durable outcome, not a file. Both count, and neither says the result
+      // is *right* — only that the run produced something that outlives it.
+      const durable = [...evidence.artifactIds, ...(evidence.durableOutcomeIds ?? [])];
+      return durable.length > 0
+        ? { available: true, passed: true, evidenceIds: durable, tokens: 0, latencyMs: 0, reason: 'durable_outcome_produced' }
+        : unavailable('no_durable_outcome');
+    }
 
     case 'V2': {
       if (evidence.observedChecks.length === 0) return unavailable('no_observed_verification');
@@ -210,4 +222,35 @@ export function validate(input: ValidateInput): ValidationResult {
  *  that forgets to ask is a caller that never claims success at all. */
 export function canClaimSuccess(result: ValidationResult): boolean {
   return result.passed;
+}
+
+/** Where the lifecycle goes once validation has spoken.
+ *
+ *  The one place `EXECUTION_FINISHED` is turned into a next state, and the
+ *  reason `COMPLETE` cannot be reached from execution success alone. A run that
+ *  finished and could not prove it worked is not a success and is not
+ *  necessarily a failure either — it is a candidate for recovery, until the
+ *  attempts run out.
+ *
+ *  Total and pure, so the transition can be tested without a state machine. */
+export interface ValidationTransitionInput {
+  executionSucceeded: boolean;
+  validation: ValidationResult;
+  executionAttempts: number;
+  /** Refusals retrying cannot fix. A rate-limited dispatch does not become
+   *  affordable a few minutes later, and burning the remaining attempts on it
+   *  was a measured cost. */
+  retriable?: boolean;
+  maxExecutionAttempts?: number;
+}
+
+export const MAX_EXECUTION_ATTEMPTS = 3;
+
+export function nextAfterValidation(input: ValidationTransitionInput): 'COMPLETE' | 'RECOVER' | 'FAILED' {
+  // Validation is the only door into COMPLETE. Execution success is a
+  // necessary condition, never a sufficient one.
+  if (input.executionSucceeded && canClaimSuccess(input.validation)) return 'COMPLETE';
+  if (input.retriable === false) return 'FAILED';
+  const cap = input.maxExecutionAttempts ?? MAX_EXECUTION_ATTEMPTS;
+  return input.executionAttempts < cap ? 'RECOVER' : 'FAILED';
 }

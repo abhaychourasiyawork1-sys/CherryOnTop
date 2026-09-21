@@ -32,6 +32,8 @@ const { insertNode, getNode } = await import('../db/queries/nodes.js');
 const { startNodeActor, cancelSubtree } = await import('./node-actor-manager.js');
 const { executeStep } = await import('../execution/execute-step.js');
 const { ZERO_USAGE } = await import('../execution/tokens.js');
+import type { StructuredEvent } from '../adapters/adapter.js';
+const { successfulRunEvents } = await import('./run-fixtures.js');
 
 const stub = executeStep as unknown as Mock;
 const TEST_DB = './test-dispatch-cancelled.db';
@@ -71,11 +73,13 @@ describe('a dispatch whose node was cancelled while queued', () => {
     const dispatched: string[] = [];
     let releaseFirst: () => void = () => {};
     const firstIsRunning = new Promise<void>((resolve) => {
-      stub.mockImplementation(async (input: { nodeId: string }) => {
+      stub.mockImplementation(async (input: { nodeId: string; onEvent?: (event: StructuredEvent) => void }) => {
         dispatched.push(input.nodeId);
         resolve();
         await new Promise<void>((release) => { releaseFirst = release; });
-        return { succeeded: true, message: 'done', events: [], usage: { ...ZERO_USAGE } };
+        const events = successfulRunEvents({ editedPath: '/workspace/README.md' });
+        for (const event of events) input.onEvent?.(event);
+        return { succeeded: true, message: 'done', events, usage: { ...ZERO_USAGE } };
       });
     });
 

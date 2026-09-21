@@ -5,11 +5,15 @@ import type { ExecuteStepResult } from '../execution/execute-step.js';
 import type { IntelligenceBundle } from '../intelligence/coordinator.js';
 import type { DecideExecutionResult } from '../engines/decide-execution.js';
 import { ZERO_USAGE } from '../execution/tokens.js';
+import type { ValidationResult } from '../validation/engine.js';
 
 function machineWithMocks(overrides: {
   assessUncertainty?: Partial<IntelligenceBundle> & { sufficientContext: boolean; complexity: 'low' | 'medium' | 'high' };
   decideExecution?: { outcome: 'SELF_EXECUTE' | 'DELEGATE' | 'ESCALATE'; breakdown: Record<string, number> };
   executeStep?: { succeeded: boolean; rateLimited?: boolean };
+  /** What validation concluded. Defaults to a passing V2 — these tests are
+   *  about the machine's shape, and the gate itself has its own file. */
+  validation?: Partial<ValidationResult>;
 } = {}) {
   return nodeMachine.provide({
     actors: {
@@ -21,6 +25,11 @@ function machineWithMocks(overrides: {
       executeStep: fromPromise(async (): Promise<ExecuteStepResult> => ({ message: 'ok', events: [], usage: { ...ZERO_USAGE }, ...(overrides.executeStep ?? { succeeded: true }) })),
       delegateToChild: fromPromise(async (): Promise<ExecuteStepResult> => ({ succeeded: true, message: 'ok', events: [], usage: { ...ZERO_USAGE } })),
       escalate: fromPromise(async () => 'approval-1'),
+      validate: fromPromise(async (): Promise<ValidationResult> => ({
+        level: 'V2', passed: true, confidence: 0.85, tokens: 0, latencyMs: 0,
+        evidenceIds: ['observed:npm test'], reasonCodes: ['V2:observed_verification_passed'],
+        ...(overrides.validation ?? {}),
+      })),
     },
   });
 }
@@ -160,6 +169,10 @@ describe('nodeMachine', () => {
           return { succeeded: true, message: 'ok', events: [], usage: { ...ZERO_USAGE } };
         }),
         escalate: fromPromise(async () => 'approval-1'),
+        validate: fromPromise(async (): Promise<ValidationResult> => ({
+          level: 'V2', passed: true, confidence: 0.85, tokens: 0, latencyMs: 0,
+          evidenceIds: ['observed:npm test'], reasonCodes: ['V2:observed_verification_passed'],
+        })),
       },
     });
 

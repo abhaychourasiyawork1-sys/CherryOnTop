@@ -16,6 +16,7 @@ import {
 } from './economic-runtime.js';
 import type { ExecuteStepInput, ExecuteStepResult } from '../execution/execute-step.js';
 import { ZERO_USAGE } from '../execution/tokens.js';
+import { successfulRunEvents, reportedSuccessWithNoEvidence, replayInto } from './run-fixtures.js';
 import { actionCandidate } from '../decision/actions.js';
 import { dispatchContextFor } from '../context/dispatch-context-cache.js';
 import { withRepoContext } from '../intelligence/repo-map.js';
@@ -48,7 +49,19 @@ function tmpRepo(): string {
 
 const OK: ExecuteStepResult = {
   succeeded: true, message: 'done',
-  events: [{ type: 'result', payload: { is_error: false, result: 'fixed it' } }],
+  // Validation is the only door into COMPLETE, so a fixture standing in for a
+  // *successful* dispatch has to carry what a successful dispatch produces: the
+  // edit it made and the check that went green.
+  events: successfulRunEvents({
+    editedPath: '/workspace/src/cart/checkout.ts', verifyCommand: 'npm test', result: 'fixed it',
+  }),
+  usage: { ...ZERO_USAGE },
+};
+
+/** Reported success, produced nothing. */
+const NO_EVIDENCE_RUN: ExecuteStepResult = {
+  succeeded: true, message: 'done',
+  events: reportedSuccessWithNoEvidence('fixed it'),
   usage: { ...ZERO_USAGE },
 };
 
@@ -172,7 +185,7 @@ describe('the agent executes unchanged when there is no opportunity', () => {
     const db = createDb(TEST_DB);
     const repo = tmpRepo();
     const calls: ExecuteStepInput[] = [];
-    stub.mockImplementation(async (input: ExecuteStepInput) => { calls.push(input); return OK; });
+    stub.mockImplementation(async (input: ExecuteStepInput) => { calls.push(input); return replayInto(input, OK); });
 
     const id = seedNode(db, repo);
     startNodeActor(db, id, GOAL);
@@ -192,7 +205,7 @@ describe('the agent executes unchanged when there is no opportunity', () => {
     const db = createDb(TEST_DB);
     const repo = tmpRepo();
     const calls: ExecuteStepInput[] = [];
-    stub.mockImplementation(async (input: ExecuteStepInput) => { calls.push(input); return OK; });
+    stub.mockImplementation(async (input: ExecuteStepInput) => { calls.push(input); return replayInto(input, OK); });
 
     const id = seedNode(db, repo);
     startNodeActor(db, id, GOAL);
@@ -204,7 +217,7 @@ describe('the agent executes unchanged when there is no opportunity', () => {
 
   it('records what looking cost even when it decided nothing', async () => {
     const db = createDb(TEST_DB);
-    stub.mockImplementation(async () => OK);
+    stub.mockImplementation(async (input: ExecuteStepInput) => replayInto(input, OK));
     const id = seedNode(db, tmpRepo());
     startNodeActor(db, id, GOAL);
     await vi.waitFor(() => expect(getNode(db, id)?.state).toBe('COMPLETE'), { timeout: 10_000 });
@@ -343,39 +356,41 @@ describe('the recovery flag', () => {
 });
 
 describe('a finished execution is not a successful task', () => {
-  it('records a run with no evidence as partial rather than success', async () => {
+  it('refuses to complete a run that reported success and produced nothing', async () => {
+    // The whole point of the ladder, and now of the lifecycle: the runtime said
+    // it worked and nothing checked. `EXECUTION_FINISHED` is a fact about a
+    // process; `TASK_SUCCESS` is a claim about the world, and this claim has
+    // nothing behind it. Before validation gated COMPLETE, this run was
+    // recorded as complete and quietly downgraded to `partial` in the ledger —
+    // so the success count the primary metric divides by included it.
     const db = createDb(TEST_DB);
-    stub.mockImplementation(async () => OK);
+    stub.mockImplementation(async (input: ExecuteStepInput) => replayInto(input, NO_EVIDENCE_RUN));
     const id = seedNode(db, tmpRepo());
     startNodeActor(db, id, GOAL);
-    await vi.waitFor(() => expect(getNode(db, id)?.state).toBe('COMPLETE'), { timeout: 10_000 });
+    await vi.waitFor(() => expect(getNode(db, id)?.state).toBe('FAILED'), { timeout: 20_000 });
 
     const verdicts = listEventsForNode(db, id).filter((e) => e.type === 'validation.result');
-    expect(verdicts).toHaveLength(1);
-    const verdict = verdicts[0].payload as { passed: boolean; level: string; reasonCodes: string[] };
-    // The runtime said it worked and nothing checked. That claim is exactly what
-    // the ladder refuses to launder into a success.
+    expect(verdicts.length).toBeGreaterThan(0);
+    const verdict = verdicts.at(-1)!.payload as { passed: boolean; level: string; reasonCodes: string[] };
     expect(verdict.passed).toBe(false);
 
-    const records = listEventsForNode(db, id);
-    expect(records).toBeDefined();
     const efficiency = (await import('../db/queries/memory.js')).listMemory(db, 'efficiency_record');
-    expect((efficiency[0].value as { outcome: string }).outcome).toBe('partial');
-  });
+    expect((efficiency[0].value as { outcome: string }).outcome).toBe('failure');
+  }, 30_000);
 
   it('names the ceiling it stopped at rather than leaving it to be inferred', async () => {
     const db = createDb(TEST_DB);
-    stub.mockImplementation(async () => OK);
+    stub.mockImplementation(async (input: ExecuteStepInput) => replayInto(input, NO_EVIDENCE_RUN));
     const id = seedNode(db, tmpRepo());
     startNodeActor(db, id, GOAL);
-    await vi.waitFor(() => expect(getNode(db, id)?.state).toBe('COMPLETE'), { timeout: 10_000 });
+    await vi.waitFor(() => expect(getNode(db, id)?.state).toBe('FAILED'), { timeout: 20_000 });
 
     const verdict = listEventsForNode(db, id)
       .filter((e) => e.type === 'validation.result')[0].payload as { reasonCodes: string[] };
     // This runtime cannot re-run a repository's tests from inside the daemon,
     // so the ladder stops at V2 — and says so.
     expect(verdict.reasonCodes).toContain('V3:no_verifier');
-  });
+  }, 30_000);
 });
 
 describe('validation sees a settled definition of done', () => {
