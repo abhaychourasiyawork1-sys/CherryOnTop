@@ -23,7 +23,7 @@
 - Retries consume the same decision budget.
 - State version and request digest prevent stale answers from being applied.
 - Preserve proven, documented components by default.
-- Removing a proven component requires an invariant test, replacement evidence, and benchmark evidence for material runtime behavior.
+- Removal of a proven component requires an invariant test, replacement evidence, and benchmark evidence for material runtime behavior.
 - Do not remove useful evidence extraction, accounting, safety, or lifecycle machinery just to reduce code size.
 
 ## Review Focus
@@ -265,6 +265,8 @@ This is explicit identity calibration, not shadow execution.
 ---
 
 ## Task 6 — Add the Model-Facing Private Decision Protocol
+
+**Tests / unit-test plan:** parser and gateway unit tests must cover chunk boundaries, malformed frames, unsupported primitives, duplicate IDs, oversized requests, transcript scrubbing, deduplication, and budget rejection.
 
 **Purpose:** The model should be able to say, in one easy operation, "I need a bounded external judgment."
 
@@ -570,6 +572,8 @@ Prefer the existing decisions JSON payload over a new table unless an actual que
 
 ## Task 14 — Add the Preservation Evidence Gate
 
+**Goal / what good looks like:** Every contested removal has a named invariant, characterization test, replacement test, and benchmark evidence when runtime behavior changes materially.
+
 **Purpose:** The implementer is allowed to critique architecture but must not erase proven behavior without evidence.
 
 **Targets:** Prevents "cleaner" architecture from losing useful safety/efficiency mechanisms.
@@ -614,6 +618,8 @@ If evidence is inconclusive, keep the proven component and narrow its responsibi
 
 ## Task 15 — Full Deterministic Integration + Opt-In Live Tests
 
+**Goal / what good looks like:** The complete private-decision round trip passes with a fake provider, while live provider tests remain isolated and opt-in.
+
 **Purpose:** Unit tests cannot prove that parser, session, provider, receipt, and lifecycle wiring work together.
 
 **Targets:** Complete runtime correctness.
@@ -654,6 +660,8 @@ npm run build
 ---
 
 ## Task 16 — Benchmark Complete CherryOnTop + Laya vs Claude Code
+
+**Goal / what good looks like:** Identical workloads yield raw, reproducible whole-harness results plus System-1 diagnostics, with outliers inspectable rather than hidden by averages.
 
 **Purpose:** The actual objective is whole-harness performance.
 
@@ -715,6 +723,8 @@ model-initiated decision request
 ---
 
 ## Task 17 — Final Spec/Plan/Implementation Consistency Review
+
+**Tests / unit-test plan:** Run the full unit suite plus typecheck/build and then execute the targeted benchmark cases; the final review must trace every spec invariant to an implementation owner and test.
 
 **Purpose:** Prevent architectural drift after real code changes.
 
