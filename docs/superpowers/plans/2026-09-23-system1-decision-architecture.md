@@ -521,6 +521,8 @@ Do not choose arbitrary "confidence thresholds" as substitutes for these determi
 
 ## Task 13 — Persist Receipts and Account for System-1 Cost
 
+**Goal / what good looks like:** Existing decision/event persistence carries complete System-1 provenance and cost exactly once while current queries and transcript behavior remain intact.
+
 **Purpose:** Existing decisions/events are already the audit channel. Extend them rather than creating parallel persistence.
 
 **Targets:** Reproducibility, cost attribution, benchmark interpretation, TUI/GUI explainability.
@@ -667,6 +669,8 @@ npm run build
 
 **Targets:** Prove or disprove that System-1 produces net benefit rather than isolated model-quality improvement.
 
+**Tests / unit-test plan:** Use deterministic benchmark fixtures plus per-run assertions for metric completeness, System-1 attribution, reproducibility, and outlier visibility.
+
 **Files:**
 - Modify bench/run.mjs
 - Modify bench/deterministic.mjs
@@ -734,9 +738,11 @@ model-initiated decision request
 - Modify spec only for evidence-backed architectural changes
 - Modify plan only for concrete interface/task changes discovered during implementation
 
+**Targets:** Prevent spec/plan/implementation drift and make every architectural invariant traceable to code and tests.
+
 **Review:**
 - [ ] every spec section maps to implementation tasks
-- [ ] no placeholders/TODO-style vague steps remain
+- [ ] no placeholder-style vague steps remain
 - [ ] provider contract names/types are consistent
 - [ ] Laya remains live provider
 - [ ] JEV remains benchmark/provider abstraction
