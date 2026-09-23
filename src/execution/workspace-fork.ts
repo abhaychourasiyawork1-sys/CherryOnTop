@@ -11,9 +11,9 @@
  *  its base is a correctness one.
  */
 import { execFileSync } from 'node:child_process';
-import { existsSync, rmSync } from 'node:fs';
-import { join } from 'node:path';
-import { tmpdir } from 'node:os';
+import { existsSync, mkdirSync, rmSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join, sep } from 'node:path';
 import { createHash } from 'node:crypto';
 
 export interface WorkspaceFork {
@@ -34,12 +34,34 @@ function git(args: string[], cwd: string): string | null {
   }
 }
 
-/** A directory name nobody else will pick, derived from what the fork is *of*
- *  rather than from a clock — so two calls for the same base and revision in
- *  the same run do not collide and do not multiply. */
+/** Where every fork lives: one directory under the user's home, outside any
+ *  git repository.
+ *
+ *  A child's pod gets a fork's path as a `hostPath` volume, and the kind
+ *  cluster this runtime deploys to only bind-mounts `$HOME` into the node
+ *  (see `src/k8s/kind.ts`) — never the OS temp directory, so a fork there
+ *  leaves the child's pod hanging in `ContainerCreating` forever waiting on a
+ *  mount that can never resolve.
+ *
+ *  Not nested inside `basePath`, even though `basePath` is itself always
+ *  under `$HOME` (`org run` refuses any `--repo` outside it): a fork living
+ *  inside the repo it forks is an untracked entry `git status` on that repo
+ *  sees for as long as the fork exists, and `repoDirty` (`src/execution/
+ *  git-state.ts`) gates the plan-cache and dependency-cache on exactly that
+ *  check — a live sibling fork would silently disable both. Anchored here
+ *  instead, a fork is invisible to every repo's own git status, including an
+ *  arbitrary real user repo passed via `--repo` that has no reason to
+ *  `.gitignore` this runtime's bookkeeping. */
+function forksRoot(): string {
+  return join(homedir(), '.org-forks');
+}
+
+/** Where one fork lives, relative to nothing but what it is *of* — so two
+ *  calls for the same base and revision in the same run do not collide and do
+ *  not multiply. */
 function forkPath(basePath: string, revision: string, label: string): string {
   const name = createHash('sha256').update(`${basePath}\0${revision}\0${label}`).digest('hex').slice(0, 16);
-  return join(tmpdir(), `org-fork-${name}`);
+  return join(forksRoot(), `org-fork-${name}`);
 }
 
 /** Forks `basePath` at `revision` into an isolated worktree.
@@ -58,6 +80,7 @@ export function forkWorkspace(basePath: string, revision: string, label: string)
     return { path, basePath, revision: resolved, release: () => releaseFork(basePath, path) };
   }
 
+  mkdirSync(forksRoot(), { recursive: true });
   // `--detach`, so the fork never takes a branch the base might also want.
   const created = git(['worktree', 'add', '--detach', path, resolved], basePath);
   if (created === null || !existsSync(path)) return null;
@@ -82,7 +105,9 @@ export function releaseFork(basePath: string, path: string): void {
 }
 
 /** Whether a path is an isolated fork rather than the base itself. The check a
- *  caller makes before letting a child write. */
+ *  caller makes before letting a child write. `basePath` is unused beyond that
+ *  triviality check — forks no longer live under it — but kept in the
+ *  signature so callers need not know that. */
 export function isFork(basePath: string, path: string): boolean {
-  return path !== basePath && path.startsWith(join(tmpdir(), 'org-fork-'));
+  return path !== basePath && path.startsWith(forksRoot() + sep);
 }

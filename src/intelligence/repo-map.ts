@@ -7,6 +7,14 @@ import { join } from 'node:path';
 // benchmark shows the map is too coarse to help.
 const SYMBOL = /^\s*(?:export\s+)?(?:default\s+)?(?:async\s+)?(?:function|class|interface|type|const\s+[A-Za-z_$][\w$]*\s*=\s*(?:async\s*)?\(|def|func)\s+([A-Za-z_$][\w$]*)/;
 const SOURCE_EXT = /\.(ts|tsx|js|jsx|mjs|cts|mts|py|go|rs|java|rb|c|cc|cpp|h|hpp)$/;
+
+// ponytail: regex import scan on the read the symbol scan already does, not a
+// module resolver. Only *relative* specifiers are kept — a package import says
+// nothing about which file in this repository relates to which, and keeping
+// them would make every file in the tree a neighbour of every other through
+// `node:path`. Resolution to real paths happens in src/context/candidates.ts,
+// where the full file list is known; here we only record what was written.
+const IMPORT = /(?:\bfrom\s*|\bimport\s*|\brequire\s*\(\s*)['"](\.[^'"\n]*)['"]/;
 const CHARS_PER_TOKEN = 4;
 
 function tracked(worktreePath: string): string[] | null {
@@ -19,18 +27,29 @@ function tracked(worktreePath: string): string[] | null {
   }
 }
 
-function symbolsOf(worktreePath: string, file: string): string[] {
+/** The top-level symbols and the relative imports, from one read of the file.
+ *
+ *  One pass for both: the read is the expensive part of the whole scan, and
+ *  doing it twice to answer two questions about the same bytes is the kind of
+ *  cost nobody notices until a repository has ten thousand files in it. */
+function scanFile(worktreePath: string, file: string): { symbols: string[]; imports: string[]; bytes: number } {
   try {
-    const lines = readFileSync(join(worktreePath, file), 'utf8').split('\n');
-    const names: string[] = [];
+    const contents = readFileSync(join(worktreePath, file), 'utf8');
+    const lines = contents.split('\n');
+    const symbols: string[] = [];
+    const imports = new Set<string>();
     for (const line of lines) {
-      const m = SYMBOL.exec(line);
-      if (m?.[1]) names.push(m[1]);
-      if (names.length >= 40) break;
+      const symbol = SYMBOL.exec(line);
+      if (symbol?.[1] && symbols.length < 40) symbols.push(symbol[1]);
+      const dependency = IMPORT.exec(line);
+      if (dependency?.[1] && imports.size < 60) imports.add(dependency[1]);
     }
-    return names;
+    // Free: the scan already holds the file. It is what lets a candidate price
+    // its full-artifact level (L3) without anything reading the file a second
+    // time to find out how big it is.
+    return { symbols, imports: [...imports], bytes: contents.length };
   } catch {
-    return [];
+    return { symbols: [], imports: [], bytes: 0 };
   }
 }
 
@@ -41,6 +60,19 @@ function symbolsOf(worktreePath: string, file: string): string[] {
 export interface RepoEntry {
   path: string;
   symbols: string[];
+  /** Relative import specifiers exactly as written in the file, unresolved.
+   *
+   *  Optional because rows cached by an earlier version do not have it: a
+   *  missing `imports` means "this scan did not look", not "this file imports
+   *  nothing", and every consumer treats it as the absence of evidence rather
+   *  than as evidence of absence. */
+  imports?: string[];
+  /** Size of the file on disk, in characters. Optional for exactly the same
+   *  reason as `imports`, and read for free off a scan that already held the
+   *  contents: it is what lets a context candidate *price* its full-artifact
+   *  level without anything opening the file to find out how big it is.
+   *  Absent means "not priceable", and an unpriceable level is never offered. */
+  bytes?: number;
 }
 
 /** Every tracked file with its symbols, unbudgeted. Empty on any failure, the
@@ -49,10 +81,11 @@ export interface RepoEntry {
 export function buildRepoInventory(worktreePath: string): RepoEntry[] {
   const files = tracked(worktreePath);
   if (!files) return [];
-  return files.map((path) => ({
-    path,
-    symbols: SOURCE_EXT.test(path) ? symbolsOf(worktreePath, path) : [],
-  }));
+  return files.map((path) => {
+    if (!SOURCE_EXT.test(path)) return { path, symbols: [], imports: [] };
+    const { symbols, imports, bytes } = scanFile(worktreePath, path);
+    return { path, symbols, imports, bytes };
+  });
 }
 
 /** A compact, size-bounded view of the repository handed to a child so it can

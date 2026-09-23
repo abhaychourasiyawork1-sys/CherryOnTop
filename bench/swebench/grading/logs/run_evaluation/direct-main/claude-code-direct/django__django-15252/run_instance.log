@@ -1,0 +1,112 @@
+2026-09-21 06:06:38,323 - INFO - Image not found locally, attempting to pull...
+2026-09-21 06:11:32,221 - INFO - Creating container for django__django-15252...
+2026-09-21 06:11:32,500 - INFO - Container for django__django-15252 created: cb85ba86dd156e911a54369bf7548b797e630e2f20bd0ce1a12d98ee3c59b9b0
+2026-09-21 06:11:32,983 - INFO - Container for django__django-15252 started: cb85ba86dd156e911a54369bf7548b797e630e2f20bd0ce1a12d98ee3c59b9b0
+2026-09-21 06:11:32,983 - INFO - Intermediate patch for django__django-15252 written to logs/run_evaluation/direct-main/claude-code-direct/django__django-15252/patch.diff, now applying to container...
+2026-09-21 06:11:33,085 - INFO - >>>>> Applied Patch:
+Checking patch django/db/migrations/recorder.py...
+warning: django/db/migrations/recorder.py has type 100755, expected 100644
+Applied patch django/db/migrations/recorder.py cleanly.
+
+2026-09-21 06:11:33,771 - INFO - Git diff before:
+diff --git a/django/db/migrations/recorder.py b/django/db/migrations/recorder.py
+index 1a37c6b7d0..cfa1d9a87c 100755
+--- a/django/db/migrations/recorder.py
++++ b/django/db/migrations/recorder.py
+@@ -56,12 +56,25 @@ class MigrationRecorder:
+             tables = self.connection.introspection.table_names(cursor)
+         return self.Migration._meta.db_table in tables
+ 
++    def is_managed(self):
++        """
++        Return True if this connection hosts at least one model that the
++        database router allows to be migrated onto it. If not, this
++        connection isn't used for migrations at all, so the migration
++        bookkeeping table shouldn't be created or written to on it either.
++        """
++        return any(self.connection.introspection.get_migratable_models())
++
+     def ensure_schema(self):
+         """Ensure the table exists and has the correct schema."""
+         # If the table's there, that's fine - we've never changed its schema
+         # in the codebase.
+         if self.has_table():
+             return
++        # Don't create the table on a connection the router doesn't use for
++        # migrations.
++        if not self.is_managed():
++            return
+         # Make the table
+         try:
+             with self.connection.schema_editor() as editor:
+@@ -83,11 +96,15 @@ class MigrationRecorder:
+ 
+     def record_applied(self, app, name):
+         """Record that a migration was applied."""
++        if not self.has_table() and not self.is_managed():
++            return
+         self.ensure_schema()
+         self.migration_qs.create(app=app, name=name)
+ 
+     def record_unapplied(self, app, name):
+         """Record that a migration was unapplied."""
++        if not self.has_table() and not self.is_managed():
++            return
+         self.ensure_schema()
+         self.migration_qs.filter(app=app, name=name).delete()
+2026-09-21 06:11:33,771 - INFO - Eval script for django__django-15252 written to logs/run_evaluation/direct-main/claude-code-direct/django__django-15252/eval.sh; copying to container...
+2026-09-21 06:11:41,464 - INFO - Test runtime: 7.66 seconds
+2026-09-21 06:11:41,466 - INFO - Test output for django__django-15252 written to logs/run_evaluation/direct-main/claude-code-direct/django__django-15252/test_output.txt
+2026-09-21 06:11:41,514 - INFO - Git diff after:
+diff --git a/django/db/migrations/recorder.py b/django/db/migrations/recorder.py
+index 1a37c6b7d0..cfa1d9a87c 100755
+--- a/django/db/migrations/recorder.py
++++ b/django/db/migrations/recorder.py
+@@ -56,12 +56,25 @@ class MigrationRecorder:
+             tables = self.connection.introspection.table_names(cursor)
+         return self.Migration._meta.db_table in tables
+ 
++    def is_managed(self):
++        """
++        Return True if this connection hosts at least one model that the
++        database router allows to be migrated onto it. If not, this
++        connection isn't used for migrations at all, so the migration
++        bookkeeping table shouldn't be created or written to on it either.
++        """
++        return any(self.connection.introspection.get_migratable_models())
++
+     def ensure_schema(self):
+         """Ensure the table exists and has the correct schema."""
+         # If the table's there, that's fine - we've never changed its schema
+         # in the codebase.
+         if self.has_table():
+             return
++        # Don't create the table on a connection the router doesn't use for
++        # migrations.
++        if not self.is_managed():
++            return
+         # Make the table
+         try:
+             with self.connection.schema_editor() as editor:
+@@ -83,11 +96,15 @@ class MigrationRecorder:
+ 
+     def record_applied(self, app, name):
+         """Record that a migration was applied."""
++        if not self.has_table() and not self.is_managed():
++            return
+         self.ensure_schema()
+         self.migration_qs.create(app=app, name=name)
+ 
+     def record_unapplied(self, app, name):
+         """Record that a migration was unapplied."""
++        if not self.has_table() and not self.is_managed():
++            return
+         self.ensure_schema()
+         self.migration_qs.filter(app=app, name=name).delete()
+2026-09-21 06:11:41,514 - INFO - Grading answer for django__django-15252...
+2026-09-21 06:11:41,522 - INFO - report: {'django__django-15252': {'patch_is_None': False, 'patch_exists': True, 'patch_successfully_applied': True, 'resolved': False, 'infra_failure': False, 'tests_status': {'FAIL_TO_PASS': {'success': [], 'failure': ['test_migrate_test_setting_false_ensure_schema (backends.base.test_creation.TestDbCreationTests)', 'The django_migrations table is not created if there are no migrations']}, 'PASS_TO_PASS': {'success': ['test_mark_expected_failures_and_skips (backends.base.test_creation.TestMarkTests)', 'test_custom_test_name (backends.base.test_creation.TestDbSignatureTests)', 'test_custom_test_name_with_test_prefix (backends.base.test_creation.TestDbSignatureTests)', 'test_default_name (backends.base.test_creation.TestDbSignatureTests)', 'If the current state satisfies the given target, do nothing.', 'Minimize unnecessary rollbacks in connected apps.', 'Minimize rollbacks when target has multiple in-app children.', "mark_expected_failures_and_skips() isn't called unless", 'test_migrate_test_setting_false (backends.base.test_creation.TestDbCreationTests)', 'test_migrate_test_setting_true (backends.base.test_creation.TestDbCreationTests)', 'test_circular_reference (backends.base.test_creation.TestDeserializeDbFromString)', 'test_circular_reference_with_natural_key (backends.base.test_creation.TestDeserializeDbFromString)', 'test_self_reference (backends.base.test_creation.TestDeserializeDbFromString)', 'test_serialize_db_to_string_base_manager (backends.base.test_creation.TestDeserializeDbFromString)', 'test_alter_id_type_with_fk (migrations.test_executor.ExecutorTests)', 'Applying all replaced migrations marks replacement as applied (#24628).', 'An atomic operation is properly rolled back inside a non-atomic', 'Regression test for #22325 - references to a custom user model defined in the', 'executor.detect_soft_applied() detects ManyToManyField tables from an', "Re-planning a full migration of a fully-migrated set doesn't", 'test_migrate_backward_to_squashed_migration (migrations.test_executor.ExecutorTests)', 'A new squash migration will be marked as applied even if all its', 'test_migrate_marks_replacement_unapplied (migrations.test_executor.ExecutorTests)', 'Migrations are applied and recorded atomically.', 'Migrations are not recorded if deferred SQL application fails.', 'Although the MigrationExecutor interfaces allows for mixed migration', 'Applying a non-atomic migration works as expected.', '#24129 - Tests callback process', 'Tests running a simple set of migrations.', 'Tests running a squashed migration from zero (should ignore what it replaces)', 'Tests detection of initial migrations already having been applied.', '#26647 - Unrelated applied migrations should be part of the final', '#24123 - All models of apps being unapplied which are', '#24123 - All models of apps already applied which are'], 'failure': []}, 'FAIL_TO_FAIL': {'success': [], 'failure': []}, 'PASS_TO_FAIL': {'success': [], 'failure': []}}}}
+Result for django__django-15252: resolved: False
+2026-09-21 06:11:41,522 - INFO - Attempting to stop container sweb.eval.django__django-15252.direct-main...
+2026-09-21 06:11:56,950 - INFO - Container sweb.eval.django__django-15252.direct-main stopped successfully.
+2026-09-21 06:11:56,950 - INFO - Attempting to remove container sweb.eval.django__django-15252.direct-main...
+2026-09-21 06:11:57,101 - INFO - Container sweb.eval.django__django-15252.direct-main removed successfully.

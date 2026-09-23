@@ -1,0 +1,50 @@
+diff --git a/sklearn/ensemble/_hist_gradient_boosting/gradient_boosting.py b/sklearn/ensemble/_hist_gradient_boosting/gradient_boosting.py
+index ad6a5a8ca3..70a507d09c 100644
+--- a/sklearn/ensemble/_hist_gradient_boosting/gradient_boosting.py
++++ b/sklearn/ensemble/_hist_gradient_boosting/gradient_boosting.py
+@@ -426,11 +426,15 @@ class BaseHistGradientBoosting(BaseEstimator, ABC):
+ 
+         Scores are computed on validation data or on training data.
+         """
++        if is_classifier(self):
++            y_small_train = self.classes_[y_small_train.astype(int)]
+         self.train_score_.append(
+             self.scorer_(self, X_binned_small_train, y_small_train)
+         )
+ 
+         if self._use_validation_data:
++            if is_classifier(self):
++                y_val = self.classes_[y_val.astype(int)]
+             self.validation_score_.append(
+                 self.scorer_(self, X_binned_val, y_val)
+             )
+diff --git a/sklearn/ensemble/_hist_gradient_boosting/tests/test_gradient_boosting.py b/sklearn/ensemble/_hist_gradient_boosting/tests/test_gradient_boosting.py
+index 1eebdefd52..bd2fd0a8d5 100644
+--- a/sklearn/ensemble/_hist_gradient_boosting/tests/test_gradient_boosting.py
++++ b/sklearn/ensemble/_hist_gradient_boosting/tests/test_gradient_boosting.py
+@@ -132,6 +132,25 @@ def test_early_stopping_classification(data, scoring, validation_fraction,
+         assert gb.n_iter_ == max_iter
+ 
+ 
++@pytest.mark.parametrize('scoring', (None, 'loss', 'accuracy'))
++def test_early_stopping_string_targets(scoring):
++    # Non-regression test for #14710: the scorer used for early stopping
++    # must be able to handle string targets, since y_true was previously
++    # passed to it in its encoded (integer) form while y_pred (produced by
++    # `predict`) is always the original (string) classes.
++    rng = np.random.RandomState(0)
++    n_samples = 100
++    X = rng.randn(n_samples, 10)
++    y = np.array(['x'] * (n_samples // 2) + ['y'] * (n_samples // 2),
++                 dtype=object)
++    gbrt = HistGradientBoostingClassifier(
++        scoring=scoring, n_iter_no_change=5, max_iter=10, random_state=0
++    )
++    gbrt.fit(X, y)
++    predictions = gbrt.predict(X)
++    assert set(predictions) <= {'x', 'y'}
++
++
+ @pytest.mark.parametrize(
+     'scores, n_iter_no_change, tol, stopping',
+     [

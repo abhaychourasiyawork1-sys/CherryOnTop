@@ -30,6 +30,9 @@ const { appendEvent, listEventsForNode } = await import('../db/queries/events.js
 const { startNodeActor } = await import('./node-actor-manager.js');
 const { executeStep } = await import('../execution/execute-step.js');
 const { ZERO_USAGE } = await import('../execution/tokens.js');
+import type { StructuredEvent } from '../adapters/adapter.js';
+const { successfulRunEvents, replayInto } = await import('./run-fixtures.js');
+const { recordDispatchUsage } = await import('../db/queries/tokens.js');
 
 const stub = executeStep as unknown as Mock;
 const TEST_DB = './test-dispatch-budget.db';
@@ -68,13 +71,21 @@ function spend(db: ReturnType<typeof createDb>, nodeId: string, costUsd: number)
   });
 }
 
-const ok = { succeeded: true, message: 'done', events: [], usage: { ...ZERO_USAGE } };
+// A run that changed the file it was asked to change. Validation is the only
+// door into COMPLETE, so a fixture standing in for a successful dispatch has to
+// carry the edit a successful dispatch makes — an empty event stream describes
+// a run that reported success and produced nothing.
+const ok = {
+  succeeded: true, message: 'done',
+  events: successfulRunEvents({ editedPath: '/workspace/README.md' }),
+  usage: { ...ZERO_USAGE },
+};
 
 describe('a dispatch for a node that has spent its budget', () => {
   it('never opens a sandbox, and says why', async () => {
     const db = createDb(TEST_DB);
     const repoPath = mkdtempSync(join(tmpdir(), 'dispatch-budget-'));
-    stub.mockResolvedValue(ok);
+    stub.mockImplementation(async (input: { onEvent?: (event: StructuredEvent) => void }) => replayInto(input, ok));
 
     const id = add(db, repoPath, 1);
     spend(db, id, 1.25);           // already over, before it starts
@@ -84,13 +95,17 @@ describe('a dispatch for a node that has spent its budget', () => {
 
     expect(stub).not.toHaveBeenCalled();
     const progress = listEventsForNode(db, id).filter((e) => e.type === 'step.progress');
-    expect(JSON.stringify(progress)).toMatch(/budget spent/i);
+    // The guard names the money and the amounts, whichever ceiling bound it:
+    // a person reading the transcript has to see that the run stopped on spend
+    // rather than on an error.
+    expect(JSON.stringify(progress)).toMatch(/spend cap reached/i);
+    expect(JSON.stringify(progress)).toMatch(/\$1\.25 of \$1\.00/);
   });
 
   it('still runs a node that is inside its budget, and one nobody costed', async () => {
     const db = createDb(TEST_DB);
     const repoPath = mkdtempSync(join(tmpdir(), 'dispatch-budget-'));
-    stub.mockResolvedValue(ok);
+    stub.mockImplementation(async (input: { onEvent?: (event: StructuredEvent) => void }) => replayInto(input, ok));
 
     const funded = add(db, repoPath, 5);
     spend(db, funded, 1.25);
@@ -102,5 +117,30 @@ describe('a dispatch for a node that has spent its budget', () => {
     startNodeActor(db, funded, GOAL);
     startNodeActor(db, uncosted, GOAL);
     await vi.waitFor(() => expect(stub.mock.calls.length).toBe(2), { timeout: 10_000 });
+  });
+});
+
+describe('the guard at the chokepoint', () => {
+  it('stops on the turn cap even when the node was never costed', async () => {
+    const db = createDb(TEST_DB);
+    const repoPath = mkdtempSync(join(tmpdir(), 'dispatch-budget-'));
+    stub.mockImplementation(async (input: { onEvent?: (event: StructuredEvent) => void }) => replayInto(input, ok));
+
+    const id = add(db, repoPath, 0);
+    // Turns recorded, no cost at all — the shape a runtime that reports no
+    // `total_cost_usd` produces. Money cannot bound this run; turns must, or
+    // the one term whose price grows superlinearly is unbounded.
+    recordDispatchUsage(db, {
+      nodeId: id, role: 'execute', model: null,
+      usage: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, numTurns: 500 },
+      costUsd: 0, createdAt: new Date().toISOString(),
+    });
+
+    startNodeActor(db, id, GOAL);
+    await vi.waitFor(() => expect(getNode(db, id)?.state).toMatch(/COMPLETE|FAILED/), { timeout: 10_000 });
+
+    expect(stub).not.toHaveBeenCalled();
+    const progress = listEventsForNode(db, id).filter((e) => e.type === 'step.progress');
+    expect(JSON.stringify(progress)).toMatch(/turn cap reached/i);
   });
 });

@@ -113,12 +113,13 @@ describe('the planning dispatch', () => {
     const first = await runDelegating(db, repoPath, '[]');
     expect(first.filter(isPlanning)).toHaveLength(1);
 
-    // Same goal, same committed HEAD, so the answer cannot have changed. The
-    // node still executes the work itself — it just does not pay a planner to
-    // repeat "this does not split".
+    // Same goal, same committed HEAD, so the answer cannot have changed — and
+    // an audit is investigative, so it runs read-only and its answer is
+    // result-cache eligible too. The node pays for neither a planner nor a
+    // sandbox the second time: no call at all, planning or execute.
     const second = await runDelegating(db, repoPath, '[]');
     expect(second.filter(isPlanning)).toHaveLength(0);
-    expect(second.length).toBeGreaterThan(0);
+    expect(second).toHaveLength(0);
   });
 
   it('still reuses a real split from the cache', async () => {
@@ -216,7 +217,7 @@ describe('the planning dispatch', () => {
     expect(calls[0].goal).toContain('unrelated.ts');
   });
 
-  it('computes the selection but does not use it in shadow mode', async () => {
+  it('computes the selection but does not use it under Baseline', async () => {
     process.env.ORG_EFFICIENCY_MODE = 'shadow';
     const db = createDb(TEST_DB);
     const calls = await runDelegating(db, tmpRepo(), '[]');

@@ -1,0 +1,85 @@
+2026-09-21 06:19:30,218 - INFO - Creating container for psf__requests-1142...
+2026-09-21 06:19:30,244 - INFO - Container for psf__requests-1142 created: 130cfecc251809087fe0415cff84657a6d1e165502c64396dae4ba7ae79a7bb8
+2026-09-21 06:19:30,378 - INFO - Container for psf__requests-1142 started: 130cfecc251809087fe0415cff84657a6d1e165502c64396dae4ba7ae79a7bb8
+2026-09-21 06:19:30,379 - INFO - Intermediate patch for psf__requests-1142 written to logs/run_evaluation/cherryontop-main/cherryontop/psf__requests-1142/patch.diff, now applying to container...
+2026-09-21 06:19:30,456 - INFO - >>>>> Applied Patch:
+Checking patch requests/models.py...
+Checking patch test_requests.py...
+Applied patch requests/models.py cleanly.
+Applied patch test_requests.py cleanly.
+
+2026-09-21 06:19:30,511 - INFO - Git diff before:
+diff --git a/requests/models.py b/requests/models.py
+index 9926045..4235141 100644
+--- a/requests/models.py
++++ b/requests/models.py
+@@ -386,13 +386,14 @@ class PreparedRequest(RequestEncodingMixin, RequestHooksMixin):
+         self.body = body
+ 
+     def prepare_content_length(self, body):
+-        self.headers['Content-Length'] = '0'
+         if hasattr(body, 'seek') and hasattr(body, 'tell'):
+             body.seek(0, 2)
+             self.headers['Content-Length'] = str(body.tell())
+             body.seek(0, 0)
+         elif body is not None:
+             self.headers['Content-Length'] = str(len(body))
++        elif self.method not in ('GET', 'HEAD'):
++            self.headers['Content-Length'] = '0'
+ 
+     def prepare_auth(self, auth):
+         """Prepares the given HTTP auth data."""
+diff --git a/test_requests.py b/test_requests.py
+index c974e98..e27f6f3 100644
+--- a/test_requests.py
++++ b/test_requests.py
+@@ -58,6 +58,18 @@ class RequestsTestCase(unittest.TestCase):
+         assert pr.body == 'life=42'
+ 
+ 
++    def test_no_content_length_for_bodyless_get(self):
++        req = requests.Request('GET', 'http://kennethreitz.org/').prepare()
++        assert 'Content-Length' not in req.headers
++
++    def test_no_content_length_for_bodyless_head(self):
++        req = requests.Request('HEAD', 'http://kennethreitz.org/').prepare()
++        assert 'Content-Length' not in req.headers
++
++    def test_content_length_for_bodyless_post(self):
++        req = requests.Request('POST', 'http://kennethreitz.org/').prepare()
++        assert req.headers['Content-Length'] == '0'
++
+     def test_path_is_not_double_encoded(self):
+         request = requests.Request('GET', "http://0.0.0.0/get/test case").prepare()
+2026-09-21 06:19:30,511 - INFO - Eval script for psf__requests-1142 written to logs/run_evaluation/cherryontop-main/cherryontop/psf__requests-1142/eval.sh; copying to container...
+2026-09-21 06:19:32,849 - INFO - Test runtime: 2.30 seconds
+2026-09-21 06:19:32,849 - INFO - Test output for psf__requests-1142 written to logs/run_evaluation/cherryontop-main/cherryontop/psf__requests-1142/test_output.txt
+2026-09-21 06:19:32,880 - INFO - Git diff after:
+diff --git a/requests/models.py b/requests/models.py
+index 9926045..4235141 100644
+--- a/requests/models.py
++++ b/requests/models.py
+@@ -386,13 +386,14 @@ class PreparedRequest(RequestEncodingMixin, RequestHooksMixin):
+         self.body = body
+ 
+     def prepare_content_length(self, body):
+-        self.headers['Content-Length'] = '0'
+         if hasattr(body, 'seek') and hasattr(body, 'tell'):
+             body.seek(0, 2)
+             self.headers['Content-Length'] = str(body.tell())
+             body.seek(0, 0)
+         elif body is not None:
+             self.headers['Content-Length'] = str(len(body))
++        elif self.method not in ('GET', 'HEAD'):
++            self.headers['Content-Length'] = '0'
+ 
+     def prepare_auth(self, auth):
+         """Prepares the given HTTP auth data."""
+2026-09-21 06:19:32,880 - INFO - Git diff changed after running eval script
+2026-09-21 06:19:32,880 - INFO - Grading answer for psf__requests-1142...
+2026-09-21 06:19:32,882 - INFO - report: {'psf__requests-1142': {'patch_is_None': False, 'patch_exists': True, 'patch_successfully_applied': True, 'resolved': True, 'infra_failure': False, 'tests_status': {'FAIL_TO_PASS': {'success': ['test_requests.py::RequestsTestCase::test_no_content_length'], 'failure': []}, 'PASS_TO_PASS': {'success': ['test_requests.py::RequestsTestCase::test_basic_building', 'test_requests.py::RequestsTestCase::test_entry_points', 'test_requests.py::RequestsTestCase::test_invalid_url', 'test_requests.py::RequestsTestCase::test_params_are_added_before_fragment', 'test_requests.py::RequestsTestCase::test_path_is_not_double_encoded'], 'failure': []}, 'FAIL_TO_FAIL': {'success': [], 'failure': []}, 'PASS_TO_FAIL': {'success': [], 'failure': []}}}}
+Result for psf__requests-1142: resolved: True
+2026-09-21 06:19:32,882 - INFO - Attempting to stop container sweb.eval.psf__requests-1142.cherryontop-main...
+2026-09-21 06:19:48,201 - INFO - Container sweb.eval.psf__requests-1142.cherryontop-main stopped successfully.
+2026-09-21 06:19:48,201 - INFO - Attempting to remove container sweb.eval.psf__requests-1142.cherryontop-main...
+2026-09-21 06:19:48,364 - INFO - Container sweb.eval.psf__requests-1142.cherryontop-main removed successfully.

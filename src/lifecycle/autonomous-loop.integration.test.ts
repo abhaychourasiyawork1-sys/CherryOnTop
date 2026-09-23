@@ -51,7 +51,7 @@ describe.skipIf(!CLUSTER_AVAILABLE)('autonomous lifecycle, real cluster', () => 
 
     // START is the only input. INTELLIGENCE_GATE, EXECUTION_DECISION, SELF_EXECUTE
     // (a genuine K8s Job round-trip) and VERIFY all resolve themselves.
-    const result = await waitForNodeCompletion('auto-1', 240_000);
+    const result = await waitForNodeCompletion(db, 'auto-1', 240_000);
     expect(result.succeeded).toBe(true);
     // The persisted state, not the actor: a finished actor is evicted from the
     // registry, and the DB row is the durable record either way.

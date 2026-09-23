@@ -32,6 +32,8 @@ const { tokensByRole } = await import('../db/queries/tokens.js');
 const { startNodeActor } = await import('./node-actor-manager.js');
 const { executeStep } = await import('../execution/execute-step.js');
 const { ZERO_USAGE } = await import('../execution/tokens.js');
+const { replayInto } = await import('./run-fixtures.js');
+import type { StructuredEvent } from '../adapters/adapter.js';
 
 const stub = executeStep as unknown as Mock;
 const TEST_DB = './test-result-reuse.db';
@@ -62,7 +64,14 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-beforeEach(() => { stub.mockResolvedValue(REPORT); });
+// The dispatch streams its events as they arrive, and the manager derives
+// artifacts and observations from that stream — so a stub that only *returns*
+// them describes a run the runtime never saw do anything, which validation
+// then cannot distinguish from a run that did nothing.
+beforeEach(() => {
+  stub.mockImplementation(async (input: { onEvent?: (event: StructuredEvent) => void }) =>
+    replayInto(input, REPORT));
+});
 
 /** A real git repository with a real commit: the cache keys on committed HEAD
  *  and refuses a dirty tree, so a fake path would only ever test the miss. */

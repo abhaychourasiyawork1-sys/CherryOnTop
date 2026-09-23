@@ -109,7 +109,7 @@ describe('the rollout switch', () => {
     expect(of('Review the codebase and find bugs. Do not modify anything.').worthSplitting).toBe(true);
   });
 
-  it('records the new signals even in shadow mode, where it does not act on them', () => {
+  it('records the new signals under Baseline, where it does not act on them', () => {
     process.env.ORG_EFFICIENCY_MODE = 'shadow';
     const shadow = of('Review the codebase and find bugs. Do not modify anything.');
     expect(shadow.worthSplitting).toBe(true);

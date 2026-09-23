@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
+import { execFileSync } from 'node:child_process';
 import { createActor, fromPromise, waitFor, type Actor } from 'xstate';
-import { nodeMachine, type NodeMachineEvent } from './node-machine.js';
+import { nodeMachine, type NodeMachineEvent, type ValidationVerdict } from './node-machine.js';
 import type { Db } from '../db/client.js';
 import { updateNodeState, getNode, insertNode, listNodes, setNodeRuntime } from '../db/queries/nodes.js';
 import { appendEvent, listEventsForNode } from '../db/queries/events.js';
@@ -25,7 +26,7 @@ import { buildPlanPrompt, parseSubgoals } from '../intelligence/plan.js';
 import { buildSynthesisPrompt, type ChildReport } from '../intelligence/synthesize.js';
 import { decideIntegration } from '../intelligence/integrate-results.js';
 import { answerOf } from '../db/queries/answers.js';
-import { recordRunOutcome, getRuntimeStats } from '../db/queries/memory.js';
+import { recordRunOutcome, getRuntimeStats, recordStrategyOutcome, listMemory } from '../db/queries/memory.js';
 import { getCostForNodes } from '../db/queries/stats.js';
 import { resolveCredentials, checkCredentials } from '../execution/credentials.js';
 import { sandboxLimiter, maxConcurrentFromEnv, CRITICAL_PATH } from '../execution/dispatch-limit.js';
@@ -38,13 +39,16 @@ import { deleteNodeNetworkPolicy, deleteNodeJobs } from '../k8s/cleanup.js';
 import { subtreeNodeIds } from '../db/queries/nodes.js';
 import { allowedTools, isReadOnly } from '../engines/enforce-tools.js';
 import type { Authority } from '../schemas/node-contract.js';
-import type { ToolGrant, RuntimeAdapter } from '../adapters/adapter.js';
+import { forkWorkspace, type WorkspaceFork } from '../execution/workspace-fork.js';
+import type { ToolGrant, RuntimeAdapter, StructuredEvent } from '../adapters/adapter.js';
 import { setNodeSnapshot, clearNodeSnapshot } from '../db/queries/nodes.js';
 import { insertDodItems, listDodForNode, setDodState } from '../db/queries/dod.js';
-import { dispatchOptionsFor, planCacheTtlHours, repoMapTokenBudget, rolePromptsEnabled, efficiencyMode, resultCacheTtlHours, type DispatchRole } from '../config/efficiency.js';
+import { dispatchOptionsFor, planCacheTtlHours, repoMapTokenBudget, rolePromptsEnabled, runtimeMode, resultCacheTtlHours, type DispatchRole } from '../config/efficiency.js';
 import { routeModel } from '../intelligence/model-router.js';
 import { assessDecomposition } from '../intelligence/decompose.js';
-import { repoHead, repoDirty } from '../execution/git-state.js';
+import { repoHead, repoDirty, repoIdentity } from '../execution/git-state.js';
+import { putKnowledge } from '../evidence/store.js';
+import { extractAnchors } from '../efficiency/task-economics.js';
 import { planCacheKey, getCachedPlan, putCachedPlan } from '../db/queries/plan-cache.js';
 import { resultCacheKey, getCachedResult, putCachedResult } from '../db/queries/result-cache.js';
 import { dependenciesFromEvents, buildDependencyFingerprint, dependenciesValid } from '../context/dependencies.js';
@@ -53,14 +57,38 @@ import { buildAgentEnvelope, renderEnvelope, EnvelopeError } from '../intelligen
 import { putAgentEnvelope, getAgentEnvelope } from '../db/queries/envelopes.js';
 import { scopeOf } from '../context/types.js';
 import { judgeTask } from '../intelligence/task-judge.js';
+import { prepareDispatch, type DispatchPreparation } from '../decision/dispatch-preparation.js';
+import { decideStrategy } from '../decision/strategy-gate.js';
+import { strategyPriorFor } from '../decision/strategy-memory.js';
+import { observationFrom } from '../learning/hierarchical.js';
+import { buildCounterfactualObservation } from '../learning/counterfactual.js';
+import type { ExecutionStrategy } from '../decision/strategy-gate.js';
+import { policyVersion } from '../efficiency/policy-version.js';
+import { evaluateSpendGuard, type SpendGuardState } from '../efficiency/spend-guard.js';
+import { summarizeExecutionTrajectory, executionSnapshot, UNKNOWN_PROGRESS } from '../efficiency/progress-signals.js';
+import { executionPolicyForGoal, calibrate, effectiveTurnCap, currentPolicyVersions, EXECUTION_POLICY_VERSION } from '../efficiency/policy.js';
+import { activePolicyChanges } from '../learning/policy-experiments.js';
 import { templateFor, pruneTemplate } from '../intelligence/execution-templates.js';
 import type { TaskClass } from '../intelligence/task-judge.js';
-import { decideExecutionPath, type DecisionReceipt } from '../decision/engine.js';
+import { decideExecutionPath, authorizeExecution, type DecisionReceipt } from '../decision/engine.js';
 import { withRepoContext } from '../intelligence/repo-map.js';
 import { dispatchContextFor, warmRepoInventory } from '../context/dispatch-context-cache.js';
-import { recordDispatchUsage } from '../db/queries/tokens.js';
+import { recordDispatchUsage, turnsForNode } from '../db/queries/tokens.js';
 import { shouldRetryWithoutModel } from '../execution/tokens.js';
-import { readOnlyPlanningGrant } from './dispatch-helpers.js';
+import { readOnlyPlanningGrant, investigativeExecuteGrant } from './dispatch-helpers.js';
+import {
+  evaluateBoundary, economicStateFor, forgetNode, isIntervention, registerEvidenceSources,
+  markRecovered, consumeRecoveryFlag, recordRecoveryAttempt,
+} from './economic-runtime.js';
+import { tombstoneFor } from '../recovery/engine.js';
+import { evaluateFallback, mustBlockAction, detectFaults } from '../decision/fallback.js';
+import { validate, type ValidationEvidence, type ValidationResult } from '../validation/engine.js';
+import { contractFor } from '../validation/contract.js';
+import { validationProfileFor, contractForProfile, meetsMinimumLevel } from '../validation/profile.js';
+import { taskEconomicsFor } from '../efficiency/task-economics.js';
+import { requestEvidenceAtBoundary, renderAcquiredEvidence } from '../context/evidence-actions.js';
+import type { ActionDecision } from '../decision/actions.js';
+import type { EconomicState } from '../decision/state.js';
 import { memory } from '../db/schema.js';
 
 // In-process actor registry. It is lost on a daemon restart, which is why every
@@ -98,20 +126,95 @@ function runnerImageOverride(): string | undefined {
   return process.env.ORG_RUNNER_IMAGE;
 }
 
-function realDelegateDeps(db: Db): DelegateChildDeps {
+/** Applies what a forked child wrote back onto the tree it was forked from.
+ *
+ *  `git apply --3way`, not a filesystem copy: siblings that both forked from
+ *  the same revision and both wrote can still integrate cleanly one after the
+ *  other, and a real overlapping edit fails loudly here instead of silently
+ *  clobbering whichever sibling's write landed second. `false` means the merge
+ *  did not go through — the caller must not report that child a success, since
+ *  its writes never reached the tree the rest of the run sees. */
+export function integrateFork(fork: WorkspaceFork): boolean {
+  try {
+    execFileSync('git', ['add', '-A'], { cwd: fork.path, stdio: 'ignore' });
+    const diff = execFileSync('git', ['diff', '--cached', '--binary'], { cwd: fork.path, encoding: 'utf8' });
+    if (!diff.trim()) return true;
+    execFileSync('git', ['apply', '--3way', '--binary'], { cwd: fork.basePath, input: diff, stdio: ['pipe', 'ignore', 'ignore'] });
+    return true;
+  } catch (err) {
+    console.error(`Failed to integrate the fork at ${fork.path} back onto ${fork.basePath}:`, err);
+    return false;
+  }
+}
+
+export function realDelegateDeps(db: Db, parentId?: string): DelegateChildDeps {
+  // Scoped to one delegation call, which is exactly the lifetime a fork needs:
+  // created when its child is, released once that child has finished and its
+  // writes have been integrated (or discarded, on failure).
+  const forks = new Map<string, WorkspaceFork>();
   return {
+    // What the work graph decided, as a durable row rather than a log line.
+    // A fan-out that serialized two siblings, or refused to start a third, is
+    // the kind of thing a comparison needs to be able to attribute afterwards.
+    recordSchedule: (schedule) => {
+      if (!parentId) return;
+      try {
+        const payload = {
+          topology: schedule.topology,
+          groups: schedule.plan.parallelGroups,
+          sharedEvidenceIds: schedule.plan.sharedEvidenceIds,
+          informationDuplication: schedule.plan.informationDuplication,
+          serializationReasons: schedule.plan.serializationReasons,
+          cancelled: schedule.cancelled,
+        };
+        appendEvent(db, {
+          nodeId: parentId, type: 'delegation.scheduled', payload,
+          createdAt: new Date().toISOString(),
+        });
+        for (const entry of schedule.cancelled) {
+          publishProgress(db, parentId, `Not starting "${entry.goal}" — ${entry.reason}`);
+        }
+      } catch (err) {
+        // Telemetry must never cost a delegation.
+        console.error(`Failed to record the delegation schedule for node ${parentId}:`, err);
+      }
+    },
+    // Why a fan-out was funded or refused, in the durable record. A plan
+    // rejected silently is a delegation capability that looks like it
+    // disappeared.
+    recordPlanValidation: (validation) => {
+      if (!parentId) return;
+      try {
+        insertMemoryRow(db, 'delegation_plan_validation', validation.valid ? 'valid' : 'rejected', validation, parentId);
+      } catch (err) {
+        console.error(`Failed to record the delegation plan verdict for node ${parentId}:`, err);
+      }
+    },
     createChildNode: (parentId, goal, siblingCount, approvedBudgetUsd) => {
       const parent = getNode(db, parentId);
       if (!parent) throw new Error(`Parent node ${parentId} not found`);
       const id = randomUUID();
       const now = new Date().toISOString();
+      const authority = childAuthority(parent.contract.authority, siblingCount, approvedBudgetUsd);
+      // Parallel children that can write must not share the parent's mutable
+      // working tree — two siblings writing the same checkout race, and the
+      // last one to finish wins silently. A read-only child cannot corrupt
+      // anything and shares the parent's tree for free; forkWorkspace's own
+      // failure path (not a git repo, no git available) falls back to sharing
+      // it too, which only gives up isolation, not correctness beyond what the
+      // runtime already had.
+      let repoPath = parent.repoPath;
+      if (siblingCount > 1 && !isReadOnly(authority) && parent.repoPath) {
+        const fork = forkWorkspace(parent.repoPath, 'HEAD', id);
+        if (fork) {
+          repoPath = fork.path;
+          forks.set(id, fork);
+        }
+      }
       insertNode(db, {
         id, parentId, goal,
-        contract: {
-          ...parent.contract, goal,
-          authority: childAuthority(parent.contract.authority, siblingCount, approvedBudgetUsd),
-        },
-        state: 'CREATED', repoPath: parent.repoPath, createdAt: now, updatedAt: now,
+        contract: { ...parent.contract, goal, authority },
+        state: 'CREATED', repoPath, createdAt: now, updatedAt: now,
       });
       return id;
     },
@@ -155,7 +258,23 @@ function realDelegateDeps(db: Db): DelegateChildDeps {
       }
     },
     startChild: (childId, goal) => startNodeActor(db, childId, goal),
-    waitForChild: (childId) => waitForNodeCompletion(childId),
+    waitForChild: async (childId) => {
+      const result = await waitForNodeCompletion(db, childId);
+      const fork = forks.get(childId);
+      if (!fork) return result;
+      forks.delete(childId);
+      try {
+        if (result.succeeded && !integrateFork(fork)) {
+          // The child did its work; the tree the rest of the run sees never got
+          // it. Reporting success here would be reporting a change that does
+          // not exist outside a directory about to be deleted.
+          return { succeeded: false };
+        }
+        return result;
+      } finally {
+        fork.release();
+      }
+    },
   };
 }
 
@@ -250,11 +369,21 @@ export function modelFor(adapter: RuntimeAdapter, model: string | undefined): st
 }
 
 /** What a dispatch cost, off the runtime's own final result event — the same
- *  number the cost views already read, recorded alongside the token counts. */
+ *  number the cost views already read, recorded alongside the token counts.
+ *
+ *  The *last* `result` event only, matching `usageFromEvents`'s convention
+ *  (execution/tokens.ts). `total_cost_usd` is the session's running total, not
+ *  a per-event delta: a dispatch that spawns background subagents gets one
+ *  `result` event per subagent completion in addition to the main turn's, each
+ *  carrying that same cumulative figure. Summing them (the old behaviour)
+ *  multiplied the true cost by however many of those notifications arrived —
+ *  a run with 5 subagents reported roughly 6x its real spend. */
 function costFromEvents(events: { type: string; payload: unknown }[]): number {
-  return events
-    .filter((e) => e.type === 'result')
-    .reduce((s, e) => s + Number((e.payload as { total_cost_usd?: number } | null)?.total_cost_usd ?? 0), 0);
+  for (let i = events.length - 1; i >= 0; i--) {
+    if (events[i].type !== 'result') continue;
+    return Number((events[i].payload as { total_cost_usd?: number } | null)?.total_cost_usd ?? 0);
+  }
+  return 0;
 }
 
 /** One fact the organization learned, written straight to memory. Total, for the
@@ -357,6 +486,263 @@ function publishContextReceipt(db: Db, nodeId: string, receipt: DispatchReceipt)
   };
   const id = appendEvent(db, { nodeId, type: 'context.receipt', payload, createdAt: now });
   publish({ id, nodeId, type: 'context.receipt', payload, createdAt: now });
+  // The same fact, told to the task-level ledger. Without it a before/after
+  // comparison can say spend moved and cannot say what moved it — which is the
+  // difference between a measurement and an anecdote.
+  try {
+    ledger.recordContextPlan(nodeId, {
+      candidates: receipt.candidates ?? receipt.selected.length + receipt.dropped.length,
+      selected: receipt.selected.length,
+      estimatedTokens: receipt.selectedTokens,
+      contextPolicyVersion: receipt.policyVersion ?? null,
+      executionPolicyVersion: EXECUTION_POLICY_VERSION,
+      // The composite: architecture, policy generation and decision engine
+      // together. Without it two runs of different engine generations average
+      // into a number describing neither.
+      policyVersion: currentPolicyVersions().policy,
+    });
+  } catch (err) {
+    console.error(`Failed to record the context plan for node ${nodeId}:`, err);
+  }
+}
+
+/** The economic control plane, asked once, at the moment before a dispatch is
+ *  built.
+ *
+ *  This is the *existing* execution boundary — the point where the goal, the
+ *  context and the grant are assembled — not a new one. That matters: the plan
+ *  this implements forbids a live context channel into a running sandbox, and
+ *  the reason is that a boundary which already exists costs nothing to reuse
+ *  while a new one has to be kept alive between turns.
+ *
+ *  Returns the text to prepend to the next dispatch, or empty. Empty is the
+ *  overwhelmingly common answer and is a genuine no-op: the dispatch that
+ *  follows is byte-identical to the one that would have happened without any of
+ *  this.
+ *
+ *  Total. Every failure path returns empty rather than throwing, because this
+ *  sits on the path to a dispatch and an optimizer that can fail a dispatch by
+ *  failing to optimize is worse than no optimizer. */
+async function economicBoundary(
+  db: Db,
+  input: {
+    nodeId: string; goal: string; worktreePath: string;
+    fullArtifactRequests?: DispatchReceipt['fullArtifactRequests'];
+  },
+): Promise<string> {
+  if (runtimeMode() !== 'full') return '';
+  try {
+    const revision = repoHead(input.worktreePath) ?? undefined;
+    // Registered here rather than at import: the source needs a database, and
+    // this is the first point that has one. Idempotent by name.
+    registerEvidenceSources(db);
+    const { decision, state, cycle } = evaluateBoundary(db, {
+      nodeId: input.nodeId, goal: input.goal, repositoryRevision: revision,
+      repository: repoIdentity(input.worktreePath) ?? undefined,
+      fullArtifactRequests: input.fullArtifactRequests,
+    });
+
+    // Recorded whether or not anything was decided: what the orchestrator cost
+    // is the number that decides whether it was worth building, and a cost only
+    // recorded when it acted would make it look free exactly when it is not.
+    if (cycle.cost.tokens > 0) publishOrchestrationCost(db, input.nodeId, cycle.cost, decision);
+    // Recorded at the moment it was made, before anything is known about how it
+    // went — the only point at which a prediction is a prediction rather than a
+    // description of what happened.
+    if (decision) {
+      try {
+        ledger.recordDecision(input.nodeId, {
+          decisionId: decision.decisionId,
+          stateVersion: decision.stateVersion,
+          action: decision.action.kind,
+          predicted: {
+            tokenDelta: decision.action.expectedTokenBenefit - decision.action.tokenCost,
+            qualityDelta: decision.action.expectedQualityBenefit - decision.action.qualityRisk,
+            latencyDelta: decision.action.expectedLatencyBenefit - decision.action.latencyCost,
+            successProbability: 1 - decision.action.failureRisk,
+          },
+          orchestrationCost: cycle.cost.tokens,
+        });
+      } catch (err) {
+        console.error(`Failed to record the decision for node ${input.nodeId}:`, err);
+      }
+    }
+    if (!isIntervention(decision)) return '';
+
+    // The last gate before anything is acted on. A decision that is not
+    // confident enough for what it would spend, or that rests on signals that
+    // were not there, does what Baseline would have done — which is nothing —
+    // rather than getting its own reduced-aggression path.
+    const fallback = evaluateFallback({
+      state,
+      decision,
+      faults: [
+        ...detectFaults(state),
+        ...(cycle.cost.reason === 'decision_engine_error' ? ['decision_engine_error' as const] : []),
+      ],
+    });
+    if (fallback.mode === 'baseline') {
+      publishFallback(db, input.nodeId, fallback.reason, mustBlockAction(fallback));
+      return '';
+    }
+
+    return await carryOut(db, decision!, state, input);
+  } catch (err) {
+    console.error(`The economic boundary failed for node ${input.nodeId}; the dispatch proceeds unchanged:`, err);
+    return '';
+  }
+}
+
+/** What survives a strategy the engine just ruled out, read back into the
+ *  words a dispatch can act on. Ruled-out beliefs first — the one thing a
+ *  blind retry gets wrong is walking straight back into them — then what is
+ *  already established and safe to build on without re-deriving it. */
+function renderPivotGuidance(invalidatedIds: string[], retainedIds: string[]): string {
+  const strip = (id: string) => id.replace(/^observed:/, '');
+  const lines = [
+    'A previous attempt at this failed and its approach has been ruled out — do not repeat it; try a genuinely different approach.',
+  ];
+  if (invalidatedIds.length > 0) {
+    lines.push(`Ruled out, do not retry as-is: ${invalidatedIds.map(strip).join(', ')}`);
+  }
+  if (retainedIds.length > 0) {
+    lines.push(`Already established from the previous attempt and safe to reuse: ${retainedIds.map(strip).join(', ')}`);
+  }
+  return lines.join('\n');
+}
+
+/** Carries out a justified `recover`: tombstones the failed strategy so the
+ *  next attempt does not walk into beliefs this one already disproved, and
+ *  flags the node so the spend guard's stall check — which would otherwise
+ *  read the exact same stuck state and stop the node in the same breath —
+ *  gives this one pivot the turn it was just priced for.
+ *
+ *  Without this the recovery ladder in `recovery/engine.ts` is priced, ranked
+ *  and recorded, and never once changes what happens: `evaluateRecovery` can
+ *  judge a retry justified and the run stops anyway, on the same turn, for the
+ *  same reason recovery just answered. That mismatch is the mechanism behind
+ *  a documented regression — the guard stopping a task the baseline
+ *  completed — not a coincidence of two modules disagreeing in the abstract. */
+function carryOutRecovery(db: Db, decision: ActionDecision, state: EconomicState, nodeId: string): string {
+  const { action } = decision;
+  const retainedIds = Array.isArray(action.metadata.retainedEvidenceIds)
+    ? (action.metadata.retainedEvidenceIds as string[]) : [];
+  const invalidatedIds = Array.isArray(action.metadata.invalidatedEvidenceIds)
+    ? (action.metadata.invalidatedEvidenceIds as string[]) : [];
+  const failureSignature = typeof action.metadata.failureSignature === 'string'
+    ? action.metadata.failureSignature : 'unknown';
+  const reasonCodes = Array.isArray(action.metadata.reasonCodes) ? (action.metadata.reasonCodes as string[]) : [];
+
+  recordRecoveryAttempt(nodeId, tombstoneFor({
+    id: `${nodeId}:${decision.stateVersion}`,
+    evaluation: {
+      justified: true,
+      expectedSuccessProbability: action.expectedProgress,
+      expectedCost: action.tokenCost,
+      retainedEvidenceIds: retainedIds,
+      invalidatedEvidenceIds: invalidatedIds,
+      reasonCodes,
+    },
+    failureSignature,
+    tokensSpent: state.resources.consumedTokens,
+  }));
+  markRecovered(nodeId);
+  publishProgress(db, nodeId, 'A prior approach did not work — pivoting rather than repeating it.');
+
+  if (invalidatedIds.length === 0 && retainedIds.length === 0) return '';
+  return renderPivotGuidance(invalidatedIds, retainedIds);
+}
+
+/** What changes about a dispatch when the decision layer intervenes.
+ *
+ *  Two capabilities are carried out today: acquiring evidence, and recovering
+ *  from a failed strategy. Everything else the decision layer can choose —
+ *  validating, narrowing, scheduling — is carried out by machinery that lands
+ *  in later tasks. Until then those decisions are *recorded* and not acted on,
+ *  which is the honest behaviour: a decision nobody can carry out must not be
+ *  quietly reported as carried out, and must certainly not stop the run. */
+async function carryOut(
+  db: Db,
+  decision: ActionDecision,
+  state: EconomicState,
+  input: { nodeId: string; goal: string; worktreePath: string },
+): Promise<string> {
+  const { action } = decision;
+
+  if (action.kind === 'recover') return carryOutRecovery(db, decision, state, input.nodeId);
+
+  const path = typeof action.metadata.path === 'string' ? action.metadata.path : null;
+  if (action.kind !== 'acquire_evidence' || !path) return '';
+
+  const result = await requestEvidenceAtBoundary({
+    state,
+    worktreePath: input.worktreePath,
+    repositoryRevision: state.repositoryRevision,
+    request: {
+      candidateId: path,
+      evidenceLevel: 'L3',
+      expectedBenefit: action.expectedTokenBenefit,
+      acquisitionCost: action.tokenCost,
+      qualityRisk: action.qualityRisk,
+      reasonCodes: decision.reasonCodes,
+    },
+  });
+
+  publishEvidenceOutcome(db, input.nodeId, path, result.acquired, result.tokens, result.reasonCodes);
+  if (!result.acquired || !result.content) return '';
+  publishProgress(db, input.nodeId, `Sending ${path} rather than letting the agent go and find it`);
+  return renderAcquiredEvidence(path, result.content);
+}
+
+function publishOrchestrationCost(
+  db: Db,
+  nodeId: string,
+  cost: { tokens: number; latencyMs: number; reason: string },
+  decision: ActionDecision | undefined,
+): void {
+  try {
+    const now = new Date().toISOString();
+    const payload = {
+      ...cost,
+      decisionId: decision?.decisionId ?? null,
+      stateVersion: decision?.stateVersion ?? null,
+      action: decision?.action.kind ?? null,
+      reasonCodes: decision?.reasonCodes ?? [],
+    };
+    const id = appendEvent(db, { nodeId, type: 'economic.decision', payload, createdAt: now });
+    publish({ id, nodeId, type: 'economic.decision', payload, createdAt: now });
+  } catch (err) {
+    console.error(`Failed to record the orchestration cost for node ${nodeId}:`, err);
+  }
+}
+
+/** Why the control plane stood down.
+ *
+ *  Recorded rather than silent: "Full Architecture fell back on 30% of tasks"
+ *  and "on which" is the difference between a benchmark result that can be
+ *  acted on and one that can only be reported. */
+function publishFallback(db: Db, nodeId: string, reason: string, blocked: boolean): void {
+  try {
+    const now = new Date().toISOString();
+    const payload = { reason, blocked };
+    const id = appendEvent(db, { nodeId, type: 'economic.fallback', payload, createdAt: now });
+    publish({ id, nodeId, type: 'economic.fallback', payload, createdAt: now });
+  } catch (err) {
+    console.error(`Failed to record the fallback for node ${nodeId}:`, err);
+  }
+}
+
+function publishEvidenceOutcome(
+  db: Db, nodeId: string, path: string, acquired: boolean, tokens: number, reasonCodes: string[],
+): void {
+  try {
+    const now = new Date().toISOString();
+    const payload = { path, acquired, tokens, reasonCodes };
+    const id = appendEvent(db, { nodeId, type: 'economic.evidence', payload, createdAt: now });
+    publish({ id, nodeId, type: 'economic.evidence', payload, createdAt: now });
+  } catch (err) {
+    console.error(`Failed to record the evidence outcome for node ${nodeId}:`, err);
+  }
 }
 
 /** Accounting, and only accounting. A dispatch that ran and produced an answer
@@ -373,7 +759,11 @@ function recordUsage(
   },
 ): void {
   try {
-    recordDispatchUsage(db, { ...r, createdAt: new Date().toISOString() });
+    recordDispatchUsage(db, {
+      ...r,
+      createdAt: new Date().toISOString(),
+      policy: currentPolicyVersions(),
+    });
   } catch (err) {
     console.error(`Failed to record ${r.role} token usage for node ${r.nodeId}:`, err);
   }
@@ -409,8 +799,7 @@ function recordUsage(
  *  dispatch. */
 function modelChoiceFor(db: Db, nodeId: string, role: DispatchRole, goal: string): string | undefined {
   const configured = dispatchOptionsFor(role).model;
-  const mode = efficiencyMode();
-  if (mode === 'disabled') return configured;
+  const mode = runtimeMode();
   try {
     const node = getNode(db, nodeId);
     const assessment = assessDecomposition(goal);
@@ -421,8 +810,12 @@ function modelChoiceFor(db: Db, nodeId: string, role: DispatchRole, goal: string
       budgetUsd: node?.contract.authority.budget_usd ?? 0,
       spentUsd: getCostForNodes(db, [nodeId]),
     });
+    // Recorded in *both* modes, and applied in only one. This is what the
+    // retired `shadow` mode was actually for — knowing what routing would have
+    // chosen on a Baseline run — and it turns out to need a memory row rather
+    // than a third product mode.
     insertMemoryRow(db, 'model_route', role, { ...route, mode }, nodeId);
-    return mode === 'shadow' ? configured : route.model;
+    return mode === 'baseline' ? configured : route.model;
   } catch (err) {
     console.error(`Failed to route a model for node ${nodeId}:`, err);
     return configured;
@@ -485,6 +878,56 @@ function publishAnswer(db: Db, nodeId: string, text: string): void {
   const payload = { text };
   const id = appendEvent(db, { nodeId, type: 'node.answer', payload, createdAt: now });
   publish({ id, nodeId, type: 'node.answer', payload, createdAt: now });
+  rememberAnswer(db, nodeId, text, now);
+}
+
+/** The shortest answer worth storing. Below this it is an acknowledgement, and
+ *  a store full of "Done." teaches nothing while still costing every future
+ *  query a row to rank. */
+const MIN_REMEMBERABLE_ANSWER = 80;
+
+/** Writes what a node concluded into the cross-run knowledge store.
+ *
+ *  The read side of this store has been wired since the economic boundary
+ *  landed (`queryKnowledge`, via the registered evidence sources) — but nothing
+ *  ever wrote to it, so every lookup missed and the whole "reading beats
+ *  re-deriving" claim was untested in production. This is the write side, and
+ *  `publishAnswer` is the only place a node states a conclusion, so it is the
+ *  only place that needs it.
+ *
+ *  Stored as an `observation` and *not* validated: this is what an agent said,
+ *  which `reuse.ts` already prices far below something a check confirmed. A
+ *  node whose validation passes is upgraded separately; recording a self-report
+ *  as validated here would be exactly the false-success failure the
+ *  architecture exists to stop.
+ *
+ *  Total: a knowledge write must never cost a node its answer. */
+function rememberAnswer(db: Db, nodeId: string, text: string, at: string): void {
+  if (text.trim().length < MIN_REMEMBERABLE_ANSWER) return;
+  try {
+    const node = getNode(db, nodeId);
+    const worktreePath = node?.repoPath ?? process.env.ORG_WORKTREE_PATH;
+    if (!worktreePath) return;
+    const repository = repoIdentity(worktreePath);
+    const revision = repoHead(worktreePath);
+    // Knowledge that cannot say which repository or which revision it is about
+    // is knowledge nothing can safely reuse.
+    if (!repository || !revision) return;
+    putKnowledge(db, {
+      kind: 'observation',
+      content: text,
+      repository,
+      revision,
+      sourcePaths: extractAnchors(node?.goal ?? ''),
+      // Mid-scale on purpose. An unvalidated self-report is worth something —
+      // it is why the run happened — and nowhere near a checked fact.
+      confidence: 0.5,
+      validated: false,
+      createdAt: at,
+    });
+  } catch (err) {
+    console.error(`Failed to remember the answer for node ${nodeId}:`, err);
+  }
 }
 
 /** Combines what the children reported into the one answer the root owes.
@@ -512,27 +955,26 @@ async function synthesizeChildren(db: Db, nodeId: string, goal: string): Promise
   const decision = decideIntegration(children);
   if (decision.kind === 'nothing') return '';
 
-  // `disabled` synthesizes unconditionally, as this branch always did. `shadow`
-  // records what the decision would have been and then synthesizes anyway, so
-  // the run stays comparable to a baseline one.
-  const mode = efficiencyMode();
-  if (mode !== 'disabled') {
-    insertMemoryRow(db, 'integration_decision', decision.kind, {
-      kind: decision.kind,
-      reason: decision.kind === 'synthesize' ? decision.reason : null,
-      applied: mode === 'enabled',
-    }, nodeId);
-  }
-  if (mode === 'enabled' && (decision.kind === 'return_child' || decision.kind === 'merge')) {
+  // Recorded in both modes and acted on in one. Baseline synthesizes
+  // unconditionally, as this branch always did, and still writes down what the
+  // decision would have been — which is what makes a matched comparison
+  // readable afterwards.
+  const mode = runtimeMode();
+  insertMemoryRow(db, 'integration_decision', decision.kind, {
+    kind: decision.kind,
+    reason: decision.kind === 'synthesize' ? decision.reason : null,
+    applied: mode === 'full',
+  }, nodeId);
+  if (mode === 'full' && (decision.kind === 'return_child' || decision.kind === 'merge')) {
     ledger.recordAvoided(nodeId, 'synthesize');
     publishProgress(db, nodeId, decision.kind === 'merge'
       ? `Combined ${children.length} agents' results directly — no extra model call was needed`
       : "One agent answered this; returning its answer rather than paying to reword it");
     return decision.text;
   }
-  // Stripping the envelopes is part of the change, so only an enabled run does
-  // it. A shadow run sends the reports exactly as a baseline run would.
-  const synthesisChildren = mode === 'enabled' && decision.kind === 'synthesize' ? decision.children : children;
+  // Stripping the envelopes is part of the change, so only a Full run does it.
+  // A Baseline run sends the reports exactly as it always did.
+  const synthesisChildren = mode === 'full' && decision.kind === 'synthesize' ? decision.children : children;
 
   const credentials = checkCredentials(os.homedir(), process.env.ANTHROPIC_API_KEY);
   if (!credentials.ok) return '';
@@ -669,6 +1111,85 @@ function resultReuseKey(goal: string, grant: ToolGrant, model: string | undefine
   return resultCacheKey(goal, model ?? '(default)', grant.allowedTools);
 }
 
+/** What the run so far looks like: mostly searching, or mostly working.
+ *
+ *  Read off the node's own recorded tool stream — the `exec.*` rows the live
+ *  event handler already writes — rather than from a second capture pass or a
+ *  model judge. Every attempt this node has made is included, deliberately: a
+ *  retry that repeats the previous attempt's failing search is exactly the
+ *  trajectory worth catching, and scoping to the latest attempt would hide it.
+ *
+ *  Unreadable stream, unreadable database, anything at all: the neutral middle.
+ *  That is not a placeholder that happens to work — the guard's stall branch
+ *  needs observed *absence* of progress, so unknown signals can only make it
+ *  more reluctant to stop, never less. */
+function trajectorySignals(db: Db, nodeId: string): {
+  explorationSignal: number; progressSignal: number; repeatedFailureSignal: number;
+} {
+  try {
+    const events = listEventsForNode(db, nodeId)
+      .filter((row) => row.type.startsWith('exec.'))
+      .map((row) => ({ type: row.type.slice('exec.'.length), payload: row.payload } as StructuredEvent));
+    const signals = summarizeExecutionTrajectory(events);
+    return {
+      explorationSignal: signals.exploration,
+      progressSignal: signals.progress,
+      repeatedFailureSignal: signals.repeatedFailure,
+    };
+  } catch (err) {
+    console.error(`Failed to read the trajectory for node ${nodeId}:`, err);
+    return {
+      explorationSignal: UNKNOWN_PROGRESS.exploration,
+      progressSignal: UNKNOWN_PROGRESS.progress,
+      repeatedFailureSignal: UNKNOWN_PROGRESS.repeatedFailure,
+    };
+  }
+}
+
+/** The economic verdict on a task, at the moment before it spends again.
+ *
+ *  Total, like everything else on this path: telemetry that cannot be read must
+ *  not stop a task that is otherwise entitled to run, so any failure here
+ *  answers GREEN. A guard that fires on its own bugs is worse than no guard —
+ *  it fails runs for reasons nobody can see.
+ *
+ *  The node's own `budget_usd` outranks the deployment-wide cap: it is an
+ *  amount someone explicitly funded this work with. Zero means "nobody costed
+ *  this node", not "out of money" — the convention model-router.ts already
+ *  uses — and that is when the deployment backstop applies instead. */
+function evaluateTaskSpend(db: Db, nodeId: string, node: ReturnType<typeof getNode>): SpendGuardState {
+  try {
+    const budgetUsd = node?.contract.authority.budget_usd ?? 0;
+    const policy = executionPolicyForGoal(node?.contract.goal ?? '', undefined, activePolicyChanges(db));
+    const trajectory = trajectorySignals(db, nodeId);
+    const guard = evaluateSpendGuard({
+      spentUsd: getCostForNodes(db, [nodeId]),
+      spendCapUsd: budgetUsd > 0 ? budgetUsd : policy.spendCapUsd,
+      turns: turnsForNode(db, nodeId),
+      softTurnTarget: policy.softTurnTarget,
+      hardTurnCap: policy.hardTurnCap,
+      explorationSignal: trajectory.explorationSignal,
+      progressSignal: trajectory.progressSignal,
+      repeatedFailureSignal: trajectory.repeatedFailureSignal,
+    });
+    ledger.recordTrajectory(nodeId, {
+      exploration: trajectory.explorationSignal,
+      progress: trajectory.progressSignal,
+    });
+    if (guard.state !== 'GREEN') {
+      insertMemoryRow(db, 'spend_guard', guard.state, { ...guard, nodeId }, nodeId);
+    }
+    // Recorded on the task, not just in the transcript: "this run was stopped,
+    // and this is what stopped it" is the one fact a cost comparison cannot be
+    // read without — a cheap arm full of stopped tasks is not a cheaper arm.
+    if (guard.state === 'STOP' && guard.reason) ledger.recordStop(nodeId, guard.reason);
+    return guard;
+  } catch (err) {
+    console.error(`Failed to evaluate the spend guard for node ${nodeId}:`, err);
+    return { state: 'GREEN', spentUsd: 0, spendCapUsd: 0, reason: null, hard: false };
+  }
+}
+
 /** Runs a sandbox when a slot is free, and says so while it waits. A node
  *  sitting in a queue looks identical to one that has hung unless it tells you.
  *
@@ -707,21 +1228,35 @@ async function dispatch<T>(db: Db, nodeId: string, task: () => Promise<T>, prior
       // `budget_usd` bounded what the organization would agree to *start* — the
       // escalation floor in decide-execution.ts, the pressure threshold in
       // model-router.ts — and nothing re-checked it once work was under way, so
-      // a task could run arbitrarily far past its own authority. Zero means
-      // "nobody costed this node", not "out of money", which is the convention
-      // model-router.ts already uses.
-      const budgetUsd = node?.contract.authority.budget_usd ?? 0;
-      if (budgetUsd > 0) {
-        const spentUsd = getCostForNodes(db, [nodeId]);
-        if (spentUsd >= budgetUsd) {
-          const message = `Budget spent — $${spentUsd.toFixed(2)} of $${budgetUsd.toFixed(2)}. No further sandbox was opened for this agent.`;
-          // Said out loud as well as thrown: the throw reaches VERIFY as a
-          // failed result, which is the machine's business, while a person
-          // watching the transcript needs to see that the run stopped on money
-          // rather than on an error.
-          publishProgress(db, nodeId, message);
-          throw new Error(message);
-        }
+      // a task could run arbitrarily far past its own authority.
+      //
+      // It is also the only place that sees *everything* a task has spent so
+      // far, which is what makes it the right place for the guard rather than
+      // one more caller of it.
+      const guard = evaluateTaskSpend(db, nodeId, node);
+      // A hard STOP (money or turns genuinely exhausted) is unconditional —
+      // there is nothing left for a recovery attempt to spend either. A stall
+      // STOP describes a run that is stuck, not out of resources, and if the
+      // economic boundary already looked at this exact stuck state this turn
+      // and judged a pivot worth the cost — tombstoning the failed strategy,
+      // see `carryOutRecovery` — then stopping here would discard the very
+      // recovery attempt it was just priced and authorized for. One pass only:
+      // `consumeRecoveryFlag` clears itself, so a pivot buys the next attempt
+      // one turn, not blanket immunity from the guard.
+      if (guard.state === 'STOP' && !(!guard.hard && consumeRecoveryFlag(nodeId))) {
+        const message = `${guard.reason} No further sandbox was opened for this agent.`;
+        // Said out loud as well as thrown: the throw reaches VERIFY as a failed
+        // result, which is the machine's business, while a person watching the
+        // transcript needs to see that the run stopped on money rather than on
+        // an error.
+        publishProgress(db, nodeId, message);
+        throw new Error(message);
+      }
+      if (guard.state === 'STOP') {
+        publishProgress(db, nodeId, `${guard.reason} Continuing on the pivot just decided rather than stopping.`);
+      }
+      if (guard.state === 'RED') {
+        publishProgress(db, nodeId, `Running hot: ${guard.reason}`);
       }
       return task();
     }, priority);
@@ -893,6 +1428,46 @@ async function planSubgoals(db: Db, nodeId: string, goal: string, maxChildren: n
   }
 }
 
+/** One dispatch, as a unit of account for the delegate-vs-self comparison.
+ *
+ *  Not a forecast, and deliberately not presented as one. The two candidates
+ *  are multiples of this number, so what the comparison needs is for it to be
+ *  the *same* for both and proportional to what this node may actually spend —
+ *  not for it to predict a bill nothing has yet produced. The node has not
+ *  dispatched anything at this point, so there is no measurement to use.
+ *
+ *  Derived by dividing the task's own token budget by the widest plan it could
+ *  fund (k children plus the planning and synthesis runs). A node that can
+ *  afford four children therefore prices one dispatch at a sixth of its budget,
+ *  which is what it would actually get if it used all of them.
+ *
+ *  Total: a unit that cannot be derived falls back to zero, and two candidates
+ *  both costing nothing rank on their non-token terms rather than failing. */
+function unitDispatchFor(db: Db, nodeId: string, goal: string, maxChildren: number) {
+  try {
+    const budget = economicStateFor(db, { nodeId, goal }).resources.totalTokenBudget;
+    const dispatches = Math.max(1, Math.floor(maxChildren)) + 2;
+    const tokens = Math.max(0, Math.round(budget / dispatches));
+    return {
+      tokens,
+      // The measured startup-to-answer time of a dispatch in this repository's
+      // recorded runs, rounded. Latency is a tie-break term here rather than a
+      // headline, so a stand-in is honest as long as it is named as one.
+      latencyMs: ASSUMED_DISPATCH_LATENCY_MS,
+      costUsd: 0,
+    };
+  } catch (err) {
+    console.error(`Could not price a dispatch for node ${nodeId}:`, err);
+    return { tokens: 0, latencyMs: ASSUMED_DISPATCH_LATENCY_MS, costUsd: 0 };
+  }
+}
+
+/** ponytail: a constant standing in for a measurement. Replace with the median
+ *  wall clock of this role's recorded dispatches once the ledger is queried for
+ *  it; the delegate-vs-self comparison is the only caller, and latency is its
+ *  weakest term. */
+const ASSUMED_DISPATCH_LATENCY_MS = 120_000;
+
 function productionMachine(db: Db, nodeId: string) {
   return nodeMachine.provide({
     actors: {
@@ -900,19 +1475,112 @@ function productionMachine(db: Db, nodeId: string) {
       decideExecution: fromPromise(async ({ input }: { input: { goal: string; complexity: NodeMachineContext['complexity']; worthSplitting?: boolean; signals?: Record<string, number> } }) => {
         const node = getNode(db, nodeId);
         if (!node) throw new Error(`Node ${nodeId} not found when deciding execution`);
-        const result = decideExecution({
+        const economics = decideExecution({
           goal: input.goal,
           authority: node.contract.authority,
           complexity: input.complexity ?? 'low',
           worthSplitting: input.worthSplitting,
           signals: input.signals,
         });
+        // Delegation is the most expensive action the runtime has and was the
+        // last one still authorized outside the Action Market. It now passes
+        // through the same ranking as everything else — so a fan-out cannot be
+        // started on a run the economic state already knows is out of budget,
+        // under a hard stop, or holding a recovery reserve it would consume.
+        //
+        // Full mode only, deliberately. The baseline arm of a comparison must
+        // keep the behaviour it was measured with, or the A/B is measuring the
+        // harness. `authorizeExecution` honours `decideExecution`'s verdict
+        // either way; what the market adds is the veto.
+        const authorized = authorizeExecution({
+          state: economicStateFor(db, { nodeId, goal: input.goal }),
+          economics,
+          plannedChildCount: node.contract.authority.max_child_count,
+          // A unit of account, not a forecast. Both candidates are multiples of
+          // it, so the comparison depends on it being the *same* for both
+          // rather than on it being right — and dividing the task's own budget
+          // by the widest plan it could fund keeps it proportional to what this
+          // node may actually spend.
+          dispatch: unitDispatchFor(db, nodeId, input.goal, node.contract.authority.max_child_count),
+        });
+        const result = runtimeMode() === 'full'
+          ? { ...economics, outcome: authorized.outcome }
+          : economics;
+
+        // The named strategy for this dispatch, from the same snapshot and the
+        // same economics. Recorded rather than authoritative: the outcome above
+        // is still what routes the machine, and this names *which* of the three
+        // strategies that outcome is so learning can measure the real thing
+        // instead of a `delegated` boolean. Serial and parallel delegation are
+        // different strategies with different costs and different failure
+        // modes, and a boolean cannot tell them apart.
+        // Wrapped, and the wrapping is the point: everything from here to the
+        // memory row is *optimizer*, and an optimizer that can fail a task by
+        // failing to optimize is worse than no optimizer. A throw here leaves
+        // the decision above exactly as it was.
+        try {
+          const strategyPreparation = prepareDispatch({
+            goal: input.goal,
+            authority: node.contract.authority,
+            toolGrant: grantOf(node.contract.authority),
+            ...(node.repoPath ? { repository: node.repoPath } : {}),
+            requiredChecks: node.contract.definition_of_done ?? [],
+          });
+          const strategy = decideStrategy({
+            preparation: strategyPreparation,
+            // What history says, shrunk toward broader evidence. Carried rather
+            // than obeyed: the economics still decide, and a prior built on two
+            // runs of this exact shape must not outvote thirty of the class.
+            prior: strategyPriorFor(db, {
+              preparation: strategyPreparation, policyVersion: policyVersion(),
+            }),
+            spentUsd: getCostForNodes(db, [nodeId]),
+            dispatch: unitDispatchFor(db, nodeId, input.goal, node.contract.authority.max_child_count),
+            plannedChildCount: node.contract.authority.max_child_count,
+          });
+          insertMemoryRow(db, 'strategy_decision', strategy.strategy, {
+            strategy: strategy.strategy,
+            evidence: strategy.evidence,
+            outcome: result.outcome,
+            // What this decision *predicted*, so the terminal transition can put
+            // the measurement beside it. Absent for a hard gate, which is the
+            // signal that there is no counterfactual to record.
+            ...(strategy.receipt.gate ? {} : {
+              predicted: {
+                costUsd: strategy.receipt.estimate.costUsd,
+                latencyMs: strategy.receipt.estimate.latencyMs,
+                successProbability: strategy.evidence.historicalPrior?.expectedSuccess ?? strategy.receipt.confidence,
+              },
+            }),
+          }, nodeId);
+        } catch (err) {
+          console.error(`Failed to name the execution strategy for node ${nodeId}:`, err);
+        }
+
+
         const decidedAt = new Date().toISOString();
         insertDecision(db, {
           id: randomUUID(), nodeId, type: 'execution_decision',
-          outcome: result.outcome, breakdown: result.breakdown,
+          outcome: result.outcome, breakdown: {
+            ...result.breakdown,
+            // What the market did with it, in the durable record rather than
+            // only in a log line: a benchmark attributing a delegation
+            // regression needs to see whether the market vetoed, a gate fired,
+            // or the economics simply declined.
+            ...(runtimeMode() === 'full' ? {
+              market_authorized: authorized.outcome === 'DELEGATE' ? 1 : 0,
+              market_vetoed: economics.outcome === 'DELEGATE' && authorized.outcome !== 'DELEGATE' ? 1 : 0,
+              market_utility: authorized.decision?.utility ?? 0,
+            } : {}),
+          },
           createdAt: decidedAt,
         });
+        if (authorized.gate) {
+          insertMemoryRow(db, 'execution_gate', authorized.gate, { outcome: authorized.outcome }, nodeId);
+        }
+        if (runtimeMode() === 'full' && economics.outcome === 'DELEGATE' && authorized.outcome !== 'DELEGATE') {
+          publishProgress(db, nodeId, 'Splitting this would cost more than doing it directly — doing it directly');
+        }
         // Also an event, so a watching transcript can narrate *why* a node did
         // what it did as it happens. The decisions table stays the durable
         // record; this is the live notification of the same fact.
@@ -923,6 +1591,8 @@ function productionMachine(db: Db, nodeId: string) {
         publish({ id: decisionEventId, nodeId, type: 'decision.made', payload: decisionPayload, createdAt: decidedAt });
         return result;
       }),
+      validate: fromPromise(async ({ input }: { input: { nodeId: string; goal: string; succeeded: boolean } }) =>
+        runValidation(db, input.nodeId, input.succeeded)),
       escalate: fromPromise(async ({ input }: { input: { nodeId: string; reason: string } }) =>
         escalate(input.nodeId, input.reason, { insertApproval: (record) => insertApproval(db, record) }),
       ),
@@ -952,7 +1622,10 @@ function productionMachine(db: Db, nodeId: string) {
             parentId: nodeId, goal: input.goal, subgoals,
             existingChildren,
             approvedBudgetUsd: input.approvedBudgetUsd,
-          }, realDelegateDeps(db));
+            // So the plan is checked against what this node may actually
+            // authorize, before a single child node exists.
+            ...(node ? { authority: node.contract.authority } : {}),
+          }, realDelegateDeps(db, nodeId));
 
           // The root owes an answer, not a tally of its children.
           if (!result.notDelegatable) {
@@ -1002,7 +1675,28 @@ function productionMachine(db: Db, nodeId: string) {
         // starting a sandbox, because on a hit none of that happens. The model
         // is resolved first only because it is part of what makes two runs the
         // same run — a haiku answer must not be served to a sonnet request.
-        const grant = grantOf(node!.contract.authority);
+        // `judgeTask` is the cheap, dispatch-free classification the template,
+        // the utility record and the grant below all key on — computed once,
+        // up front, so nothing here can disagree about what kind of goal this is.
+        // One snapshot, built here at the safe execution boundary, and read
+        // everywhere below. Before this, the goal was judged here, judged again
+        // inside `executionPolicyForGoal`, and judged a third time inside the
+        // context selector — three derivations that could disagree about what
+        // kind of task this is.
+        const prep: DispatchPreparation = prepareDispatch({
+          goal: input.goal,
+          authority: node!.contract.authority,
+          toolGrant: grantOf(node!.contract.authority),
+          ...(node?.repoPath ? { repository: node.repoPath } : {}),
+          requiredChecks: node?.contract.definition_of_done ?? [],
+        });
+        const verdict = prep.verdict;
+        // Investigating is reading, not editing — and an unrestricted grant
+        // does not just permit editing, it also keeps the Task tool, which is
+        // how a single dispatch spawns its own background subagents. Narrowed
+        // to read-only only when nobody configured a grant of their own; see
+        // dispatch-helpers.ts for the measured run this closes off.
+        const grant = investigativeExecuteGrant(grantOf(node!.contract.authority), verdict.decomposition.investigative);
         let usedModel = modelFor(adapter, modelChoiceFor(db, nodeId, 'execute', input.goal));
         const reuseKey = resultReuseKey(input.goal, grant, usedModel);
         // Validity is asked of each candidate answer in turn, newest first:
@@ -1014,9 +1708,7 @@ function productionMachine(db: Db, nodeId: string) {
 
         // Routed through the one decision contract rather than decided inline,
         // so reusing and running fresh are explained the same way and by the
-        // same rules — the budget gate included. `judgeTask` is the cheap
-        // classification the template and the utility record both key on.
-        const verdict = judgeTask(input.goal);
+        // same rules — the budget gate included.
         const pathDecision = decideExecutionPath({
           goal: input.goal,
           authority: node!.contract.authority,
@@ -1045,6 +1737,15 @@ function productionMachine(db: Db, nodeId: string) {
           // for a report, and without this the node would finish having said
           // nothing.
           publishAnswer(db, nodeId, cached.text);
+          // The reused answer is a durable outcome of *this* node, and has to
+          // be recorded as one: validation reads artifacts, and a run that
+          // produced nothing on disk because it produced nothing at all and a
+          // run that skipped the work because the answer was already in hand
+          // must not look identical to it.
+          insertArtifact(db, {
+            id: randomUUID(), nodeId, eventId: null, createdAt: new Date().toISOString(),
+            kind: 'result', path: null, summary: `reused a prior answer to this exact question ($0.0000)`,
+          });
           // Counted as work avoided, not work done.
           recordUsage(db, {
             nodeId, role: 'execute:cache-hit', model: usedModel ?? null,
@@ -1061,11 +1762,23 @@ function productionMachine(db: Db, nodeId: string) {
 
         publishProgress(db, nodeId, `Starting a sandbox on ${adapter.name} against ${worktreePath}`);
         const execOpts = dispatchOptionsFor('execute');
+        // What this particular task was judged to need, rather than what every
+        // task gets. The configured cap is a deployment-wide circuit breaker
+        // and stays the outer bound — an operator who sets one means it, and
+        // `undefined` is the documented "uncapped", which this must not
+        // quietly re-impose a cap on top of.
+        // The snapshot's policy, recalibrated by whatever the learning loop has
+        // promoted. `calibrate` is the only step that cannot live in the
+        // snapshot, because a promotion can land between snapshot and dispatch.
+        const execPolicy = calibrate(prep.executionPolicy, activePolicyChanges(db));
+        const hardTurnCap = effectiveTurnCap(execOpts.maxTurns, execPolicy);
         // Built once, out here rather than inside runOnce: the fallback retry
         // below calls runOnce a second time with the same goal, and a goal
         // carrying two copies of the context is the thing this is meant to
         // avoid. No context (disabled, not a repo, scan failed) → the bare goal.
-        const repoContext = dispatchContextFor(db, worktreePath, input.goal);
+        const repoContext = dispatchContextFor(db, worktreePath, input.goal, {
+          signals: prep.economics, policy: prep.contextPolicy,
+        });
         if (repoContext) publishContextReceipt(db, nodeId, repoContext.receipt);
 
         // Constraints are instructions, not boundaries — the interface says so
@@ -1080,13 +1793,19 @@ function productionMachine(db: Db, nodeId: string) {
         const constraints = (node?.contract.constraints ?? []).map((c) => c.trim()).filter(Boolean);
         const roleSystemPrompt = rolePromptsEnabled() && honoursSystemPrompt(adapter)
           ? buildRolePrompt('execute', {
-              allowedTools: node ? grantOf(node.contract.authority).allowedTools : undefined,
+              allowedTools: grant.allowedTools,
               constraints,
               definitionOfDone: node?.contract.definition_of_done ?? [],
               // The same cap that goes into argv below. A run told its budget
               // summarises at the limit; one that is merely cut off at it
               // reports "max turns exceeded" and loses what it found.
-              maxTurns: execOpts.maxTurns,
+              maxTurns: hardTurnCap,
+              // Advice rather than a wall: the cap stops a run, this is what
+              // stops it wandering. Only worth saying when it is actually
+              // below the cap — "about 45 turns, at most 45 turns" is noise.
+              softTurnTarget: hardTurnCap !== undefined && execPolicy.softTurnTarget < hardTurnCap
+                ? execPolicy.softTurnTarget
+                : undefined,
             })
           : undefined;
         const goalWithConstraints = (!roleSystemPrompt && constraints.length > 0)
@@ -1106,9 +1825,18 @@ function productionMachine(db: Db, nodeId: string) {
         const goalWithHandoff = envelopeText
           ? `${envelopeText}\n\n${goalWithConstraints}`
           : goalWithConstraints;
+        // The economic boundary. Asked once, here, at the point the dispatch is
+        // assembled — and answering "nothing to do" leaves `goalForDispatch`
+        // byte-identical to what it would have been, which is what makes
+        // CONTINUE a true no-op rather than a no-op with a comment.
+        const acquired = await economicBoundary(db, {
+          nodeId, goal: input.goal, worktreePath,
+          fullArtifactRequests: repoContext?.receipt.fullArtifactRequests,
+        });
+        const goalWithEvidence = acquired ? `${goalWithHandoff}\n\n${acquired}` : goalWithHandoff;
         const goalForDispatch = repoContext
-          ? withRepoContext(goalWithHandoff, repoContext.content)
-          : goalWithHandoff;
+          ? withRepoContext(goalWithEvidence, repoContext.content)
+          : goalWithEvidence;
 
         // Reset per attempt: the fallback retry below re-runs the dispatch, and
         // its stream is the one whose rows the observations belong to.
@@ -1129,7 +1857,7 @@ function productionMachine(db: Db, nodeId: string) {
           image: runnerImageOverride(),
           grant,
           model,
-          maxTurns: execOpts.maxTurns,
+          maxTurns: hardTurnCap,
           onViolation: (tool) => publishDenial(db, nodeId, tool, node!.contract.authority),
           // The runner's structured output is the point of the whole dispatch.
           // Was: a loop over result.events run once, after the whole Job
@@ -1258,6 +1986,88 @@ function closeDefinitionOfDone(db: Db, nodeId: string, state: string, now: strin
   }
 }
 
+/** One run, remembered as strategy evidence.
+ *
+ *  Keyed at every level it is evidence for — global, task class, task shape,
+ *  repository, exact pattern — so a later decision can ask the narrowest
+ *  question that still has enough evidence behind it, instead of averaging a
+ *  typo fix and a cross-module bug hunt because they shared a complexity band.
+ *
+ *  Only *validated* outcomes count as successes. A run that finished without
+ *  proving anything is evidence about the run, not about the strategy, and
+ *  recording it as a strategy success is the same laundering the validation
+ *  ladder exists to refuse — one layer further out. */
+function recordStrategyLearning(db: Db, nodeId: string, completed: boolean, now: string): void {
+  try {
+    const node = getNode(db, nodeId);
+    if (!node?.runtime) return;
+    const goal = node.contract.goal ?? '';
+    const prep = prepareDispatch({
+      goal, authority: node.contract.authority,
+      toolGrant: grantOf(node.contract.authority),
+      ...(node.repoPath ? { repository: node.repoPath } : {}),
+    });
+    const verdicts = listEventsForNode(db, nodeId).filter((row) => row.type === 'validation.result');
+    const last = verdicts.at(-1)?.payload as { passed?: boolean; level?: string } | undefined;
+    const delegated = listNodes(db).some((child) => child.parentId === nodeId);
+
+    const costUsd = getCostForNodes(db, [nodeId]);
+    const latencyMs = Date.parse(now) - Date.parse(node.createdAt);
+    const validated = completed && last?.passed === true;
+
+    // What the decision predicted, beside what it cost. Recorded only for a
+    // decision a *score* made: a hard gate predicted nothing, and a prediction
+    // error for it would manufacture evidence that arithmetic went wrong when
+    // none ran. The actual side is telemetry, never the estimate that produced
+    // the prediction — comparing an estimate to itself always reports perfect
+    // accuracy.
+    const decided = listMemory(db, 'strategy_decision').filter((row) => row.nodeId === nodeId).at(-1);
+    const decision = decided?.value as { strategy?: string; predicted?: Record<string, number> } | undefined;
+    if (decision?.strategy) {
+      const observation = buildCounterfactualObservation({
+        chosen: decision.strategy as ExecutionStrategy,
+        alternative: decision.strategy === 'MANAGED' ? 'SERIAL_DELEGATED' : 'MANAGED',
+        predictedCostUsd: decision.predicted?.costUsd ?? 0,
+        predictedLatencyMs: decision.predicted?.latencyMs ?? 0,
+        predictedSuccessProbability: decision.predicted?.successProbability ?? 0.5,
+        actualCostUsd: costUsd,
+        actualLatencyMs: latencyMs,
+        actualSucceeded: validated,
+        validationLevel: (last?.level as 'V0' | 'V1' | 'V2' | 'V3') ?? 'V0',
+        recoveryCount: Math.max(0, verdicts.length - 1),
+        scored: decision.predicted !== undefined,
+      });
+      if (observation) insertMemoryRow(db, 'strategy_counterfactual', decision.strategy, observation, nodeId);
+    }
+
+    recordStrategyOutcome(db, {
+      id: randomUUID(), nodeId, createdAt: now,
+      observation: observationFrom({
+        strategy: delegated ? 'SERIAL_DELEGATED' : 'MANAGED',
+        taskClass: prep.taskClass,
+        taskShape: prep.taskShape,
+        ...(node.repoPath ? { repository: node.repoPath } : {}),
+        ...(node.repoPath ? { exactPattern: `${node.repoPath}@${prep.taskShape}` } : {}),
+        validated,
+        // Quality against the run's own contract rather than against a baseline
+        // this process cannot see. A paired benchmark supplies the real delta;
+        // this is the honest zero until it does.
+        qualityDelta: 0,
+        costUsd,
+        latencyMs,
+        // Each extra verdict is an attempt that had to be recovered from.
+        recoveryCount: Math.max(0, verdicts.length - 1),
+        validationLevel: (last?.level as 'V0' | 'V1' | 'V2' | 'V3') ?? 'V0',
+        policyVersion: policyVersion(),
+      }),
+    });
+  } catch (err) {
+    // Learning must never cost a run. A missing observation is a smaller
+    // problem than a node that could not finish because recording one failed.
+    console.error(`Failed to record strategy learning for node ${nodeId}:`, err);
+  }
+}
+
 /** One run, remembered. This is the only writer of node memory: everything the
  *  organization later believes about a runtime is an aggregate of these rows,
  *  so a run that ended in any way at all has to produce exactly one. */
@@ -1287,12 +2097,175 @@ function recordOutcomeInMemory(db: Db, nodeId: string, succeeded: boolean, now: 
  *
  *  Total, like every other recorder here: this runs on the terminal transition,
  *  and a node must not be left un-finalized because measuring it failed. */
+/** What the runtime already knows about how well a finished run went.
+ *
+ *  Every field is read off something that already happened — the artifacts
+ *  table, the run's own tool stream, the definition of done. No new telemetry,
+ *  which is what makes validation at V0-V2 cost nothing. */
+function validationEvidenceFor(db: Db, nodeId: string, succeeded: boolean): ValidationEvidence {
+  const all = listArtifactsForNode(db, nodeId);
+  const artifacts = all.filter((a) => a.kind !== 'result');
+  // An investigation's deliverable *is* its report: there is no file to point
+  // at, and treating "a file changed" as the only durable outcome made every
+  // read-only task permanently unverifiable — a task family whose floor can
+  // never be cleared is a task family whose floor stops meaning anything.
+  //
+  // Read-only only, deliberately. For work that was supposed to change
+  // something, "the agent wrote a summary" is the claim, not evidence for it,
+  // and accepting it there is the empty-patch success this whole ladder exists
+  // to refuse.
+  const readOnly = taskEconomicsFor(getNode(db, nodeId)?.contract.goal ?? '').readOnly;
+  const durableOutcomeIds = readOnly ? all.filter((a) => a.kind === 'result').map((a) => a.id) : [];
+  const snapshot = executionSnapshot({
+    events: listEventsForNode(db, nodeId)
+      .filter((row) => row.type.startsWith('exec.'))
+      .map((row) => ({ type: row.type.slice('exec.'.length), payload: row.payload } as StructuredEvent)),
+    sequence: 0,
+    tokensConsumed: 0,
+  });
+  // A verifying command that ran green is the strongest evidence the trace can
+  // offer, and the fingerprint already separated those out as active targets.
+  const failures = new Set(snapshot.failureSignatures);
+  const observedChecks = snapshot.activeTargets
+    .filter((target) => VERIFYING_COMMAND.test(target))
+    .map((target) => ({
+      id: `observed:${target}`,
+      command: target,
+      passed: ![...failures].some((signature) => signature.includes(target)),
+    }));
+
+  return {
+    claimedSuccess: succeeded,
+    artifactIds: artifacts.map((a) => a.id),
+    durableOutcomeIds,
+    observedChecks,
+    requiredChecks: listDodForNode(db, nodeId).map((item) => ({
+      id: item.id, text: item.text, met: item.state === 'met',
+    })),
+  };
+}
+
+/** The same shapes `efficiency/progress-signals.ts` treats as proof. Duplicated
+ *  deliberately narrow rather than exported: what counts as *a verifying
+ *  command* and what counts as *an active target that is one* are the same
+ *  question, and if they ever diverge this is the line that should have to
+ *  change. */
+const VERIFYING_COMMAND = /\b(?:test|tests|vitest|jest|pytest|build|tsc|typecheck|lint|eslint|check|cargo|go\s+test|make)\b/i;
+
 function recordEfficiency(db: Db, nodeId: string, outcome: EfficiencyOutcome): void {
+  // Said explicitly rather than left to a timeout: the control plane keeps a
+  // little working memory per node, and a daemon that runs for weeks must not
+  // accumulate one entry for every node it has ever seen.
+  forgetNode(nodeId);
   try {
-    const record = ledger.finishTask(nodeId, outcome);
+    // `EXECUTION_FINISHED` is a fact about a process; `TASK_SUCCESS` is a claim
+    // about the world. The primary KPI is tokens per *successful* task, so a
+    // success count that includes runs which did not work scores an optimizer
+    // that makes runs cheaper and wronger as an improvement. This is the gate.
+    //
+    // Downgraded to `partial`, never to `failure`: the run did finish and did
+    // produce something, and calling that a failure would be as dishonest in
+    // the other direction.
+    const validated = outcome !== 'success'
+      ? outcome
+      : recordValidation(db, nodeId) ? 'success' : 'partial';
+    const record = ledger.finishTask(nodeId, validated);
     insertMemoryRow(db, 'efficiency_record', nodeId, record, nodeId);
   } catch (err) {
     console.error(`Failed to record the efficiency of node ${nodeId}:`, err);
+  }
+}
+
+/** Whether this run may be counted as a successful task, and the receipt for
+ *  the answer either way.
+ *
+ *  No fresh verifier is passed: re-running a repository's test suite from
+ *  inside the daemon is a capability this runtime does not have, so the ladder
+ *  stops at V2 — a green check in the run's own trace. Recorded as
+ *  `V3:no_verifier` rather than silently, so the ceiling is visible in the
+ *  telemetry rather than inferred from its absence. */
+function runValidation(db: Db, nodeId: string, succeeded: boolean): ValidationVerdict {
+  const node = getNode(db, nodeId);
+  const goal = node?.contract.goal ?? '';
+  // Closed *here*, not at the terminal transition, and the ordering is
+  // load-bearing: validation reads the definition of done, so a definition
+  // still sitting at `unverified` makes every named check look unmet and every
+  // run fail. Reversed, it launders "the process exited 0" into "the work was
+  // done". Neither is acceptable, so the checklist is ruled against what the
+  // run actually produced, immediately before the evidence is read.
+  closeDefinitionOfDone(db, nodeId, succeeded ? 'COMPLETE' : 'FAILED', new Date().toISOString());
+
+  // What this particular task needs proving, and to what level. The profile
+  // may raise the floor — delegated work, a wide change, a task already on its
+  // second attempt — and human-named checks raise it independently.
+  const delegated = listNodes(db).some((child) => child.parentId === nodeId);
+  const profile = validationProfileFor({
+    strategy: delegated ? 'SERIAL_DELEGATED' : 'MANAGED',
+    economics: taskEconomicsFor(goal),
+    requiredChecks: node?.contract.definition_of_done ?? [],
+    // No fresh verifier: re-running a repository's suite from inside the daemon
+    // is a capability this runtime does not have. Recorded as `V3:no_verifier`
+    // rather than silently, so the ceiling is visible in the telemetry rather
+    // than inferred from its absence.
+    freshVerifierAvailable: false,
+  });
+
+  const result = validate({
+    evidence: validationEvidenceFor(db, nodeId, succeeded),
+    contract: contractForProfile(profile),
+  });
+
+  // The level floor and the confidence floor can disagree, and when they do the
+  // level wins: a task that demanded an observed check and got an artifact has
+  // not been verified, however confident the arithmetic became.
+  const levelOk = meetsMinimumLevel(profile, result.level);
+  const gated: ValidationResult = levelOk ? result : {
+    ...result, passed: false,
+    reasonCodes: [...result.reasonCodes, `below_minimum_level:${profile.minimumLevel}`],
+  };
+
+  const now = new Date().toISOString();
+  const payload = {
+    level: gated.level, passed: gated.passed, confidence: gated.confidence,
+    tokens: gated.tokens, latencyMs: gated.latencyMs,
+    evidenceIds: gated.evidenceIds, reasonCodes: gated.reasonCodes,
+    minimumLevel: profile.minimumLevel, riskReasons: profile.riskReasons,
+  };
+  const id = appendEvent(db, { nodeId, type: 'validation.result', payload, createdAt: now });
+  publish({ id, nodeId, type: 'validation.result', payload, createdAt: now });
+
+  // The strategy identity of this attempt, so the lifecycle can tell a recovery
+  // from a repeat. Without it the attempt cap bounds how many identical retries
+  // happen and nothing stops the first one being pointless.
+  const signals = trajectorySignals(db, nodeId);
+  return {
+    ...gated,
+    strategy: delegated ? 'SERIAL_DELEGATED' : 'MANAGED',
+    // What failed, in the stable form the trajectory fingerprint uses, so two
+    // attempts that died the same way are recognisable as such.
+    failureSignature: gated.passed
+      ? 'none'
+      : `validation:${gated.level}:${gated.reasonCodes.filter((code) => !code.startsWith('V')).join('|') || 'insufficient_evidence'}`,
+    progress: signals.progressSignal,
+  };
+}
+
+/** The stored verdict for this node, or a fresh one if the machine never
+ *  reached VALIDATE (a cancelled or crashed run).
+ *
+ *  Total: unreadable evidence must not manufacture a success. It also must not
+ *  manufacture a failure of the *run* — the caller downgrades to partial, which
+ *  is the honest reading of "it finished and we cannot say whether it worked". */
+function recordValidation(db: Db, nodeId: string): boolean {
+  try {
+    const stored = listEventsForNode(db, nodeId)
+      .filter((row) => row.type === 'validation.result')
+      .at(-1);
+    if (stored) return (stored.payload as { passed?: boolean }).passed === true;
+    return runValidation(db, nodeId, true).passed;
+  } catch (err) {
+    console.error(`Failed to validate node ${nodeId}:`, err);
+    return false;
   }
 }
 
@@ -1339,13 +2312,20 @@ function createAndRun(db: Db, nodeId: string, goal: string, persisted: unknown):
       // on. Recording it here, at the one point that knows the verdict, is what
       // makes `evidence` more than a field that was always empty.
       recordOutcomeInMemory(db, nodeId, snapshot.value === 'COMPLETE', now);
+      recordStrategyLearning(db, nodeId, snapshot.value === 'COMPLETE', now);
       // One efficiency record per task, at the one point that knows the verdict.
       // CANCELLED is 'partial', not a failure: the work stopped because someone
       // stopped it, and counting that against the success rate would make every
       // change look worse the more often people intervened.
+      // Order matters, and getting it wrong is invisible until a benchmark
+      // reports a success rate of zero: `recordEfficiency` validates the run
+      // against its definition of done, so the definition of done has to be
+      // *closed* first. Reversed, validation reads every item as `unverified`,
+      // every run is downgraded to `partial`, and the primary metric — tokens
+      // per *successful* task — can never be computed at all.
+      closeDefinitionOfDone(db, nodeId, String(snapshot.value), now);
       recordEfficiency(db, nodeId, snapshot.value === 'COMPLETE' ? 'success'
         : snapshot.value === 'CANCELLED' ? 'partial' : 'failure');
-      closeDefinitionOfDone(db, nodeId, String(snapshot.value), now);
       const evidence = listArtifactsForNode(db, nodeId).map((a) => a.id);
       for (const commitment of listCommitmentsForNode(db, nodeId)) {
         updateCommitmentStatus(db, commitment.id, outcome, now);
@@ -1460,6 +2440,7 @@ export function sendToNode(nodeId: string, event: NodeMachineEvent): void {
 const CHILD_WAIT_TIMEOUT_MS = 45 * 60_000;
 
 export async function waitForNodeCompletion(
+  db: Db,
   nodeId: string,
   timeoutMs = CHILD_WAIT_TIMEOUT_MS,
 ): Promise<{ succeeded: boolean }> {
@@ -1471,7 +2452,24 @@ export async function waitForNodeCompletion(
         `Gave up waiting for agent ${nodeId} after ${Math.round(timeoutMs / 60_000)} minutes. It is still running; its work is not included here.`,
       );
     });
-  // COMPLETE is the only terminal state that means the goal was met — FAILED and
-  // ESCALATE are both terminal too, and neither is a success.
-  return { succeeded: snapshot.value === 'COMPLETE' };
+  // COMPLETE is the only terminal state that means the goal was *attempted to
+  // completion* — FAILED and CANCELLED are both terminal too, and neither is a
+  // success. But COMPLETE alone is EXECUTION_FINISHED, not TASK_SUCCESS: the
+  // subscriber that ran validation and appended `validation.result` was
+  // registered when this actor started, before this call's own `waitFor`
+  // subscription, so it has already run by the time `snapshot.status` reads
+  // 'done' here. A caller that trusted the bare state machine value would
+  // treat an unverified completion the same as a confirmed one — exactly the
+  // confusion `validation/engine.ts` exists to prevent everywhere else.
+  // ponytail: reads the last validation.result event rather than threading the
+  // validate() result through the state machine itself; revisit if a second
+  // caller needs more than pass/fail.
+  if (snapshot.value !== 'COMPLETE') return { succeeded: false };
+  const lastValidation = listEventsForNode(db, nodeId)
+    .filter((e) => e.type === 'validation.result')
+    .sort((a, b) => b.id - a.id)[0];
+  // Absent means validation did not run or could not be read — the same
+  // "must not manufacture a success" rule recordValidation itself applies.
+  const passed = (lastValidation?.payload as { passed?: boolean } | undefined)?.passed === true;
+  return { succeeded: passed };
 }

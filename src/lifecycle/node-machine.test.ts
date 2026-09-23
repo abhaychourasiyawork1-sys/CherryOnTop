@@ -1,15 +1,19 @@
 import { describe, it, expect, vi } from 'vitest';
 import { createActor, fromPromise, waitFor } from 'xstate';
-import { nodeMachine } from './node-machine.js';
+import { nodeMachine, type ValidationVerdict } from './node-machine.js';
 import type { ExecuteStepResult } from '../execution/execute-step.js';
 import type { IntelligenceBundle } from '../intelligence/coordinator.js';
 import type { DecideExecutionResult } from '../engines/decide-execution.js';
 import { ZERO_USAGE } from '../execution/tokens.js';
+import type { ValidationResult } from '../validation/engine.js';
 
 function machineWithMocks(overrides: {
   assessUncertainty?: Partial<IntelligenceBundle> & { sufficientContext: boolean; complexity: 'low' | 'medium' | 'high' };
   decideExecution?: { outcome: 'SELF_EXECUTE' | 'DELEGATE' | 'ESCALATE'; breakdown: Record<string, number> };
-  executeStep?: { succeeded: boolean };
+  executeStep?: { succeeded: boolean; rateLimited?: boolean };
+  /** What validation concluded. Defaults to a passing V2 — these tests are
+   *  about the machine's shape, and the gate itself has its own file. */
+  validation?: Partial<ValidationResult>;
 } = {}) {
   return nodeMachine.provide({
     actors: {
@@ -21,6 +25,11 @@ function machineWithMocks(overrides: {
       executeStep: fromPromise(async (): Promise<ExecuteStepResult> => ({ message: 'ok', events: [], usage: { ...ZERO_USAGE }, ...(overrides.executeStep ?? { succeeded: true }) })),
       delegateToChild: fromPromise(async (): Promise<ExecuteStepResult> => ({ succeeded: true, message: 'ok', events: [], usage: { ...ZERO_USAGE } })),
       escalate: fromPromise(async () => 'approval-1'),
+      validate: fromPromise(async (): Promise<ValidationResult> => ({
+        level: 'V2', passed: true, confidence: 0.85, tokens: 0, latencyMs: 0,
+        evidenceIds: ['observed:npm test'], reasonCodes: ['V2:observed_verification_passed'],
+        ...(overrides.validation ?? {}),
+      })),
     },
   });
 }
@@ -60,12 +69,46 @@ describe('nodeMachine', () => {
     expect(actor.getSnapshot().context.lastDecision?.breakdown.score).toBe(0.42);
   });
 
-  it('retries execution when the step fails, then lands in FAILED at the retry cap', async () => {
+  it('stops retrying once the same strategy has hit the same wall with nothing gained', async () => {
+    // The attempt cap bounds how many identical retries happen; it does not
+    // stop the first of them being pointless. A second attempt that is the same
+    // strategy, against the same failure, from the same standstill is not an
+    // attempt — it is another sandbox bought to reach the same wall.
     const actor = createActor(machineWithMocks({ executeStep: { succeeded: false } }), { input: { nodeId: 'n1', goal: 'test' } });
     actor.start();
     actor.send({ type: 'START' });
     await vi.waitFor(() => expect(actor.getSnapshot().value).toBe('FAILED'));
+    expect(actor.getSnapshot().context.executionAttempts).toBe(1);
+  });
+
+  it('keeps retrying while each attempt dies a different way, up to the cap', async () => {
+    // A run working through three distinct problems is making progress, and
+    // counting those against it would stop exactly the run about to succeed.
+    let attempt = 0;
+    const machine = machineWithMocks({ executeStep: { succeeded: false } }).provide({
+      actors: {
+        validate: fromPromise(async (): Promise<ValidationVerdict> => ({
+          level: 'V1', passed: false, confidence: 0.5, tokens: 0, latencyMs: 0,
+          evidenceIds: [], reasonCodes: ['below_required_confidence'],
+          failureSignature: `problem_${++attempt}`,
+        })),
+      },
+    });
+    const actor = createActor(machine, { input: { nodeId: 'n1', goal: 'test' } });
+    actor.start();
+    actor.send({ type: 'START' });
+    await vi.waitFor(() => expect(actor.getSnapshot().value).toBe('FAILED'));
     expect(actor.getSnapshot().context.executionAttempts).toBe(3);
+  });
+
+  it('fails on the first rate-limited step instead of retrying into a dead quota', async () => {
+    const actor = createActor(machineWithMocks({ executeStep: { succeeded: false, rateLimited: true } }), { input: { nodeId: 'n1', goal: 'test' } });
+    actor.start();
+    actor.send({ type: 'START' });
+    await vi.waitFor(() => expect(actor.getSnapshot().value).toBe('FAILED'));
+    // Not 3: the usage window does not refill between attempts a few minutes
+    // apart, so every retry was guaranteed to fail the same way for nothing.
+    expect(actor.getSnapshot().context.executionAttempts).toBeUndefined();
   });
 
   it('escalates through to WAIT_APPROVAL when the decision combinator says so', async () => {
@@ -150,6 +193,10 @@ describe('nodeMachine', () => {
           return { succeeded: true, message: 'ok', events: [], usage: { ...ZERO_USAGE } };
         }),
         escalate: fromPromise(async () => 'approval-1'),
+        validate: fromPromise(async (): Promise<ValidationResult> => ({
+          level: 'V2', passed: true, confidence: 0.85, tokens: 0, latencyMs: 0,
+          evidenceIds: ['observed:npm test'], reasonCodes: ['V2:observed_verification_passed'],
+        })),
       },
     });
 

@@ -13,11 +13,23 @@ import type { EfficiencyRecord } from './metrics.js';
 export interface ObjectiveWeights {
   tokens: number;
   latency: number;
+  /** Optional so a caller can still isolate a single term — `{tokens: 1,
+   *  latency: 0}` is a legitimate question to ask of a run. Absent means zero
+   *  weight, never a missing gate: quality stays a hard gate in
+   *  `evaluateExperiment` whatever the weighting says. */
+  quality?: number;
 }
 
-/** Tokens are the primary metric and latency the secondary, but not by much:
- *  a change that halves spend and doubles the wait is not obviously a win. */
-export const DEFAULT_WEIGHTS: ObjectiveWeights = { tokens: 0.6, latency: 0.4 };
+/** `Tokens : Quality : Latency = 2 : 2 : 1` — the objective this architecture
+ *  was approved under, and the same ratio `decision/utility.ts` scores a single
+ *  action with. Two contracts describing one preference must not be allowed to
+ *  drift apart, so both are pinned by test.
+ *
+ *  Quality appears here as a *term* as well as a gate. The gate stops a quality
+ *  regression from shipping; the term is what makes a change that improved
+ *  quality at equal cost register as the improvement it is, which a
+ *  tokens-and-latency objective scored as exactly neutral. */
+export const DEFAULT_WEIGHTS: ObjectiveWeights = { tokens: 0.4, quality: 0.4, latency: 0.2 };
 
 export interface SuiteSummary {
   tasks: number;
@@ -25,6 +37,29 @@ export interface SuiteSummary {
   /** Null when nothing in the run was scored. Never invented. */
   qualityScore: number | null;
   tokensPerSuccessfulTask: number;
+  /** The three acceptance metrics, per *success*. These are what a rollout gate
+   *  reads: a change that lowered a total by failing more often raises all
+   *  three, and a total alone would have called it a win. */
+  costPerSuccessfulTask: number;
+  turnsPerSuccessfulTask: number;
+  cacheReadPerSuccessfulTask: number;
+  /** Mean share of trajectories spent looking rather than doing. The mechanism
+   *  this architecture claims to move — if it does not move, no cost change is
+   *  attributable to it. */
+  explorationRatio: number;
+  /** Mean return on what the optimizer spent deciding. */
+  optimizationRoi: number;
+  /** Mean context handed over per task. The direct measure of what the planner
+   *  changed about the prompt — and the one that must be read *beside* cost
+   *  rather than instead of it, because less context is the mechanism, not the
+   *  result. */
+  contextTokensPerTask: number;
+  /** Selected over considered. How aggressive the planner was being. */
+  contextSelectionRatio: number;
+  /** Tasks the guard stopped. A cheap arm full of stopped tasks is not a
+   *  cheaper arm, and without this the two are indistinguishable in the
+   *  summary. */
+  tasksStopped: number;
   p50LatencyMs: number;
   p95LatencyMs: number;
   cacheHitRatio: number;
@@ -68,6 +103,15 @@ export function summarizeRun(records: EfficiencyRecord[]): SuiteSummary {
     // Per *successful* task: a change that halves tokens by failing twice as
     // often has not improved anything, and a plain average would hide it.
     tokensPerSuccessfulTask: mean(successful.map((r) => r.totalTokens)),
+    costPerSuccessfulTask: mean(successful.map((r) => r.costUsd)),
+    turnsPerSuccessfulTask: mean(successful.map((r) => r.turns)),
+    cacheReadPerSuccessfulTask: mean(successful.map((r) => r.cachedTokens)),
+    explorationRatio: mean(records.map((r) => r.explorationRatio)),
+    optimizationRoi: mean(records.map((r) => r.optimizationRoi)),
+    contextTokensPerTask: mean(records.map((r) => r.contextEstimatedTokens)),
+    contextSelectionRatio: mean(records.map((r) =>
+      (r.contextCandidates <= 0 ? 0 : r.contextSelected / r.contextCandidates))),
+    tasksStopped: records.filter((r) => r.stopReason !== null).length,
     // Latency over every task, successful or not — a person waits for failures
     // too, and a change that makes failures slow is a change that made things
     // worse.
@@ -90,11 +134,18 @@ export function summarizeRun(records: EfficiencyRecord[]): SuiteSummary {
  *  those together only means something once both are dimensionless. */
 export function objectiveScore(summary: SuiteSummary, baseline: SuiteSummary, weights: ObjectiveWeights): number {
   const ratio = (value: number, base: number) => (base <= 0 ? 1 : value / base);
-  const total = weights.tokens + weights.latency;
+  const quality = weights.quality ?? 0;
+  const total = weights.tokens + weights.latency + quality;
   if (total <= 0) return 1;
   return (
     weights.tokens * ratio(summary.tokensPerSuccessfulTask, baseline.tokensPerSuccessfulTask) +
-    weights.latency * ratio(summary.p95LatencyMs, baseline.p95LatencyMs)
+    weights.latency * ratio(summary.p95LatencyMs, baseline.p95LatencyMs) +
+    // Inverted, because this is a cost-shaped score where lower is better and
+    // quality is the one term where *more* is better. An unscored run
+    // contributes exactly 1 — neutral — rather than an invented number: silence
+    // is not evidence of improvement, and the gate below already refuses a
+    // change that stopped measuring.
+    quality * ratio(baseline.qualityScore ?? 0, summary.qualityScore ?? 0)
   ) / total;
 }
 
@@ -141,6 +192,15 @@ export function evaluateExperiment(input: ExperimentInput): ExperimentResult {
 
   if (optimized.successRate < baseline.successRate - epsilon) {
     failures.push(`success rate fell more than ${epsilon}`);
+  }
+
+  // Stopping tasks is a way to make an arm look cheap that has nothing to do
+  // with being efficient. The success-rate gate catches most of it, but not the
+  // case where the guard stops a task the baseline would also have failed —
+  // there the rates match and the optimized arm still bought its saving by
+  // refusing to work.
+  if (optimized.tasksStopped > baseline.tasksStopped) {
+    failures.push(`the guard stopped more tasks (${optimized.tasksStopped} vs ${baseline.tasksStopped})`);
   }
 
   if (objectiveOptimized >= objectiveBaseline) failures.push('the objective did not improve');

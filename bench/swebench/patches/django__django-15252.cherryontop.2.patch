@@ -1,0 +1,141 @@
+diff --git a/django/db/migrations/recorder.py b/django/db/migrations/recorder.py
+index 1a37c6b7d0..ba49d16631 100644
+--- a/django/db/migrations/recorder.py
++++ b/django/db/migrations/recorder.py
+@@ -1,5 +1,5 @@
+ from django.apps.registry import Apps
+-from django.db import DatabaseError, models
++from django.db import DatabaseError, models, router
+ from django.utils.functional import classproperty
+ from django.utils.timezone import now
+ 
+@@ -62,6 +62,10 @@ class MigrationRecorder:
+         # in the codebase.
+         if self.has_table():
+             return
++        # Don't create the table on a database that the router says the
++        # migrations app isn't allowed to migrate to.
++        if not router.allow_migrate_model(self.connection.alias, self.Migration):
++            return
+         # Make the table
+         try:
+             with self.connection.schema_editor() as editor:
+@@ -83,11 +87,15 @@ class MigrationRecorder:
+ 
+     def record_applied(self, app, name):
+         """Record that a migration was applied."""
++        if not router.allow_migrate_model(self.connection.alias, self.Migration):
++            return
+         self.ensure_schema()
+         self.migration_qs.create(app=app, name=name)
+ 
+     def record_unapplied(self, app, name):
+         """Record that a migration was unapplied."""
++        if not router.allow_migrate_model(self.connection.alias, self.Migration):
++            return
+         self.ensure_schema()
+         self.migration_qs.filter(app=app, name=name).delete()
+ 
+diff --git a/tests/migrations/test_recorder.py b/tests/migrations/test_recorder.py
+new file mode 100644
+index 0000000000..c5e0d8ff08
+--- /dev/null
++++ b/tests/migrations/test_recorder.py
+@@ -0,0 +1,97 @@
++from django.db import connection
++from django.db.migrations.exceptions import MigrationSchemaMissing
++from django.db.migrations.recorder import MigrationRecorder
++from django.test import TestCase, override_settings
++
++from .test_base import MigrationTestBase
++
++
++class RecorderTests(MigrationTestBase):
++    """
++    Tests the migration recorder.
++    """
++
++    def test_apply(self):
++        """
++        Tests marking migrations as applied/unapplied.
++        """
++        recorder = MigrationRecorder(connection)
++        self.assertEqual(
++            {(x, y) for (x, y) in recorder.applied_migrations() if x == "myapp"},
++            set(),
++        )
++        recorder.record_applied("myapp", "0432_ponies")
++        self.assertEqual(
++            {(x, y) for (x, y) in recorder.applied_migrations() if x == "myapp"},
++            {("myapp", "0432_ponies")},
++        )
++        # That should not affect records of another app
++        recorder.record_applied("otherapp", "0001_initial")
++        self.assertEqual(
++            {(x, y) for (x, y) in recorder.applied_migrations() if x == "myapp"},
++            {("myapp", "0432_ponies")},
++        )
++        recorder.record_unapplied("myapp", "0432_ponies")
++        self.assertEqual(
++            {(x, y) for (x, y) in recorder.applied_migrations() if x == "myapp"},
++            set(),
++        )
++        # Removing a non-existent migration should not raise an error.
++        recorder.record_unapplied("otherapp", "0001_initial")
++        self.assertEqual(
++            {(x, y) for (x, y) in recorder.applied_migrations() if x == "otherapp"},
++            set(),
++        )
++
++
++class RecorderRouterTests(MigrationTestBase):
++    databases = {'default', 'other'}
++
++    @override_settings(DATABASE_ROUTERS=['migrations.routers.DefaultOnlyRouter'])
++    def test_router_honored_on_ensure_schema(self):
++        """
++        ensure_schema() does not create the migrations table on a database
++        that a router disallows migrations for.
++        """
++        recorder = MigrationRecorder(connection.connections['other'] if False else None)
++
++
++class MigrationRecorderRouterTests(TestCase):
++    databases = {'default', 'other'}
++
++    @override_settings(DATABASE_ROUTERS=['migrations.routers.DefaultOnlyRouter'])
++    def test_ensure_schema_not_allowed(self):
++        from django.db import connections
++        other = connections['other']
++        recorder = MigrationRecorder(other)
++        recorder.ensure_schema()
++        self.assertFalse(recorder.has_table())
++
++    @override_settings(DATABASE_ROUTERS=['migrations.routers.DefaultOnlyRouter'])
++    def test_record_applied_not_allowed(self):
++        from django.db import connections
++        other = connections['other']
++        recorder = MigrationRecorder(other)
++        recorder.record_applied('migrations', '0001_initial')
++        self.assertFalse(recorder.has_table())
++        self.assertEqual(recorder.applied_migrations(), {})
++
++    @override_settings(DATABASE_ROUTERS=['migrations.routers.DefaultOnlyRouter'])
++    def test_record_unapplied_not_allowed(self):
++        from django.db import connections
++        default = connections['default']
++        other = connections['other']
++        # Record on the allowed connection first.
++        default_recorder = MigrationRecorder(default)
++        default_recorder.record_applied('migrations', '0001_initial')
++        self.addCleanup(default_recorder.record_unapplied, 'migrations', '0001_initial')
++
++        other_recorder = MigrationRecorder(other)
++        # No error, and no table is created on the disallowed connection.
++        other_recorder.record_unapplied('migrations', '0001_initial')
++        self.assertFalse(other_recorder.has_table())
++
++    def test_ensure_schema_allowed_by_default(self):
++        recorder = MigrationRecorder(connection)
++        recorder.ensure_schema()
++        self.assertTrue(recorder.has_table())

@@ -1,35 +1,48 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import { parseEfficiencyMode, efficiencyMode, modelForTier } from './efficiency.js';
+import { parseRuntimeMode, runtimeMode, modelForTier } from './efficiency.js';
 
 afterEach(() => {
   delete process.env.ORG_EFFICIENCY_MODE;
   for (const key of ['ORG_MODEL_FAST', 'ORG_MODEL_STANDARD', 'ORG_MODEL_DEEP']) delete process.env[key];
 });
 
-describe('parseEfficiencyMode', () => {
-  it('supports the three rollout modes', () => {
-    expect(parseEfficiencyMode('disabled')).toBe('disabled');
-    expect(parseEfficiencyMode('shadow')).toBe('shadow');
-    expect(parseEfficiencyMode('enabled')).toBe('enabled');
+describe('parseRuntimeMode', () => {
+  it('exposes exactly two product modes', () => {
+    // The architectural invariant, asserted where it is decided. A third mode
+    // is one more behaviour an operator can be in, one more combination to
+    // test, and one more thing a bug report has to establish before it can be
+    // read.
+    const modes = new Set(
+      ['disabled', 'off', '0', 'false', 'baseline', 'shadow', 'enabled', 'full', '', 'anything', undefined]
+        .map((value) => parseRuntimeMode(value as string | undefined)),
+    );
+    expect([...modes].sort()).toEqual(['baseline', 'full']);
   });
 
   it('accepts the ways people actually write "off"', () => {
-    for (const value of ['off', '0', 'false', 'DISABLED', ' disabled ']) {
-      expect(parseEfficiencyMode(value)).toBe('disabled');
+    for (const value of ['off', '0', 'false', 'DISABLED', ' disabled ', 'baseline']) {
+      expect(parseRuntimeMode(value)).toBe('baseline');
     }
   });
 
-  it('defaults to enabled, including for an unset or unrecognised value', () => {
-    // Every component this gates degrades to the previous behaviour on failure,
-    // and a flag nobody turns on measures nothing.
-    expect(parseEfficiencyMode(undefined)).toBe('enabled');
-    expect(parseEfficiencyMode('')).toBe('enabled');
-    expect(parseEfficiencyMode('yes-please')).toBe('enabled');
+  it('resolves the retired shadow mode to the behaviour it actually had', () => {
+    // A shadow run decided, recorded, and then dispatched exactly as a disabled
+    // run would. A deployment that set it keeps what it had and stops being in
+    // a mode nobody else is in.
+    expect(parseRuntimeMode('shadow')).toBe('baseline');
+  });
+
+  it('defaults to full, including for an unset or unrecognised value', () => {
+    // Every component this gates degrades to Baseline on failure, and a flag
+    // nobody turns on measures nothing.
+    expect(parseRuntimeMode(undefined)).toBe('full');
+    expect(parseRuntimeMode('')).toBe('full');
+    expect(parseRuntimeMode('yes-please')).toBe('full');
   });
 
   it('reads the environment', () => {
-    process.env.ORG_EFFICIENCY_MODE = 'shadow';
-    expect(efficiencyMode()).toBe('shadow');
+    process.env.ORG_EFFICIENCY_MODE = 'disabled';
+    expect(runtimeMode()).toBe('baseline');
   });
 });
 

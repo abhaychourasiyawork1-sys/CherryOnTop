@@ -17,7 +17,8 @@
     "test:gui": "npm --prefix gui ci && npm --prefix gui run test",
     "seed:demo": "tsx scripts/seed-demo.mts",
     "bench": "node bench/run.mjs",
-    "bench:deterministic": "npm run build && node bench/deterministic.mjs"
+    "bench:deterministic": "npm run build && node bench/deterministic.mjs",
+    "bench:guard": "node bench/economic-trajectories.mjs"
   },
   "keywords": [],
   "author": "",

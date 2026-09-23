@@ -1,7 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import { buildEfficiencyRecord, EMPTY_TOTALS } from './metrics.js';
+import { buildEfficiencyRecord, EMPTY_TOTALS, EMPTY_ATTRIBUTION } from './metrics.js';
 
 const base = {
+  ...EMPTY_TOTALS,
+  ...EMPTY_ATTRIBUTION,
   taskId: 'task-1',
   outcome: 'success' as const,
   inputTokens: 1000,
@@ -23,6 +25,16 @@ const base = {
   endToEndMs: 4100,
   costUsd: 0.02,
   qualityScore: 0.95,
+  turns: 12,
+  contextPolicyVersion: 'ctx-1',
+  executionPolicyVersion: 'exec-1',
+  contextCandidates: 9,
+  contextSelected: 3,
+  contextEstimatedTokens: 400,
+  explorationSignal: 0.4,
+  progressSignal: 0.6,
+  optimizationOverheadUsd: 0,
+  stopReason: null,
 };
 
 describe('buildEfficiencyRecord', () => {
@@ -103,5 +115,48 @@ describe('buildEfficiencyRecord', () => {
   it('reports recovery spend as a share of the total', () => {
     const record = buildEfficiencyRecord({ ...base, recoveryTokens: 350, retries: 1 });
     expect(record.recoveryTokenShare).toBeCloseTo(0.25);
+  });
+});
+
+
+describe('the control plane accounts for itself', () => {
+  it('reports orchestration spend beside task spend rather than inside it', () => {
+    const record = buildEfficiencyRecord({ ...base, orchestrationTokens: 140 });
+    // Charged to the optimization allowance, not to the work.
+    expect(record.totalTokens).toBe(1400);
+    expect(record.orchestrationOverheadRatio).toBeCloseTo(0.1);
+  });
+
+  it('rates interventions against the ones actually checked, not against all of them', () => {
+    const record = buildEfficiencyRecord({
+      ...base, decisionCycles: 20, interventions: 8,
+      reconciledInterventions: 4, beneficialInterventions: 3,
+    });
+    expect(record.beneficialInterventionRate).toBeCloseTo(0.75);
+  });
+
+  it('reports no rate at all when nothing was reconciled', () => {
+    // "No intervention helped" and "we never checked" are different results,
+    // and only one of them is a verdict.
+    const record = buildEfficiencyRecord({ ...base, interventions: 8, reconciledInterventions: 0 });
+    expect(record.beneficialInterventionRate).toBeNull();
+    expect(record.meanRegret).toBeNull();
+  });
+
+  it('reports mean prediction error per reconciled decision', () => {
+    const record = buildEfficiencyRecord({ ...base, reconciledInterventions: 4, totalRegret: 2_000 });
+    expect(record.meanRegret).toBe(500);
+  });
+
+  it('reports duplicated information as a share of what the task cost', () => {
+    const record = buildEfficiencyRecord({ ...base, duplicatedInformationTokens: 350 });
+    expect(record.duplicationRatio).toBeCloseTo(0.25);
+  });
+
+  it('keeps every new ratio finite on an empty run', () => {
+    const record = buildEfficiencyRecord({ ...base, ...EMPTY_TOTALS, outcome: 'failure' });
+    expect(record.orchestrationOverheadRatio).toBe(0);
+    expect(record.duplicationRatio).toBe(0);
+    expect(record.beneficialInterventionRate).toBeNull();
   });
 });

@@ -1,0 +1,61 @@
+2026-09-21 01:02:22,935 - INFO - Creating container for django__django-13512...
+2026-09-21 01:02:22,978 - INFO - Container for django__django-13512 created: 94fb630b5324deb05603bbb800cb6e32f4eb1d5e4a0e609c28db89be1557b328
+2026-09-21 01:02:23,104 - INFO - Container for django__django-13512 started: 94fb630b5324deb05603bbb800cb6e32f4eb1d5e4a0e609c28db89be1557b328
+2026-09-21 01:02:23,105 - INFO - Intermediate patch for django__django-13512 written to logs/run_evaluation/cherryontop-smoke-v2/cherryontop/django__django-13512/patch.diff, now applying to container...
+2026-09-21 01:02:23,171 - INFO - >>>>> Applied Patch:
+Checking patch django/forms/fields.py...
+Checking patch tests/forms_tests/field_tests/test_jsonfield.py...
+Applied patch django/forms/fields.py cleanly.
+Applied patch tests/forms_tests/field_tests/test_jsonfield.py cleanly.
+
+2026-09-21 01:02:23,672 - INFO - Git diff before:
+diff --git a/django/forms/fields.py b/django/forms/fields.py
+index 9de2c60b35..17c7956b53 100644
+--- a/django/forms/fields.py
++++ b/django/forms/fields.py
+@@ -1258,7 +1258,7 @@ class JSONField(CharField):
+     def prepare_value(self, value):
+         if isinstance(value, InvalidJSONInput):
+             return value
+-        return json.dumps(value, cls=self.encoder)
++        return json.dumps(value, ensure_ascii=False, cls=self.encoder)
+ 
+     def has_changed(self, initial, data):
+         if super().has_changed(initial, data):
+diff --git a/tests/forms_tests/field_tests/test_jsonfield.py b/tests/forms_tests/field_tests/test_jsonfield.py
+index 915b180d0c..4d2b7b2683 100644
+--- a/tests/forms_tests/field_tests/test_jsonfield.py
++++ b/tests/forms_tests/field_tests/test_jsonfield.py
+@@ -29,6 +29,7 @@ class JSONFieldTest(SimpleTestCase):
+         self.assertEqual(field.prepare_value({'a': 'b'}), '{"a": "b"}')
+         self.assertEqual(field.prepare_value(None), 'null')
+         self.assertEqual(field.prepare_value('foo'), '"foo"')
++        self.assertEqual(field.prepare_value({'a': '😀🐱'}), '{"a": "😀🐱"}')
+ 
+     def test_widget(self):
+         field = JSONField()
+2026-09-21 01:02:23,672 - INFO - Eval script for django__django-13512 written to logs/run_evaluation/cherryontop-smoke-v2/cherryontop/django__django-13512/eval.sh; copying to container...
+2026-09-21 01:02:28,243 - INFO - Test runtime: 4.54 seconds
+2026-09-21 01:02:28,243 - INFO - Test output for django__django-13512 written to logs/run_evaluation/cherryontop-smoke-v2/cherryontop/django__django-13512/test_output.txt
+2026-09-21 01:02:28,277 - INFO - Git diff after:
+diff --git a/django/forms/fields.py b/django/forms/fields.py
+index 9de2c60b35..17c7956b53 100644
+--- a/django/forms/fields.py
++++ b/django/forms/fields.py
+@@ -1258,7 +1258,7 @@ class JSONField(CharField):
+     def prepare_value(self, value):
+         if isinstance(value, InvalidJSONInput):
+             return value
+-        return json.dumps(value, cls=self.encoder)
++        return json.dumps(value, ensure_ascii=False, cls=self.encoder)
+ 
+     def has_changed(self, initial, data):
+         if super().has_changed(initial, data):
+2026-09-21 01:02:28,277 - INFO - Git diff changed after running eval script
+2026-09-21 01:02:28,277 - INFO - Grading answer for django__django-13512...
+2026-09-21 01:02:28,278 - INFO - report: {'django__django-13512': {'patch_is_None': False, 'patch_exists': True, 'patch_successfully_applied': True, 'resolved': False, 'infra_failure': False, 'tests_status': {'FAIL_TO_PASS': {'success': ['test_prepare_value (forms_tests.field_tests.test_jsonfield.JSONFieldTest)'], 'failure': ['test_json_display_for_field (admin_utils.tests.UtilsTests)', 'test_label_for_field (admin_utils.tests.UtilsTests)']}, 'PASS_TO_PASS': {'success': ['test_cyclic (admin_utils.tests.NestedObjectsTests)', 'test_non_added_parent (admin_utils.tests.NestedObjectsTests)', 'test_on_delete_do_nothing (admin_utils.tests.NestedObjectsTests)', 'test_queries (admin_utils.tests.NestedObjectsTests)', 'test_relation_on_abstract (admin_utils.tests.NestedObjectsTests)', 'test_siblings (admin_utils.tests.NestedObjectsTests)', 'test_unrelated_roots (admin_utils.tests.NestedObjectsTests)', 'test_converted_value (forms_tests.field_tests.test_jsonfield.JSONFieldTest)', 'test_custom_encoder_decoder (forms_tests.field_tests.test_jsonfield.JSONFieldTest)', 'The widget can be overridden with an attribute.', 'test_custom_widget_kwarg (forms_tests.field_tests.test_jsonfield.JSONFieldTest)', 'test_formfield_disabled (forms_tests.field_tests.test_jsonfield.JSONFieldTest)', 'test_has_changed (forms_tests.field_tests.test_jsonfield.JSONFieldTest)', 'test_invalid (forms_tests.field_tests.test_jsonfield.JSONFieldTest)', 'test_redisplay_wrong_input (forms_tests.field_tests.test_jsonfield.JSONFieldTest)', 'test_valid (forms_tests.field_tests.test_jsonfield.JSONFieldTest)', 'test_valid_empty (forms_tests.field_tests.test_jsonfield.JSONFieldTest)', 'test_widget (forms_tests.field_tests.test_jsonfield.JSONFieldTest)', 'test_flatten (admin_utils.tests.UtilsTests)', 'test_flatten_fieldsets (admin_utils.tests.UtilsTests)', 'test_help_text_for_field (admin_utils.tests.UtilsTests)', 'test_label_for_field_form_argument (admin_utils.tests.UtilsTests)', 'test_label_for_property (admin_utils.tests.UtilsTests)', 'test_list_display_for_value (admin_utils.tests.UtilsTests)', 'test_list_display_for_value_boolean (admin_utils.tests.UtilsTests)', 'test_null_display_for_field (admin_utils.tests.UtilsTests)', 'test_number_formats_display_for_field (admin_utils.tests.UtilsTests)', 'test_number_formats_with_thousand_separator_display_for_field (admin_utils.tests.UtilsTests)', 'test_quote (admin_utils.tests.UtilsTests)', 'test_related_name (admin_utils.tests.UtilsTests)', 'test_safestring_in_field_label (admin_utils.tests.UtilsTests)', 'test_values_from_lookup_field (admin_utils.tests.UtilsTests)'], 'failure': []}, 'FAIL_TO_FAIL': {'success': [], 'failure': []}, 'PASS_TO_FAIL': {'success': [], 'failure': []}}}}
+Result for django__django-13512: resolved: False
+2026-09-21 01:02:28,278 - INFO - Attempting to stop container sweb.eval.django__django-13512.cherryontop-smoke-v2...
+2026-09-21 01:02:43,561 - INFO - Container sweb.eval.django__django-13512.cherryontop-smoke-v2 stopped successfully.
+2026-09-21 01:02:43,561 - INFO - Attempting to remove container sweb.eval.django__django-13512.cherryontop-smoke-v2...
+2026-09-21 01:02:43,685 - INFO - Container sweb.eval.django__django-13512.cherryontop-smoke-v2 removed successfully.

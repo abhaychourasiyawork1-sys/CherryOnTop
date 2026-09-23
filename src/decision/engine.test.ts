@@ -1,7 +1,9 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import {
+import { authorizeExecution, executionCandidates, delegationEstimate,
   hardGates, decideExecutionPath, decideEvidence, decideSynthesis, decideModel,
 } from './engine.js';
+import { initialEconomicState } from './state.js';
+import { decideExecution } from '../engines/decide-execution.js';
 import { EMPTY_FRONTIER, updateFrontier } from '../context/frontier.js';
 import type { EvidenceCandidate } from '../execution/evidence-planner.js';
 import type { Authority } from '../schemas/node-contract.js';
@@ -197,13 +199,15 @@ describe('model choice', () => {
   const KEYS = ['ORG_MODEL_EXECUTE', 'ORG_MODEL_DEEP'];
   afterEach(() => { for (const key of KEYS) delete process.env[key]; });
 
-  it('tiers a trivial job down, on the fast path', () => {
+  it('leaves a low-complexity execute job on the runtime default, not the fast path', () => {
+    // See model-router.ts: measured to cost more in total on the fast tier,
+    // not less, so low complexity alone no longer buys the fast path here.
     const decision = decideModel({
       authority: authority(), spentUsd: 0, dispatch,
       role: 'execute', complexity: 'low',
     });
     expect(decision.chosen).toBe('RUN_MODEL');
-    expect(decision.fastPath).toBe(true);
+    expect(decision.fastPath).toBe(false);
   });
 
   it('reports an escalation as one when an operator configured a deep tier', () => {
@@ -233,5 +237,124 @@ describe('receipts', () => {
       goal: 'g', authority: authority(), spentUsd: 0, complexity: 'medium', worthSplitting: false, dispatch,
     });
     expect(scored.alternatives.length).toBeGreaterThan(0);
+  });
+});
+
+describe('delegationEstimate', () => {
+  it('scales with the children actually planned, not a flat doubling', () => {
+    const dispatch = { tokens: 1000, latencyMs: 10_000, costUsd: 0.10 };
+    // plan + 2 children + synthesize = 4 dispatches; plan + 4 + synthesize = 6.
+    expect(delegationEstimate(dispatch, 2).tokens).toBe(4000);
+    expect(delegationEstimate(dispatch, 4).tokens).toBe(6000);
+    expect(delegationEstimate(dispatch, 4).costUsd).toBeCloseTo(0.60);
+  });
+
+  it('does not sum concurrent children into the wall clock', () => {
+    const dispatch = { tokens: 1000, latencyMs: 10_000, costUsd: 0.10 };
+    // Four children run at once. plan -> child -> synthesize, whatever k is.
+    expect(delegationEstimate(dispatch, 4).latencyMs).toBe(30_000);
+    expect(delegationEstimate(dispatch, 2).latencyMs).toBe(30_000);
+  });
+});
+
+describe('authorizeExecution', () => {
+  const authority = { tools: [], spawn_children: true, max_child_count: 4, budget_usd: 10 };
+  const splittable = decideExecution({ goal: 'g', authority, complexity: 'high', worthSplitting: true });
+  const dispatch = { tokens: 100_000, latencyMs: 120_000, costUsd: 0 };
+  const state = (over: Record<string, unknown> = {}) => ({
+    ...initialEconomicState({ goal: 'g', totalTokenBudget: 600_000 }),
+    ...over,
+  });
+  const authorize = (over = {}, economics = splittable) =>
+    authorizeExecution({ state: state(over), economics, dispatch, plannedChildCount: 4 });
+
+  it('authorizes a fan-out the estimator asked for on a healthy run', () => {
+    // The refactor must not quietly change delegation behaviour: the market is
+    // a veto, not a second delegation economics.
+    expect(authorize().outcome).toBe('DELEGATE');
+  });
+
+  it('vetoes a fan-out on a run that is under a hard stop', () => {
+    // The gap this whole refactor exists to close. Delegation is the most
+    // expensive action the runtime has and it was the one that never passed
+    // through the common constraints.
+    const result = authorize({ constraints: { ...state().constraints, hardStop: true } });
+    expect(result.outcome).toBe('SELF_EXECUTE');
+    expect(result.gate).toBe('hard_stop');
+  });
+
+  it('vetoes a fan-out that cannot be afforded', () => {
+    const result = authorize({
+      resources: { ...state().resources, consumedTokens: 590_000, remainingTokens: 10_000 },
+    });
+    expect(result.outcome).toBe('SELF_EXECUTE');
+    expect(result.gate).toBe('insufficient_budget');
+  });
+
+  it('will not let a fan-out eat the recovery reserve', () => {
+    const result = authorize({
+      resources: {
+        ...state().resources,
+        consumedTokens: 400_000, remainingTokens: 200_000, recoveryReserve: 150_000,
+      },
+    });
+    expect(result.outcome).toBe('SELF_EXECUTE');
+    expect(result.gate).toBe('insufficient_budget');
+  });
+
+  it('passes authority gates through without inventing a ranking for them', () => {
+    // A gate is not a comparison. Presenting one as a decision receipt would
+    // claim a comparison nobody made.
+    const noSpawn = decideExecution({
+      goal: 'g', authority: { ...authority, spawn_children: false },
+      complexity: 'high', worthSplitting: true,
+    });
+    const result = authorize({}, noSpawn);
+    expect(result.outcome).toBe('SELF_EXECUTE');
+    expect(result.gate).toBe('no-spawn-authority');
+    expect(result.decision).toBeNull();
+
+    const poor = decideExecution({
+      goal: 'g', authority: { ...authority, budget_usd: 0.4 },
+      complexity: 'high', worthSplitting: true,
+    });
+    expect(authorize({}, poor).outcome).toBe('ESCALATE');
+  });
+
+  it('does not propose a split its own estimator rejected', () => {
+    const single = decideExecution({ goal: 'g', authority, complexity: 'low', worthSplitting: false });
+    const result = authorize({}, single);
+    expect(result.outcome).toBe('SELF_EXECUTE');
+    expect(result.gate).toBe('single-unit-of-work');
+  });
+});
+
+describe('executionCandidates', () => {
+  const authority = { tools: [], spawn_children: true, max_child_count: 4, budget_usd: 10 };
+  const economics = decideExecution({ goal: 'g', authority, complexity: 'high', worthSplitting: true });
+  const dispatch = { tokens: 100_000, latencyMs: 120_000, costUsd: 0 };
+
+  it('prices the split at the margin, not at the whole task', () => {
+    // Absolute pricing makes both options look like they consume the budget,
+    // which rejects the expensive one on affordability and drives the cheap one
+    // negative — so the comparison never happens at all.
+    const [self, delegate] = executionCandidates({ economics, dispatch, plannedChildCount: 4 });
+    expect(self.tokenCost + self.coordinationCost).toBe(0);
+    // The planning and synthesis dispatches, which only a fan-out pays for.
+    expect(delegate.coordinationCost).toBe(dispatch.tokens * 2);
+  });
+
+  it('charges the two extra dispatches once, not twice', () => {
+    // `utility.ts` sums tokenCost and coordinationCost. Setting both would
+    // silently double the price of every fan-out.
+    const [, delegate] = executionCandidates({ economics, dispatch, plannedChildCount: 4 });
+    expect(delegate.tokenCost).toBe(0);
+  });
+
+  it('carries the estimator’s margin as a term the utility model actually reads', () => {
+    // expectedProgress is not scored by utility.ts. Putting the margin there
+    // would compute it, record it, and silently ignore it.
+    const [, delegate] = executionCandidates({ economics, dispatch, plannedChildCount: 4 });
+    expect(delegate.expectedQualityBenefit).toBeGreaterThan(0);
   });
 });

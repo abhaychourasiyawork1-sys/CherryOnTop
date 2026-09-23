@@ -1,15 +1,18 @@
 import { describe, it, expect } from 'vitest';
 import { summarizeRun, objectiveScore, evaluateExperiment, DEFAULT_WEIGHTS } from './objective.js';
-import { buildEfficiencyRecord, EMPTY_TOTALS, type EfficiencyOutcome } from './metrics.js';
+import { buildEfficiencyRecord, EMPTY_TOTALS, EMPTY_ATTRIBUTION, type EfficiencyOutcome } from './metrics.js';
 
 const record = (over: Partial<Parameters<typeof buildEfficiencyRecord>[0]> = {}) => buildEfficiencyRecord({
-  taskId: 't', outcome: 'success' as EfficiencyOutcome, ...EMPTY_TOTALS,
+  taskId: 't', outcome: 'success' as EfficiencyOutcome, ...EMPTY_TOTALS, ...EMPTY_ATTRIBUTION,
   inputTokens: 1000, outputTokens: 200, endToEndMs: 10_000, qualityScore: 0.9, ...over,
 });
 
 const suite = (over: Partial<ReturnType<typeof summarizeRun>> = {}) => ({
   tasks: 10, successRate: 0.95, qualityScore: 0.9,
   tokensPerSuccessfulTask: 10_000, p50LatencyMs: 50_000, p95LatencyMs: 100_000,
+  costPerSuccessfulTask: 0.5, turnsPerSuccessfulTask: 12,
+  cacheReadPerSuccessfulTask: 80_000, explorationRatio: 0.4, optimizationRoi: 0,
+  contextTokensPerTask: 1200, contextSelectionRatio: 0.1, tasksStopped: 0,
   cacheHitRatio: 0, coordinationTokenShare: 0.2, recoveryTokenShare: 0,
   synthesisAvoidanceRatio: 0, concurrencyEfficiency: 1,
   tokensAvoided: 0, workAvoidedRatio: 0, executionOverheadRatio: 0, ...over,
@@ -73,15 +76,40 @@ describe('objectiveScore', () => {
     expect(objectiveScore(base, base, DEFAULT_WEIGHTS)).toBeCloseTo(1);
   });
 
-  it('falls below 1 when both terms improve', () => {
+  it('falls below 1 when tokens and latency improve at equal quality', () => {
     const score = objectiveScore(suite({ tokensPerSuccessfulTask: 5000, p95LatencyMs: 50_000 }), suite(), DEFAULT_WEIGHTS);
-    expect(score).toBeCloseTo(0.5);
+    // 0.4*0.5 + 0.2*0.5 + 0.4*1 (quality unchanged) = 0.7
+    expect(score).toBeCloseTo(0.7);
   });
 
-  it('weights the two terms as configured', () => {
+  it('weights the three terms as configured', () => {
     const halved = suite({ tokensPerSuccessfulTask: 5000 });
     expect(objectiveScore(halved, suite(), { tokens: 1, latency: 0 })).toBeCloseTo(0.5);
     expect(objectiveScore(halved, suite(), { tokens: 0, latency: 1 })).toBeCloseTo(1);
+    expect(objectiveScore(halved, suite(), { tokens: 0, latency: 0, quality: 1 })).toBeCloseTo(1);
+  });
+
+  it('carries the 2:2:1 objective this architecture was approved under', () => {
+    expect(DEFAULT_WEIGHTS).toEqual({ tokens: 0.4, quality: 0.4, latency: 0.2 });
+    // The same preference `decision/utility.ts` scores a single action with:
+    // tokens and quality equal, latency half of either.
+    expect(DEFAULT_WEIGHTS.quality).toBe(DEFAULT_WEIGHTS.tokens);
+    expect(DEFAULT_WEIGHTS.latency).toBeCloseTo(DEFAULT_WEIGHTS.tokens / 2);
+  });
+
+  it('rewards a quality improvement at unchanged cost', () => {
+    const better = suite({ qualityScore: 0.95 });
+    expect(objectiveScore(better, suite(), DEFAULT_WEIGHTS)).toBeLessThan(1);
+  });
+
+  it('penalises a quality regression bought with tokens', () => {
+    const cheapAndWorse = suite({ tokensPerSuccessfulTask: 8000, qualityScore: 0.6 });
+    expect(objectiveScore(cheapAndWorse, suite(), DEFAULT_WEIGHTS)).toBeGreaterThan(1);
+  });
+
+  it('treats an unscored run as neutral on quality rather than as an improvement', () => {
+    const unscored = suite({ qualityScore: null });
+    expect(objectiveScore(unscored, suite(), { tokens: 0, latency: 0, quality: 1 })).toBeCloseTo(1);
   });
 
   it('does not divide by a baseline of zero', () => {
@@ -155,5 +183,42 @@ describe('evaluateExperiment', () => {
     const result = run(suite({ qualityScore: 0.5, successRate: 0.5, tokensPerSuccessfulTask: 99_000 }));
     expect(result.reason).toContain('quality');
     expect(result.reason).toContain('success');
+  });
+});
+
+describe('an arm that bought its saving by refusing to work', () => {
+  it('is refused even when the success rate matches', () => {
+    const baseline = suite({ tasksStopped: 0 });
+    const result = evaluateExperiment({
+      baseline,
+      // Half the tokens, same success rate — and four tasks the guard killed.
+      optimized: suite({ tasksStopped: 4, tokensPerSuccessfulTask: 5_000 }),
+      weights: DEFAULT_WEIGHTS,
+      epsilon: 0.02,
+    });
+    expect(result.accepted).toBe(false);
+    expect(result.reason).toMatch(/stopped more tasks/);
+  });
+
+  it('accepts an arm that stopped no more than the baseline did', () => {
+    const result = evaluateExperiment({
+      baseline: suite({ tasksStopped: 2 }),
+      optimized: suite({ tasksStopped: 2, tokensPerSuccessfulTask: 5_000 }),
+      weights: DEFAULT_WEIGHTS,
+      epsilon: 0.02,
+    });
+    expect(result.accepted).toBe(true);
+  });
+});
+
+describe('summarizeRun — the planner\'s own numbers', () => {
+  it('reports context handed over, how much of it was selected, and what was stopped', () => {
+    const summary = summarizeRun([
+      record({ contextCandidates: 40, contextSelected: 4, contextEstimatedTokens: 1000 }),
+      record({ contextCandidates: 20, contextSelected: 4, contextEstimatedTokens: 2000, stopReason: 'Spend cap reached.' }),
+    ]);
+    expect(summary.contextTokensPerTask).toBe(1500);
+    expect(summary.contextSelectionRatio).toBeCloseTo((0.1 + 0.2) / 2);
+    expect(summary.tasksStopped).toBe(1);
   });
 });

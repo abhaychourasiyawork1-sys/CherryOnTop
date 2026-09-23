@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { buildRepoMap, withRepoContext } from './repo-map.js';
+import { buildRepoMap, buildRepoInventory, withRepoContext } from './repo-map.js';
 
 const dirs: string[] = [];
 
@@ -80,5 +80,22 @@ describe('withRepoContext', () => {
   it('tells the agent the listing is partial, so an absent file is not read as a missing one', () => {
     const out = withRepoContext('do the thing', 'MAP');
     expect(out).toContain('not a complete listing');
+  });
+
+  it('records the relative imports it saw, and only the relative ones', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'repo-map-imports-'));
+    dirs.push(dir);
+    execFileSync('git', ['init', '-q'], { cwd: dir });
+    writeFileSync(join(dir, 'a.ts'), [
+      "import { x } from './b.js';",
+      "import { readFileSync } from 'node:fs';",
+      "export function a() { return x; }",
+    ].join('\n'));
+    execFileSync('git', ['add', '-A'], { cwd: dir });
+
+    const entry = buildRepoInventory(dir).find((e) => e.path === 'a.ts')!;
+    // './b.js' relates two files in this tree. 'node:fs' relates every file to
+    // every other, which is not a relationship worth having.
+    expect(entry.imports).toEqual(['./b.js']);
   });
 });

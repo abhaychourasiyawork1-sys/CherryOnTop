@@ -57,6 +57,13 @@
       "when": 1788770494126,
       "tag": "0007_rare_screwball",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "6",
+      "when": 1789378689206,
+      "tag": "0008_dynamic_economic_knowledge",
+      "breakpoints": true
     }
   ]
 }

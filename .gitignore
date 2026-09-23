@@ -8,4 +8,7 @@ test-results/
 *.db-shm
 .org/
 .worktrees/
+.bench/worktrees/
+.swebench/
 node_modules
+bench/last-run.json

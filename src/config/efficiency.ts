@@ -100,6 +100,32 @@ export function resultCacheTtlHours(): number {
   return envInt('ORG_RESULT_CACHE_TTL_HOURS', 24);
 }
 
+/** The most one task may spend before the guard stops it, in dollars.
+ *
+ *  0 means "no ceiling of its own", which is the default: a node's contract
+ *  already carries `authority.budget_usd`, and inventing a second, lower
+ *  ceiling that nobody asked for would stop work an operator explicitly
+ *  funded. This is the deployment-wide backstop for the case where the
+ *  contract's budget is 0 — i.e. nobody set one at all. */
+export function taskSpendCapUsd(): number {
+  const raw = process.env.ORG_TASK_SPEND_CAP_USD;
+  if (raw === undefined) return 0;
+  const n = Number(raw);
+  return Number.isFinite(n) && n >= 0 ? n : 0;
+}
+
+/** The kill switch for the structural context planner.
+ *
+ *  Off returns the selector to the lexical-only behaviour this branch shipped
+ *  with, which is what makes the new planner a change an operator can take
+ *  back in one environment variable rather than a revert. On unless explicitly
+ *  turned off, for the same reason `runtimeMode` defaults to Full: a flag nobody
+ *  turns on measures nothing. */
+export function contextPlannerEnabled(): boolean {
+  const v = (process.env.ORG_CONTEXT_PLANNER ?? '').trim().toLowerCase();
+  return !['off', '0', 'false', 'no', 'disabled'].includes(v);
+}
+
 /** 0 disables the repo-map handoff (Phase 2). */
 export function repoMapTokenBudget(): number {
   return envInt('ORG_REPO_MAP_TOKENS', 6000);
@@ -111,26 +137,39 @@ export function rolePromptsEnabled(): boolean {
   return !['off', '0', 'false', 'no'].includes(v);
 }
 
-export type EfficiencyMode = 'disabled' | 'shadow' | 'enabled';
+/** The two runtime modes the product has, and the only two it may ever have.
+ *
+ *  `baseline` is the behaviour this branch shipped with before the economic
+ *  architecture: fixed per-role models, lexical context, nothing decided from
+ *  the state of a run. `full` is the architecture acting on its decisions.
+ *
+ *  There used to be a third, `shadow`, which decided and recorded but dispatched
+ *  as `baseline` would. It was a good idea in the wrong place. A shadow's whole
+ *  value is being inert, and a *product* mode cannot be inert — it is one more
+ *  behaviour an operator can be in, one more combination to test, and one more
+ *  thing a bug report has to establish before it can be read. The measurement it
+ *  existed for now happens where it belongs: `learning/shadow.ts` records a
+ *  candidate decision beside the real one without being reachable from
+ *  configuration at all, and the benchmark harness compares matched runs of the
+ *  two real modes.
+ *
+ *  `ORG_EFFICIENCY_MODE=shadow` therefore resolves to `baseline`, which is
+ *  exactly what a shadow run dispatched as — so a deployment that set it keeps
+ *  the behaviour it had, and stops being in a mode nobody else is in. */
+export type RuntimeMode = 'baseline' | 'full';
 
-/** How much of the efficiency work is live.
+/** Which architecture this process is running.
  *
- *  `disabled` is this branch's behaviour before adaptive routing: fixed
- *  per-role models, nothing decided from complexity. `shadow` decides and
- *  records but dispatches as `disabled` would, so a deployment can measure the
- *  change before taking it. `enabled` acts on the decisions.
- *
- *  Defaults to `enabled`: the components it gates all degrade to the previous
- *  behaviour on any failure, and a flag nobody turns on measures nothing. */
-export function efficiencyMode(): EfficiencyMode {
-  return parseEfficiencyMode(process.env.ORG_EFFICIENCY_MODE);
+ *  Defaults to `full`: every component it gates degrades to Baseline on any
+ *  failure, and a flag nobody turns on measures nothing. */
+export function runtimeMode(): RuntimeMode {
+  return parseRuntimeMode(process.env.ORG_EFFICIENCY_MODE);
 }
 
-export function parseEfficiencyMode(value: string | undefined): EfficiencyMode {
-  const v = (value ?? '').trim().toLowerCase();
-  if (v === 'disabled' || v === 'off' || v === '0' || v === 'false') return 'disabled';
-  if (v === 'shadow') return 'shadow';
-  return 'enabled';
+const BASELINE_ALIASES = new Set(['disabled', 'off', '0', 'false', 'baseline', 'shadow']);
+
+export function parseRuntimeMode(value: string | undefined): RuntimeMode {
+  return BASELINE_ALIASES.has((value ?? '').trim().toLowerCase()) ? 'baseline' : 'full';
 }
 
 /** The model name for a tier, or undefined to let the runtime use its own

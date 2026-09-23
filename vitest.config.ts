@@ -4,7 +4,11 @@ const suite = process.env.VITEST_SUITE ?? 'unit';
 
 const suites = {
   unit: {
-    include: ['src/**/*.test.ts', 'test/unit/**/*.test.ts', 'test/smoke.test.ts'],
+    // `bench/**/*.test.mjs` runs here rather than in its own suite: those
+    // are pure functions over synthetic records with no cluster and no model,
+    // and the arithmetic that decides whether a change ships should be checked
+    // by the suite that runs on every change.
+    include: ['src/**/*.test.ts', 'test/unit/**/*.test.ts', 'test/smoke.test.ts', 'bench/**/*.test.mjs'],
     exclude: [
       'src/daemon/manager.test.ts',
       'src/execution/execute-step.integration.test.ts',

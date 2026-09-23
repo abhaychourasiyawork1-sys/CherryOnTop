@@ -1,8 +1,9 @@
 import { z } from 'zod';
 import { router, publicProcedure } from '../trpc.js';
 import { getRuntimeStats, listMemory, setOutcomeVetoed, VETOED_KIND, type RunOutcome } from '../../db/queries/memory.js';
-import { getNode } from '../../db/queries/nodes.js';
+import { getNode, subtreeNodeIds } from '../../db/queries/nodes.js';
 import { tokensByRole } from '../../db/queries/tokens.js';
+import { loadEfficiencyRecords } from '../../efficiency/ledger.js';
 
 export const memoryRouter = router({
   /** What the organization has learned about each runtime it has actually used. */
@@ -56,4 +57,20 @@ export const memoryRouter = router({
   tokens: publicProcedure
     .input(z.object({ caseId: z.string().optional() }).optional())
     .query(({ input, ctx }) => tokensByRole(ctx.db, input?.caseId)),
+
+  /** The economic record of every task, or of one case's subtree.
+   *
+   *  What the benchmark reads. Separate from `tokens` because the two answer
+   *  different questions — `tokens` is what the provider billed, by role; this
+   *  is what the control plane decided, what it predicted, and what it cost —
+   *  and a comparison needs both without either having to carry the other's
+   *  fields. */
+  economic: publicProcedure
+    .input(z.object({ caseId: z.string().optional() }).optional())
+    .query(({ input, ctx }) => {
+      const records = loadEfficiencyRecords(ctx.db);
+      if (!input?.caseId) return records;
+      const scope = new Set(subtreeNodeIds(ctx.db, input.caseId));
+      return records.filter((record) => scope.has(record.taskId));
+    }),
 });

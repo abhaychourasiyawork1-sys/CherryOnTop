@@ -110,21 +110,26 @@ issues, etc.) and the complete command reference.
 src/
   adapters/       runtime adapters (Claude Code, Codex) that actually execute work
   approvals/      human-in-the-loop approval flow
+  architecture/   executable invariants — the rules the design is not allowed to break
   cli/            `org` CLI commands (run, tree, doctor, approve, gui, verify, ...)
   context/        goal-aware selection of the repository context a dispatch is given
   daemon/         background process that supervises runs across sessions
   db/             SQLite schema, migrations, and queries (Drizzle ORM)
+  decision/       the economic control plane: state, actions, utility, trust, fallback
   doctor/         environment/health checks
   engines/        the scoring engines behind delegate-vs-execute and runtime-choice decisions
   efficiency/     per-task token/latency ledger and the objective that gates changes to it
   events/         the hash-chained event log
-  execution/      step execution and credential handling inside sandboxes
+  evidence/       versioned cross-run knowledge, and what it is worth reusing
+  execution/      step execution, credential handling, and workstream scheduling
   intelligence/   coordinates planning and decision-making for a node
   k8s/            Kubernetes client for provisioning sandboxes
   lifecycle/      node/case state machines (xstate) — spawn, delegate, execute, complete
+  recovery/       evidence-preserving retries and what a failed attempt ruled out
   schemas/        zod schemas shared across the runtime (decisions, etc.)
   server/         tRPC server the CLI/TUI/GUI talk to
   tui/            the interactive `org` terminal session (Ink)
+  validation/     the evidence ladder between "the process exited" and "the task worked"
 gui/              Mission Control — the Electron desktop app
 scripts/          setup and dev scripts (runner image build, demo seeding, migrations)
 test/             integration tests
@@ -132,11 +137,31 @@ test/             integration tests
 
 ## Token efficiency
 
-Each dispatch is given only the part of the repository its goal is about, planning and
-synthesis are skipped whenever their answer is already known or already mechanical, and the
-model tier follows the work's complexity. One switch, `ORG_EFFICIENCY_MODE`
-(`enabled` | `shadow` | `disabled`), covers all of it — `shadow` computes every decision and
-records it without acting, so you can see the change before taking it. Every task writes an
+The thing being optimized is **cost per successful task**, not the size of the initial
+prompt. A smaller prompt that sends the agent hunting for what it was not given is more
+expensive, not less: cost inside a dispatch grows superlinearly in turns, because the whole
+conversation prefix is re-read on every one.
+
+So each dispatch is given the part of the repository its goal is about — chosen from the
+goal's own words *and* the compiler's import edges, so a named file arrives with its
+dependencies, its dependents and its test — planning and synthesis are skipped whenever
+their answer is already known or already mechanical, and the model tier follows the work's
+complexity. Turn budgets adapt to what a task was judged to need, and a spend guard at the
+single dispatch chokepoint stops a task that has run out of money, run out of turns, or
+stopped making progress.
+
+On top of that sits an economic control plane that decides, at each execution boundary,
+whether there is a material opportunity worth acting on — and almost always answers no.
+The agent stays the reasoner; `CONTINUE` is a genuine no-op, and the dispatch that follows
+is byte-identical to the one that would have happened without it. See
+[docs/architecture/dynamic-economic-runtime.md](docs/architecture/dynamic-economic-runtime.md).
+
+There are exactly **two runtime modes**, and both are reversible without a code change.
+`ORG_EFFICIENCY_MODE=disabled` is **Baseline** — fixed per-role models, lexical context,
+nothing decided from the state of a run — and anything else is **Full Architecture**.
+(`shadow` was a third mode and is now an alias for Baseline, which is what a shadow run
+dispatched as; the measurement it existed for lives in the benchmark harness instead.)
+`ORG_CONTEXT_PLANNER=off` returns the lexical selector on its own. Every task writes an
 `efficiency_record` when it finishes, and `org tokens` reports what was spent. See
 [USAGE.md](USAGE.md#token-efficiency) for the knobs and the failure behaviour.
 
