@@ -742,7 +742,7 @@ model-initiated decision request
 
 **Review:**
 - [ ] every spec section maps to implementation tasks
-- [ ] no placeholder-style vague steps remain
+- [ ] no vague incomplete steps remain
 - [ ] provider contract names/types are consistent
 - [ ] Laya remains live provider
 - [ ] JEV remains benchmark/provider abstraction
