@@ -12,6 +12,7 @@ const suites = {
     exclude: [
       'src/daemon/manager.test.ts',
       'src/execution/execute-step.integration.test.ts',
+      'src/execution/execute-step.session.k8s.test.ts',
       'src/k8s/client.test.ts',
       'src/k8s/kind.test.ts',
       'src/lifecycle/**/*.integration.test.ts',
@@ -26,7 +27,7 @@ const suites = {
   },
   e2e: { include: ['test/cli-e2e.test.ts', 'test/e2e/**/*.test.ts'], exclude: [] },
   k8s: {
-    include: ['src/k8s/client.test.ts', 'src/k8s/kind.test.ts', 'src/execution/execute-step.integration.test.ts', 'test/k8s/**/*.test.ts'],
+    include: ['src/k8s/client.test.ts', 'src/k8s/kind.test.ts', 'src/execution/execute-step.integration.test.ts', 'src/execution/execute-step.session.k8s.test.ts', 'test/k8s/**/*.test.ts'],
     exclude: [],
   },
 } as const;
