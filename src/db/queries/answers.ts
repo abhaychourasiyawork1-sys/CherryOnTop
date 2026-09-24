@@ -19,7 +19,11 @@ export function answerOf(db: Db, nodeId: string): string {
   const combinedText = (combined?.payload as { text?: unknown } | null)?.text;
   if (typeof combinedText === 'string' && combinedText.trim()) return combinedText;
 
-  const report = rows.filter((row) => row.type === 'exec.result').at(-1);
-  const reportText = (report?.payload as { result?: unknown } | null)?.result;
-  return typeof reportText === 'string' && reportText.trim() ? reportText : '';
+  // The last result that says something: a run stopped before finishing
+  // leaves a synthetic, empty result behind it (execute-step.ts), which must
+  // not hide an earlier attempt's real report.
+  const texts = rows.filter((row) => row.type === 'exec.result')
+    .map((row) => (row.payload as { result?: unknown } | null)?.result)
+    .filter((text): text is string => typeof text === 'string' && text.trim().length > 0);
+  return texts.at(-1) ?? '';
 }

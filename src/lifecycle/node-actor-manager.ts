@@ -964,10 +964,21 @@ function modelDecisionSession(db: Db, nodeId: string, goal: string): NonNullable
         finalRuntimeAction: 'advice-returned-to-model',
         ...(r.outcome!.judgment ? {} : { fallbackReason: 'the model was told to use its own judgment' }),
       })), reply.records.length);
+      // A rejected frame never reaches System-1, so it has no receipt; without
+      // this the only record of *why* was the reply the model saw, which is
+      // not persisted (found live: a child's scoping question was rejected
+      // and nothing said why).
+      for (const r of reply.records.filter((record) => record.rejected)) {
+        const now = new Date().toISOString();
+        const payload = { reason: r.rejected, frame: r.body.slice(0, 600) };
+        const id = appendEvent(db, { nodeId, type: 'system1.rejected', payload, createdAt: now });
+        publish({ id, nodeId, type: 'system1.rejected', payload, createdAt: now });
+      }
       const n = reply.records.length;
       const ok = answered.filter((r) => r.outcome!.judgment).length;
+      const why = reply.records.filter((record) => record.rejected).map((record) => record.rejected).join('; ');
       // One short line, no provider detail: the receipts hold the rest.
-      publishProgress(db, nodeId, `Asked for a quick outside judgment on ${n} question${n === 1 ? '' : 's'} (${ok} answered)`);
+      publishProgress(db, nodeId, `Asked for a quick outside judgment on ${n} question${n === 1 ? '' : 's'} (${ok} answered${why ? `; rejected: ${why}` : ''})`);
     },
   };
 }
@@ -1268,14 +1279,30 @@ function trajectorySignals(db: Db, nodeId: string): {
  *  amount someone explicitly funded this work with. Zero means "nobody costed
  *  this node", not "out of money" — the convention model-router.ts already
  *  uses — and that is when the deployment backstop applies instead. */
-function evaluateTaskSpend(db: Db, nodeId: string, node: ReturnType<typeof getNode>): SpendGuardState {
+export function evaluateTaskSpend(db: Db, nodeId: string, node: ReturnType<typeof getNode>): SpendGuardState {
   try {
     const budgetUsd = node?.contract.authority.budget_usd ?? 0;
     const policy = executionPolicyForGoal(node?.contract.goal ?? '', undefined, activePolicyChanges(db));
     const trajectory = trajectorySignals(db, nodeId);
+    // Spend is counted over the *tree*, not the node. A child's budget is
+    // carved out of its parent's, so a node's own budget covers everything
+    // it and its children spend; the deployment cap covers the whole task.
+    // Counting only the node itself let a delegating task spend its cap once
+    // per agent (measured: $7.46 against a $5 cap on Terminal-Bench
+    // vba-userform-port). Whichever of the two leaves less room applies.
+    const own = { cap: budgetUsd, spent: getCostForNodes(db, subtreeNodeIds(db, nodeId)) };
+    let rootId = nodeId;
+    for (let parent = node?.parentId; parent; parent = getNode(db, parent)?.parentId) rootId = parent;
+    const root = rootId === nodeId ? node : getNode(db, rootId);
+    const rootBudget = root?.contract.authority.budget_usd ?? 0;
+    const task = {
+      cap: rootBudget > 0 ? rootBudget : policy.spendCapUsd,
+      spent: rootId === nodeId ? own.spent : getCostForNodes(db, subtreeNodeIds(db, rootId)),
+    };
+    const binding = own.cap > 0 && (task.cap <= 0 || own.cap - own.spent <= task.cap - task.spent) ? own : task;
     const guard = evaluateSpendGuard({
-      spentUsd: getCostForNodes(db, [nodeId]),
-      spendCapUsd: budgetUsd > 0 ? budgetUsd : policy.spendCapUsd,
+      spentUsd: binding.spent,
+      spendCapUsd: binding.cap,
       turns: turnsForNode(db, nodeId),
       softTurnTarget: policy.softTurnTarget,
       hardTurnCap: policy.hardTurnCap,

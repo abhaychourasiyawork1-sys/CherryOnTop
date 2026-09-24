@@ -9,7 +9,7 @@ import type { RuntimeAdapter, StructuredEvent, ToolGrant } from '../adapters/ada
 import { toolNamesFromEvent } from './tool-calls.js';
 import { isToolAllowed } from '../engines/enforce-tools.js';
 import { rateLimitFromEvents, describeRateLimit } from './rate-limit.js';
-import { usageFromEvents } from './tokens.js';
+import { usageFromEvents, recoveredUsage } from './tokens.js';
 import { estimateCostUsd } from './pricing.js';
 
 export interface ExecuteStepInput {
@@ -344,6 +344,33 @@ async function runStep(
       }
       const finished = controller?.finish();
       if (finished?.synthetic) collected.push(finished.synthetic);
+      // A run stopped before its final `result` (spend watchdog, wall clock,
+      // crash) still spent money, and every reader of spend (the spend guard,
+      // the ledger, `org tokens`) reads it from a result event. Without one the
+      // spend was invisible: measured, delegated children overran their share
+      // because each killed attempt counted as $0. Recovered from per-step
+      // usage and priced at list rates; empty `result`, `is_error: true`.
+      if (!collected.some((event) => event.type === 'result')) {
+        const recovered = recoveredUsage(collected);
+        if (recovered.usage.numTurns > 0) {
+          const synthetic: StructuredEvent = {
+            type: 'result',
+            payload: {
+              type: 'result', subtype: 'error_stopped_before_result', is_error: true, result: '',
+              session_id: `recovered-${jobName}`,
+              num_turns: recovered.usage.numTurns,
+              usage: {
+                input_tokens: recovered.usage.inputTokens, output_tokens: recovered.usage.outputTokens,
+                cache_read_input_tokens: recovered.usage.cacheReadTokens,
+                cache_creation_input_tokens: recovered.usage.cacheCreationTokens,
+              },
+              total_cost_usd: estimateCostUsd(recovered.usage, recovered.model),
+            },
+          };
+          collected.push(synthetic);
+          input.onEvent?.(synthetic);
+        }
+      }
 
       // "Job failed — see pod logs" is true and useless. The runtime's own final
       // `result` event carries what actually went wrong ("Request timed out",

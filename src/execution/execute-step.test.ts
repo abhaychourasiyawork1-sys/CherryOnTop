@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { executeStep } from './execute-step.js';
-import type { RuntimeAdapter } from '../adapters/adapter.js';
+import type { RuntimeAdapter, StructuredEvent } from '../adapters/adapter.js';
 import type { ExecuteStepDeps } from './execute-step.js';
 
 const fakeAdapter: RuntimeAdapter = {
@@ -256,10 +256,17 @@ describe('executeStep without a wall clock', () => {
       waitForJobCompletion: vi.fn(() => new Promise<{ succeeded: boolean; message: string }>((r) => { finish = () => r({ succeeded: false, message: 'Job was cancelled' }); })),
       deleteJob: vi.fn(async () => { finish(); }),
     };
-    const out = await executeStep({ nodeId: 'n', goal: 'g', namespace: 'ns', worktreePath: '/w', credentials: {}, adapter: claudeLike, image: 'i', spendLimitUsd: 1 }, deps);
+    const published: StructuredEvent[] = [];
+    const out = await executeStep({ nodeId: 'n', goal: 'g', namespace: 'ns', worktreePath: '/w', credentials: {}, adapter: claudeLike, image: 'i', spendLimitUsd: 1, onEvent: (e) => published.push(e) }, deps);
     expect(out.succeeded).toBe(false);
     expect(out.message).toMatch(/\$1\.00 spend limit/);
     expect(deps.deleteJob).toHaveBeenCalled();
+    // The stopped run still leaves a costed result, so the task's spend guard
+    // (which reads result events) can see what it spent.
+    const result = published.find((e) => e.type === 'result')?.payload as { is_error: boolean; total_cost_usd: number; result: string };
+    expect(result.is_error).toBe(true);
+    expect(result.result).toBe('');
+    expect(result.total_cost_usd).toBeGreaterThan(1);
   });
 
   it('allows DNS to the kube-dns pods by label, not only to the Service IP', async () => {
