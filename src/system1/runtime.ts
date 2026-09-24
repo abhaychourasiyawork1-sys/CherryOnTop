@@ -91,6 +91,8 @@ export async function probeSystem1(
 }
 
 function defaultOnPath(command: string): boolean {
+  // ORG_LAYA_COMMAND may be an absolute path (a virtualenv's laya-serve).
+  if (command.includes('/')) return existsSync(command);
   const dirs = (process.env.PATH ?? '').split(path.delimiter);
   return dirs.some((dir) => dir && existsSync(path.join(dir, command)));
 }
