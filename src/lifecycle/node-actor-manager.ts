@@ -157,6 +157,29 @@ export function integrateFork(fork: WorkspaceFork): boolean {
   }
 }
 
+/** What happens to a forked child's workspace once the child has finished.
+ *
+ *  Integrated whether or not the child passed. A failed or unvalidated child
+ *  usually still did real work, and deleting its fork threw all of it away:
+ *  measured on Terminal-Bench vba-userform-port, two children spent ~$2.8
+ *  building a backend and a frontend, stopped short of validation, and the
+ *  task's tree ended up with nothing. A single agent keeps a failed attempt's
+ *  edits in the tree for the retry to build on; delegation now does the same.
+ *  The child's own verdict is unchanged, and the task still has to pass its
+ *  own validation. The fork is released either way. */
+export function settleFork<T extends { succeeded: boolean }>(fork: WorkspaceFork, result: T): T | { succeeded: false } {
+  try {
+    const integrated = integrateFork(fork);
+    // The child did its work; the tree the rest of the run sees never got it.
+    // Reporting success here would be reporting a change that does not exist
+    // outside a directory about to be deleted.
+    if (result.succeeded && !integrated) return { succeeded: false };
+    return result;
+  } finally {
+    fork.release();
+  }
+}
+
 export function realDelegateDeps(db: Db, parentId?: string): DelegateChildDeps {
   // Scoped to one delegation call, which is exactly the lifetime a fork needs:
   // created when its child is, released once that child has finished and its
@@ -282,17 +305,7 @@ export function realDelegateDeps(db: Db, parentId?: string): DelegateChildDeps {
       const fork = forks.get(childId);
       if (!fork) return result;
       forks.delete(childId);
-      try {
-        if (result.succeeded && !integrateFork(fork)) {
-          // The child did its work; the tree the rest of the run sees never got
-          // it. Reporting success here would be reporting a change that does
-          // not exist outside a directory about to be deleted.
-          return { succeeded: false };
-        }
-        return result;
-      } finally {
-        fork.release();
-      }
+      return settleFork(fork, result);
     },
   };
 }

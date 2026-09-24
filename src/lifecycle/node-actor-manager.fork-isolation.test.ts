@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createDb } from '../db/client.js';
 import { getNode, insertNode } from '../db/queries/nodes.js';
-import { realDelegateDeps, integrateFork } from './node-actor-manager.js';
+import { realDelegateDeps, integrateFork, settleFork } from './node-actor-manager.js';
 import { forkWorkspace } from '../execution/workspace-fork.js';
 
 // Two failure modes this closes, both real and both observed: a benchmark run
@@ -153,5 +153,17 @@ describe('integrating a fork back onto its base', () => {
     const fork = forkWorkspace(base, 'HEAD', 'child-1')!;
     expect(integrateFork(fork)).toBe(true);
     fork.release();
+  });
+});
+
+describe('a child that did not pass', () => {
+  it('still hands its work back to the task tree, and stays failed', () => {
+    const base = repo();
+    const fork = forkWorkspace(base, 'HEAD', 'failed-child')!;
+    writeFileSync(join(fork.path, 'backend.py'), 'app = "built but not validated"\n');
+    const result = settleFork(fork, { succeeded: false, message: 'validation failed' });
+    expect(result.succeeded).toBe(false);
+    expect(readFileSync(join(base, 'backend.py'), 'utf8')).toContain('built but not validated');
+    expect(existsSync(fork.path)).toBe(false);
   });
 });
