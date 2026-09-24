@@ -1,5 +1,7 @@
 import { buildExecutionJob } from '../k8s/job-manifest.js';
-import { createJob, waitForJobCompletion, deleteJob, streamJobLogs, followJobLogs } from '../k8s/client.js';
+import { createJob, waitForJobCompletion, deleteJob, streamJobLogs, followJobLogs, attachStdin } from '../k8s/client.js';
+import { createSessionController, type SessionController, type SessionSummary } from '../system1/model-session-controller.js';
+import type { GatewayReply, ModelGateway } from '../system1/model-gateway.js';
 import { createEphemeralSecret, deleteSecret } from '../k8s/secrets.js';
 import { buildEgressAllowlistPolicy, applyNetworkPolicy } from '../k8s/network-policy.js';
 import { getKubeDnsClusterIp } from '../k8s/kind.js';
@@ -40,6 +42,14 @@ export interface ExecuteStepInput {
   maxTurns?: number;
   /** Appended to the runtime's system prompt. */
   systemPrompt?: string;
+  /** Run as a stdin-fed session so the model can ask CherryOnTop for a private
+   *  decision (`<cto_decide>`) and continue in the same process. Ignored by an
+   *  adapter that cannot hold a session. */
+  session?: {
+    gateway: ModelGateway;
+    maxDecisionTurns: number;
+    onDecision?: (reply: GatewayReply, turn: number) => void;
+  };
 }
 
 export interface ExecuteStepResult {
@@ -75,6 +85,8 @@ export interface ExecuteStepResult {
    *  no startup time, and reporting 0 there would flatter the ratio with runs
    *  that never ran. */
   startupMs?: number;
+  /** Present when the dispatch ran as a decision-capable session. */
+  session?: SessionSummary;
 }
 
 export interface ExecuteStepDeps {
@@ -87,11 +99,12 @@ export interface ExecuteStepDeps {
   followJobLogs: typeof followJobLogs;
   streamJobLogs: typeof streamJobLogs;
   getKubeDnsClusterIp: typeof getKubeDnsClusterIp;
+  attachStdin: typeof attachStdin;
 }
 
 const defaultDeps: ExecuteStepDeps = {
   createEphemeralSecret, deleteSecret, applyNetworkPolicy, createJob,
-  waitForJobCompletion, deleteJob, followJobLogs, streamJobLogs, getKubeDnsClusterIp,
+  waitForJobCompletion, deleteJob, followJobLogs, streamJobLogs, getKubeDnsClusterIp, attachStdin,
 };
 
 // Local tag, not a registry reference: no GHCR account is needed to use this
@@ -134,11 +147,37 @@ function runtimeError(events: StructuredEvent[]): string | null {
   return null;
 }
 
+/** A session nobody can feed. The Job has already been cleaned up by the time
+ *  this reaches `executeStep`, which reruns the step without one. */
+class SessionUnavailable extends Error {
+  constructor(jobName: string, cause: unknown) {
+    super(`could not attach to ${jobName}: ${cause instanceof Error ? cause.message : String(cause)}`);
+    this.name = 'SessionUnavailable';
+  }
+}
+
 export async function executeStep(
   input: ExecuteStepInput,
   deps: Partial<ExecuteStepDeps> = {},
 ): Promise<ExecuteStepResult> {
+  try {
+    return await runStep(input, deps);
+  } catch (err) {
+    if (!(err instanceof SessionUnavailable)) throw err;
+    // The capability degrades; the work does not. A session nobody can feed
+    // would wait on stdin until the timeout, so the same step runs once more as
+    // an ordinary one-shot dispatch.
+    console.error(`${err.message}; running without a decision session`);
+    return runStep({ ...input, session: undefined }, deps);
+  }
+}
+
+async function runStep(
+  input: ExecuteStepInput,
+  deps: Partial<ExecuteStepDeps>,
+): Promise<ExecuteStepResult> {
   const d = { ...defaultDeps, ...deps };
+  const sessionMode = input.session !== undefined && input.adapter.supportsSession === true;
 
   const secretName = await d.createEphemeralSecret(input.nodeId, input.credentials, input.namespace);
   try {
@@ -158,14 +197,31 @@ export async function executeStep(
         model: input.model,
         maxTurns: input.maxTurns,
         systemPrompt: input.systemPrompt,
+        ...(sessionMode ? { session: true } : {}),
       }),
       worktreePath: input.worktreePath,
       secretName,
       includeOauthCredentials: 'CLAUDE_CREDENTIALS_JSON' in input.credentials,
+      ...(sessionMode ? { interactive: true } : {}),
     });
 
     const jobName = await d.createJob(job);
+    let controller: SessionController | undefined;
     try {
+      if (sessionMode) {
+        try {
+          const channel = await d.attachStdin(jobName, input.namespace);
+          controller = createSessionController({
+            gateway: input.session!.gateway,
+            transport: channel,
+            maxDecisionTurns: input.session!.maxDecisionTurns,
+            onDecision: input.session!.onDecision,
+          });
+          controller.start(input.goal);
+        } catch (err) {
+          throw new SessionUnavailable(jobName, err);
+        }
+      }
       const requestedAt = Date.now();
       // The first event is the first evidence the agent is actually running.
       // Null until then, so a Job that produced nothing is charged the whole
@@ -180,8 +236,12 @@ export async function executeStep(
       const reported = new Set<string>();
       const consume = (line: string) => {
         linesSeen++;
-        const event = input.adapter.parseLine(line);
-        if (!event) return;
+        const parsed = input.adapter.parseLine(line);
+        if (!parsed) return;
+        // Frames are scrubbed and turn results re-typed *before* anything else
+        // sees the event: the transcript, the tool check and the collected
+        // record all get the same, clean stream.
+        const event = controller ? controller.process(parsed) : parsed;
         firstEventAt ??= Date.now();
         collected.push(event);
         if (input.grant?.allowedTools) {
@@ -197,9 +257,14 @@ export async function executeStep(
       // A log stream that cannot be attached is a degraded live view, not a
       // failed step: the post-completion backfill below still recovers every
       // event, so never let it take the whole dispatch down with it.
-      const stopFollowing = await d.followJobLogs(jobName, input.namespace, consume)
+      // A session is steered by the live stream. If that stream is lost, or
+      // never attaches, stdin is closed: the runtime finishes the turn it is on
+      // and exits, which is exactly a one-shot dispatch, rather than waiting for
+      // an answer nobody can see it ask for.
+      const stopFollowing = await d.followJobLogs(jobName, input.namespace, consume, undefined, () => controller?.closeInput())
         .catch((err) => {
           console.error(`Live log streaming unavailable for ${jobName}:`, err);
+          controller?.closeInput();
           return () => {};
         });
 
@@ -217,12 +282,16 @@ export async function executeStep(
       // quirk). One historical fetch before the Job is deleted backfills from
       // exactly where the live stream stopped, so `events` is the complete
       // record even when the live view was not.
+      // Nothing arriving from here on can still be answered.
+      controller?.closeInput();
       const rawLogs = await d.streamJobLogs(jobName, input.namespace).catch(() => '');
       const allLines = rawLogs ? rawLogs.split('\n') : [];
       if (allLines.length > 0 && allLines[allLines.length - 1] === '') allLines.pop();
       if (allLines.length > linesSeen) {
         for (const line of allLines.slice(linesSeen)) consume(line);
       }
+      const finished = controller?.finish();
+      if (finished?.synthetic) collected.push(finished.synthetic);
 
       // "Job failed — see pod logs" is true and useless. The runtime's own final
       // `result` event carries what actually went wrong ("Request timed out",
@@ -235,8 +304,10 @@ export async function executeStep(
         usage: usageFromEvents(collected),
         startupMs: Math.max(0, (firstEventAt ?? Date.now()) - requestedAt),
         rateLimited: !jobResult.succeeded && rateLimitFromEvents(collected) !== null,
+        ...(finished ? { session: finished.summary } : {}),
       };
     } finally {
+      controller?.closeInput();
       await d.deleteJob(jobName, input.namespace);
     }
   } finally {

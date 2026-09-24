@@ -3,6 +3,7 @@ import type { RuntimeAdapter, StructuredEvent, ToolGrant, BuildCommandOptions } 
 
 export const claudeCodeAdapter: RuntimeAdapter = {
   name: 'claude-code',
+  supportsSession: true,
 
   buildCommand(goal: string, grant?: ToolGrant, opts: BuildCommandOptions = {}): string[] {
     // --verbose: the real binary refuses `--print --output-format stream-json`
@@ -22,9 +23,14 @@ export const claudeCodeAdapter: RuntimeAdapter = {
     const model = opts.model ? ['--model', opts.model] : [];
     const maxTurns = opts.maxTurns ? ['--max-turns', String(opts.maxTurns)] : [];
     const systemPrompt = opts.systemPrompt ? ['--append-system-prompt', opts.systemPrompt] : [];
-    return ['claude', '--print', '--output-format', 'stream-json', '--verbose',
+    // Session mode: one process, many turns, fed stream-json user messages over
+    // stdin. The goal is the first of those messages, so it is not in argv.
+    // Nothing is registered as a tool: the private decision capability lives in
+    // the conversation, not in the runtime's tool or permission surface.
+    const input = opts.session ? ['--input-format', 'stream-json'] : [];
+    return ['claude', '--print', ...input, '--output-format', 'stream-json', '--verbose',
       ...permission, ...model, ...maxTurns, ...systemPrompt,
-      '--dangerously-skip-permissions', goal];
+      '--dangerously-skip-permissions', ...(opts.session ? [] : [goal])];
   },
 
   // Gap G8 fix: real Claude Code lines carry no `payload` field — they ARE the

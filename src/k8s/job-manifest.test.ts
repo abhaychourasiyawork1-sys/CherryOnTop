@@ -67,3 +67,16 @@ it('adds no OAuth volume when not requested', () => {
   expect(job.spec?.template.spec?.containers[0].volumeMounts).toHaveLength(1);
   expect(job.spec?.template.spec?.volumes).toHaveLength(1);
 });
+
+it('opens stdin once, without a TTY, only on the runner container of a session job', () => {
+  const params = {
+    nodeId: 'n1', namespace: 'org-exec', image: 'img', command: ['claude'],
+    worktreePath: '/tmp/w', secretName: 's',
+  };
+  const session = buildExecutionJob({ ...params, interactive: true }).spec!.template.spec!.containers;
+  expect(session).toHaveLength(1);
+  expect(session[0]).toMatchObject({ name: 'runner', stdin: true, stdinOnce: true, tty: false });
+  const plain = buildExecutionJob(params).spec!.template.spec!.containers[0];
+  expect(plain.stdin).toBeUndefined();
+  expect(plain.tty).toBeUndefined();
+});

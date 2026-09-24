@@ -11,6 +11,11 @@ export interface ExecutionJobParams {
    *  key (see execution/credentials.ts) — mounts it to the exact path the
    *  claude binary reads it from, rather than exposing it as an env var. */
   includeOauthCredentials?: boolean;
+  /** Keep stdin open for a stdin-fed session. `stdinOnce` makes the harness
+   *  detaching the end of input, so a daemon that dies mid-session cannot leave
+   *  the runtime waiting forever. Never a TTY: the stream is JSON, not a
+   *  terminal. */
+  interactive?: boolean;
 }
 
 const OAUTH_CREDENTIALS_VOLUME = 'claude-oauth-credentials';
@@ -36,6 +41,7 @@ export function buildExecutionJob(params: ExecutionJobParams): V1Job {
               name: 'runner',
               image: params.image,
               command: params.command,
+              ...(params.interactive ? { stdin: true, stdinOnce: true, tty: false } : {}),
               envFrom: [{ secretRef: { name: params.secretName } }],
               volumeMounts: [
                 { name: 'workspace', mountPath: '/workspace' },

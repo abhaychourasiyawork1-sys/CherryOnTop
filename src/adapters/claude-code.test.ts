@@ -100,3 +100,19 @@ describe('dispatch options', () => {
     expect(cmd.at(-1)).toBe('do it');
   });
 });
+
+describe('claudeCodeAdapter session mode', () => {
+  it('reads stream-json from stdin and keeps the goal out of argv', () => {
+    const cmd = claudeCodeAdapter.buildCommand('do it', undefined, { session: true });
+    expect(cmd.slice(0, 4)).toEqual(['claude', '--print', '--input-format', 'stream-json']);
+    expect(cmd).toContain('--output-format');
+    expect(cmd).not.toContain('do it');
+    expect(claudeCodeAdapter.supportsSession).toBe(true);
+  });
+
+  it('text mode is unchanged', () => {
+    const cmd = claudeCodeAdapter.buildCommand('do it');
+    expect(cmd).not.toContain('--input-format');
+    expect(cmd.at(-1)).toBe('do it');
+  });
+});
