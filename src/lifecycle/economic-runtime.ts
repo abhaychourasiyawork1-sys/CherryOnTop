@@ -232,7 +232,22 @@ export interface ExecutionBoundaryInput {
  *  definition of done the runtime already tracks. That it *can* be assembled
  *  from what exists is the evidence that the state contract describes this
  *  runtime rather than a different one. */
-export function economicStateFor(db: Db, input: ExecutionBoundaryInput): EconomicState {
+/** How far the node's observable record has moved: the number of runtime
+ *  events it has produced. Side-effect free, and it only grows, so a System-1
+ *  judgment made against an earlier count can be recognised as stale.
+ *  (`EconomicState.version` cannot serve here: this module rebuilds the state
+ *  from scratch at every boundary, so it is always 0.) */
+export function observedStateVersion(db: Db, nodeId: string): number {
+  return execEvents(db, nodeId).length;
+}
+
+/** `commit: false` reads the state without advancing the node's trajectory
+ *  memory. Any read that is not a boundary evaluation (a System-1 question
+ *  asked mid-run) must use it: committing would replace the snapshot the next
+ *  boundary compares against, and an identical snapshot reads as "repeating
+ *  the same ground". */
+export function economicStateFor(db: Db, input: ExecutionBoundaryInput, options: { commit?: boolean } = {}): EconomicState {
+  const commit = options.commit ?? true;
   const entry = memoryFor(input.nodeId);
   const signals = taskEconomicsFor(input.goal, judgeTask(input.goal));
   // Validated learning, applied to the economic inputs and nothing else. Empty
@@ -243,14 +258,17 @@ export function economicStateFor(db: Db, input: ExecutionBoundaryInput): Economi
   const consumedTokens = tokensForNode(db, input.nodeId);
   const turns = turnsForNode(db, input.nodeId);
 
-  entry.sequence += 1;
+  const sequence = entry.sequence + 1;
   const snapshot = executionSnapshot({
     events: execEvents(db, input.nodeId),
-    sequence: entry.sequence,
+    sequence,
     tokensConsumed: consumedTokens,
   });
   const trajectory = compareTrajectory(entry.previous, snapshot);
-  entry.previous = snapshot;
+  if (commit) {
+    entry.sequence = sequence;
+    entry.previous = snapshot;
+  }
 
   const evidence = evidenceFrom(snapshot, input.repositoryRevision);
   const validation = validationOf(db, input.nodeId);

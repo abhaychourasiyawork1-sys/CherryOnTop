@@ -78,7 +78,7 @@ import { recordDispatchUsage, turnsForNode } from '../db/queries/tokens.js';
 import { shouldRetryWithoutModel } from '../execution/tokens.js';
 import { readOnlyPlanningGrant, investigativeExecuteGrant } from './dispatch-helpers.js';
 import {
-  evaluateBoundary, economicStateFor, forgetNode, isIntervention, registerEvidenceSources,
+  evaluateBoundary, economicStateFor, forgetNode, isIntervention, registerEvidenceSources, observedStateVersion,
   markRecovered, consumeRecoveryFlag, recordRecoveryAttempt,
 } from './economic-runtime.js';
 import { tombstoneFor } from '../recovery/engine.js';
@@ -568,9 +568,10 @@ async function economicBoundary(
     // path not running means the screen saw nothing to decide, and nothing is
     // asked.
     if (decision && !cycle.skippedDeepEvaluation && cycle.candidates.length > 0) {
+      // No stale check is needed here: this awaits on the dispatch path before
+      // the Job exists, so nothing can move this node's state meanwhile.
       const refined = await refineWithSystem1({
         s1: system1(), scope: input.nodeId, state, candidates: cycle.candidates, decision,
-        currentStateVersion: () => economicStateFor(db, boundaryInput).version,
       });
       recordSystem1(db, input.nodeId, refined.outcomes, refined.contexts);
       decision = refined.decision;
@@ -921,12 +922,19 @@ function recordSystem1(
  *  asks. Per dispatch, so the allowance of new questions is per run. */
 function modelDecisionSession(db: Db, nodeId: string, goal: string): NonNullable<ExecuteStepInput['session']> {
   const cfg = system1Config();
-  const state = () => economicStateFor(db, { nodeId, goal });
   const gateway = createModelGateway({
     system1: system1(), scope: nodeId, goal, maxRequests: cfg.maxModelRequestsPerDispatch,
-    facts: () => stateFacts(state()),
-    stateVersion: () => state().version,
-    orchestration: () => state().trajectory.orchestrationConfidence,
+    observe: () => {
+      // Peek, never commit: this runs mid-dispatch, and committing would move
+      // the trajectory baseline the next boundary compares against.
+      const state = economicStateFor(db, { nodeId, goal }, { commit: false });
+      return {
+        facts: stateFacts(state),
+        stateVersion: observedStateVersion(db, nodeId),
+        orchestration: state.trajectory.orchestrationConfidence,
+      };
+    },
+    currentStateVersion: () => observedStateVersion(db, nodeId),
   });
   return {
     gateway,

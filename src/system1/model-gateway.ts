@@ -24,9 +24,11 @@ export interface ModelGatewayContext {
   /** New questions one dispatch may ask. Replays of an earlier question are
    *  free and do not count. */
   maxRequests: number;
-  facts?: () => Fact[];
-  stateVersion?: () => number;
-  orchestration?: () => number;
+  /** The run's state as System-1 may see it. Read once per batch of frames:
+   *  the model is waiting while this runs, so nothing is gained by re-reading. */
+  observe?: () => { facts: Fact[]; stateVersion: number; orchestration: number };
+  /** Re-read after the provider answers, to refuse a stale judgment. */
+  currentStateVersion?: () => number;
 }
 
 /** One frame's fate, for receipts. */
@@ -71,7 +73,8 @@ export function createModelGateway(ctx: ModelGatewayContext): ModelGateway {
     async handle(bodies) {
       const records: ModelDecisionRecord[] = bodies.map((body, index) => ({ index, body }));
       const admitted: { record: ModelDecisionRecord; request: ReturnType<typeof compileRequest> }[] = [];
-      const version = ctx.stateVersion?.() ?? 0;
+      const observed = ctx.observe?.() ?? { facts: [], stateVersion: 0, orchestration: 0.5 };
+      const version = observed.stateVersion;
 
       for (const record of records) {
         const parsed = parseFrame(record.body);
@@ -82,7 +85,7 @@ export function createModelGateway(ctx: ModelGatewayContext): ModelGateway {
           request = compileRequest({
             source: 'model', surface: 'model.request', primitive: parsed.frame.type,
             question: parsed.frame.question, questionVersion: MODEL_QUESTION_VERSION,
-            goal: ctx.goal, facts: ctx.facts?.() ?? [],
+            goal: ctx.goal, facts: observed.facts,
             candidates: parsed.frame.options.map((o) => ({ ...o, action: '' })),
             stateVersion: version,
           });
@@ -105,8 +108,8 @@ export function createModelGateway(ctx: ModelGatewayContext): ModelGateway {
 
       if (admitted.length > 0) {
         const outcomes = await ctx.system1.judge(ctx.scope, admitted.map((a) => a.request), {
-          orchestration: ctx.orchestration?.() ?? 0.5,
-          ...(ctx.stateVersion ? { currentStateVersion: ctx.stateVersion } : {}),
+          orchestration: observed.orchestration,
+          ...(ctx.currentStateVersion ? { currentStateVersion: ctx.currentStateVersion } : {}),
         });
         admitted.forEach((a, i) => { a.record.outcome = outcomes[i]; });
       }
