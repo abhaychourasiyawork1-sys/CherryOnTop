@@ -1,4 +1,5 @@
-import { describe, it, expect, afterEach, vi } from 'vitest';
+import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
+import { useFakeLaya } from '../system1/fake-provider.js';
 import { existsSync, unlinkSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
@@ -13,6 +14,12 @@ import { claudeCodeAdapter } from '../adapters/claude-code.js';
 import { codexAdapter } from '../adapters/codex.js';
 
 const TEST_DB = './test-actor.db';
+
+// These paths sit behind the decomposability judgment; a fake Laya that says
+// "this splits" is what lets them be reached without the old regex verdict.
+let restoreSystem1: () => void = () => {};
+beforeEach(() => { restoreSystem1 = useFakeLaya(0.9).restore; });
+afterEach(() => restoreSystem1());
 
 afterEach(() => {
   for (const suffix of ['', '-journal', '-wal', '-shm']) {
@@ -55,6 +62,10 @@ describe('node-actor-manager', () => {
     const decision = recordedEvents.find((e) => e.type === 'decision.made');
     expect(decision).toBeDefined();
     expect((decision!.payload as { outcome: string }).outcome).toBe('ESCALATE');
+
+    // Whether the goal splits was System-1's call, and it left a receipt.
+    const receipt = recordedEvents.find((e) => e.type === 'system1.judgment');
+    expect(receipt?.payload).toMatchObject({ surface: 'execution.decomposable', source: 'harness', fallback: false });
   });
 
   it('throws when sending to a node with no active actor', () => {

@@ -5,6 +5,7 @@ import { runChecks, probeModels, type DoctorCheck } from '../../doctor/checks.js
 import { isClusterReachable, ensureLocalCluster } from '../../k8s/kind.js';
 import os from 'node:os';
 import { hasOauthCredentials, checkCredentials } from '../../execution/credentials.js';
+import { probeSystem1 } from '../../system1/runtime.js';
 
 // Probe args are per-binary on purpose: kubectl rejects `--version` (it wants
 // `version --client`), so a shared flag would report an installed kubectl as
@@ -129,6 +130,10 @@ export const CHECKS: DoctorCheck[] = [
       if (process.env.ANTHROPIC_API_KEY) return { ok: true, message: 'using ANTHROPIC_API_KEY' };
       return { ok: false, message: 'no Claude auth found — run `claude login` to use your subscription, or export ANTHROPIC_API_KEY (get one at https://console.anthropic.com/settings/keys)' };
     },
+  },
+  {
+    name: 'System-1 (Laya)',
+    run: () => probeSystem1(),
   },
   {
     name: 'callable models',

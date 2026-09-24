@@ -91,6 +91,14 @@ import { requestEvidenceAtBoundary, renderAcquiredEvidence } from '../context/ev
 import type { ActionDecision } from '../decision/actions.js';
 import type { EconomicState } from '../decision/state.js';
 import { memory } from '../db/schema.js';
+import { assessDecomposability } from '../system1/decomposability.js';
+import { refineWithSystem1 } from '../decision/system1-decision.js';
+import { createModelGateway } from '../system1/model-gateway.js';
+import { stateFacts } from '../system1/compiler.js';
+import { system1Config } from '../config/system1.js';
+import type { ExecuteStepInput } from '../execution/execute-step.js';
+import { buildReceipt, epochOf, SYSTEM1_EVENT, type ReceiptContext } from '../system1/receipts.js';
+import { system1, type JudgeOutcome } from '../system1/guard.js';
 
 // In-process actor registry. It is lost on a daemon restart, which is why every
 // transition persists the actor to `nodes.snapshot` — see rehydrate.ts, which
@@ -546,11 +554,27 @@ async function economicBoundary(
     // Registered here rather than at import: the source needs a database, and
     // this is the first point that has one. Idempotent by name.
     registerEvidenceSources(db);
-    const { decision, state, cycle } = evaluateBoundary(db, {
+    const boundaryInput = {
       nodeId: input.nodeId, goal: input.goal, repositoryRevision: revision,
       repository: repoIdentity(input.worktreePath) ?? undefined,
       fullArtifactRequests: input.fullArtifactRequests,
-    });
+    };
+    const boundary = evaluateBoundary(db, boundaryInput);
+    const { state, cycle } = boundary;
+    let decision = boundary.decision;
+
+    // System-1 fills the semantic gaps in the candidates the deep path just
+    // proposed, and only where an answer could change the action. The deep
+    // path not running means the screen saw nothing to decide, and nothing is
+    // asked.
+    if (decision && !cycle.skippedDeepEvaluation && cycle.candidates.length > 0) {
+      const refined = await refineWithSystem1({
+        s1: system1(), scope: input.nodeId, state, candidates: cycle.candidates, decision,
+        currentStateVersion: () => economicStateFor(db, boundaryInput).version,
+      });
+      recordSystem1(db, input.nodeId, refined.outcomes, refined.contexts);
+      decision = refined.decision;
+    }
 
     // Recorded whether or not anything was decided: what the orchestrator cost
     // is the number that decides whether it was worth building, and a cost only
@@ -871,6 +895,57 @@ function publishStepOutcome(db: Db, nodeId: string, result: { succeeded: boolean
 /** Narrates what the node is about to do, as it does it. The state machine's own
  *  transitions say which state it is in; these say what that means in practice —
  *  which repository, which runtime, what it is waiting on. */
+/** Receipts and overhead for one System-1 epoch, harness or model initiated.
+ *
+ *  Receipts go on the event chain (see `system1/receipts.ts` for why not the
+ *  decisions table) and the overhead goes to the ledger exactly once, here.
+ *  Total, like every other piece of bookkeeping on the path to a dispatch. */
+function recordSystem1(
+  db: Db, nodeId: string, outcomes: readonly JudgeOutcome[], contexts: readonly ReceiptContext[], modelRequests?: number,
+): void {
+  try {
+    outcomes.forEach((outcome, i) => {
+      const payload = buildReceipt(outcome, contexts[i]);
+      const now = new Date().toISOString();
+      const id = appendEvent(db, { nodeId, type: SYSTEM1_EVENT, payload, createdAt: now });
+      publish({ id, nodeId, type: SYSTEM1_EVENT, payload, createdAt: now });
+    });
+    if (outcomes.length > 0) ledger.recordSystem1(nodeId, epochOf(outcomes, modelRequests));
+  } catch (err) {
+    console.error(`Failed to record a System-1 receipt for node ${nodeId}:`, err);
+  }
+}
+
+/** The model-facing side of System-1 for one execute dispatch: a gateway
+ *  bound to this node's budget and state, and what to record when the model
+ *  asks. Per dispatch, so the allowance of new questions is per run. */
+function modelDecisionSession(db: Db, nodeId: string, goal: string): NonNullable<ExecuteStepInput['session']> {
+  const cfg = system1Config();
+  const state = () => economicStateFor(db, { nodeId, goal });
+  const gateway = createModelGateway({
+    system1: system1(), scope: nodeId, goal, maxRequests: cfg.maxModelRequestsPerDispatch,
+    facts: () => stateFacts(state()),
+    stateVersion: () => state().version,
+    orchestration: () => state().trajectory.orchestrationConfidence,
+  });
+  return {
+    gateway,
+    maxDecisionTurns: cfg.maxModelRequestsPerDispatch,
+    onDecision: (reply) => {
+      const answered = reply.records.filter((r) => r.outcome);
+      recordSystem1(db, nodeId, answered.map((r) => r.outcome!), answered.map((r) => ({
+        provider: system1().provider,
+        finalRuntimeAction: 'advice-returned-to-model',
+        ...(r.outcome!.judgment ? {} : { fallbackReason: 'the model was told to use its own judgment' }),
+      })), reply.records.length);
+      const n = reply.records.length;
+      const ok = answered.filter((r) => r.outcome!.judgment).length;
+      // One short line, no provider detail: the receipts hold the rest.
+      publishProgress(db, nodeId, `Asked for a quick outside judgment on ${n} question${n === 1 ? '' : 's'} (${ok} answered)`);
+    },
+  };
+}
+
 function publishProgress(db: Db, nodeId: string, message: string): void {
   const now = new Date().toISOString();
   const payload = { message };
@@ -1481,7 +1556,35 @@ const ASSUMED_DISPATCH_LATENCY_MS = 120_000;
 function productionMachine(db: Db, nodeId: string) {
   return nodeMachine.provide({
     actors: {
-      assessUncertainty: fromPromise(async ({ input }: { input: { goal: string } }) => assessUncertainty(input)),
+      // Whether the goal comes apart is System-1's judgment; whether splitting
+      // is legal and worth it stays with `decideExecution` below. See
+      // `system1/decomposability.ts` for the ownership split.
+      assessUncertainty: fromPromise(async ({ input }: { input: { goal: string } }) => {
+        const node = getNode(db, nodeId);
+        if (!node) return assessUncertainty(input);
+        const result = await assessDecomposability({
+          scope: nodeId,
+          goal: input.goal,
+          authority: node.contract.authority,
+          existingChildren: listNodes(db).filter((child) => child.parentId === nodeId).length,
+        });
+        if (result.outcome) {
+          recordSystem1(db, nodeId, [result.outcome], [{
+            provider: system1().provider,
+            economicResult: {
+              worthSplitting: result.bundle.worthSplitting,
+              threshold: result.bundle.signals.system1_threshold ?? 0,
+              complexity: result.bundle.complexity,
+            },
+            finalRuntimeAction: result.bundle.worthSplitting ? 'offer-delegation-to-economics' : 'single-unit-of-work',
+            ...(result.fallbackReason ? { fallbackReason: result.fallbackReason } : {}),
+          }]);
+          if (result.fallbackReason) {
+            publishProgress(db, nodeId, 'No decomposability judgment was available, so this runs as one piece of work');
+          }
+        }
+        return result.bundle;
+      }),
       decideExecution: fromPromise(async ({ input }: { input: { goal: string; complexity: NodeMachineContext['complexity']; worthSplitting?: boolean; signals?: Record<string, number> } }) => {
         const node = getNode(db, nodeId);
         if (!node) throw new Error(`Node ${nodeId} not found when deciding execution`);
@@ -1801,8 +1904,17 @@ function productionMachine(db: Db, nodeId: string) {
         // carrying a blank constraint cannot produce a header with an empty
         // bullet under it — what the retired withConstraints also did.
         const constraints = (node?.contract.constraints ?? []).map((c) => c.trim()).filter(Boolean);
+        // The private decision capability needs three things at once: a runtime
+        // that can hold a session, a system prompt to tell the model about it
+        // (a capability the model does not know exists will not be used), and a
+        // System-1 to answer. Missing any one, the run is an ordinary dispatch
+        // and nothing is advertised.
+        const decisionSession = adapter.supportsSession === true
+          && rolePromptsEnabled() && honoursSystemPrompt(adapter)
+          && system1().provider !== 'none';
         const roleSystemPrompt = rolePromptsEnabled() && honoursSystemPrompt(adapter)
           ? buildRolePrompt('execute', {
+              decisionCapability: decisionSession,
               allowedTools: grant.allowedTools,
               constraints,
               definitionOfDone: node?.contract.definition_of_done ?? [],
@@ -1873,6 +1985,7 @@ function productionMachine(db: Db, nodeId: string) {
           // Was: a loop over result.events run once, after the whole Job
           // finished. Now: called per-event, live, as executeStep's follow-mode
           // stream delivers them — this is what makes the TUI's live output real.
+          ...(decisionSession ? { session: modelDecisionSession(db, nodeId, input.goal) } : {}),
           onEvent: (event) => {
             const now = new Date().toISOString();
             const type = `exec.${event.type}`;
@@ -2167,6 +2280,7 @@ function recordEfficiency(db: Db, nodeId: string, outcome: EfficiencyOutcome): v
   // little working memory per node, and a daemon that runs for weeks must not
   // accumulate one entry for every node it has ever seen.
   forgetNode(nodeId);
+  system1().forget(nodeId);
   try {
     // `EXECUTION_FINISHED` is a fact about a process; `TASK_SUCCESS` is a claim
     // about the world. The primary KPI is tokens per *successful* task, so a

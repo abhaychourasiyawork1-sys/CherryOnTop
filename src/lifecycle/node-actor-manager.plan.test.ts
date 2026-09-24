@@ -1,4 +1,5 @@
 import { describe, it, expect, afterEach, beforeEach, vi, type Mock } from 'vitest';
+import { useFakeLaya } from '../system1/fake-provider.js';
 import { existsSync, unlinkSync, mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
@@ -76,6 +77,12 @@ async function runDelegating(db: ReturnType<typeof createDb>, repoPath: string, 
   );
   return calls;
 }
+
+// These paths sit behind the decomposability judgment; a fake Laya that says
+// "this splits" is what lets them be reached without the old regex verdict.
+let restoreSystem1: () => void = () => {};
+beforeEach(() => { restoreSystem1 = useFakeLaya(0.9).restore; });
+afterEach(() => restoreSystem1());
 
 afterEach(() => {
   for (const suffix of ['', '-journal', '-wal', '-shm']) {

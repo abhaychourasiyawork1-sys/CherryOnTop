@@ -88,6 +88,10 @@ export interface EfficiencyLedger {
   recordMemoryValue(taskId: string, netValue: number): void;
   /** Tokens spent on each kind of work the control plane budgets separately. */
   recordSpend(taskId: string, bucket: 'evidence' | 'validation' | 'exploration', tokens: number): void;
+  /** One System-1 decision epoch: what was asked, what it cost, and whether a
+   *  fallback decided instead. Counted once per epoch, at the guard's outcome,
+   *  never again by whoever acts on the judgment. */
+  recordSystem1(taskId: string, epoch: System1Epoch): void;
   /** Every decision recorded for a task, in the order made. Exists so a
    *  benchmark can attribute a regression to specific decisions rather than to
    *  an aggregate. */
@@ -96,6 +100,21 @@ export interface EfficiencyLedger {
   /** How many tasks are still open. Exists so a leak is a failing test rather
    *  than a slow memory climb in a daemon that runs for weeks. */
   size(): number;
+}
+
+export interface System1Epoch {
+  /** Questions asked, and how many were replayed from an earlier answer. */
+  questions: number;
+  cached: number;
+  /** Provider invocations, retries included. */
+  calls: number;
+  latencyMs: number;
+  inputTokens: number;
+  failed: boolean;
+  fallback: boolean;
+  candidates: number;
+  /** Frames the execution model emitted, for a model-initiated epoch. */
+  modelRequests?: number;
 }
 
 type Totals = typeof EMPTY_TOTALS;
@@ -249,6 +268,20 @@ export function createEfficiencyLedger(
       const t = taskFor(taskId).totals as Record<string, number>;
       const key = `${bucket}Tokens`;
       t[key] += Math.max(0, tokens);
+    },
+
+    recordSystem1(taskId, epoch) {
+      const t = taskFor(taskId).totals as Record<string, number>;
+      t.system1Epochs += 1;
+      t.system1Questions += Math.max(0, epoch.questions);
+      t.system1CachedAnswers += Math.max(0, epoch.cached);
+      t.system1Calls += Math.max(0, epoch.calls);
+      t.system1LatencyMs += Math.max(0, epoch.latencyMs);
+      t.system1InputTokens += Math.max(0, epoch.inputTokens);
+      t.system1Candidates += Math.max(0, epoch.candidates);
+      t.modelDecisionRequests += Math.max(0, epoch.modelRequests ?? 0);
+      if (epoch.failed) t.system1Failures += 1;
+      if (epoch.fallback) t.system1Fallbacks += 1;
     },
 
     decisions(taskId) {
