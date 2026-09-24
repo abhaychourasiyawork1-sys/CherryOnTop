@@ -101,11 +101,42 @@ decision accuracy **0.700** (Laya + calibration + economics boundary) vs **0.575
 heuristic), log loss 0.569 (identity) → 0.492 (Platt). Forty hand-labelled goals is a
 starting point. Refit from real orchestration outcomes once Tier-B runs exist.
 
+## Recorded: Tier-B, Claude Code vs CherryOnTop + Laya (2026-09-24)
+
+Sonnet 5 on both arms, $5 cap per run, one repetition, graded by each task's own tests.
+Raw rows: `bench/tier-b/results/system1-main.jsonl` and `grading.jsonl`.
+
+| Task | Arm | Official grade | Tests | Spend (true) | Wall |
+|---|---|---|---|---|---|
+| cargo-flight-dispatch | Claude Code | fail | 19/27 | $1.07 | 7.0 min |
+| cargo-flight-dispatch | CherryOnTop + Laya | fail | 19/27 | $0.94 | 6.2 min |
+| vba-userform-port | Claude Code | fail | 0/28 traces (stopped at cap) | ~$3.34 | 11.5 min |
+| vba-userform-port | CherryOnTop + Laya | fail | 0/28 (no `run.sh` written) | ≥ $4.18 | 45 min |
+
+Neither harness solved either task, so quality is a tie. CherryOnTop was 12% cheaper on
+the task it finished in one attempt. It was slower and more expensive on the long task,
+because every execute attempt is capped at 10 minutes and all three attempts were cut
+off before the app was complete. An earlier CherryOnTop VBA run is excluded as invalid:
+the account's five-hour usage window was exhausted and both attempts were refused at 0
+tokens.
+
+System-1 behaviour: for flight-dispatch the split question was not asked (economics
+could not justify delegating). For the VBA port Laya said decomposable (P=0.94); the
+planner's split was then wrongly rejected (bug, fixed), and on the rerun the planner
+ran out of turns. The execution model never chose to use `<cto_decide>` on these tasks.
+
+Bugs this benchmark exposed, all fixed on this branch: the grader passing a 0/28 run,
+the daemon ignoring `ORG_*` settings including the spend cap, the delegation validator
+rejecting every split of a long spec, a failed planner cached as "does not split",
+killed runs recorded as ~$0, and the runner pricing Sonnet 5 at the old $3/$15.
+
+Not changed: the 10-minute per-attempt Job timeout. It is what decided the VBA result.
+Raising it for long tasks is the next thing to measure.
+
 ## Status
 
 - Levels 1–3 are wired and unit-tested (`bench/system1-decision-cases.test.mjs`,
   `bench/metrics/economic.test.mjs`).
 - Level 1 has been run against live Laya (above).
-- Levels 2 and 3 need a logged-in `claude` and a kind cluster, and spend real usage.
-  They have **not** been run for this change. Treat any claim of whole-harness benefit
-  as unmeasured until they are.
+- Level 3 (Tier-B) has been run once per task per arm (above). One repetition on two
+  tasks cannot show a difference; it shows the harness works end to end.
