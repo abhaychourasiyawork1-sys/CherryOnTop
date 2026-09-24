@@ -1,6 +1,9 @@
 /** A deterministic stand-in for Laya, for tests that exercise paths behind a
- *  System-1 judgment. Answers every noul with `probability`, every choice with
- *  its first option, and records what it was asked. */
+ *  System-1 judgment. Answers every noul with `probability`. Answers a choice
+ *  by putting `probability` on its "yes" option: `many` for the decomposability
+ *  staffing choice, otherwise the first option. Records what it was asked.
+ *  Probabilities pass through the real calibrator, so a high `probability`
+ *  still reads as a confident yes after it. */
 import { createSystem1, setSystem1 } from './guard.js';
 import type { System1Provider } from './provider.js';
 import type { DecisionJudgment, DecisionRequest } from './types.js';
@@ -12,10 +15,16 @@ export function fakeLaya(probability: number): System1Provider & { asked: Decisi
     asked,
     async decide(requests) {
       asked.push(...requests);
-      return requests.map((r): DecisionJudgment => ({
+      return requests.map((r): DecisionJudgment => {
+        const yes = r.candidates.find((c) => c.id === 'many') ?? r.candidates[0];
+        const other = r.candidates.filter((c) => c !== yes);
+        return {
         requestId: r.id, provider: 'laya', surface: r.surface, primitive: r.primitive,
         result: r.primitive === 'choice'
-          ? { selectedId: r.candidates[0].id, probabilities: Object.fromEntries(r.candidates.map((c, i) => [c.id, i === 0 ? 1 : 0])) }
+          ? {
+              selectedId: probability >= 1 / r.candidates.length ? yes.id : other[0].id,
+              probabilities: Object.fromEntries(r.candidates.map((c) => [c.id, c === yes ? probability : (1 - probability) / other.length])),
+            }
           : r.primitive === 'score' ? { score: { value: 0, min: 0, max: r.candidates.length - 1 } } : { probability },
         calibration: { rawProbability: probability, version: 'fake' },
         confidence: { provider: 1, orchestration: 0 },
@@ -23,7 +32,8 @@ export function fakeLaya(probability: number): System1Provider & { asked: Decisi
           model: 'fake', questionVersion: r.questionVersion, inputDigest: r.inputDigest,
           stateVersion: r.stateVersion, latencyMs: 0, inputTokens: 0,
         },
-      }));
+        };
+      });
     },
   };
 }

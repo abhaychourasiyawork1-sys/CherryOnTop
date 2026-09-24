@@ -192,12 +192,21 @@ describe('the planning dispatch', () => {
     // dispatch -> collection. This goal is the one that was recorded splitting
     // five ways off the single word "codebase"; it has full spawn authority and
     // a $10 budget here, so nothing but the classification stops it.
+    // What live Laya (typed-decisions) answers for this goal's twin, "Review
+    // the codebase and check for bugs, no edits": 0.35 on "many" before
+    // calibration. The classification is now System-1's, so that is the input
+    // this test has to feed it.
+    restoreSystem1();
+    restoreSystem1 = useFakeLaya(0.35).restore;
     const db = createDb(TEST_DB);
     const calls = await runDelegating(
       db, tmpRepo(), '[]',
       'Review the codebase and find bugs. Do not modify anything.',
     );
 
+    const root = listNodes(db).find((node) => node.parentId === null)!;
+    const judged = listEventsForNode(db, root.id).find((e) => e.type === 'system1.judgment');
+    expect((judged?.payload as { economicResult: { worthSplitting: boolean } }).economicResult.worthSplitting).toBe(false);
     expect(calls).toHaveLength(1);
     expect(calls[0].goal).not.toContain('Split this goal');
     // Still the strong model: not splitting must not mean not thinking.

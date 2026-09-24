@@ -26,9 +26,18 @@ const GOAL_CHARS = 1_500;
 /** Versioned harness questions. Changing a wording is a new version, so
  *  receipts from before and after the change are never compared as equals. */
 export const HARNESS_QUESTIONS = {
+  // Asked as a described two-way choice rather than a bare yes/no. Measured
+  // against live Laya (typed-decisions) on 40 labelled goals
+  // (bench/system1-calibration): AUC 0.89 as a choice, stable across a
+  // train/test split, against 0.80 for the bare yes/no and 0.86 for a yes/no
+  // with criteria. P(decomposable) is the calibrated probability of `many`.
   'execution.decomposable': {
-    version: 'execution.decomposable@1',
-    text: 'Is the requested work meaningfully decomposable into independent workstreams, so that several agents can work concurrently without substantial duplicated reasoning, conflicting changes or coordination overhead?',
+    version: 'execution.decomposable@2',
+    text: 'How should this task be staffed?',
+    options: [
+      { id: 'one', action: 'self-execute', description: 'one agent: it is a single coherent investigation, fix or change whose steps depend on each other' },
+      { id: 'many', action: 'offer-delegation', description: 'several agents in parallel: it is made of separate, independent deliverables' },
+    ],
   },
   'action.helpful': {
     version: 'action.helpful@1',
@@ -82,6 +91,12 @@ export interface CompileInput {
   /** Choice options (any order; canonicalized here) or score levels (rubric
    *  order, which is meaning and is kept). */
   candidates?: DecisionCandidate[];
+  /** Keep the options in the order given. For a harness question whose
+   *  options are constants: the order is already deterministic, and Laya is
+   *  sensitive to it. Measured on the decomposability question: AUC 0.89 with
+   *  the declared order against 0.835 sorted. A calibrator is only valid for
+   *  the order it was fitted on. */
+  fixedOrder?: boolean;
   stateVersion: number;
 }
 
@@ -100,7 +115,7 @@ export function compileRequest(input: CompileInput): DecisionRequest {
   }
 
   const raw = (input.candidates ?? []).map((c) => ({ id: c.id, action: c.action, description: c.description.trim() }));
-  const candidates = input.primitive === 'choice'
+  const candidates = input.primitive === 'choice' && !input.fixedOrder
     ? [...raw].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
     : raw;
 
@@ -131,12 +146,13 @@ export function compileHarnessRequest(input: Omit<CompileInput, 'source' | 'ques
    *  shares one forward pass. */
   subject?: string;
 }): DecisionRequest {
-  const q = HARNESS_QUESTIONS[input.surface];
+  const q: { version: string; text: string; options?: readonly DecisionCandidate[] } = HARNESS_QUESTIONS[input.surface];
   const { subject, ...rest } = input;
   return compileRequest({
     ...rest,
+    ...(q.options ? { candidates: [...q.options], fixedOrder: true } : {}),
     source: 'harness',
-    primitive: input.surface === 'runtime.next_action' ? 'choice' : 'noul',
+    primitive: input.surface === 'action.helpful' ? 'noul' : 'choice',
     question: subject ? `${q.text} Action: ${subject.slice(0, 200)}` : q.text,
     questionVersion: q.version,
   });

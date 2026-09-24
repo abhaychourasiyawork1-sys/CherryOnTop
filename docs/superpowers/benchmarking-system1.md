@@ -75,12 +75,37 @@ traced to the exact question, digest, probability and fallback that shaped it.
 - **If overhead is the problem, fix admission first.** Reduce how often questions are
   asked (gates, dedup, batching) before degrading what is asked.
 
+## Recorded: level 1 against live Laya (2026-09-24)
+
+`laya-serve` 0.3.11, `typed-decisions` checkpoint, CUDA (RTX 3060 laptop GPU), revision on
+branch `feat/system1-laya-decision-architecture`.
+
+| Workload | Before calibration (raw, sorted options) | After (`@2` question, Platt) | Expected |
+|---|---|---|---|
+| historical coherent review | split (P 0.35 ≥ 0.33) ✗ | not split (P 0.017) ✓ | not split |
+| single-file change | not asked ✓ | not asked ✓ | not asked |
+| coherent global investigation | split ✗ | split (P 0.94) ✗ | not split |
+| independent workstreams | split ✓ | split (P 0.95) ✓ | split |
+| ambiguous implementation choice | split (P 0.41) | split (P 0.25, threshold 0.20) | (recorded) |
+| validation failure → recovery | split ✗ | not split (P 0.037) ✓ | not split |
+| model-initiated choice | A (0.53/0.47) ✓ | A ✓ | A |
+| **matches** | **4 / 7** | **6 / 7** | |
+
+Latency: first question after start ~1.9 s (CUDA warm-up), then **23–73 ms per question**.
+The remaining miss is a real Laya limitation: the raw output leans `many` (0.70) for
+"find out why the whole test suite became slow across every package". It is kept in the
+calibration set as a negative and not tuned around.
+
+Calibration evidence (`node bench/system1-calibrate.mjs`, 40 labelled goals, leave-one-out):
+decision accuracy **0.700** (Laya + calibration + economics boundary) vs **0.575** (regex
+heuristic), log loss 0.569 (identity) → 0.492 (Platt). Forty hand-labelled goals is a
+starting point. Refit from real orchestration outcomes once Tier-B runs exist.
+
 ## Status
 
 - Levels 1–3 are wired and unit-tested (`bench/system1-decision-cases.test.mjs`,
   `bench/metrics/economic.test.mjs`).
-- Level-1 numbers from a live Laya run, if recorded, are in the PR description for this
-  change.
+- Level 1 has been run against live Laya (above).
 - Levels 2 and 3 need a logged-in `claude` and a kind cluster, and spend real usage.
   They have **not** been run for this change. Treat any claim of whole-harness benefit
   as unmeasured until they are.

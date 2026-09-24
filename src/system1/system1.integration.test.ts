@@ -38,6 +38,11 @@ beforeAll(async () => {
       const answers = Object.fromEntries(Object.entries(questions).map(([k, q]) => {
         if (q.type === 'noul') return [k, { type: 'noul', noul, confidence: Math.max(noul, 1 - noul) }];
         const ids = Array.isArray(q.criteria) ? q.criteria.map((_, i) => String(i)) : Object.keys(q.criteria ?? {});
+        // The decomposability staffing choice answers with the configured
+        // probability on "many"; any other choice prefers its last option.
+        if (ids.includes('many')) {
+          return [k, { type: 'choice', choice: noul >= 0.5 ? 'many' : 'one', probabilities: { many: noul, one: 1 - noul }, confidence: 0.5 }];
+        }
         const last = ids[ids.length - 1];
         return [k, { type: 'choice', choice: last, probabilities: Object.fromEntries(ids.map((id) => [id, id === last ? 0.8 : 0.2 / (ids.length - 1)])), confidence: 0.5 }];
       }));
@@ -158,7 +163,7 @@ describe('System-1 integration', () => {
   it('a live yes still has to clear deterministic economics', async () => {
     reset('ok', 0.9);
     const r = await assessDecomposability({ scope: 'n', goal: AMBIGUOUS, authority, existingChildren: 0 }, s1());
-    expect(r.bundle.signals.system1_p_decomposable).toBe(0.9);
+    expect(r.bundle.signals.system1_p_decomposable).toBeGreaterThan(0.9);
     expect(decideExecution({ goal: AMBIGUOUS, authority, complexity: r.bundle.complexity, worthSplitting: r.bundle.worthSplitting }).outcome).toBe('DELEGATE');
   });
 });

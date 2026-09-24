@@ -38,12 +38,15 @@ describe.skipIf(!live)('live Laya', () => {
       scope: 'b', authority, existingChildren: 0,
       goal: 'Add input validation to the billing service, write a README for the auth package, and upgrade the logging library in the reporting service',
     }, s1);
-    const pc = coherent.outcome?.judgment?.result.probability;
-    const pp = parallel.outcome?.judgment?.result.probability;
+    const pc = coherent.bundle.signals.system1_p_decomposable;
+    const pp = parallel.bundle.signals.system1_p_decomposable;
     console.log(`P(decomposable): coherent=${pc} parallel=${pp}; latency ${coherent.outcome?.latencyMs}ms / ${parallel.outcome?.latencyMs}ms`);
     expect(pc).toBeTypeOf('number');
     expect(pp).toBeTypeOf('number');
     expect(pp!).toBeGreaterThan(pc!);
+    // The case this whole surface exists for: broad, coherent, not split.
+    expect(coherent.bundle.worthSplitting).toBe(false);
+    expect(parallel.bundle.worthSplitting).toBe(true);
   }, 120_000);
 
   it('answers a model-initiated choice through the gateway', async () => {

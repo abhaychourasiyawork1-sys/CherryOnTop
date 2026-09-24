@@ -30,7 +30,7 @@ If the evidence is inconclusive, keep the proven component and narrow what it is
 
 | Replaced | Replacement | Invariant test | Replacement test | Integration evidence | Benchmark evidence |
 |---|---|---|---|---|---|
-| Regex `worthSplitting` as the **final** semantic verdict | Laya P(decomposable) through the economics-derived boundary | `system1-regression.test.ts` (economics and hard gates unchanged) | `system1/decomposability.test.ts` | `lifecycle/node-actor-manager.test.ts` (live actor asks System-1 and writes a receipt) | `bench/system1-decision-cases.mjs` (historical coherent investigation) |
+| Regex `worthSplitting` as the **final** semantic verdict | Laya's calibrated P(decomposable) (described two-way choice, `platt-decomposable@1`) through the economics-derived boundary | `system1-regression.test.ts` (economics and hard gates unchanged) | `system1/decomposability.test.ts` | `lifecycle/node-actor-manager.test.ts` and `.plan.test.ts` (live actor asks System-1, writes a receipt, and the historical global review is not split) | Live Laya, 40 labelled goals, leave-one-out: decision accuracy **0.700 vs 0.575** for the regex. Workload classes 6/7 vs 4/7 uncalibrated (`docs/superpowers/benchmarking-system1.md`). Whole-harness (Tier-B) **not yet run**. |
 
 The regex signals themselves were **kept**. `assessDecomposition` still computes breadth,
 separate items, work types, named targets, explicit split requests and investigative

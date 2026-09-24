@@ -16,11 +16,20 @@ function fakeChild() {
   return child;
 }
 
-function deps(healthyAfter: number, child = fakeChild()): LayaProcessDeps & { spawn: ReturnType<typeof vi.fn> } {
+/** A fake laya-serve: /health comes up after `healthyAfter` polls, and the key
+ *  probe answers like the real server (400 for our key, 401 otherwise). */
+function deps(healthyAfter: number, child = fakeChild(), key?: string): LayaProcessDeps & { spawn: ReturnType<typeof vi.fn>; bodies: string[] } {
   let polls = 0;
+  const bodies: string[] = [];
   return {
+    bodies,
     spawn: vi.fn(() => child) as never,
-    fetch: (async () => new Response('{}', { status: ++polls > healthyAfter ? 200 : 503 })) as unknown as typeof fetch,
+    fetch: (async (url: string, init?: RequestInit) => {
+      if (String(url).endsWith('/health')) return new Response('{}', { status: ++polls > healthyAfter ? 200 : 503 });
+      bodies.push(String(init?.body));
+      const auth = (init?.headers as Record<string, string>).authorization;
+      return new Response('{}', { status: key === undefined || auth === `Bearer ${key}` ? 400 : 401 });
+    }) as unknown as typeof fetch,
     sleep: async () => {},
   };
 }
@@ -38,6 +47,19 @@ describe('resident laya-serve supervisor', () => {
     const p = startLaya(system1Config({}), dir(), d);
     expect(await p.ready(1_000)).toBe(true);
     expect(d.spawn).not.toHaveBeenCalled();
+  });
+
+  it('checks the key without ever asking the router to pick (and download) a checkpoint', async () => {
+    const d = deps(0);
+    await startLaya(system1Config({}), dir(), d).ready(1_000);
+    expect(d.bodies.length).toBeGreaterThan(0);
+    for (const body of d.bodies) expect(Array.isArray(JSON.parse(body).questions)).toBe(true);
+  });
+
+  it('does not adopt a server that rejects our key', async () => {
+    const d = deps(0, fakeChild(), 'someone-elses-key');
+    const p = startLaya(system1Config({ ORG_LAYA_URL: 'http://127.0.0.1:1' }), dir(), d);
+    expect(await p.ready(10)).toBe(false);
   });
 
   it('starts laya-serve on loopback with the typed-decisions checkpoint preloaded', async () => {

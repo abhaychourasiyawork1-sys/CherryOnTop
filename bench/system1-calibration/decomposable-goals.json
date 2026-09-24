@@ -1,0 +1,162 @@
+[
+ {
+  "goal": "Review the codebase and check for bugs, no edits",
+  "decomposable": false
+ },
+ {
+  "goal": "Find out why the whole test suite became slow across every package after the last dependency upgrade",
+  "decomposable": false
+ },
+ {
+  "goal": "The previous attempt to fix the flaky integration test failed validation; fix it properly",
+  "decomposable": false
+ },
+ {
+  "goal": "Debug why login fails intermittently for some users",
+  "decomposable": false
+ },
+ {
+  "goal": "Refactor the payment module to use the new billing API",
+  "decomposable": false
+ },
+ {
+  "goal": "Investigate the root cause of the memory leak in the worker process",
+  "decomposable": false
+ },
+ {
+  "goal": "Fix the off-by-one error in the pagination helper",
+  "decomposable": false
+ },
+ {
+  "goal": "Explain how the authentication flow works end to end",
+  "decomposable": false
+ },
+ {
+  "goal": "Rename the User class to Account everywhere and update all references",
+  "decomposable": false
+ },
+ {
+  "goal": "Make the checkout page load faster",
+  "decomposable": false
+ },
+ {
+  "goal": "Upgrade React from 17 to 18 and fix whatever breaks",
+  "decomposable": false
+ },
+ {
+  "goal": "Find out why the nightly build fails on ARM runners",
+  "decomposable": false
+ },
+ {
+  "goal": "Add retry with exponential backoff to the HTTP client",
+  "decomposable": false
+ },
+ {
+  "goal": "Implement OAuth login using the existing session middleware",
+  "decomposable": false
+ },
+ {
+  "goal": "Audit the whole repository for SQL injection vulnerabilities and report findings",
+  "decomposable": false
+ },
+ {
+  "goal": "Figure out why CPU usage spikes every hour in production",
+  "decomposable": false
+ },
+ {
+  "goal": "Replace the custom logger with pino across the service",
+  "decomposable": false
+ },
+ {
+  "goal": "Write a design document for the new caching layer",
+  "decomposable": false
+ },
+ {
+  "goal": "Reduce the Docker image size",
+  "decomposable": false
+ },
+ {
+  "goal": "Trace where the wrong currency symbol comes from on the invoice page",
+  "decomposable": false
+ },
+ {
+  "goal": "Add input validation to the billing service, write a README for the auth package, and upgrade the logging library in the reporting service",
+  "decomposable": true
+ },
+ {
+  "goal": "Write unit tests for the parser, the lexer and the formatter modules",
+  "decomposable": true
+ },
+ {
+  "goal": "Translate the user documentation into French, German and Spanish",
+  "decomposable": true
+ },
+ {
+  "goal": "Add a dark mode to the web app, fix the CSV export bug in the admin panel, and bump the Node version in CI",
+  "decomposable": true
+ },
+ {
+  "goal": "Audit every module for dead code and also document the public services",
+  "decomposable": true
+ },
+ {
+  "goal": "Migrate each of the five microservices from Express to Fastify",
+  "decomposable": true
+ },
+ {
+  "goal": "Add type hints to the utils, models and api packages",
+  "decomposable": true
+ },
+ {
+  "goal": "Write API reference docs for the orders, inventory and shipping endpoints",
+  "decomposable": true
+ },
+ {
+  "goal": "Fix the three unrelated bugs reported in issues 101, 214 and 307",
+  "decomposable": true
+ },
+ {
+  "goal": "Create Dockerfiles for the frontend, the backend and the worker",
+  "decomposable": true
+ },
+ {
+  "goal": "Add Prometheus metrics to the gateway, and separately set up the Terraform module for the new S3 bucket",
+  "decomposable": true
+ },
+ {
+  "goal": "Port the CLI to Windows, add shell completion scripts, and write a changelog for 2.0",
+  "decomposable": true
+ },
+ {
+  "goal": "Generate seed data for the users, products and orders tables",
+  "decomposable": true
+ },
+ {
+  "goal": "Add end-to-end tests for signup, checkout and password reset flows",
+  "decomposable": true
+ },
+ {
+  "goal": "Localize the mobile app strings into Japanese and Korean",
+  "decomposable": true
+ },
+ {
+  "goal": "Update the copyright header in every source file and add a CONTRIBUTING guide",
+  "decomposable": true
+ },
+ {
+  "goal": "Implement the export to PDF feature and, independently, fix the broken email templates",
+  "decomposable": true
+ },
+ {
+  "goal": "Lint-fix the frontend package and upgrade dependencies in the backend package",
+  "decomposable": true
+ },
+ {
+  "goal": "Write benchmarks for the JSON parser and the HTTP router",
+  "decomposable": true
+ },
+ {
+  "goal": "Add a health check endpoint to each of the four services",
+  "decomposable": true
+ }
+]

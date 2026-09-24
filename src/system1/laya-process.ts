@@ -55,15 +55,19 @@ async function healthy(deps: LayaProcessDeps, url: string, apiKey: string): Prom
   try {
     const res = await deps.fetch(`${url}/health`, { signal: AbortSignal.timeout(1_000) });
     if (!res.ok) return false;
-    // /health is unauthenticated, so it proves a server, not *our* server. An
-    // empty question set costs no forward pass and does check the key.
+    // /health is unauthenticated, so it proves a server, not *our* server.
+    // The key is checked with a request laya-serve rejects *after* auth and
+    // *before* any model work: `questions` that is not an object is a 400,
+    // a wrong key is a 401. Found live: an empty but valid question set is
+    // not free. The router auto-selects a checkpoint for it and starts
+    // downloading one that was never preloaded.
     const probe = await deps.fetch(`${url}/v1/systemone`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', authorization: `Bearer ${apiKey}` },
-      body: JSON.stringify({ state: {}, questions: {} }),
+      body: JSON.stringify({ state: {}, questions: [] }),
       signal: AbortSignal.timeout(2_000),
     });
-    return probe.ok;
+    return probe.status === 400;
   } catch {
     return false;
   }

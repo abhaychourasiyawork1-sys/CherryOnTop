@@ -4,7 +4,7 @@ import { ProviderFailure, type System1Provider } from './provider.js';
 import { compileHarnessRequest } from './compiler.js';
 import type { DecisionJudgment, DecisionRequest } from './types.js';
 
-const request = (goal = 'g', stateVersion = 1) => compileHarnessRequest({ surface: 'execution.decomposable', goal, stateVersion });
+const request = (goal = 'g', stateVersion = 1) => compileHarnessRequest({ surface: 'action.helpful', goal, stateVersion, subject: 'validate' });
 
 const answer = (r: DecisionRequest, p = 0.7): DecisionJudgment => ({
   requestId: r.id, provider: 'laya', surface: r.surface, primitive: r.primitive, result: { probability: p },

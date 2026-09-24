@@ -88,7 +88,9 @@ export async function assessDecomposability(
   signals.system1_asked = 1;
   signals.system1_threshold = Number(boundary!.threshold.toFixed(4));
 
-  const p = outcome.judgment?.result.probability;
+  // The calibrated probability of the `many` option: see compiler.ts for why
+  // this is asked as a two-way choice and calibration.ts for the calibrator.
+  const p = outcome.judgment?.result.probabilities?.many;
   if (p === undefined) {
     signals.system1_fallback = 1;
     return { bundle: bundle(false), outcome, fallbackReason: outcome.failure?.reason ?? 'no judgment' };

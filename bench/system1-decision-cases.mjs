@@ -104,7 +104,7 @@ async function main() {
     rows.push({
       id: w.id, class: w.class, asked, gate: r.gate ?? null,
       complexity: r.bundle.complexity,
-      pDecomposable: r.outcome?.judgment?.result.probability ?? null,
+      pDecomposable: r.bundle.signals.system1_p_decomposable ?? null,
       threshold: r.bundle.signals.system1_threshold ?? null,
       split: r.bundle.worthSplitting,
       latencyMs: r.outcome?.latencyMs ?? 0,

@@ -3,7 +3,7 @@ import { createHttpProvider } from './laya-client.js';
 import { compileRequest, compileHarnessRequest } from './compiler.js';
 import { ProviderFailure } from './provider.js';
 
-const noul = (goal = 'g') => compileHarnessRequest({ surface: 'execution.decomposable', goal, stateVersion: 1 });
+const noul = (goal = 'g') => compileHarnessRequest({ surface: 'action.helpful', goal, stateVersion: 1, subject: 'run the tests' });
 const choice = () => compileRequest({
   source: 'model', surface: 'model.request', primitive: 'choice', question: 'Which approach?',
   questionVersion: 'model@1', goal: 'g', stateVersion: 1,

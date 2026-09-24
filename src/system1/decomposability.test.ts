@@ -17,7 +17,9 @@ function laya(p: number | Error): System1Provider & { decide: ReturnType<typeof 
     decide: vi.fn(async (rs: readonly DecisionRequest[]) => {
       if (p instanceof Error) throw p;
       return rs.map((r) => ({
-        requestId: r.id, provider: 'laya' as const, surface: r.surface, primitive: r.primitive, result: { probability: p },
+        // The staffing choice: raw probability `p` on "many".
+        requestId: r.id, provider: 'laya' as const, surface: r.surface, primitive: r.primitive,
+        result: { selectedId: p >= 0.5 ? 'many' : 'one', probabilities: { many: p, one: 1 - p } },
         calibration: { rawProbability: p, version: 'x' }, confidence: { provider: 0.6, orchestration: 0 },
         metadata: { model: 'typed-decisions', questionVersion: r.questionVersion, inputDigest: r.inputDigest, stateVersion: r.stateVersion, latencyMs: 4, inputTokens: 60 },
       }));
@@ -83,6 +85,25 @@ describe('execution.decomposable ownership', () => {
     expect(decide(yes.bundle.worthSplitting)).toBe('DELEGATE');
     expect(decide(no.bundle.worthSplitting)).toBe('SELF_EXECUTE');
     expect(decide(yes.bundle.worthSplitting, 0.5)).toBe('ESCALATE');
+  });
+
+  it('asks a described two-way staffing choice and reads the calibrated "many"', async () => {
+    const { provider, s1: sys } = s1(0.6);
+    const r = await assessDecomposability({ scope: 'n', goal: AMBIGUOUS, authority: authority(), existingChildren: 0 }, sys);
+    const asked = provider.decide.mock.calls[0][0][0] as DecisionRequest;
+    expect(asked.primitive).toBe('choice');
+    expect(asked.candidates.map((c) => c.id)).toEqual(['one', 'many']);
+    expect(asked.questionVersion).toBe('execution.decomposable@2');
+    // Raw 0.6 on a biased centre is not 0.6: the fitted calibrator moved it.
+    expect(r.outcome?.judgment?.calibration.version).toBe('platt-decomposable@1');
+    expect(r.bundle.signals.system1_p_decomposable).not.toBeCloseTo(0.6, 2);
+  });
+
+  it('keeps the historical coherent review single after calibration', async () => {
+    // 0.35 is what live Laya (typed-decisions) returned for this goal.
+    const r = await assessDecomposability({ scope: 'h', goal: HISTORICAL, authority: authority(), existingChildren: 0 }, s1(0.35).s1);
+    expect(r.bundle.signals.system1_asked).toBe(1);
+    expect(r.bundle.worthSplitting).toBe(false);
   });
 
   it('on provider failure, does not split and does not consult the old heuristic', async () => {
