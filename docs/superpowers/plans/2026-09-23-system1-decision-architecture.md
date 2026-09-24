@@ -906,11 +906,20 @@ Every spec §29 invariant, the code that owns it, and the test that fails if it 
 - [x] Hard controls and validation stay deterministic (regression and preservation tests).
 - [x] No hidden legacy semantic fallback.
 - [x] Only one proven component changed ownership (the regex split verdict), with replacement evidence (leave-one-out 0.700 vs 0.575). Its signal extraction is kept.
-- [ ] Whole-harness benchmark (Tier-B, levels 2–3). Needs a logged-in `claude`; the local OAuth token on the build machine had expired.
+- [x] Live Claude private-decision round trip (3/3 with live Laya).
+- [ ] Whole-harness benchmark (Tier-B, levels 2–3): spends real usage, not yet run.
 
-**Known limitation found during review (pre-existing, not changed here):** `economicStateFor`
-rebuilds state at version 0, so `runDecisionCycle`'s cadence marks every boundary after
+**Pre-existing bug found during review, fixed in this branch:** `economicStateFor`
+rebuilt state at version 0, so `runDecisionCycle`'s cadence marked every boundary after
 a node's first as `not_due`. The deep path, and with it `action.helpful` and
-`runtime.next_action`, currently runs only at a node's first dispatch. Tracked as a
-separate task because fixing it changes how often the decision loop runs, which needs
-its own benchmark.
+`runtime.next_action`, only ever ran at a node's first dispatch. The state version is
+now the node's runtime event count (`economic-runtime.test.ts`: a regression test
+verified to fail before the fix, plus a check that it still backs off when nothing
+changed). Offline `bench:guard` and `bench:deterministic` are byte-identical before and
+after. The live effect (more boundaries evaluated) is unmeasured until Tier-B runs.
+
+**Live Claude round trip:** passes 3/3 against real Claude Code and real Laya, after
+fixing a protocol bug the first run exposed. The model wrote its frame and then one more
+sentence; frames were only honoured at the very end of a message, so the request was
+ignored and leaked. Every complete frame in the model's own text is now honoured and
+hidden.

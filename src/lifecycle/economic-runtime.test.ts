@@ -106,6 +106,31 @@ function recordToolCall(
   });
 }
 
+describe('the decision cycle cadence follows the run, not a constant', () => {
+  it('evaluates again once the run has produced new events', () => {
+    const db = createDb(TEST_DB);
+    const id = seedNode(db, tmpRepo());
+    recordToolCall(db, id, 'Read', { file_path: 'src/a.ts' });
+    const first = evaluateBoundary(db, { nodeId: id, goal: GOAL });
+    expect(first.cycle.cost.reason).not.toBe('not_due');
+    for (let i = 0; i < 20; i++) recordToolCall(db, id, 'Read', { file_path: `src/f${i}.ts` });
+    const second = evaluateBoundary(db, { nodeId: id, goal: GOAL });
+    // Was 'not_due' forever: the state version was always 0.
+    expect(second.cycle.cost.reason).not.toBe('not_due');
+    expect(second.state.version).toBeGreaterThan(first.state.version);
+    forgetNode(id);
+  });
+
+  it('still backs off when nothing has happened since the last look', () => {
+    const db = createDb(TEST_DB);
+    const id = seedNode(db, tmpRepo());
+    recordToolCall(db, id, 'Read', { file_path: 'src/a.ts' });
+    evaluateBoundary(db, { nodeId: id, goal: GOAL });
+    expect(evaluateBoundary(db, { nodeId: id, goal: GOAL }).cycle.cost.reason).toBe('not_due');
+    forgetNode(id);
+  });
+});
+
 describe('reading the state for System-1 mid-run', () => {
   it('a peek does not move the trajectory baseline the next boundary compares against', () => {
     const db = createDb(TEST_DB);

@@ -259,8 +259,9 @@ export function economicStateFor(db: Db, input: ExecutionBoundaryInput, options:
   const turns = turnsForNode(db, input.nodeId);
 
   const sequence = entry.sequence + 1;
+  const events = execEvents(db, input.nodeId);
   const snapshot = executionSnapshot({
-    events: execEvents(db, input.nodeId),
+    events,
     sequence,
     tokensConsumed: consumedTokens,
   });
@@ -292,6 +293,13 @@ export function economicStateFor(db: Db, input: ExecutionBoundaryInput, options:
 
   return normalizeEconomicState({
     ...base,
+    // The run's own event count, the same number `observedStateVersion`
+    // reports. The state is rebuilt from scratch at every boundary, so without
+    // this it was always 0, and `runDecisionCycle`'s cadence (which backs off
+    // in *versions*) marked every boundary after a node's first as `not_due`:
+    // the deep path, recovery and evidence candidates, and System-1's
+    // next-action refinement only ever ran at a node's first dispatch.
+    version: events.length,
     evidence,
     uncertainty: {
       target: doubt,
