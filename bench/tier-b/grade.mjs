@@ -62,15 +62,35 @@ try {
   dockerLog = (err.stdout || '') + (err.stderr || '');
 }
 
+// Two conventions coexist across Terminal-Bench tasks: some verifiers write
+// reward.txt themselves (e.g. cargo-flight-dispatch); others only emit the
+// CTRF pytest report and leave pass/fail aggregation to the caller (e.g.
+// vba-userform-port -- confirmed empirically: its test.sh has no reward.txt
+// write at all, yet its own pytest output prints "Reward: 1.0" and all
+// tests pass). ctrf.json's summary is present for every task here and is
+// the universal signal; reward.txt is treated as an authoritative override
+// only when it disagrees by reporting failure (never silently overridden
+// the other way).
+let resolved = false;
 let reward = 0;
+const ctrfFile = join(logDirHost, 'ctrf.json');
+if (existsSync(ctrfFile)) {
+  const ctrf = JSON.parse(readFileSync(ctrfFile, 'utf8'));
+  const summary = ctrf.results?.summary;
+  if (summary && summary.tests > 0) {
+    resolved = summary.failed === 0;
+    reward = resolved ? 1 : 0;
+  }
+}
 const rewardFile = join(logDirHost, 'reward.txt');
 if (existsSync(rewardFile)) {
-  reward = Number(readFileSync(rewardFile, 'utf8').trim()) || 0;
+  const fileReward = Number(readFileSync(rewardFile, 'utf8').trim()) || 0;
+  if (fileReward < 1) { resolved = false; reward = fileReward; }
 }
 
 const row = {
   tier: 'B', task_id: task.id, arm, repetition,
-  resolved: reward >= 1,
+  resolved,
   reward,
   dockerRunFailed: dockerFailed,
   logTail: dockerLog.slice(-4000),

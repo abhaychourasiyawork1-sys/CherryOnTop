@@ -1,0 +1,122 @@
+{
+  "design": "single-arm (cherryontop only), descriptive vs. published baselines -- see 2026-09-21-v2-design-change-addendum.md",
+  "tier_a": {
+    "smoke": [
+      {
+        "instance_id": "pydata__xarray-6461",
+        "state": "COMPLETE",
+        "resolved": true,
+        "cost_usd": 0.4069,
+        "turns": 25,
+        "wall_seconds": 135,
+        "tokens_total": 959116,
+        "patch_bytes": 1972
+      }
+    ],
+    "main": [
+      {
+        "instance_id": "django__django-15315",
+        "state": "COMPLETE",
+        "resolved": true,
+        "cost_usd": 0.2757,
+        "turns": 19,
+        "wall_seconds": 98,
+        "tokens_total": 627507,
+        "patch_bytes": 1765
+      },
+      {
+        "instance_id": "astropy__astropy-7336",
+        "state": "COMPLETE",
+        "resolved": false,
+        "cost_usd": 0.5145,
+        "turns": 30,
+        "wall_seconds": 175,
+        "tokens_total": 1434855,
+        "patch_bytes": 1837
+      },
+      {
+        "instance_id": "sympy__sympy-23262",
+        "state": "FAILED",
+        "resolved": false,
+        "cost_usd": 0.2681,
+        "turns": 20,
+        "wall_seconds": 164,
+        "tokens_total": 535552,
+        "patch_bytes": 0
+      },
+      {
+        "instance_id": "scikit-learn__scikit-learn-25102",
+        "state": "FAILED",
+        "resolved": false,
+        "cost_usd": 0.5726,
+        "turns": 23,
+        "wall_seconds": 217,
+        "tokens_total": 980273,
+        "patch_bytes": 6226
+      }
+    ],
+    "n_valid": 4,
+    "n_resolved": 1,
+    "resolve_rate": 0.25,
+    "resolve_rate_wilson95": [
+      0.0456,
+      0.6994
+    ],
+    "mean_cost_usd": 0.4077,
+    "mean_turns": 23.0,
+    "mean_wall_seconds": 163.5,
+    "mean_tokens_total": 894546.8,
+    "total_cost_usd": 1.6309,
+    "published_baseline": {
+      "score": 0.852,
+      "source": "Claude Sonnet 5 System Card SS8.2, p.116",
+      "date": "2026-06-30",
+      "n_instances": 500
+    }
+  },
+  "tier_b": {
+    "main": [
+      {
+        "task_id": "cargo-flight-dispatch",
+        "state": "FAILED",
+        "resolved": false,
+        "reward": 0,
+        "cost_usd": 2.0101,
+        "turns": 63,
+        "wall_seconds": 1254,
+        "tokens_total": 3104903,
+        "patch_bytes": 8537
+      },
+      {
+        "task_id": "vba-userform-port",
+        "state": "FAILED",
+        "resolved": true,
+        "reward": 1,
+        "cost_usd": 0.0806,
+        "turns": 9,
+        "wall_seconds": 2707,
+        "tokens_total": 120376,
+        "patch_bytes": 184640
+      }
+    ],
+    "n_valid": 2,
+    "n_resolved": 1,
+    "resolve_rate": 0.5,
+    "resolve_rate_wilson95": [
+      0.0945,
+      0.9055
+    ],
+    "mean_cost_usd": 1.0454,
+    "mean_turns": 36.0,
+    "mean_wall_seconds": 1980.5,
+    "mean_tokens_total": 1612639.5,
+    "total_cost_usd": 2.0907,
+    "published_baseline": {
+      "score": 0.804,
+      "source": "Claude Sonnet 5 System Card SS8.3, p.116-117",
+      "date": "2026-06-30",
+      "n_instances": 89,
+      "note": "Terminal-Bench 2.1, mini-SWE-agent harness, xhigh effort -- dataset-version mismatch vs. the terminal-bench-3 task pool used here, disclosed in the addendum"
+    }
+  }
+}
