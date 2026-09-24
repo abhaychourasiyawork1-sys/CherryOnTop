@@ -1,0 +1,164 @@
+diff --git a/sklearn/utils/_set_output.py b/sklearn/utils/_set_output.py
+index 335773c6af..9869f2cf93 100644
+--- a/sklearn/utils/_set_output.py
++++ b/sklearn/utils/_set_output.py
+@@ -7,11 +7,60 @@ from .._config import get_config
+ from ._available_if import available_if
+ 
+ 
++def _dtypes_can_be_restored(new_column, original_column):
++    """Check if `new_column` can be safely cast back to `original_column`'s dtype.
++
++    This round-trips `new_column` through `original_column`'s dtype and back. If the
++    values are unchanged, the dtype change from `original_column` to `new_column` was
++    purely representational (e.g. an upcast performed internally by the estimator or a
++    plain column selection) and it is safe to restore the original dtype. If the
++    values differ, the estimator actually modified the data (e.g. scaling) and
++    restoring the original dtype could silently corrupt the output.
++    """
++    orig_dtype = original_column.dtype
++    if new_column.dtype == orig_dtype:
++        return False
++
++    try:
++        candidate = new_column.astype(orig_dtype)
++    except (TypeError, ValueError):
++        return False
++
++    try:
++        round_tripped = candidate.astype(new_column.dtype)
++    except (TypeError, ValueError):
++        return False
++
++    return round_tripped.equals(new_column)
++
++
++def _restore_dtypes(data_to_wrap, dtypes):
++    """Restore dtypes of `data_to_wrap`'s columns from `dtypes` where safe.
++
++    Only columns whose name is present in `dtypes` and whose values are unchanged by
++    the round-trip check in :func:`_dtypes_can_be_restored` are cast back to their
++    original dtype. This preserves information (e.g. `category` dtypes or a narrower
++    numeric dtype) for transformers, such as feature selectors, that only select or
++    reorder columns without modifying the underlying values.
++    """
++    if dtypes is None:
++        return data_to_wrap
++
++    for column in data_to_wrap.columns:
++        if column not in dtypes.index:
++            continue
++        if _dtypes_can_be_restored(data_to_wrap[column], dtypes[column]):
++            data_to_wrap[column] = data_to_wrap[column].astype(dtypes[column])
++
++    return data_to_wrap
++
++
+ def _wrap_in_pandas_container(
+     data_to_wrap,
+     *,
+     columns,
+     index=None,
++    dtypes=None,
+ ):
+     """Create a Pandas DataFrame.
+ 
+@@ -36,6 +85,13 @@ def _wrap_in_pandas_container(
+     index : array-like, default=None
+         Index for data.
+ 
++    dtypes : Series, default=None
++        Dtypes for the original input columns, indexed by column name (for
++        example `original_input.dtypes`). For each output column whose name
++        matches an entry in `dtypes`, the original dtype is restored if doing
++        so does not change the underlying values, i.e. only for transformers
++        that select or reorder columns without modifying their values.
++
+     Returns
+     -------
+     dataframe : DataFrame
+@@ -57,9 +113,10 @@ def _wrap_in_pandas_container(
+             data_to_wrap.columns = columns
+         if index is not None:
+             data_to_wrap.index = index
+-        return data_to_wrap
++    else:
++        data_to_wrap = pd.DataFrame(data_to_wrap, index=index, columns=columns)
+ 
+-    return pd.DataFrame(data_to_wrap, index=index, columns=columns)
++    return _restore_dtypes(data_to_wrap, dtypes)
+ 
+ 
+ def _get_output_config(method, estimator=None):
+@@ -131,6 +188,7 @@ def _wrap_data_with_container(method, data_to_wrap, original_input, estimator):
+         data_to_wrap=data_to_wrap,
+         index=getattr(original_input, "index", None),
+         columns=estimator.get_feature_names_out,
++        dtypes=getattr(original_input, "dtypes", None),
+     )
+ 
+ 
+diff --git a/sklearn/utils/tests/test_set_output.py b/sklearn/utils/tests/test_set_output.py
+index ac73ca0943..e1d78b8d82 100644
+--- a/sklearn/utils/tests/test_set_output.py
++++ b/sklearn/utils/tests/test_set_output.py
+@@ -45,6 +45,59 @@ def test__wrap_in_pandas_container_error_validation():
+         _wrap_in_pandas_container(X_csr, columns=["a", "b", "c"])
+ 
+ 
++def test__wrap_in_pandas_container_dtypes_preserved_when_unmodified():
++    """Columns that are selected/reordered without changing values keep their
++    original dtype, e.g. category dtype or a narrower numeric dtype."""
++    pd = pytest.importorskip("pandas")
++
++    X_df = pd.DataFrame(
++        {
++            "a": np.asarray([1, 2, 3], dtype=np.float16),
++            "b": pd.Categorical([0, 1, 0]),
++        }
++    )
++    # Simulate a transformer that selects both columns but returns a plain
++    # ndarray, which loses dtype information (values are unchanged).
++    X_selected = X_df.to_numpy(dtype=np.float64)
++
++    X_wrapped = _wrap_in_pandas_container(
++        X_selected, columns=["a", "b"], dtypes=X_df.dtypes
++    )
++
++    assert X_wrapped["a"].dtype == np.float16
++    assert isinstance(X_wrapped["b"].dtype, pd.CategoricalDtype)
++
++
++def test__wrap_in_pandas_container_dtypes_not_restored_when_values_change():
++    """Columns whose values are actually modified (e.g. scaling) keep the new
++    dtype rather than being forced back to a potentially lossy original dtype."""
++    pd = pytest.importorskip("pandas")
++
++    X_df = pd.DataFrame({"a": np.asarray([1, 2, 3], dtype=np.int64)})
++    # Simulate a transformer that scales the column, producing new values that
++    # cannot be represented exactly in the original int64 dtype.
++    X_scaled = (X_df.to_numpy(dtype=np.float64) * 1.5).reshape(-1, 1)
++
++    X_wrapped = _wrap_in_pandas_container(
++        X_scaled, columns=["a"], dtypes=X_df.dtypes
++    )
++
++    assert X_wrapped["a"].dtype == np.float64
++    assert_array_equal(X_wrapped["a"].to_numpy(), X_scaled.ravel())
++
++
++def test__wrap_in_pandas_container_dtypes_ignore_unknown_columns():
++    """Columns not present in `dtypes` are left unchanged."""
++    pd = pytest.importorskip("pandas")
++
++    X_df = pd.DataFrame({"a": np.asarray([1, 2, 3], dtype=np.float16)})
++    X_new = np.asarray([[1.0], [2.0], [3.0]])
++
++    X_wrapped = _wrap_in_pandas_container(X_new, columns=["b"], dtypes=X_df.dtypes)
++
++    assert X_wrapped["b"].dtype == np.float64
++
++
+ class EstimatorWithoutSetOutputAndWithoutTransform:
+     pass
+ 

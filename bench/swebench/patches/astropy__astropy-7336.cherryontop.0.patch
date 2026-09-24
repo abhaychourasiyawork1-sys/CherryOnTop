@@ -1,0 +1,52 @@
+diff --git a/CHANGES.rst b/CHANGES.rst
+index aea009f09c..a96b4c1386 100644
+--- a/CHANGES.rst
++++ b/CHANGES.rst
+@@ -238,6 +238,9 @@ astropy.time
+ astropy.units
+ ^^^^^^^^^^^^^
+ 
++- ``quantity_input`` no longer errors when the decorated function has a
++  return type annotation of `None`. [#7245]
++
+ astropy.utils
+ ^^^^^^^^^^^^^
+ 
+diff --git a/astropy/units/decorators.py b/astropy/units/decorators.py
+index 8bece5a850..9051cbfae6 100644
+--- a/astropy/units/decorators.py
++++ b/astropy/units/decorators.py
+@@ -220,8 +220,10 @@ class QuantityInput:
+             # Call the original function with any equivalencies in force.
+             with add_enabled_equivalencies(self.equivalencies):
+                 return_ = wrapped_function(*func_args, **func_kwargs)
+-            if wrapped_signature.return_annotation is not inspect.Signature.empty:
+-                return return_.to(wrapped_signature.return_annotation)
++            return_annotation = wrapped_signature.return_annotation
++            if (return_annotation is not inspect.Signature.empty and
++                    return_annotation is not None):
++                return return_.to(return_annotation)
+             else:
+                 return return_
+ 
+diff --git a/astropy/units/tests/py3_test_quantity_annotations.py b/astropy/units/tests/py3_test_quantity_annotations.py
+index 4956b0ec19..0ad92435d1 100644
+--- a/astropy/units/tests/py3_test_quantity_annotations.py
++++ b/astropy/units/tests/py3_test_quantity_annotations.py
+@@ -285,3 +285,16 @@ def test_return_annotation():
+     assert solarx.unit is u.deg
+     """
+     return src
++
++
++@py3only
++def test_return_annotation_none():
++    src = """
++    @u.quantity_input
++    def myfunc_args(solarx: u.arcsec) -> None:
++        pass
++
++    solarx = myfunc_args(1*u.arcsec)
++    assert solarx is None
++    """
++    return src

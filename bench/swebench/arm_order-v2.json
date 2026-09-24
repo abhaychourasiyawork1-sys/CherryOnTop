@@ -1,0 +1,47 @@
+{
+  "seed": 2027,
+  "order": [
+    {
+      "instance_id": "django__django-15315",
+      "arm_order": [
+        "direct",
+        "cherryontop"
+      ]
+    },
+    {
+      "instance_id": "astropy__astropy-7336",
+      "arm_order": [
+        "direct",
+        "cherryontop"
+      ]
+    },
+    {
+      "instance_id": "sympy__sympy-23262",
+      "arm_order": [
+        "cherryontop",
+        "direct"
+      ]
+    },
+    {
+      "instance_id": "scikit-learn__scikit-learn-25102",
+      "arm_order": [
+        "cherryontop",
+        "direct"
+      ]
+    },
+    {
+      "instance_id": "cargo-flight-dispatch",
+      "arm_order": [
+        "cherryontop",
+        "direct"
+      ]
+    },
+    {
+      "instance_id": "vba-userform-port",
+      "arm_order": [
+        "cherryontop",
+        "direct"
+      ]
+    }
+  ]
+}

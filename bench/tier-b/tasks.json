@@ -1,0 +1,53 @@
+{
+  "benchmark": "Terminal-Bench (terminal-bench/terminal-bench, harbor-framework org)",
+  "harness_version": "harbor 0.x, repo pinned at clone time (see harness_git_sha in results)",
+  "published_baseline": {
+    "model": "claude-sonnet-5",
+    "score": "80.4% mean reward, averaged over 5 attempts x 89 unique tasks (445 trials), xhigh effort",
+    "harness_used_for_baseline": "mini-SWE-agent (not Harbor's claude-code agent) on a GKE cluster, 1x timeout rate, 3x memory ceiling",
+    "prior_model_score": "Sonnet 4.6: 67% mean reward, same eval/infra, high effort",
+    "source": "Claude Sonnet 5 System Card, §8.3 'Terminal-Bench 2.1', page 116",
+    "source_url": "https://www-cdn.anthropic.com/283ef97c476cf442c91d9a37d5b214242a55bb92/Claude%20Sonnet%205%20System%20Card.pdf",
+    "date": "2026-06-30",
+    "dataset_version_note": "System card cites 'Terminal-Bench 2.1' (89 tasks). The task repository cloned for this study (harbor-framework/terminal-bench, no version tag found; dataset.toml header reads 'terminal-bench-3') is a later dataset generation than the one the published 80.4% figure covers -- disclosed as a version mismatch, not a fabricated match. The benchmark identity (Terminal-Bench, arXiv:2601.11868, Merrill et al. 2026) is the same; the specific task pool is not guaranteed identical."
+  },
+  "tasks": [
+    {
+      "slot": "B1",
+      "id": "cargo-flight-dispatch",
+      "task_name": "terminal-bench/cargo-flight-dispatch",
+      "expert_time_estimate_hours": 2.5,
+      "deliverables": ["navigation.py (distance/bearing/wind-triangle/crosswind bugs)", "aircraft.py (airspeed/fuel/weight/reserve bugs)", "dispatch.py (route optimization/flight-plan assembly bugs)"],
+      "repo_dir": "tasks/cargo-flight-dispatch",
+      "env_root_files": ["navigation.py", "aircraft.py", "dispatch.py", "data"],
+      "instruction_path_rewrites": [["/app/", ""], ["/output/", "output/"], ["/requirements.txt", "requirements.txt"], ["/apt-packages.txt", "apt-packages.txt"]],
+      "instruction_append": "\n\nEnvironment note (applies identically to both arms): this workspace is rooted at the current directory, not /app. `dispatch.py --data-dir` defaults to `/app/data`, which does not exist here -- pass `--data-dir data` when running it locally (e.g. `python dispatch.py --data-dir data --output output/flight_plan.json`). Official grading runs your files inside a container where `/app/data` is the real path, so the default is correct there; this note only affects local testing in this workspace.",
+      "grading": {
+        "mounts": [
+          { "hostRelative": "navigation.py", "containerPath": "/app/navigation.py" },
+          { "hostRelative": "aircraft.py", "containerPath": "/app/aircraft.py" },
+          { "hostRelative": "dispatch.py", "containerPath": "/app/dispatch.py" },
+          { "hostRelative": "requirements.txt", "containerPath": "/app/requirements.txt", "optional": true },
+          { "hostRelative": "apt-packages.txt", "containerPath": "/app/apt-packages.txt", "optional": true }
+        ],
+        "command": "bash /tests/test.sh"
+      }
+    },
+    {
+      "slot": "B2",
+      "id": "vba-userform-port",
+      "task_name": "terminal-bench/vba-userform-port",
+      "expert_time_estimate_hours": 4.0,
+      "deliverables": ["generated_app/frontend (React)", "generated_app/backend (FastAPI)", "generated_app/backend persistence (SQLite)"],
+      "repo_dir": "tasks/vba-userform-port",
+      "env_root_files": ["legacy_app"],
+      "instruction_path_rewrites": [["/shared/legacy_app/", "legacy_app/"], ["/workspace/generated_app/", "generated_app/"], ["/workspace/generated_app", "generated_app"]],
+      "grading": {
+        "mounts": [
+          { "hostRelative": "generated_app", "containerPath": "/workspace/generated_app" }
+        ],
+        "command": "bash /tests/test.sh"
+      }
+    }
+  ]
+}

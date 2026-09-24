@@ -41,7 +41,7 @@ if (!['direct', 'cherryontop'].includes(arm) || !instanceId || !Number.isFinite(
 }
 
 const REPO_CACHE = join(homedir(), '.swebench-repos');
-const PINNED_MODEL = 'sonnet';
+const PINNED_MODEL = 'claude-sonnet-5';
 // Generous circuit breaker, not the real ceiling — money is the ceiling
 // (dispatchDirectArm kills on estimated spend; CherryOnTop's own
 // ORG_TASK_SPEND_CAP_USD does the same for the cherryontop arm).
