@@ -10,17 +10,22 @@ import { system1Config, type System1Config } from '../config/system1.js';
 import { createHttpProvider } from './laya-client.js';
 import { startLaya, type LayaProcess, type LayaProcessDeps } from './laya-process.js';
 import { createSystem1, setSystem1 } from './guard.js';
+import { compileHarnessRequest } from './compiler.js';
 
 export interface InstalledSystem1 {
   config: System1Config;
   laya?: LayaProcess;
+  /** Asks one throwaway question so the first real decision does not pay the
+   *  model's warm-up (measured: ~1.5 s on the first CUDA forward pass, ~40 ms
+   *  after). Straight to the provider: no budget, no receipt. Never throws. */
+  warm(): Promise<void>;
   stop(): Promise<void>;
 }
 
 export function installSystem1(dataDir: string, env: NodeJS.ProcessEnv = process.env, deps?: LayaProcessDeps): InstalledSystem1 {
   const config = system1Config(env);
   if (config.mode === 'off') {
-    return { config, stop: async () => {} };
+    return { config, warm: async () => {}, stop: async () => {} };
   }
   const laya = config.mode === 'laya' ? startLaya(config, dataDir, deps) : undefined;
   const provider = createHttpProvider({
@@ -35,10 +40,18 @@ export function installSystem1(dataDir: string, env: NodeJS.ProcessEnv = process
   const restore = setSystem1(createSystem1(provider, {
     maxCallsPerScope: config.maxCallsPerNode,
     timeoutMs: config.timeoutMs,
+    ready: () => !laya || laya.status() === 'ready',
   }));
   return {
     config,
     ...(laya ? { laya } : {}),
+    async warm() {
+      try {
+        await provider.decide([compileHarnessRequest({ surface: 'execution.decomposable', goal: 'warm-up', stateVersion: 0 })], { timeoutMs: 30_000 });
+      } catch {
+        // A cold first decision is slower, not wrong.
+      }
+    },
     async stop() {
       restore();
       await laya?.stop();

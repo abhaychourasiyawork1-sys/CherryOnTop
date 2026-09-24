@@ -870,3 +870,47 @@ When new orchestration overhead is the problem, first reduce unnecessary decisio
 ~~~
 
 Each task ends with focused tests and a focused commit. Do not mix unrelated refactors into this implementation.
+
+---
+
+# Implementation Traceability (Task 17)
+
+Every spec §29 invariant, the code that owns it, and the test that fails if it breaks.
+
+| # | Invariant | Owner | Test |
+|---|---|---|---|
+| 1 | Hard constraints before economic ranking | `decision/engine.ts` (`hardGates`, `chooseEconomicAction`), `system1/decomposability.ts` gates | `decision/system1-regression.test.ts`, `system1/preservation-gates.test.ts` |
+| 2 | System-1 cannot grant authority | `system1/decomposability.ts` (no-spawn gate), `engines/decide-execution.ts` | `preservation-gates.test.ts` ("grants no spawn authority", "cannot buy past the budget floor") |
+| 3 | System-1 cannot create illegal candidates | `decision/system1-decision.ts` (asks only about proposed, allowed candidates), `system1/types.ts` (`assertValidJudgment`: selected id must be offered) | `system1-decision.test.ts`, `types.test.ts` |
+| 4 | Provider probability ≠ success probability | `system1/economic-mapping.ts` (helpfulness scales benefit only, `failureRisk` untouched) | `economic-mapping.test.ts` |
+| 5 | Choice = semantic preference among legal options | `decision/system1-decision.ts` (Choice only breaks exact ties) | `system1-decision.test.ts` ("never overrides a utility difference"), `system1.integration.test.ts` |
+| 6 | Calibration separate from inference | `system1/calibration.ts` (per surface, versioned, applied in the guard) | `economic-mapping.test.ts`, `guard.test.ts`, `decomposability.test.ts` |
+| 7 | Trust separate from semantic probability | `system1/calibration.ts` keeps `orchestration` beside `probability`; `decision/trust.ts` unchanged | `economic-mapping.test.ts`, `decision/trust.test.ts` |
+| 8 | Uncertainty does not imply more orchestration | `decision/system1-decision.ts` (demand gate: ask only if the answer flips the action); no re-asking on low confidence | `system1-decision.test.ts` |
+| 9 | Validation is the only path to COMPLETE | `lifecycle/node-machine.ts`, `validation/engine.ts` (unchanged); model path has no route to either | `system1-regression.test.ts`, `preservation-gates.test.ts` (import isolation) |
+| 10 | Retries consume the same budget | `system1/guard.ts` | `guard.test.ts` ("a retry spends from the same budget"), `system1.integration.test.ts` |
+| 11 | Stale decisions are not applied | `system1/guard.ts` (version re-read after answer), `lifecycle/economic-runtime.ts` (`observedStateVersion`, side-effect-free peek) | `guard.test.ts`, `system1.integration.test.ts`, `economic-runtime.test.ts` |
+| 12 | No hidden legacy semantic brain | `system1/decomposability.ts` (fallback = no split unless explicit; never `assessDecomposition().worthSplitting`) | `decomposability.test.ts` ("does not consult the old heuristic") |
+| 13 | Non-intervention is legitimate | `decision/engine.ts` (`continue` fallback), unanswerable helpfulness leaves candidates unscaled | `system1-decision.test.ts` ("a useless verdict … continue") |
+| 14 | Invocation must be decision-relevant | `decompositionBoundary` (null when the answer cannot change economics), `helpfulnessMatters` | `decomposability.test.ts`, `system1-decision.test.ts`, live case "single-file change: not asked" |
+| 15 | Model can request judgment, cannot reach the provider | `system1/model-gateway.ts`, `model-session-controller.ts`, `prompts/roles.ts` (no endpoint/provider named), adapter registers no tool/MCP | `model-gateway.test.ts`, `roles.test.ts`, `execute-step.session.test.ts`, `execute-step.session.k8s.test.ts` (real attach) |
+| 16 | Model judgment cannot override authority/policy | Gateway answer is advice text only; import isolation from lifecycle/authority/validation | `preservation-gates.test.ts` |
+| 17 | Whole-harness benchmark is the target | `bench/tier-b` (Claude Code vs CherryOnTop + Laya) with `system1` diagnostics; `docs/superpowers/benchmarking-system1.md` | `bench/system1-decision-cases.test.mjs`, `bench/metrics/economic.test.mjs`. **Tier-B not yet run.** |
+
+**Review checklist**
+
+- [x] Laya is the live provider (`installSystem1` → supervised `laya-serve`, `typed-decisions`, verified live).
+- [x] JEV stays a provider behind the same client (`ORG_SYSTEM1=jev`).
+- [x] The private protocol is outside the Claude tool/MCP surface (argv test, prompt test).
+- [x] Model awareness is explicit, and only advertised when System-1 is `ready()`.
+- [x] Hard controls and validation stay deterministic (regression and preservation tests).
+- [x] No hidden legacy semantic fallback.
+- [x] Only one proven component changed ownership (the regex split verdict), with replacement evidence (leave-one-out 0.700 vs 0.575). Its signal extraction is kept.
+- [ ] Whole-harness benchmark (Tier-B, levels 2–3). Needs a logged-in `claude`; the local OAuth token on the build machine had expired.
+
+**Known limitation found during review (pre-existing, not changed here):** `economicStateFor`
+rebuilds state at version 0, so `runDecisionCycle`'s cadence marks every boundary after
+a node's first as `not_due`. The deep path, and with it `action.helpful` and
+`runtime.next_action`, currently runs only at a node's first dispatch. Tracked as a
+separate task because fixing it changes how often the decision loop runs, which needs
+its own benchmark.

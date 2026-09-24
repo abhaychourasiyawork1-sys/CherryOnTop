@@ -42,6 +42,11 @@ export interface JudgeOptions {
 
 export interface System1 {
   readonly provider: string;
+  /** Whether the provider can answer right now. Decisions are asked either
+   *  way (a failure has a fallback); this decides only whether the execution
+   *  model is *told* it can ask, so a missing or still-loading Laya does not
+   *  cost model turns spent asking for answers that will not come. */
+  ready(): boolean;
   judge(scope: string, requests: readonly DecisionRequest[], options: JudgeOptions): Promise<JudgeOutcome[]>;
   /** Calls spent and left in a scope. */
   usage(scope: string): { calls: number; remaining: number };
@@ -52,6 +57,8 @@ export interface GuardConfig {
   maxCallsPerScope: number;
   timeoutMs: number;
   now?: () => number;
+  /** Defaults to "a provider exists". */
+  ready?: () => boolean;
 }
 
 const TRANSIENT: ReadonlySet<ProviderFailureKind> = new Set(['timeout', 'unavailable', 'http']);
@@ -73,6 +80,7 @@ export function createSystem1(provider: System1Provider | null, config: GuardCon
 
   return {
     provider: provider?.name ?? 'none',
+    ready: () => provider !== null && (config.ready?.() ?? true),
     usage(scope) {
       const s = scopeOf(scope);
       return { calls: s.calls, remaining: Math.max(0, config.maxCallsPerScope - s.calls) };

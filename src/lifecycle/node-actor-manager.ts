@@ -1919,7 +1919,7 @@ function productionMachine(db: Db, nodeId: string) {
         // and nothing is advertised.
         const decisionSession = adapter.supportsSession === true
           && rolePromptsEnabled() && honoursSystemPrompt(adapter)
-          && system1().provider !== 'none';
+          && system1().ready();
         const roleSystemPrompt = rolePromptsEnabled() && honoursSystemPrompt(adapter)
           ? buildRolePrompt('execute', {
               decisionCapability: decisionSession,

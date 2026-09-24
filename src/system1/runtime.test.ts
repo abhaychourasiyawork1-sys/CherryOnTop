@@ -22,8 +22,17 @@ describe('installSystem1', () => {
     stop = installed.stop;
     expect(system1().provider).toBe('laya');
     expect(installed.laya?.url).toBe('http://127.0.0.1:8765');
+    // Installed, but not answering yet: nothing tells the model it can ask.
+    expect(system1().ready()).toBe(false);
     await installed.stop();
     expect(system1().provider).toBe('none');
+  });
+
+  it('warms the model without spending a budget or failing when it cannot', async () => {
+    const installed = installSystem1(dir(), { ORG_LAYA_URL: 'http://127.0.0.1:1' }, noSpawn);
+    stop = installed.stop;
+    await expect(installed.warm()).resolves.toBeUndefined();
+    expect(system1().usage('any').calls).toBe(0);
   });
 
   it('installs nothing when System-1 is off', () => {

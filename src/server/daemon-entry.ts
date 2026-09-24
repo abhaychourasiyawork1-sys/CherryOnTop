@@ -35,7 +35,8 @@ const app = buildServer(DB_PATH);
 // Laya, resident for the daemon's lifetime. Started here rather than in
 // buildServer so tests that build a server never spawn a model.
 const s1 = installSystem1(path.dirname(DB_PATH));
-s1.laya?.ready().then((ok) => {
+s1.laya?.ready().then(async (ok) => {
+  if (ok) await s1.warm();
   console.error(ok
     ? `System-1 ready: Laya at ${s1.laya!.url}`
     : `System-1 unavailable (${s1.laya!.failure()}); decisions use their deterministic fallbacks`);

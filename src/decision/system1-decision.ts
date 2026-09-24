@@ -23,9 +23,9 @@ import { withHelpfulness } from '../system1/economic-mapping.js';
 import type { JudgeOutcome, System1 } from '../system1/guard.js';
 import type { ReceiptContext } from '../system1/receipts.js';
 
-/** What each action kind is, in words a semantic model can judge. The
- *  candidate's own reason is appended; the id and capability are not, since
- *  they mean nothing outside this codebase. */
+/** What each action kind is, in words a semantic model can judge. A file path
+ *  is appended when the candidate names one; ids and capabilities are not,
+ *  since they mean nothing outside this codebase. */
 const KIND_WORDS: Record<string, string> = {
   acquire_evidence: 'Read more of the repository into context before continuing',
   explore: 'Explore the repository further before acting',
