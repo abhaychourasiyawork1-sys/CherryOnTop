@@ -73,6 +73,16 @@ describe('session controller', () => {
     expect(final.result).toBe('Final answer.');
   });
 
+  it('answers a frame followed by a closing sentence in the same message', async () => {
+    const { c, gateway } = setup();
+    c.start('g');
+    const a = c.process(assistant(text(`${frame}\nWaiting for the decision.`)));
+    expect(JSON.stringify(a)).not.toContain('cto_decide');
+    c.process(result({ result: `${frame}\nWaiting for the decision.` }));
+    await c.settled();
+    expect(gateway.handle).toHaveBeenCalledTimes(1);
+  });
+
   it('does not treat a frame followed by more work as a request', async () => {
     const { c, gateway, end } = setup();
     c.start('g');

@@ -22,11 +22,19 @@ describe('<cto_decide> extraction', () => {
     expect(parseFrame(bodies[0])).toMatchObject({ ok: true, frame: { type: 'noul' } });
   });
 
+  it('takes a frame followed by more prose (regression: first live Claude run)', () => {
+    const text = `I'll use the decision capability.\n\n${frame(choice)}\n\nWaiting for the decision to advise on the specific context.`;
+    const { visible, bodies } = extractFrames(text);
+    expect(bodies).toHaveLength(1);
+    expect(visible).not.toContain('cto_decide');
+    expect(visible).toBe("I'll use the decision capability.\n\nWaiting for the decision to advise on the specific context.");
+  });
+
   it('does not intercept ordinary text that merely mentions the token', () => {
     for (const text of [
       'I could use <cto_decide> for this but it is trivial.',
-      `Example syntax: ${frame(choice)} — and then I carried on working.`,
       '<cto_decide>{"type":"noul","question":"x"}',
+      'The closing tag is </cto_decide>, on its own.',
     ]) {
       const { visible, bodies } = extractFrames(text);
       expect(bodies).toEqual([]);

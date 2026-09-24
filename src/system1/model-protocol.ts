@@ -10,10 +10,13 @@
  *     fixture that contains the syntax, sees it in a `tool_result`, which is
  *     not assistant text, so it cannot fire a decision.
  *
- *  A frame counts only at the end of the model's text, which is where the
- *  protocol tells the model to put it before ending its turn. A frame in the
- *  middle of prose is the model *talking about* the capability, and it stays
- *  visible as ordinary text.
+ *  Every complete frame in the model's text counts, wherever it sits. The
+ *  first version honoured only a trailing run of frames, and the first live
+ *  Claude run broke it: the model wrote its frame, then one more sentence
+ *  ("Waiting for the decision…"), so the request was ignored *and* leaked into
+ *  the transcript. The false triggers that rule guarded against come from tool
+ *  output, which is never parsed here. Whether the turn ended (so the frame can
+ *  be answered) is the session controller's call, not the parser's.
  *
  *  This module never calls a provider. The gateway is the policy boundary. */
 import { LIMITS, type DecisionPrimitive } from './types.js';
@@ -38,24 +41,21 @@ export type FrameParse =
 export interface ExtractedFrames {
   /** The text with honoured frames removed: what the transcript shows. */
   visible: string;
-  /** Raw bodies of the trailing frames, in order. */
+  /** Raw bodies of every complete frame, in order. */
   bodies: string[];
 }
 
-/** Finds the trailing run of complete frames and removes it from view. */
+/** Finds every complete frame and removes it from view. */
 export function extractFrames(text: string): ExtractedFrames {
   const bodies: string[] = [];
-  let rest = text.replace(/\s+$/, '');
-  while (rest.endsWith(FRAME_CLOSE)) {
-    const open = rest.lastIndexOf(FRAME_OPEN);
-    if (open < 0) break;
-    const body = rest.slice(open + FRAME_OPEN.length, rest.length - FRAME_CLOSE.length);
-    // A nested or unbalanced tag is not a frame we can reason about.
-    if (body.includes(FRAME_OPEN) || body.includes(FRAME_CLOSE)) break;
-    bodies.unshift(body.trim());
-    rest = rest.slice(0, open).replace(/\s+$/, '');
-  }
-  return bodies.length === 0 ? { visible: text, bodies } : { visible: rest, bodies };
+  // Non-greedy and open-free, so two frames stay two frames and an unclosed
+  // tag is left alone as ordinary text.
+  const visible = text.replace(/<cto_decide>((?:(?!<cto_decide>)[\s\S])*?)<\/cto_decide>/g, (_, body: string) => {
+    bodies.push(body.trim());
+    return '';
+  });
+  if (bodies.length === 0) return { visible: text, bodies };
+  return { visible: visible.replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim(), bodies };
 }
 
 const str = (v: unknown): string => (typeof v === 'string' ? v.trim() : '');
