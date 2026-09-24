@@ -15,11 +15,13 @@ const suites = {
       'src/k8s/client.test.ts',
       'src/k8s/kind.test.ts',
       'src/lifecycle/**/*.integration.test.ts',
+      // Opt-in live System-1 tests: need a real Laya and/or a logged-in Claude.
+      'src/system1/live-*.integration.test.ts',
       'test/cli-e2e.test.ts',
     ],
   },
   integration: {
-    include: ['src/daemon/manager.test.ts', 'src/lifecycle/**/*.integration.test.ts', 'test/integration/**/*.test.ts'],
+    include: ['src/daemon/manager.test.ts', 'src/lifecycle/**/*.integration.test.ts', 'src/system1/live-*.integration.test.ts', 'test/integration/**/*.test.ts'],
     exclude: [],
   },
   e2e: { include: ['test/cli-e2e.test.ts', 'test/e2e/**/*.test.ts'], exclude: [] },
