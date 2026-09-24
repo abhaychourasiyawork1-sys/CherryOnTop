@@ -37,7 +37,10 @@ const WORKTREE_ROOT = join(REPO_ROOT, '.bench', 'worktrees', 'tier-b');
 
 const PINNED_MODEL = 'claude-sonnet-5';
 const MAX_TURNS_DIRECT = 120; // long-horizon: higher ceiling than Tier A's 80
-const RATE = { input: 3e-6, output: 15e-6, cacheWrite: 3.75e-6, cacheRead: 0.3e-6 };
+// Claude Sonnet 5 list price: $2 / $10 per M tokens; cache write 1.25x, read
+// 0.1x. Was Sonnet 4.x's $3 / $15, which overstated spend by 50% and so cut
+// the direct arm off at a real ~$3.34 when it read "$5".
+const RATE = { input: 2e-6, output: 10e-6, cacheWrite: 2.5e-6, cacheRead: 0.2e-6 };
 
 function estimateCost(usage) {
   return (usage.input_tokens ?? 0) * RATE.input

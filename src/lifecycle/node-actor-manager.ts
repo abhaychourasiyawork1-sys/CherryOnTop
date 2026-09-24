@@ -75,7 +75,8 @@ import { decideExecutionPath, authorizeExecution, type DecisionReceipt } from '.
 import { withRepoContext } from '../intelligence/repo-map.js';
 import { dispatchContextFor, warmRepoInventory } from '../context/dispatch-context-cache.js';
 import { recordDispatchUsage, turnsForNode } from '../db/queries/tokens.js';
-import { shouldRetryWithoutModel } from '../execution/tokens.js';
+import { shouldRetryWithoutModel, recoveredUsage } from '../execution/tokens.js';
+import { estimateCostUsd } from '../execution/pricing.js';
 import { readOnlyPlanningGrant, investigativeExecuteGrant } from './dispatch-helpers.js';
 import {
   evaluateBoundary, economicStateFor, forgetNode, isIntervention, registerEvidenceSources, observedStateVersion,
@@ -401,7 +402,11 @@ function costFromEvents(events: { type: string; payload: unknown }[]): number {
     if (events[i].type !== 'result') continue;
     return Number((events[i].payload as { total_cost_usd?: number } | null)?.total_cost_usd ?? 0);
   }
-  return 0;
+  // No final result: the run was killed or crashed after spending. Estimated
+  // from the per-step usage it did report, so neither the ledger nor the
+  // spend cap reads a paid-for run as free.
+  const recovered = recoveredUsage(events as StructuredEvent[]);
+  return estimateCostUsd(recovered.usage, recovered.model);
 }
 
 /** One fact the organization learned, written straight to memory. Total, for the
