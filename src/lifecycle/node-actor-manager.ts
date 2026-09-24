@@ -44,7 +44,7 @@ import { toContainerPath } from '../k8s/kind.js';
 import type { ToolGrant, RuntimeAdapter, StructuredEvent } from '../adapters/adapter.js';
 import { setNodeSnapshot, clearNodeSnapshot } from '../db/queries/nodes.js';
 import { insertDodItems, listDodForNode, setDodState } from '../db/queries/dod.js';
-import { dispatchOptionsFor, planCacheTtlHours, repoMapTokenBudget, rolePromptsEnabled, runtimeMode, resultCacheTtlHours, type DispatchRole } from '../config/efficiency.js';
+import { executeTimeoutMs, dispatchOptionsFor, planCacheTtlHours, repoMapTokenBudget, rolePromptsEnabled, runtimeMode, resultCacheTtlHours, type DispatchRole } from '../config/efficiency.js';
 import { routeModel } from '../intelligence/model-router.js';
 import { assessDecomposition } from '../intelligence/decompose.js';
 import { repoHead, repoDirty, repoIdentity } from '../execution/git-state.js';
@@ -1991,9 +1991,15 @@ function productionMachine(db: Db, nodeId: string) {
         let eventIds: number[] = [];
         const runOnce = (model: string | undefined) => {
           eventIds = [];
+          // What is left of the task's budget, re-read per attempt. The spend
+          // guard only runs between dispatches; this is what stops one inside.
+          const spend = evaluateTaskSpend(db, nodeId, getNode(db, nodeId));
+          const spendLimitUsd = spend.spendCapUsd > 0 ? Math.max(0, spend.spendCapUsd - spend.spentUsd) : undefined;
           return dispatch(db, nodeId, () => executeStep({
           nodeId,
           goal: goalForDispatch,
+          timeoutMs: executeTimeoutMs(),
+          ...(spendLimitUsd === undefined ? {} : { spendLimitUsd }),
           systemPrompt: roleSystemPrompt,
           namespace: NAMESPACE,
           worktreePath,
@@ -2587,7 +2593,10 @@ export function sendToNode(nodeId: string, event: NodeMachineEvent): void {
  *  minutes, may retry that three times, and queues behind the sandbox limiter
  *  throughout. Giving up early is expensive twice over: the parent then does the
  *  work itself while the child is still doing it. */
-const CHILD_WAIT_TIMEOUT_MS = 45 * 60_000;
+// Follows the execute limit: with no wall clock on a child's dispatches, a
+// parent that gave up after 45 minutes would abandon children that are still
+// legitimately working (and still spending).
+const CHILD_WAIT_TIMEOUT_MS = Number.isFinite(executeTimeoutMs()) ? 45 * 60_000 : Number.POSITIVE_INFINITY;
 
 export async function waitForNodeCompletion(
   db: Db,

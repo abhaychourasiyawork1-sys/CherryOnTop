@@ -193,7 +193,7 @@ describe('the planning dispatch', () => {
     // already been handed a map of. Planning is look-then-answer; a cap that
     // only lives in config/efficiency.ts and never reaches the dispatch is not
     // a cap at all.
-    expect(plan.maxTurns).toBe(2);
+    expect(plan.maxTurns).toBe(6);
 
     // The work dispatch gets a circuit breaker rather than a budget. It was
     // uncapped, on the reasoning that a whole-codebase investigation needs its

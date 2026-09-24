@@ -10,6 +10,7 @@ import { toolNamesFromEvent } from './tool-calls.js';
 import { isToolAllowed } from '../engines/enforce-tools.js';
 import { rateLimitFromEvents, describeRateLimit } from './rate-limit.js';
 import { usageFromEvents } from './tokens.js';
+import { estimateCostUsd } from './pricing.js';
 
 export interface ExecuteStepInput {
   nodeId: string;
@@ -42,6 +43,12 @@ export interface ExecuteStepInput {
   maxTurns?: number;
   /** Appended to the runtime's system prompt. */
   systemPrompt?: string;
+  /** Stop the Job once this dispatch's live, estimated spend reaches this
+   *  many dollars. What bounds a run now that there is no wall-clock limit on
+   *  it: the task's spend guard is only consulted *between* dispatches, so
+   *  without this a single unbounded dispatch could spend past the task's
+   *  budget before anything checked. */
+  spendLimitUsd?: number;
   /** Run as a stdin-fed session so the model can ask CherryOnTop for a private
    *  decision (`<cto_decide>`) and continue in the same process. Ignored by an
    *  adapter that cannot hold a session. */
@@ -184,8 +191,24 @@ async function runStep(
     // The policy is per-node, not per-step, so it outlives this call; the node's
     // terminal transition deletes it (k8s/cleanup.ts).
     const dnsIp = await d.getKubeDnsClusterIp();
+    // DNS is allowed to the kube-dns *pods* by label as well as to the Service
+    // IP. The Service IP is rewritten to a CoreDNS pod IP (10.244.x.x) before
+    // the policy is evaluated, and that address sits inside the blocked
+    // 10.0.0.0/8, so the IP-only rule let ~5% of lookups through (measured:
+    // 2/40). Every model call retried its way past it, which made each sandbox
+    // turn ~5x slower than the same turn on the host, and package installs
+    // simply failed. By label it is 40/40 and survives CoreDNS restarts.
     const policy = buildEgressAllowlistPolicy(input.nodeId, DEFAULT_EGRESS_ALLOWLIST, [
-      { to: [{ ipBlock: { cidr: `${dnsIp}/32` } }], ports: [{ port: 53, protocol: 'UDP' }, { port: 53, protocol: 'TCP' }] },
+      {
+        to: [
+          { ipBlock: { cidr: `${dnsIp}/32` } },
+          {
+            namespaceSelector: { matchLabels: { 'kubernetes.io/metadata.name': 'kube-system' } },
+            podSelector: { matchLabels: { 'k8s-app': 'kube-dns' } },
+          },
+        ],
+        ports: [{ port: 53, protocol: 'UDP' }, { port: 53, protocol: 'TCP' }],
+      },
     ]);
     await d.applyNetworkPolicy(policy, input.namespace);
 
@@ -207,6 +230,7 @@ async function runStep(
 
     const jobName = await d.createJob(job);
     let controller: SessionController | undefined;
+    let stoppedForSpend = false;
     try {
       if (sessionMode) {
         try {
@@ -234,10 +258,38 @@ async function runStep(
       // Reported once per tool, not once per call: a node that loops on a
       // forbidden tool would otherwise write a thousand identical rows.
       const reported = new Set<string>();
+      // Live spend, from per-step usage as it streams (each API response
+      // counted once). An estimate, and deliberately a slight under-estimate:
+      // per-step output tokens are placeholders. It only has to catch a run
+      // walking past its budget, not bill it.
+      const spendSeen = new Set<string>();
+      const spendUsage = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 };
+      let spendModel: string | undefined;
+      const watchSpend = (event: StructuredEvent) => {
+        if (input.spendLimitUsd === undefined || stoppedForSpend || event.type !== 'assistant') return;
+        const p = event.payload as { parent_tool_use_id?: unknown; message?: { id?: unknown; model?: unknown; usage?: Record<string, number> } } | null;
+        const id = p?.message?.id;
+        if (typeof id !== 'string' || spendSeen.has(id)) return;
+        spendSeen.add(id);
+        const u = p?.message?.usage ?? {};
+        spendUsage.inputTokens += u.input_tokens ?? 0;
+        spendUsage.outputTokens += u.output_tokens ?? 0;
+        spendUsage.cacheReadTokens += u.cache_read_input_tokens ?? 0;
+        spendUsage.cacheCreationTokens += u.cache_creation_input_tokens ?? 0;
+        if (typeof p?.message?.model === 'string') spendModel = p.message.model;
+        if (estimateCostUsd(spendUsage, spendModel) >= input.spendLimitUsd) {
+          stoppedForSpend = true;
+          controller?.closeInput();
+          // Deleting the Job is what stops the pod; the wait below then reads
+          // the 404 as a cancellation and the result says why.
+          void d.deleteJob(jobName, input.namespace).catch(() => {});
+        }
+      };
       const consume = (line: string) => {
         linesSeen++;
         const parsed = input.adapter.parseLine(line);
         if (!parsed) return;
+        watchSpend(parsed);
         // Frames are scrubbed and turn results re-typed *before* anything else
         // sees the event: the transcript, the tool check and the collected
         // record all get the same, clean stream.
@@ -299,7 +351,9 @@ async function runStep(
       // reader knowing the cause and going to dig through kubectl.
       return {
         succeeded: jobResult.succeeded,
-        message: jobResult.succeeded ? jobResult.message : (runtimeError(collected) ?? jobResult.message),
+        message: stoppedForSpend
+          ? `Stopped: this run reached its $${input.spendLimitUsd!.toFixed(2)} spend limit`
+          : jobResult.succeeded ? jobResult.message : (runtimeError(collected) ?? jobResult.message),
         events: collected,
         usage: usageFromEvents(collected),
         startupMs: Math.max(0, (firstEventAt ?? Date.now()) - requestedAt),
@@ -308,7 +362,8 @@ async function runStep(
       };
     } finally {
       controller?.closeInput();
-      await d.deleteJob(jobName, input.namespace);
+      // Already gone if the spend watchdog stopped it.
+      await d.deleteJob(jobName, input.namespace).catch((err) => { if (!stoppedForSpend) throw err; });
     }
   } finally {
     await d.deleteSecret(secretName, input.namespace);
