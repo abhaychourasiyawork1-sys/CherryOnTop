@@ -57,6 +57,12 @@ const MATRIX = {
   // is a safety property, and an arm that runs without one is not a control,
   // it is an unbounded bill.
   'context-planner': [['on', { ORG_CONTEXT_PLANNER: 'on' }], ['off', { ORG_CONTEXT_PLANNER: 'off' }]],
+  // An ablation, not a production mode: `off` is what a deployment without
+  // Laya gets (the conservative fallbacks), so the difference is what Laya
+  // itself buys. The headline comparison is still the whole harness against
+  // Claude Code (bench/tier-b), and bench/system1-decision-cases.mjs selects
+  // the workload classes this switch is expected to move.
+  system1: [['on', { ORG_SYSTEM1: 'laya' }], ['off', { ORG_SYSTEM1: 'off' }]],
 };
 if (!MATRIX[mode]) {
   console.error('mode must be one of: ' + Object.keys(MATRIX).join(', '));

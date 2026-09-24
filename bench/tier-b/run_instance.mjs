@@ -17,6 +17,7 @@
 import { execFileSync, spawn } from 'node:child_process';
 import { existsSync, mkdirSync, cpSync, rmSync, readFileSync, appendFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
+import { system1Totals } from '../metrics/economic.mjs';
 
 const [, , arm, taskId, repetitionArg, budgetArg, outfile] = process.argv;
 const repetition = Number(repetitionArg);
@@ -177,6 +178,9 @@ async function runCherryOnTop(worktreePath, instruction) {
     models: tokens.rows.map((r) => `${r.role}:${r.model}`).join(' '),
     planCacheHits: tokens.planCacheHits ?? 0, resultCacheHits: tokens.resultCacheHits ?? 0,
     economic: tokens.economic ?? [],
+    // Diagnostics that explain this arm's outcome. They are not a second
+    // objective: the comparison is the whole harness against Claude Code.
+    system1: system1Totals(tokens.economic ?? []),
     costEstimated: false,
   };
 }
