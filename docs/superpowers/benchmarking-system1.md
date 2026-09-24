@@ -133,6 +133,43 @@ killed runs recorded as ~$0, and the runner pricing Sonnet 5 at the old $3/$15.
 Not changed: the 10-minute per-attempt Job timeout. It is what decided the VBA result.
 Raising it for long tasks is the next thing to measure.
 
+## Recorded: bottleneck hunt and rerun (2026-09-24, later)
+
+The 10-minute limit was removed and the runs were traced step by step. Nine
+bottlenecks were found and fixed (commits on this branch), then both arms were rerun.
+
+| Bottleneck | Evidence | Fix |
+|---|---|---|
+| 10-minute wall clock per attempt | VBA: 4 attempts killed mid-build, each retry started over | No wall clock by default; live spend watchdog stops a run at its budget |
+| Sandbox DNS | 2/40 lookups worked: policy allowed the DNS Service IP, traffic goes to CoreDNS pod IPs | DNS allowed to kube-dns pods by label: 40/40 |
+| No Python in the sandbox | Agent searched for an interpreter, could not run a test | python3, pip, venv in the runner image |
+| Planner capped at 2 turns | 3/3 planner runs ended `error_max_turns` | 6 turns |
+| Turn cap could not be raised above the complexity band | Band ~45-75, Claude Code alone used 93-126 | An explicit `ORG_MAX_TURNS_EXECUTE` is authoritative |
+| Failed child's work deleted | Two children built backend/frontend (~$2.8), task tree empty | Fork integrated whatever the verdict |
+| Spend cap counted one agent, not the task | $7.46 spent against $5 | Guard counts the subtree / whole task |
+| Stopped runs invisible to the guard | Killed attempts left no result event, counted $0 | Synthetic costed result event |
+| Rejected `<cto_decide>` left no trace | A child's scoping question was refused, reason lost | `system1.rejected` event |
+
+Rerun (Sonnet 5 both arms, $5 per run):
+
+| Task | Claude Code alone | CherryOnTop + Laya |
+|---|---|---|
+| cargo-flight-dispatch | 16/27 tests, $1.34, 8 min | **19/27 tests, $0.86, 6 min** |
+| vba-userform-port | 0/28, $5.02 (cap), 15 min | 0/28, $5.02 (cap), 22 min |
+| vba-userform-port, before the tree-wide cap fix | | 21/28 traces, ~$8 (over cap), 38 min |
+
+Before the fixes CherryOnTop scored 0/28 on the VBA port with every attempt cut off at
+10 minutes. With them it ties Claude Code at an equal $5 and, given ~$8, produced a
+working app (21/28). Claude Code was not given $8, so that last row is not a
+like-for-like comparison.
+
+Remaining bottleneck (measured, not changed): on the VBA port delegation spent ~83% of
+the $5 in two children who each re-read the whole spec and neither finished, leaving
+the root ~$0.84. The delegation economics price a split with fixed constants and never
+ask whether one child's share of the budget can finish its piece. Also, the live spend
+watchdog under-counts output tokens, so a child can overrun its share by ~50% before
+the tree-wide cap catches it.
+
 ## Status
 
 - Levels 1–3 are wired and unit-tested (`bench/system1-decision-cases.test.mjs`,
