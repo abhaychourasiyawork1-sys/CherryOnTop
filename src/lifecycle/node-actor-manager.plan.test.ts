@@ -129,6 +129,34 @@ describe('the planning dispatch', () => {
     expect(second).toHaveLength(0);
   });
 
+  it('does not cache a planner that ran out of turns as "does not split"', async () => {
+    const db = createDb(TEST_DB);
+    const repoPath = tmpRepo();
+    const isPlanning = (input: ExecuteStepInput) => input.goal.includes('Split this goal');
+    const calls: ExecuteStepInput[] = [];
+    stub.mockImplementation(async (input: ExecuteStepInput) => {
+      calls.push(input);
+      return isPlanning(input)
+        ? { succeeded: false, message: 'max turns', events: [{ type: 'result', payload: { is_error: true, subtype: 'error_max_turns' } }], usage: { ...ZERO_USAGE } }
+        : result('done');
+    });
+    const id = randomUUID();
+    insertNode(db, {
+      id, parentId: null, goal: GOAL, repoPath, state: 'CREATED', createdAt: 't0', updatedAt: 't0',
+      contract: { goal: GOAL, definition_of_done: ['every module audited'], authority: { tools: [], spawn_children: true, max_child_count: 3, budget_usd: 10 }, constraints: [] },
+    });
+    startNodeActor(db, id, GOAL);
+    await vi.waitFor(() => expect(['COMPLETE', 'FAILED', 'CANCELLED']).toContain(getNode(db, id)?.state), { timeout: 10_000 });
+    const notes = listEventsForNode(db, id).filter((e) => e.type === 'step.progress').map((e) => (e.payload as { message: string }).message);
+    expect(notes.some((m) => /planner stopped: error_max_turns/.test(m))).toBe(true);
+    expect(notes.some((m) => /does not split/.test(m))).toBe(false);
+
+    // The next run of the same goal and HEAD plans again instead of reusing a
+    // failure as a verdict.
+    const again = await runDelegating(db, repoPath, JSON.stringify(['Audit src/cart for unhandled errors', 'Add tests for src/cart']));
+    expect(again.filter(isPlanning)).toHaveLength(1);
+  });
+
   it('still reuses a real split from the cache', async () => {
     const db = createDb(TEST_DB);
     const repoPath = tmpRepo();

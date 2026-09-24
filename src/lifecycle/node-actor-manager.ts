@@ -1496,6 +1496,19 @@ async function planSubgoals(db: Db, nodeId: string, goal: string, maxChildren: n
       usage: result.usage, costUsd: costFromEvents(result.events),
       startupMs: result.startupMs,
     });
+    // A planner that errored (turn cap, rate limit, timeout) gave no answer,
+    // and an empty result from it is not "does not split". It used to be
+    // cached as that verdict, so one planner cut off at its turn cap made
+    // every later run of the same goal and HEAD skip planning and never split
+    // (found on Terminal-Bench vba-userform-port).
+    const plannerFailed = result.events.some((event) => event.type === 'result'
+      && (event.payload as { is_error?: unknown } | null)?.is_error === true);
+    if (plannerFailed && subgoals.length === 0) {
+      const why = result.events.filter((event) => event.type === 'result')
+        .map((event) => String((event.payload as { subtype?: unknown } | null)?.subtype ?? 'error')).pop();
+      publishProgress(db, nodeId, `Could not plan a split (the planner stopped: ${why}) — doing it directly`);
+      return [];
+    }
     // Both answers are worth pinning, including "does not split". That one used
     // to be dropped as "cheap to recompute", which it is not: recomputing it
     // buys another whole planning sandbox to be told the same thing, and it is
