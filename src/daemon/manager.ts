@@ -24,32 +24,26 @@ function withPm2<T>(fn: (resolve: (v: T) => void, reject: (e: unknown) => void) 
   });
 }
 
+/** What the daemon is started with. pm2 does not pass the caller's
+ *  environment through, and this used to forward a hand-kept list of
+ *  seventeen names. Anything missing from it was silently ignored by the
+ *  daemon: `ORG_SYSTEM1` / `ORG_LAYA_*` (so Laya could not be configured or
+ *  turned off), and `ORG_TASK_SPEND_CAP_USD` (so the Tier-B runner's spend cap
+ *  never reached the runs it was meant to bound). Every `ORG_*` setting is
+ *  ours, so all of them go through, plus the two non-`ORG_` names the daemon
+ *  reads: the API key and `PATH` (to find `laya-serve`). */
+export function daemonEnv(env: NodeJS.ProcessEnv): Record<string, string> {
+  return Object.fromEntries(Object.entries(env).filter(([name, value]) =>
+    value !== undefined && (name.startsWith('ORG_') || name === 'ANTHROPIC_API_KEY' || name === 'PATH'))) as Record<string, string>;
+}
+
 export async function startDaemon(): Promise<void> {
   await withPm2<void>((resolve, reject) => {
     pm2.start(
       {
         name: processName(),
         script: ENTRY_SCRIPT,
-        // pm2 does not inherit the caller's env by default for these.
-        env: {
-          ...(process.env.ORG_DB_PATH ? { ORG_DB_PATH: process.env.ORG_DB_PATH } : {}),
-          ...(process.env.ORG_DAEMON_PORT ? { ORG_DAEMON_PORT: process.env.ORG_DAEMON_PORT } : {}),
-          ...(process.env.ORG_DAEMON_NAME ? { ORG_DAEMON_NAME: process.env.ORG_DAEMON_NAME } : {}),
-          ...(process.env.ORG_RUNNER_IMAGE ? { ORG_RUNNER_IMAGE: process.env.ORG_RUNNER_IMAGE } : {}),
-          ...(process.env.ORG_WORKTREE_PATH ? { ORG_WORKTREE_PATH: process.env.ORG_WORKTREE_PATH } : {}),
-          ...(process.env.ORG_MODEL_PLAN ? { ORG_MODEL_PLAN: process.env.ORG_MODEL_PLAN } : {}),
-          ...(process.env.ORG_MODEL_EXECUTE ? { ORG_MODEL_EXECUTE: process.env.ORG_MODEL_EXECUTE } : {}),
-          ...(process.env.ORG_MODEL_SYNTHESIZE ? { ORG_MODEL_SYNTHESIZE: process.env.ORG_MODEL_SYNTHESIZE } : {}),
-          ...(process.env.ORG_MAX_TURNS_PLAN ? { ORG_MAX_TURNS_PLAN: process.env.ORG_MAX_TURNS_PLAN } : {}),
-          ...(process.env.ORG_MAX_TURNS_SYNTHESIZE ? { ORG_MAX_TURNS_SYNTHESIZE: process.env.ORG_MAX_TURNS_SYNTHESIZE } : {}),
-          ...(process.env.ORG_PLAN_CACHE_TTL_HOURS ? { ORG_PLAN_CACHE_TTL_HOURS: process.env.ORG_PLAN_CACHE_TTL_HOURS } : {}),
-          ...(process.env.ORG_REPO_MAP_TOKENS ? { ORG_REPO_MAP_TOKENS: process.env.ORG_REPO_MAP_TOKENS } : {}),
-          ...(process.env.ORG_ROLE_PROMPTS ? { ORG_ROLE_PROMPTS: process.env.ORG_ROLE_PROMPTS } : {}),
-          ...(process.env.ORG_EFFICIENCY_MODE ? { ORG_EFFICIENCY_MODE: process.env.ORG_EFFICIENCY_MODE } : {}),
-          ...(process.env.ORG_MAX_TURNS_EXECUTE ? { ORG_MAX_TURNS_EXECUTE: process.env.ORG_MAX_TURNS_EXECUTE } : {}),
-          ...(process.env.ORG_RESULT_CACHE_TTL_HOURS ? { ORG_RESULT_CACHE_TTL_HOURS: process.env.ORG_RESULT_CACHE_TTL_HOURS } : {}),
-          ...(process.env.ORG_MAX_CHILD_JOBS ? { ORG_MAX_CHILD_JOBS: process.env.ORG_MAX_CHILD_JOBS } : {}),
-        },
+        env: daemonEnv(process.env),
       },
       (err) => {
         if (err) return reject(err);
