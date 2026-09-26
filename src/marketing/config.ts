@@ -9,6 +9,8 @@ export interface MarketingConfig {
   allowedOrigin?: string;
   trustProxy: boolean;
   consentVersion?: string;
+  /** Extra origin allowed by CSP `media-src` when the promo video is hosted elsewhere. */
+  mediaOrigin?: string;
 }
 
 const DEFAULT_DB_PATH = path.join(os.homedir(), '.cherryontop', 'marketing.db');
@@ -22,5 +24,6 @@ export function loadMarketingConfig(env: NodeJS.ProcessEnv): MarketingConfig {
     allowedOrigin: env.MARKETING_ALLOWED_ORIGIN,
     trustProxy: env.MARKETING_TRUST_PROXY === 'true',
     consentVersion: env.MARKETING_CONSENT_VERSION,
+    mediaOrigin: env.MARKETING_MEDIA_ORIGIN || undefined,
   };
 }

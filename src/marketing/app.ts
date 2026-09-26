@@ -5,6 +5,7 @@ import { createRateLimiter } from './rate-limit.js';
 import { waitlistRequestSchema } from './schemas.js';
 import { addToWaitlist } from './waitlist.js';
 import { analyticsBatchSchema, createTelemetryStore } from './telemetry.js';
+import { registerStaticSite } from './static.js';
 
 const MAX_BODY_BYTES = 20 * 1024;
 const WAITLIST_RATE_LIMIT = { windowMs: 60_000, max: 20 };
@@ -30,7 +31,9 @@ export function buildMarketingApp(configOverrides: Partial<MarketingConfig> = {}
 
   app.marketingDb = db;
 
-  app.addHook('onSend', async (_request, reply, payload) => {
+  const mediaSources = ["'self'", ...(config.mediaOrigin ? [config.mediaOrigin] : [])].join(' ');
+
+  app.addHook('onSend', async (request, reply, payload) => {
     reply.header('X-Content-Type-Options', 'nosniff');
     reply.header('Referrer-Policy', 'strict-origin-when-cross-origin');
     reply.header('Permissions-Policy', 'camera=(), microphone=(), geolocation=(), payment=()');
@@ -39,13 +42,19 @@ export function buildMarketingApp(configOverrides: Partial<MarketingConfig> = {}
       [
         "default-src 'self'",
         "img-src 'self' data:",
-        "media-src 'self'",
+        `media-src ${mediaSources}`,
         "font-src 'self'",
         "style-src 'self' 'unsafe-inline'",
         "script-src 'self'",
         "connect-src 'self'",
+        "frame-ancestors 'none'",
+        "base-uri 'self'",
+        "form-action 'self'",
       ].join('; '),
     );
+    if (request.url.startsWith('/api/')) {
+      reply.header('Cache-Control', 'no-store');
+    }
     if (config.allowedOrigin) {
       reply.header('Access-Control-Allow-Origin', config.allowedOrigin);
     }
@@ -111,6 +120,8 @@ export function buildMarketingApp(configOverrides: Partial<MarketingConfig> = {}
     }
     reply.code(statusCode >= 400 && statusCode < 500 ? statusCode : 500).send({ error: 'request_error' });
   });
+
+  registerStaticSite(app, config.siteDir);
 
   app.addHook('onClose', async () => {
     db.close();
