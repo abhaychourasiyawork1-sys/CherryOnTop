@@ -25,6 +25,12 @@ export function buildPlanPrompt(goal: string, maxChildren: number): string {
     `Reply with ONLY a JSON array of up to ${limit} strings — one self-contained subgoal each,`,
     'written for an agent who cannot see this conversation. No subgoal may depend on or overlap another.',
     'Reply with exactly [] if the goal is already a single unit of work.',
+    // Measured: a seaborn bug report was split into "investigate the bug" and
+    // "implement the fix", two phases where the second needs the first, and
+    // the split cost more than doing it directly. System-1 cannot tell a long
+    // bug report from a multi-part task (live Laya: 0.60 vs 0.64), so the rule
+    // is stated here, where the split is actually decided.
+    'One bug report, one feature or one question is a single unit of work however long it is. Never split one problem into phases (investigate, implement, test, document): each phase needs the one before it.',
     'Example: ["Audit src/auth for unhandled promise rejections", "Add tests for the cart discount edge cases"]',
   ].join('\n');
 }

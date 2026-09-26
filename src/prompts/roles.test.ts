@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { buildRolePrompt, HARNESS_CONSTITUTION } from './roles.js';
+import { ENVELOPE_INSTRUCTION } from '../intelligence/result-envelope.js';
 
 describe('buildRolePrompt', () => {
   it('every role starts with the constitution', () => {
@@ -82,4 +83,12 @@ describe('private decision capability', () => {
     // Rides on every session's system prompt: about 300 tokens, not more.
     expect(withCapability.length - buildRolePrompt('execute').length).toBeLessThan(1_300);
   });
+});
+
+describe('token weight of the execute prompt', () => {
+  it('asks for the structured result block only from a run whose parent reads it', () => {
+    expect(buildRolePrompt('execute', {})).not.toContain(ENVELOPE_INSTRUCTION);
+    expect(buildRolePrompt('execute', { reportsToParent: true })).toContain(ENVELOPE_INSTRUCTION);
+  });
+
 });

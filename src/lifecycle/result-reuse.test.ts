@@ -29,6 +29,7 @@ const { createDb } = await import('../db/client.js');
 const { insertNode, getNode } = await import('../db/queries/nodes.js');
 const { answerOf } = await import('../db/queries/answers.js');
 const { tokensByRole } = await import('../db/queries/tokens.js');
+const { listEventsForNode } = await import('../db/queries/events.js');
 const { startNodeActor } = await import('./node-actor-manager.js');
 const { executeStep } = await import('../execution/execute-step.js');
 const { ZERO_USAGE } = await import('../execution/tokens.js');
@@ -208,13 +209,13 @@ describe('a read-only question asked twice against the same commit', () => {
     // is only reusable at the exact commit it was given.
     const db = createDb(TEST_DB);
     const path = repo();
-    stub.mockResolvedValue({
+    stub.mockImplementation(async (input: { onEvent?: (event: StructuredEvent) => void }) => replayInto(input, {
       ...REPORT,
       events: [
         { type: 'assistant', payload: { message: { content: [{ type: 'tool_use', name: 'Bash', input: { command: 'cat README.md' } }] } } },
         { type: 'result', payload: { result: ANSWER, total_cost_usd: 0.95 } },
       ],
-    });
+    }));
     await run(db, add(db, path, READ_ONLY));
 
     // Same commit: reusable.
@@ -249,6 +250,23 @@ describe('a read-only question asked twice against the same commit', () => {
     // Counted per node, not in total: a failed dispatch is retried by the state
     // machine, so the first node made several attempts. What matters is that
     // none of them left an answer behind for the second node to reuse.
+    expect(stub.mock.calls.some((call) => call[0].nodeId === second)).toBe(true);
+  });
+
+  it('does not store an answer that failed validation', async () => {
+    // RC6 in the SWE-bench report: the Job succeeded, validation did not, and
+    // the answer was cached anyway and replayed to every later rep for $0.
+    // Returned without streaming, the run leaves nothing validation can accept.
+    const db = createDb(TEST_DB);
+    const path = repo();
+    stub.mockResolvedValue(REPORT);
+    const first = add(db, path, READ_ONLY);
+    await run(db, first);
+    expect(listEventsForNode(db, first).filter((e) => e.type === 'validation.result')
+      .every((e) => (e.payload as { passed: boolean }).passed === false)).toBe(true);
+
+    const second = add(db, path, READ_ONLY);
+    await run(db, second);
     expect(stub.mock.calls.some((call) => call[0].nodeId === second)).toBe(true);
   });
 });

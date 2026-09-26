@@ -53,6 +53,19 @@ describe('deciding whether work needs splitting at all', () => {
     expect(of('Rename the variable').investigative).toBe(false);
   });
 
+  it('reads "asks only for an answer" from what the goal asks, not from one word in it', () => {
+    // The SWE-bench xarray issue: a bug report narrating "I am confused why".
+    const xarray = '"center" kwarg ignored when manually iterating over DataArrayRolling\nI am confused why the following two code chunks do not produce the same sequence of values. Is there a way to do this?';
+    expect(of(xarray).investigative).toBe(true);
+    expect(of(xarray).explanationOnly).toBe(false);
+    expect(of('Review the codebase and find bugs. Do not modify anything.').explanationOnly).toBe(true);
+    expect(of('Explain how the rolling window iterator works').explanationOnly).toBe(true);
+    expect(of('Review the codebase for bugs').explanationOnly).toBe(true);
+    expect(of('Investigate the root cause of the crash and fix it').explanationOnly).toBe(false);
+    expect(of('Audit every module and add tests').explanationOnly).toBe(false);
+    expect(of('Debug why login fails').explanationOnly).toBe(false);
+  });
+
   it('still splits genuinely independent workstreams', () => {
     const multi = of('Fix authentication, optimize the DB query layer, update the frontend, and add API tests');
     expect(multi.worthSplitting).toBe(true);
@@ -90,6 +103,7 @@ describe('deciding whether work needs splitting at all', () => {
       // Why it did or did not split, separately from how hard it judged the
       // work — the two were one number, and that was the bug.
       'split_score', 'coherent_single_task', 'explicit_split_request',
+      'explicit_no_change', 'change_request_terms',
     ]);
     expect(result.signals.breadth_terms).toBeGreaterThan(0);
   });

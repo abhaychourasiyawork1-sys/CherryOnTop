@@ -1,0 +1,17 @@
+2026-09-25T14:24:17.504Z matrix start: 2 instances x 3 reps x 2 arms, $3 per run
+2026-09-25T14:25:21.883Z psf__requests-1142 cherryontop rep 41: COMPLETE $0.1282 9 turns s1=1/0fb [5h 0.29 7d 0.73]
+2026-09-25T14:26:46.328Z psf__requests-1142 cherryontop-nolaya rep 41: COMPLETE $0.1948 15 turns s1=1/1fb [5h 0.32 7d 0.73]
+2026-09-25T14:35:06.220Z scikit-learn__scikit-learn-14710 cherryontop rep 41: COMPLETE $0.4504 24 turns s1=0/0fb [5h 0.36 7d 0.74]
+2026-09-25T14:43:15.667Z scikit-learn__scikit-learn-14710 cherryontop-nolaya rep 41: COMPLETE $0.7379 40 turns s1=0/0fb [5h 0.42 7d 0.74]
+2026-09-25T14:44:14.822Z psf__requests-1142 cherryontop rep 42: COMPLETE $0.1167 10 turns s1=1/0fb [5h 0.44 7d 0.74]
+2026-09-25T14:45:13.355Z psf__requests-1142 cherryontop-nolaya rep 42: COMPLETE $0.126 10 turns s1=1/1fb [5h 0.46 7d 0.74]
+2026-09-25T14:50:38.956Z scikit-learn__scikit-learn-14710 cherryontop-nolaya rep 42: COMPLETE $0.7079 31 turns s1=0/0fb [5h 0.52 7d 0.75]
+2026-09-25T14:58:31.535Z scikit-learn__scikit-learn-14710 cherryontop rep 42: COMPLETE $0.4179 24 turns s1=0/0fb [5h 0.55 7d 0.75]
+2026-09-25T14:59:53.542Z psf__requests-1142 cherryontop-nolaya rep 43: COMPLETE $0.2115 17 turns s1=1/1fb [5h 0.57 7d 0.75]
+2026-09-25T15:01:01.850Z psf__requests-1142 cherryontop rep 43: COMPLETE $0.1383 10 turns s1=1/0fb [5h 0.58 7d 0.75]
+2026-09-25T15:08:33.891Z scikit-learn__scikit-learn-14710 cherryontop rep 43: COMPLETE $0.483 28 turns s1=0/0fb [5h 0.61 7d 0.75]
+2026-09-25T15:13:10.856Z scikit-learn__scikit-learn-14710 cherryontop-nolaya rep 43: COMPLETE $0.2349 16 turns s1=0/0fb [5h 0.63 7d 0.76]
+2026-09-25T15:13:10.857Z matrix runs finished: 12/12 cells recorded
+2026-09-25T15:13:10.857Z grading with SWE-bench
+2026-09-25T15:23:13.645Z grading exited 0
+2026-09-25T15:23:13.778Z analysis exited 0; MATRIX COMPLETE

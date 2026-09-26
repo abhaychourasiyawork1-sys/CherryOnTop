@@ -79,3 +79,10 @@ describe('parseSubgoals', () => {
     expect(parseSubgoals('["real", 42, "  ", "also real"]', 3)).toEqual(['real', 'also real']);
   });
 });
+
+describe('buildPlanPrompt: one problem is one unit', () => {
+  it('forbids splitting a single problem into dependent phases', () => {
+    // A seaborn bug report was split into "investigate" and "implement".
+    expect(buildPlanPrompt('Legend values are wrong for large ranges', 3)).toContain('Never split one problem into phases');
+  });
+});

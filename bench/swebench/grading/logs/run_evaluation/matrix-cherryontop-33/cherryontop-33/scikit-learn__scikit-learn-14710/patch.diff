@@ -1,0 +1,52 @@
+diff --git a/sklearn/ensemble/_hist_gradient_boosting/gradient_boosting.py b/sklearn/ensemble/_hist_gradient_boosting/gradient_boosting.py
+index ad6a5a8ca3..bbcd1723d2 100644
+--- a/sklearn/ensemble/_hist_gradient_boosting/gradient_boosting.py
++++ b/sklearn/ensemble/_hist_gradient_boosting/gradient_boosting.py
+@@ -426,11 +426,17 @@ class BaseHistGradientBoosting(BaseEstimator, ABC):
+ 
+         Scores are computed on validation data or on training data.
+         """
++        # scorer_ needs the original (unencoded) classes, not the
++        # integer-encoded ones produced by _encode_y().
++        if hasattr(self, 'classes_'):
++            y_small_train = self.classes_[y_small_train.astype(int)]
+         self.train_score_.append(
+             self.scorer_(self, X_binned_small_train, y_small_train)
+         )
+ 
+         if self._use_validation_data:
++            if hasattr(self, 'classes_'):
++                y_val = self.classes_[y_val.astype(int)]
+             self.validation_score_.append(
+                 self.scorer_(self, X_binned_val, y_val)
+             )
+diff --git a/sklearn/ensemble/_hist_gradient_boosting/tests/test_gradient_boosting.py b/sklearn/ensemble/_hist_gradient_boosting/tests/test_gradient_boosting.py
+index 1eebdefd52..c28f686d7d 100644
+--- a/sklearn/ensemble/_hist_gradient_boosting/tests/test_gradient_boosting.py
++++ b/sklearn/ensemble/_hist_gradient_boosting/tests/test_gradient_boosting.py
+@@ -132,6 +132,25 @@ def test_early_stopping_classification(data, scoring, validation_fraction,
+         assert gb.n_iter_ == max_iter
+ 
+ 
++def test_early_stopping_with_string_targets():
++    # Non-regression test for #14710: the scorer used for early stopping
++    # must be called with the original (string) classes, not the
++    # integer-encoded ones used internally, otherwise the accuracy score
++    # is always wrong and early stopping triggers immediately.
++    X, y = make_classification(n_samples=100, random_state=0)
++    y = np.array(['class_0', 'class_1'])[y]
++
++    n_iter_no_change = 5
++    gb = HistGradientBoostingClassifier(
++        n_iter_no_change=n_iter_no_change, random_state=0)
++    gb.fit(X, y)
++
++    # This is an easy, well-separated classification problem: if the
++    # scorer is fed the right classes, accuracy should keep improving
++    # past the first n_iter_no_change iterations.
++    assert gb.n_iter_ > n_iter_no_change
++
++
+ @pytest.mark.parametrize(
+     'scores, n_iter_no_change, tol, stopping',
+     [

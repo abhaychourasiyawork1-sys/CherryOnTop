@@ -40,7 +40,8 @@ import { subtreeNodeIds } from '../db/queries/nodes.js';
 import { allowedTools, isReadOnly } from '../engines/enforce-tools.js';
 import type { Authority } from '../schemas/node-contract.js';
 import { forkWorkspace, type WorkspaceFork } from '../execution/workspace-fork.js';
-import { toContainerPath } from '../k8s/kind.js';
+import { toContainerPath, fromContainerPath } from '../k8s/kind.js';
+import { sandboxNotes } from '../k8s/sandbox-env.js';
 import type { ToolGrant, RuntimeAdapter, StructuredEvent } from '../adapters/adapter.js';
 import { setNodeSnapshot, clearNodeSnapshot } from '../db/queries/nodes.js';
 import { insertDodItems, listDodForNode, setDodState } from '../db/queries/dod.js';
@@ -51,7 +52,7 @@ import { repoHead, repoDirty, repoIdentity } from '../execution/git-state.js';
 import { putKnowledge } from '../evidence/store.js';
 import { extractAnchors } from '../efficiency/task-economics.js';
 import { planCacheKey, getCachedPlan, putCachedPlan } from '../db/queries/plan-cache.js';
-import { resultCacheKey, getCachedResult, putCachedResult } from '../db/queries/result-cache.js';
+import { resultCacheKey, getCachedResult, putCachedResult, type CachedResult } from '../db/queries/result-cache.js';
 import { dependenciesFromEvents, buildDependencyFingerprint, dependenciesValid } from '../context/dependencies.js';
 import { indexRunObservations, scoreProjection } from './run-index.js';
 import { buildAgentEnvelope, renderEnvelope, EnvelopeError } from '../intelligence/agent-envelope.js';
@@ -77,7 +78,7 @@ import { dispatchContextFor, warmRepoInventory } from '../context/dispatch-conte
 import { recordDispatchUsage, turnsForNode } from '../db/queries/tokens.js';
 import { shouldRetryWithoutModel, recoveredUsage } from '../execution/tokens.js';
 import { estimateCostUsd } from '../execution/pricing.js';
-import { readOnlyPlanningGrant, investigativeExecuteGrant } from './dispatch-helpers.js';
+import { readOnlyPlanningGrant, investigativeExecuteGrant, needsProofOnly, PROOF_PASS_INSTRUCTION, PROOF_PASS_TURNS } from './dispatch-helpers.js';
 import {
   evaluateBoundary, economicStateFor, forgetNode, isIntervention, registerEvidenceSources, observedStateVersion,
   markRecovered, consumeRecoveryFlag, recordRecoveryAttempt,
@@ -93,6 +94,8 @@ import type { ActionDecision } from '../decision/actions.js';
 import type { EconomicState } from '../decision/state.js';
 import { memory } from '../db/schema.js';
 import { assessDecomposability } from '../system1/decomposability.js';
+import { assessChangeRequest, EXPLAIN_THRESHOLD } from '../system1/change-request.js';
+import { verifiedChangeAtTurnCap, isVerifyingCommand } from '../execution/observation.js';
 import { refineWithSystem1 } from '../decision/system1-decision.js';
 import { createModelGateway } from '../system1/model-gateway.js';
 import { stateFacts } from '../system1/compiler.js';
@@ -1211,6 +1214,14 @@ function finalResultText(events: { type: string; payload: unknown }[]): string {
     .trim();
 }
 
+/** Answers waiting for their node's validation verdict before they may be
+ *  cached. In-process only: a daemon that restarts mid-run loses the saving,
+ *  never correctness. */
+const pendingResults = new Map<string, { key: string; value: CachedResult }>();
+
+/** The receipt action that marks an execute dispatch as having run read-only. */
+const READ_ONLY_GRANT = 'read-only-grant';
+
 /** The key this dispatch's answer may be stored under and served from, or null
  *  when it may not be reused at all.
  *
@@ -1870,17 +1881,36 @@ function productionMachine(db: Db, nodeId: string) {
           requiredChecks: node?.contract.definition_of_done ?? [],
         });
         const verdict = prep.verdict;
-        // Investigating is reading, not editing — and an unrestricted grant
+        // Explaining is reading, not editing — and an unrestricted grant
         // does not just permit editing, it also keeps the Task tool, which is
         // how a single dispatch spawns its own background subagents. Narrowed
         // to read-only only when nobody configured a grant of their own; see
-        // dispatch-helpers.ts for the measured run this closes off.
-        const grant = investigativeExecuteGrant(grantOf(node!.contract.authority), verdict.decomposition.investigative);
+        // dispatch-helpers.ts for the measured run this closes off. Whether the
+        // goal asks for a change is System-1's question (change-request.ts);
+        // a keyword used to decide it and took a bug fix's edit tools away.
+        const change = await assessChangeRequest(nodeId, input.goal);
+        const grant = investigativeExecuteGrant(grantOf(node!.contract.authority), change.readOnly);
+        // Once per node: a retry replays the same judgment from the guard's
+        // cache, and recording it again would count a call that never happened.
+        // The action is the grant actually applied, which an explicitly
+        // configured tool list can differ from.
+        if (change.outcome && !change.outcome.cached) {
+          recordSystem1(db, nodeId, [change.outcome], [{
+            provider: system1().provider,
+            ...(change.pExplain === undefined ? {} : { economicResult: { threshold: EXPLAIN_THRESHOLD } }),
+            finalRuntimeAction: grant.readOnly ? READ_ONLY_GRANT : 'writable-grant',
+            ...(change.fallbackReason ? { fallbackReason: change.fallbackReason } : {}),
+          }]);
+        }
         let usedModel = modelFor(adapter, modelChoiceFor(db, nodeId, 'execute', input.goal));
         const reuseKey = resultReuseKey(input.goal, grant, usedModel);
         // Validity is asked of each candidate answer in turn, newest first:
         // does the code it actually read still say what it said?
-        const cached = reuseKey
+        // Never on a retry after this node failed validation: the answer that
+        // failed is exactly the kind a cache would hand straight back.
+        const failedBefore = () => listEventsForNode(db, nodeId).some((row) =>
+          row.type === 'validation.result' && (row.payload as { passed?: boolean }).passed === false);
+        const cached = reuseKey && !failedBefore()
           ? getCachedResult(db, reuseKey, resultCacheTtlHours(),
               (value) => dependenciesValid(worktreePath, value.deps))
           : null;
@@ -1950,12 +1980,18 @@ function productionMachine(db: Db, nodeId: string) {
         // promoted. `calibrate` is the only step that cannot live in the
         // snapshot, because a promotion can land between snapshot and dispatch.
         const execPolicy = calibrate(prep.executionPolicy, activePolicyChanges(db));
-        const hardTurnCap = effectiveTurnCap(execOpts.maxTurns, execPolicy);
+        // The previous attempt made its change and was rejected only for want of
+        // an observed check: this attempt is a short verification pass on the
+        // same tree, not a fresh run of the whole task (see dispatch-helpers.ts).
+        const proofOnly = needsProofOnly(listEventsForNode(db, nodeId)
+          .filter((row) => row.type === 'validation.result').at(-1)?.payload);
+        const configuredCap = effectiveTurnCap(execOpts.maxTurns, execPolicy);
+        const hardTurnCap = proofOnly ? Math.min(configuredCap ?? PROOF_PASS_TURNS, PROOF_PASS_TURNS) : configuredCap;
         // Built once, out here rather than inside runOnce: the fallback retry
         // below calls runOnce a second time with the same goal, and a goal
         // carrying two copies of the context is the thing this is meant to
         // avoid. No context (disabled, not a repo, scan failed) → the bare goal.
-        const repoContext = dispatchContextFor(db, worktreePath, input.goal, {
+        const repoContext = proofOnly ? null : dispatchContextFor(db, worktreePath, input.goal, {
           signals: prep.economics, policy: prep.contextPolicy,
         });
         if (repoContext) publishContextReceipt(db, nodeId, repoContext.receipt);
@@ -1983,7 +2019,11 @@ function productionMachine(db: Db, nodeId: string) {
               decisionCapability: decisionSession,
               allowedTools: grant.allowedTools,
               constraints,
-              definitionOfDone: node?.contract.definition_of_done ?? [],
+              environment: sandboxNotes(fromContainerPath(worktreePath)),
+              reportsToParent: Boolean(node?.parentId),
+              // An item that *is* the goal is already the user message; repeating
+              // it here re-bills the whole issue text on every turn.
+              definitionOfDone: (node?.contract.definition_of_done ?? []).filter((item) => item.trim() !== input.goal.trim()),
               // The same cap that goes into argv below. A run told its budget
               // summarises at the limit; one that is merely cut off at it
               // reports "max turns exceeded" and loses what it found.
@@ -2022,9 +2062,11 @@ function productionMachine(db: Db, nodeId: string) {
           fullArtifactRequests: repoContext?.receipt.fullArtifactRequests,
         });
         const goalWithEvidence = acquired ? `${goalWithHandoff}\n\n${acquired}` : goalWithHandoff;
-        const goalForDispatch = repoContext
-          ? withRepoContext(goalWithEvidence, repoContext.content)
-          : goalWithEvidence;
+        const goalForDispatch = proofOnly
+          ? `${PROOF_PASS_INSTRUCTION}\n\n${goalWithEvidence}`
+          : repoContext
+            ? withRepoContext(goalWithEvidence, repoContext.content)
+            : goalWithEvidence;
 
         // Reset per attempt: the fallback retry below re-runs the dispatch, and
         // its stream is the one whose rows the observations belong to.
@@ -2088,6 +2130,15 @@ function productionMachine(db: Db, nodeId: string) {
           usedModel = undefined;
           result = await runOnce(undefined);
         }
+        // Cut off at the turn cap *after* making a change and watching its check
+        // pass is a finished fix that ran out of room to say so. Counted as a
+        // claim and handed to validation, which still needs the green check in
+        // the trace; failing it outright threw correct patches away (seaborn,
+        // sklearn on SWE-bench) and the retry guard then refused a second try.
+        if (!result.succeeded && verifiedChangeAtTurnCap(result.events)) {
+          result = { ...result, succeeded: true, message: `Stopped at the turn cap after a change whose check passed.\n\n${result.message}` };
+          publishProgress(db, nodeId, 'Hit the turn cap after a verified change — handing it to validation instead of failing it');
+        }
         // Exactly one row per logical dispatch, naming the model whose tokens
         // and cost this row actually carries — see the retry above.
         recordUsage(db, {
@@ -2112,7 +2163,7 @@ function productionMachine(db: Db, nodeId: string) {
           outcome: result.succeeded ? 'success' : 'failure',
         });
 
-        // Stored only on success. The fingerprint is built from the run's own
+        // Stored only on a validated success. The fingerprint is built from the run's own
         // stream — the files it actually read — against the commit it was given,
         // not the tree as it now stands: a read-only run should not have moved
         // the tree, and if something else did, what the answer describes is
@@ -2132,13 +2183,16 @@ function productionMachine(db: Db, nodeId: string) {
                 : null;
               // No fingerprint, no reuse. An answer we cannot say the validity
               // of is not one we may serve again.
+              // Held until validation passes (runValidation). A finished Job is
+              // not a correct answer: a read-only reply to a change request was
+              // cached this way and replayed to every later rep for $0.
               if (deps) {
-                putCachedResult(db, storeKey, {
+                pendingResults.set(nodeId, { key: storeKey, value: {
                   text,
                   tokens: result.usage.inputTokens + result.usage.outputTokens,
                   costUsd: costFromEvents(result.events),
                   deps,
-                }, new Date().toISOString());
+                } });
               }
             } catch (err) {
               console.error(`Failed to cache the result for node ${nodeId}:`, err);
@@ -2162,21 +2216,26 @@ function productionMachine(db: Db, nodeId: string) {
  *  point at. A node that reported success and produced nothing stays
  *  `unverified` and says so — which is precisely the failure worth catching.
  *  A person can always overrule either way; that is what node.setDod is for. */
-function closeDefinitionOfDone(db: Db, nodeId: string, state: string, now: string): void {
-  const artifacts = listArtifactsForNode(db, nodeId).filter((a) => a.kind !== 'result');
+function closeDefinitionOfDone(db: Db, nodeId: string, state: string, _now: string): void {
+  const artifacts = subtreeArtifacts(db, nodeId).filter((a) => a.kind !== 'result');
   for (const item of listDodForNode(db, nodeId)) {
-    if (item.state !== 'unverified' || item.checkedAt) continue; // a person already ruled
+    // Only a person's ruling (node.setDod, which records when) is final. The
+    // runtime's own ruling is recomputed on every attempt: it used to record a
+    // check time too, which this line then read as "a person ruled", so the
+    // first attempt's verdict froze and no later attempt could satisfy it
+    // (a correct seaborn fix ran 91 turns and was marked FAILED).
+    if (item.checkedAt) continue;
     if (state === 'FAILED') {
-      setDodState(db, item.id, 'unmet', { note: 'The agent did not finish.' }, now);
+      setDodState(db, item.id, 'unmet', { note: 'The agent did not finish.' }, null);
     } else if (state === 'COMPLETE' && artifacts.length > 0) {
       setDodState(db, item.id, 'met', {
         artifactId: artifacts[0].id,
         note: `Closed against ${artifacts.length} thing${artifacts.length === 1 ? '' : 's'} this agent produced.`,
-      }, now);
+      }, null);
     } else if (state === 'COMPLETE') {
       setDodState(db, item.id, 'unverified', {
         note: 'The agent reported it finished, but produced nothing to show for it.',
-      }, now);
+      }, null);
     }
   }
 }
@@ -2297,8 +2356,21 @@ function recordOutcomeInMemory(db: Db, nodeId: string, succeeded: boolean, now: 
  *  Every field is read off something that already happened — the artifacts
  *  table, the run's own tool stream, the definition of done. No new telemetry,
  *  which is what makes validation at V0-V2 cost nothing. */
+/** What a node and everything it delegated produced. A parent's children
+ *  edit forks that are merged back into the parent's tree, and they run the
+ *  tests; judging the parent on its own rows alone failed every delegated
+ *  parent for "no durable outcome" and sent it to redo the work itself. */
+function subtreeArtifacts(db: Db, nodeId: string) {
+  return subtreeNodeIds(db, nodeId).flatMap((id) => listArtifactsForNode(db, id));
+}
+
+function subtreeExecEvents(db: Db, nodeId: string) {
+  return subtreeNodeIds(db, nodeId).flatMap((id) => listEventsForNode(db, id))
+    .filter((row) => row.type.startsWith('exec.'));
+}
+
 function validationEvidenceFor(db: Db, nodeId: string, succeeded: boolean): ValidationEvidence {
-  const all = listArtifactsForNode(db, nodeId);
+  const all = subtreeArtifacts(db, nodeId);
   const artifacts = all.filter((a) => a.kind !== 'result');
   // An investigation's deliverable *is* its report: there is no file to point
   // at, and treating "a file changed" as the only durable outcome made every
@@ -2309,11 +2381,18 @@ function validationEvidenceFor(db: Db, nodeId: string, succeeded: boolean): Vali
   // something, "the agent wrote a summary" is the claim, not evidence for it,
   // and accepting it there is the empty-patch success this whole ladder exists
   // to refuse.
-  const readOnly = taskEconomicsFor(getNode(db, nodeId)?.contract.goal ?? '').readOnly;
+  // The grant this node actually ran under, when System-1 decided it; the rule
+  // otherwise. The two must agree, or a report is accepted for a node that
+  // was given edit tools to make a change.
+  const events = listEventsForNode(db, nodeId);
+  const grantReceipt = events.filter((row) => row.type === SYSTEM1_EVENT
+    && (row.payload as { surface?: string }).surface === 'execution.change_requested').at(-1);
+  const readOnly = grantReceipt
+    ? (grantReceipt.payload as { finalRuntimeAction?: string }).finalRuntimeAction === READ_ONLY_GRANT
+    : taskEconomicsFor(getNode(db, nodeId)?.contract.goal ?? '').readOnly;
   const durableOutcomeIds = readOnly ? all.filter((a) => a.kind === 'result').map((a) => a.id) : [];
   const snapshot = executionSnapshot({
-    events: listEventsForNode(db, nodeId)
-      .filter((row) => row.type.startsWith('exec.'))
+    events: subtreeExecEvents(db, nodeId)
       .map((row) => ({ type: row.type.slice('exec.'.length), payload: row.payload } as StructuredEvent)),
     sequence: 0,
     tokensConsumed: 0,
@@ -2322,7 +2401,7 @@ function validationEvidenceFor(db: Db, nodeId: string, succeeded: boolean): Vali
   // offer, and the fingerprint already separated those out as active targets.
   const failures = new Set(snapshot.failureSignatures);
   const observedChecks = snapshot.activeTargets
-    .filter((target) => VERIFYING_COMMAND.test(target))
+    .filter((target) => isVerifyingCommand(target))
     .map((target) => ({
       id: `observed:${target}`,
       command: target,
@@ -2340,12 +2419,6 @@ function validationEvidenceFor(db: Db, nodeId: string, succeeded: boolean): Vali
   };
 }
 
-/** The same shapes `efficiency/progress-signals.ts` treats as proof. Duplicated
- *  deliberately narrow rather than exported: what counts as *a verifying
- *  command* and what counts as *an active target that is one* are the same
- *  question, and if they ever diverge this is the line that should have to
- *  change. */
-const VERIFYING_COMMAND = /\b(?:test|tests|vitest|jest|pytest|build|tsc|typecheck|lint|eslint|check|cargo|go\s+test|make)\b/i;
 
 function recordEfficiency(db: Db, nodeId: string, outcome: EfficiencyOutcome): void {
   // Said explicitly rather than left to a timeout: the control plane keeps a
@@ -2353,6 +2426,7 @@ function recordEfficiency(db: Db, nodeId: string, outcome: EfficiencyOutcome): v
   // accumulate one entry for every node it has ever seen.
   forgetNode(nodeId);
   system1().forget(nodeId);
+  pendingResults.delete(nodeId);
   try {
     // `EXECUTION_FINISHED` is a fact about a process; `TASK_SUCCESS` is a claim
     // about the world. The primary KPI is tokens per *successful* task, so a
@@ -2429,6 +2503,16 @@ function runValidation(db: Db, nodeId: string, succeeded: boolean): ValidationVe
   };
   const id = appendEvent(db, { nodeId, type: 'validation.result', payload, createdAt: now });
   publish({ id, nodeId, type: 'validation.result', payload, createdAt: now });
+
+  const pending = pendingResults.get(nodeId);
+  pendingResults.delete(nodeId);
+  if (pending && gated.passed) {
+    try {
+      putCachedResult(db, pending.key, pending.value, now);
+    } catch (err) {
+      console.error(`Failed to cache the result for node ${nodeId}:`, err);
+    }
+  }
 
   // The strategy identity of this attempt, so the lifecycle can tell a recovery
   // from a repeat. Without it the attempt cap bounds how many identical retries

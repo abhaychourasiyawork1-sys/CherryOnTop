@@ -64,7 +64,8 @@ describe('resident laya-serve supervisor', () => {
 
   it('starts laya-serve on loopback with the typed-decisions checkpoint preloaded', async () => {
     const d = deps(2);
-    const p = startLaya(system1Config({ ORG_LAYA_PORT: '9911' }), dir(), d);
+    // The command is pinned: the default depends on whether ~/.org/laya exists.
+    const p = startLaya(system1Config({ ORG_LAYA_PORT: '9911', ORG_LAYA_COMMAND: 'laya-serve' }), dir(), d);
     expect(await p.ready(60_000)).toBe(true);
     const [command, , options] = d.spawn.mock.calls[0];
     expect(command).toBe('laya-serve');

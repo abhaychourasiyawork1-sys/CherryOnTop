@@ -1,0 +1,27 @@
+diff --git a/sympy/simplify/fu.py b/sympy/simplify/fu.py
+index ad1130ef96..1e21801cec 100644
+--- a/sympy/simplify/fu.py
++++ b/sympy/simplify/fu.py
+@@ -501,6 +501,9 @@ def _f(rv):
+         if not (rv.is_Pow and rv.base.func == f):
+             return rv
+ 
++        if not rv.exp.is_real:
++            return rv
++
+         if (rv.exp < 0) == True:
+             return rv
+         if (rv.exp > max) == True:
+diff --git a/sympy/simplify/tests/test_fu.py b/sympy/simplify/tests/test_fu.py
+index 54be6e1dca..3063489382 100644
+--- a/sympy/simplify/tests/test_fu.py
++++ b/sympy/simplify/tests/test_fu.py
+@@ -87,6 +87,8 @@ def test_TR6():
+     assert TR6(cos(x)**2) == -sin(x)**2 + 1
+     assert TR6(cos(x)**-2) == cos(x)**(-2)
+     assert TR6(cos(x)**4) == (-sin(x)**2 + 1)**2
++    assert TR6(cos(x)**I) == cos(x)**I
++    assert TR6(cos(x)**y) == cos(x)**y  # exponent not known to be real
+ 
+ 
+ def test_TR7():

@@ -1,4 +1,5 @@
 import type { V1Job } from '@kubernetes/client-node';
+import type { ExtraMount } from './sandbox-env.js';
 
 export interface ExecutionJobParams {
   nodeId: string;
@@ -16,6 +17,10 @@ export interface ExecutionJobParams {
    *  the runtime waiting forever. Never a TTY: the stream is JSON, not a
    *  terminal. */
   interactive?: boolean;
+  /** Plain (non-secret) environment for the runtime. */
+  env?: ReadonlyArray<{ name: string; value: string }>;
+  /** Host directories beyond the worktree: git metadata, a lent toolchain. */
+  extraMounts?: ExtraMount[];
 }
 
 const OAUTH_CREDENTIALS_VOLUME = 'claude-oauth-credentials';
@@ -43,8 +48,10 @@ export function buildExecutionJob(params: ExecutionJobParams): V1Job {
               command: params.command,
               ...(params.interactive ? { stdin: true, stdinOnce: true, tty: false } : {}),
               envFrom: [{ secretRef: { name: params.secretName } }],
+              ...(params.env?.length ? { env: params.env.map((e) => ({ ...e })) } : {}),
               volumeMounts: [
                 { name: 'workspace', mountPath: '/workspace' },
+                ...(params.extraMounts ?? []).map((m, i) => ({ name: `extra-${i}`, mountPath: m.mountPath, readOnly: m.readOnly })),
                 ...(params.includeOauthCredentials ? [{
                   name: OAUTH_CREDENTIALS_VOLUME,
                   mountPath: '/home/node/.claude/.credentials.json',
@@ -70,6 +77,7 @@ export function buildExecutionJob(params: ExecutionJobParams): V1Job {
           // an extraMounts entry for it (Phase 5's cluster-config task).
           volumes: [
             { name: 'workspace', hostPath: { path: params.worktreePath, type: 'Directory' } },
+            ...(params.extraMounts ?? []).map((m, i) => ({ name: `extra-${i}`, hostPath: { path: m.hostPath, type: 'Directory' } })),
             ...(params.includeOauthCredentials ? [{
               name: OAUTH_CREDENTIALS_VOLUME,
               secret: { secretName: params.secretName, items: [{ key: 'CLAUDE_CREDENTIALS_JSON', path: '.credentials.json' }] },

@@ -1,6 +1,17 @@
 import { createInterface } from 'node:readline';
 import type { RuntimeAdapter, StructuredEvent, ToolGrant, BuildCommandOptions } from './adapter.js';
 
+/** The tools an unrestricted coding run is given, and nothing else.
+ *
+ *  Every advertised tool's description is re-read on every turn. The default
+ *  set in a headless sandbox was 17 tools (design sync, worktrees, agent
+ *  messaging, Skill, ToolSearch, the subagent Task tool...), none of which 72
+ *  benchmark runs ever used; naming the set cut the fixed prompt from 23.0k to
+ *  14.4k tokens (measured, same sandbox, same model). Glob and Grep are named
+ *  because the default headless set omits them and the agent then shells out.
+ *  Wait-and-poll tools are simply absent. */
+export const CODING_TOOLS = ['Bash', 'Read', 'Edit', 'Write', 'Glob', 'Grep', 'WebFetch', 'WebSearch'];
+
 export const claudeCodeAdapter: RuntimeAdapter = {
   name: 'claude-code',
   supportsSession: true,
@@ -17,9 +28,11 @@ export const claudeCodeAdapter: RuntimeAdapter = {
     //   declared. It is prevention; execute-step also *detects* a violation
     //   from the event stream, because a boundary worth having is worth
     //   checking from a side the runtime does not control.
+    // No skills list either: skills are a person's shortcuts, and their
+    // descriptions were part of every turn's prompt.
     const permission = grant?.allowedTools
-      ? ['--allowedTools', grant.allowedTools.join(',')]
-      : [];
+      ? ['--allowedTools', grant.allowedTools.join(','), '--disable-slash-commands']
+      : ['--tools', CODING_TOOLS.join(','), '--disable-slash-commands'];
     const model = opts.model ? ['--model', opts.model] : [];
     const maxTurns = opts.maxTurns ? ['--max-turns', String(opts.maxTurns)] : [];
     const systemPrompt = opts.systemPrompt ? ['--append-system-prompt', opts.systemPrompt] : [];

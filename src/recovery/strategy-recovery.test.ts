@@ -35,6 +35,14 @@ describe('strategyRetryAllowed', () => {
     expect(strategyRetryAllowed({ ...base, progress: 0.6 })).toBe(true);
   });
 
+  it('does not re-run a finished change that failed validation the same way again, however busy it was', () => {
+    // SWE-bench requests-1142: the change was in place every time and only an
+    // observed passing test was missing. Each attempt edited and grepped, so
+    // "progress" was always high, and four full dispatches followed.
+    const sig = 'validation:V1:below_required_confidence|below_minimum_level:V2';
+    expect(strategyRetryAllowed({ ...base, failureSignature: sig, previousFailureSignatures: [sig], progress: 0.6 })).toBe(false);
+  });
+
   it('allows a first attempt, which has nothing to repeat', () => {
     expect(strategyRetryAllowed({
       ...base, previousStrategies: [], previousFailureSignatures: [],

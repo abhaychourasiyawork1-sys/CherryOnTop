@@ -4,7 +4,8 @@ import { createSessionController, type SessionController, type SessionSummary } 
 import type { GatewayReply, ModelGateway } from '../system1/model-gateway.js';
 import { createEphemeralSecret, deleteSecret } from '../k8s/secrets.js';
 import { buildEgressAllowlistPolicy, applyNetworkPolicy } from '../k8s/network-policy.js';
-import { getKubeDnsClusterIp } from '../k8s/kind.js';
+import { getKubeDnsClusterIp, fromContainerPath } from '../k8s/kind.js';
+import { gitMounts, toolchainMounts, SANDBOX_ENV } from '../k8s/sandbox-env.js';
 import type { RuntimeAdapter, StructuredEvent, ToolGrant } from '../adapters/adapter.js';
 import { toolNamesFromEvent } from './tool-calls.js';
 import { isToolAllowed } from '../engines/enforce-tools.js';
@@ -212,7 +213,11 @@ async function runStep(
     ]);
     await d.applyNetworkPolicy(policy, input.namespace);
 
+    const worktreeHost = fromContainerPath(input.worktreePath);
+    const toolchain = toolchainMounts();
     const job = buildExecutionJob({
+      env: [...SANDBOX_ENV, ...toolchain.env],
+      extraMounts: [...(worktreeHost ? gitMounts(worktreeHost) : []), ...toolchain.mounts],
       nodeId: input.nodeId,
       namespace: input.namespace,
       image: input.image ?? RUNNER_IMAGE,

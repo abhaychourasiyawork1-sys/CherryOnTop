@@ -39,6 +39,18 @@ export const HARNESS_QUESTIONS = {
       { id: 'many', action: 'offer-delegation', description: 'several agents in parallel: it is made of separate, independent deliverables' },
     ],
   },
+  // Whether an execute dispatch may edit. Replaces a keyword rule that read the
+  // word "why" in a bug report as "explain only" and took away the edit tools.
+  // `change` is listed first: a wrong "explain" costs the whole task, a wrong
+  // "change" only costs a narrower grant not being applied.
+  'execution.change_requested': {
+    version: 'execution.change_requested@1',
+    text: 'What does this task ask the agent to deliver?',
+    options: [
+      { id: 'change', action: 'writable-grant', description: 'a change: code or files should be modified, including a bug report that expects the bug fixed' },
+      { id: 'explain', action: 'read-only-grant', description: 'only an answer: an explanation, review or report, and nothing in the repository should be modified' },
+    ],
+  },
   'action.helpful': {
     version: 'action.helpful@1',
     // Conditioned on the action being carried out, so this composes with the

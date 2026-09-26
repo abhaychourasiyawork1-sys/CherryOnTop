@@ -244,3 +244,40 @@ done
 | Daemon log (Laya ENOENT) | pm2 logs for the org daemon |
 
 `/tmp` paths are ephemeral. Copy them into `bench/swebench/` before relying on them.
+
+## 10. Fix status (2026-09-25, same day)
+
+All fixes below are in the working tree on `feat/system1-laya-decision-architecture`. The unit
+suite passes (192 files, 2178 tests), and each fix has a regression test.
+
+| Fix | What changed | Where |
+|---|---|---|
+| F1 | Host toolchain lent read-only (`ORG_SANDBOX_TOOLCHAIN`; the runner lends the host `python3`'s prefix). It reaches the agent's Bash tool through `CLAUDE_ENV_FILE`, because Claude Code ignores the container `PATH` (measured). The image also gains `build-essential` | `src/k8s/sandbox-env.ts`, `Dockerfile` |
+| F2 | `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1`, cron off, 10/30-minute Bash timeouts, `--disallowedTools` for wait/poll tools, `procps` | `sandbox-env.ts`, `adapters/claude-code.ts`, `Dockerfile` |
+| F3 | The repository's `.git` is mounted read-only at its host path, and the worktree's admin directory is writable. A live pod runs `git log`/`git diff`, and a ref write is refused | `sandbox-env.ts`, `k8s/job-manifest.ts` |
+| F4 | A run cut off at the cap after an edit whose last test passed (not piped, no failure output) is handed to validation as a claim. It costs no extra turn | `execution/observation.ts`, `node-actor-manager.ts` |
+| F5 | The runner sets `ORG_MAX_TURNS_EXECUTE=80`. It also restarts the daemon when its `ORG_*` settings or build differ, because a running daemon never saw them (new bug) | `bench/swebench/run_instance.mjs`, `daemon.ping.envDigest` |
+| F6 | The Laya question `execution.change_requested@1`. The rule decides when the words settle it ("fix", "expected", "do not modify"), and Laya decides the rest (read-only needs P(explain) ≥ 0.7). The same rule also stopped letting "review"/"why" anywhere mark a task read-only for validation | `system1/change-request.ts`, `intelligence/decompose.ts`, `efficiency/task-economics.ts` |
+| F7 | An answer is cached only after validation passes, and never served on a retry after a failed validation | `node-actor-manager.ts` |
+| F8 | `cacheCreationTokens` is added to `tokensByRole` and `org tokens` | `db/queries/tokens.ts`, `cli/commands/tokens.ts` |
+| F9 | Patches are written instead of appended, a recorded rep is refused, and caches are off | runner |
+| F10 | The runner refuses to run until the daemon's System-1 is ready, unless `ORG_SYSTEM1=off`. `org doctor` asks the running daemon. Laya lives at `~/.org/laya` (auto-discovered). Every row records `system1Available` | runner, `cli/commands/doctor.ts`, `config/system1.ts` |
+| F11 | The image is pinned to CLI 2.1.280, and the runner refuses to run if the host version differs | `Dockerfile`, runner |
+| F12 | The execute prompt says to verify with the narrowest check, and a definition-of-done item equal to the goal is no longer repeated in the system prompt | `prompts/roles.ts`, `node-actor-manager.ts` |
+
+Found while fixing: the runner priced Sonnet 5 at Sonnet 4 rates (it killed the direct arm at two
+thirds of its budget); an expired login recorded $0 "FAILED" rows (the runner now checks first); and
+test stubs had only passed because they relied on RC6's replay.
+
+Live rerun (CherryOnTop with Laya ready, $3 cap, n=1 each, self-reported, not graded; the patches
+match the upstream fixes on inspection):
+
+| Instance | Claude Code | CherryOnTop before | CherryOnTop after |
+|---|---|---|---|
+| flask-5014 | $0.21 / 11.5 turns | $0.34 / 26.5 | **$0.14 / 12**, complete |
+| xarray-6744 | $0.51 / 21.5 | $0.25 / 8, FAILED ×2 | **$0.32 / 22**, complete |
+| seaborn-3187 | $0.64 / 16 | $1.11 / 61, FAILED ×2 | **$0.51 / 25**, complete (before the toolchain PATH fix) |
+
+Open: with Laya live, seaborn's issue scored P(decomposable)=0.91 and paid a $0.05 haiku planner
+that answered "does not split". Refit the decomposability calibrator with SWE-bench issues in the
+labelled set. Still to do: the full 6×3×3 rerun and SWE-bench grading (§8).

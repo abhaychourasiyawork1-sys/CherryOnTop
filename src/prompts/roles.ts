@@ -20,7 +20,15 @@ export interface RolePromptParams {
    *  then: advertising a capability the transport cannot serve would teach the
    *  model to wait for an answer that never comes. */
   decisionCapability?: boolean;
+  /** Facts about this sandbox the agent would otherwise spend turns
+   *  discovering: where the toolchain is, what it may and may not write. */
+  environment?: string[];
+  /** A parent will parse this run's result (it is a delegated child). Only
+   *  then is the structured result block worth asking for: integrate-results.ts
+   *  is its one reader, and a root task's block was output nobody read. */
+  reportsToParent?: boolean;
 }
+
 
 /** How the execution model learns the private decision capability exists.
  *  Names no provider, endpoint or credential: the model can ask, it cannot
@@ -64,12 +72,15 @@ function stanza(role: PromptRole, p: RolePromptParams): string {
         'YOUR ROLE FOR THIS RUN: implementer closing one commitment.',
         tools,
         'Work to the definition of done and then stop — do not gold-plate.',
+        // Evidence still has to be observed (validation's V2 rung reads the
+        // trace), but each extra full-suite run re-reads the whole context.
+        'Verify with the narrowest check that proves the change — the one relevant test, run after your last edit. Do not re-run a check that already passed or run the whole suite unless the task needs it.',
         'Your final message is the evidence that closes this commitment: state what you changed, what you verified, and what remains unchecked.',
         'If a standing constraint blocks the most direct path, follow the constraint and say which one and where.',
         // What lets a delegating parent combine this result without paying a
         // model to read it. Best-effort: a run that ignores it degrades to the
         // prose merge that was the only option before.
-        ENVELOPE_INSTRUCTION,
+        p.reportsToParent ? ENVELOPE_INSTRUCTION : '',
         p.maxTurns && p.maxTurns > 0
           ? `You have at most ${p.maxTurns} turns. Track how many you have used; when you are near the limit, stop exploring and summarise what you have found and what is still unchecked. Being cut off mid-task loses your work.`
           : '',
@@ -78,6 +89,7 @@ function stanza(role: PromptRole, p: RolePromptParams): string {
           : '',
         p.decisionCapability ? DECISION_CAPABILITY : '',
         list('Standing constraints (told, not enforced)', p.constraints),
+        list('Environment', p.environment),
         list('Definition of done', p.definitionOfDone),
       ].filter(Boolean).join('\n');
     }

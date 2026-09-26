@@ -190,7 +190,7 @@ export interface DelegateChildDeps {
 export function workstreamNodesFor(subgoals: string[]): WorkstreamNode[] {
   return subgoals.map((goal, index) => {
     const anchors = extractAnchors(goal);
-    const readOnly = assessDecomposition(goal).investigative;
+    const readOnly = assessDecomposition(goal).explanationOnly;
     return {
       id: String(index),
       inputDependencies: [],

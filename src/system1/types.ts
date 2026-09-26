@@ -7,6 +7,7 @@
 
 export type DecisionSurface =
   | 'execution.decomposable'
+  | 'execution.change_requested'
   | 'runtime.next_action'
   | 'action.helpful'
   /** A bounded question the execution model asked through `<cto_decide>`. */

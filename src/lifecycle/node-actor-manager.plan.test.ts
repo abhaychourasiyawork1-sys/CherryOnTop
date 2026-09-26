@@ -11,6 +11,8 @@ import { listEventsForNode } from '../db/queries/events.js';
 import { startNodeActor } from './node-actor-manager.js';
 import type { ExecuteStepInput, ExecuteStepResult } from '../execution/execute-step.js';
 import { ZERO_USAGE } from '../execution/tokens.js';
+import { successfulRunEvents } from './run-fixtures.js';
+import { insertDodItems } from '../db/queries/dod.js';
 
 // Same shape as the execute-dispatch test: stubbing the module is what makes
 // the prompt each dispatch is given observable at all. Everything else — the
@@ -56,7 +58,11 @@ async function runDelegating(db: ReturnType<typeof createDb>, repoPath: string, 
   const calls: ExecuteStepInput[] = [];
   stub.mockImplementation(async (input: ExecuteStepInput) => {
     calls.push(input);
-    return result(planAnswer);
+    // Streamed the way the real executeStep does, so the run's result lands
+    // as an artifact and validation sees what production would.
+    const r = result(planAnswer);
+    r.events.forEach((event) => input.onEvent?.(event));
+    return r;
   });
 
   const id = randomUUID();
@@ -120,13 +126,14 @@ describe('the planning dispatch', () => {
     const first = await runDelegating(db, repoPath, '[]');
     expect(first.filter(isPlanning)).toHaveLength(1);
 
-    // Same goal, same committed HEAD, so the answer cannot have changed — and
-    // an audit is investigative, so it runs read-only and its answer is
-    // result-cache eligible too. The node pays for neither a planner nor a
-    // sandbox the second time: no call at all, planning or execute.
+    // Same goal, same committed HEAD, so the planner's answer cannot have
+    // changed. The work itself is run again: the goal says "add tests", a
+    // change request, so it runs with edit tools and is not result-cacheable.
+    // (It used to be read-only because "audit" appeared in it.)
     const second = await runDelegating(db, repoPath, '[]');
     expect(second.filter(isPlanning)).toHaveLength(0);
-    expect(second).toHaveLength(0);
+    expect(second.length).toBeGreaterThan(0);
+    expect(second.every((call) => call.grant?.readOnly !== true)).toBe(true);
   });
 
   it('does not cache a planner that ran out of turns as "does not split"', async () => {
@@ -241,6 +248,37 @@ describe('the planning dispatch', () => {
     expect(calls[0].model).toBeUndefined();
     // No children, so nothing to synthesise.
     expect(listNodes(db).filter((node) => node.parentId !== null)).toHaveLength(0);
+  });
+
+  it('completes a delegated parent on its children\'s verified work instead of redoing it alone', async () => {
+    // opt rep 61 (seaborn): two children made and tested the fix, the parent
+    // was judged on its own empty rows, failed, and re-ran the whole task
+    // itself twice — 91 turns for a fix its children had already delivered.
+    const db = createDb(TEST_DB);
+    const calls: ExecuteStepInput[] = [];
+    stub.mockImplementation(async (input: ExecuteStepInput) => {
+      calls.push(input);
+      const r = input.goal.includes('Split this goal')
+        ? result(JSON.stringify(['Fix checkout error handling in src/cart/checkout.ts', 'Add tests for checkout in src/cart/checkout.test.ts']))
+        : { succeeded: true, message: 'done', usage: { ...ZERO_USAGE }, events: successfulRunEvents({ editedPath: 'src/cart/checkout.ts', verifyCommand: 'npx vitest run src/cart' }) };
+      r.events.forEach((event) => input.onEvent?.(event));
+      return r;
+    });
+    const id = randomUUID();
+    insertNode(db, {
+      id, parentId: null, goal: GOAL, repoPath: tmpRepo(), state: 'CREATED', createdAt: 't0', updatedAt: 't0',
+      contract: { goal: GOAL, definition_of_done: [GOAL], authority: { tools: [], spawn_children: true, max_child_count: 3, budget_usd: 10 }, constraints: [] },
+    });
+    insertDodItems(db, id, [GOAL], 't0', () => randomUUID());
+    startNodeActor(db, id, GOAL);
+    await vi.waitFor(() => expect(['COMPLETE', 'FAILED', 'CANCELLED']).toContain(getNode(db, id)?.state), { timeout: 10_000 });
+
+    expect(getNode(db, id)?.state).toBe('COMPLETE');
+    // Planning and the synthesis that merges the children's reports are the
+    // parent's own jobs; re-running the task itself is not.
+    const parentSelfRuns = calls.filter((c) => c.nodeId === id
+      && !c.goal.includes('Split this goal') && !c.goal.startsWith('THE ORIGINAL GOAL'));
+    expect(parentSelfRuns).toHaveLength(0);
   });
 
   it('still fans out, but no wider than the default cap', async () => {

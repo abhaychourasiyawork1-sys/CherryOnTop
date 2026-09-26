@@ -1,5 +1,13 @@
 /** System-1 configuration, read from the environment once per call so a test
  *  can set a variable and see it without reloading modules. */
+import { existsSync } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+
+/** Where `laya-serve` is looked for when ORG_LAYA_COMMAND is unset and before
+ *  PATH. A daemon started by pm2 does not inherit an activated virtualenv, so a
+ *  Laya that only lived on one shell's PATH was simply never found. */
+export const LAYA_HOME_COMMAND = path.join(os.homedir(), '.org', 'laya', 'bin', 'laya-serve');
 
 export type System1Mode = 'laya' | 'jev' | 'off';
 
@@ -32,7 +40,7 @@ export function system1Config(env: NodeJS.ProcessEnv = process.env): System1Conf
   const mode: System1Mode = raw === 'jev' || raw === 'off' ? raw : 'laya';
   const port = int(env.ORG_LAYA_PORT, 8765);
   const common = {
-    command: env.ORG_LAYA_COMMAND ?? 'laya-serve',
+    command: env.ORG_LAYA_COMMAND ?? (existsSync(LAYA_HOME_COMMAND) ? LAYA_HOME_COMMAND : 'laya-serve'),
     port,
     ...(env.ORG_LAYA_DEVICE ? { device: env.ORG_LAYA_DEVICE } : {}),
     timeoutMs: int(env.ORG_SYSTEM1_TIMEOUT_MS, 5_000),

@@ -1,0 +1,49 @@
+diff --git a/sklearn/ensemble/_hist_gradient_boosting/gradient_boosting.py b/sklearn/ensemble/_hist_gradient_boosting/gradient_boosting.py
+index ad6a5a8ca3..c774d4ca93 100644
+--- a/sklearn/ensemble/_hist_gradient_boosting/gradient_boosting.py
++++ b/sklearn/ensemble/_hist_gradient_boosting/gradient_boosting.py
+@@ -426,11 +426,16 @@ class BaseHistGradientBoosting(BaseEstimator, ABC):
+ 
+         Scores are computed on validation data or on training data.
+         """
++        if is_classifier(self):
++            y_small_train = self.classes_[y_small_train.astype(int)]
++
+         self.train_score_.append(
+             self.scorer_(self, X_binned_small_train, y_small_train)
+         )
+ 
+         if self._use_validation_data:
++            if is_classifier(self):
++                y_val = self.classes_[y_val.astype(int)]
+             self.validation_score_.append(
+                 self.scorer_(self, X_binned_val, y_val)
+             )
+diff --git a/sklearn/ensemble/_hist_gradient_boosting/tests/test_gradient_boosting.py b/sklearn/ensemble/_hist_gradient_boosting/tests/test_gradient_boosting.py
+index 1eebdefd52..fa740ff860 100644
+--- a/sklearn/ensemble/_hist_gradient_boosting/tests/test_gradient_boosting.py
++++ b/sklearn/ensemble/_hist_gradient_boosting/tests/test_gradient_boosting.py
+@@ -132,6 +132,23 @@ def test_early_stopping_classification(data, scoring, validation_fraction,
+         assert gb.n_iter_ == max_iter
+ 
+ 
++def test_early_stopping_with_string_targets():
++    # Non-regression test for #14710: string targets used to break early
++    # stopping when using a scorer, because the scorer would compare the
++    # (encoded, integer) y_true against the (decoded, string) y_pred coming
++    # out of predict().
++    X = X_classification
++    y = np.array(['x'] * (len(y_classification) // 2) +
++                ['y'] * (len(y_classification) - len(y_classification) // 2),
++                dtype=object)
++
++    gb = HistGradientBoostingClassifier(scoring='accuracy',
++                                        n_iter_no_change=5,
++                                        max_iter=50,
++                                        random_state=0)
++    gb.fit(X, y)
++
++
+ @pytest.mark.parametrize(
+     'scores, n_iter_no_change, tol, stopping',
+     [

@@ -250,5 +250,11 @@ export function strategyRetryAllowed(input: StrategyRetryInput): boolean {
   const sameFailure = input.previousFailureSignatures.includes(input.failureSignature);
   // Same idea, same wall, nothing gained. The only combination that is refused.
   if (sameStrategy && sameFailure && input.progress <= MEANINGFUL_PROGRESS) return false;
+  // A validation failure is about the evidence, not the work: the change was
+  // made and what was missing is proof of it. "Progress" there is just the
+  // attempt redoing the same edits, so it cannot justify a third identical
+  // attempt. Measured: four full dispatches of requests-1142, each rejected
+  // for the same missing observed test, one of them a correct fix marked FAILED.
+  if (sameStrategy && sameFailure && input.failureSignature.startsWith('validation:')) return false;
   return true;
 }
