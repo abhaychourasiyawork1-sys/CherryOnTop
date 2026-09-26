@@ -19,7 +19,7 @@ test.describe('mobile product exploration', () => {
     const trigger = page.getByRole('button', { name: /menu/i });
     await trigger.tap();
     await expect(trigger).toHaveAttribute('aria-expanded', 'true');
-    const firstLink = page.locator('.site-header__mobile-nav a').first();
+    const firstLink = page.locator('.site-header__mobile-menu a').first();
     await expect(firstLink).toBeFocused();
     await page.keyboard.press('Escape');
     await expect(trigger).toHaveAttribute('aria-expanded', 'false');

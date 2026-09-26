@@ -105,16 +105,7 @@
   padding: var(--space-2) 0;
 }
 
-@media (max-width: 900px) {
-  .site-header__nav,
-  .site-header__cta {
-    display: none;
-  }
-
-  .site-header__menu-trigger {
-    display: inline-flex;
-  }
-}
+/* Header collapse, graph, and dashboard breakpoints live in responsive.css. */
 
 .site-section {
   padding-block: var(--space-section);
@@ -387,17 +378,6 @@
   background: var(--color-panel);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-card);
-}
-
-@media (max-width: 768px) {
-  .organization__nodes {
-    grid-template-columns: 1fr;
-  }
-
-  .organization__inspector {
-    flex-direction: column;
-    gap: var(--space-4);
-  }
 }
 
 /* Page composition: quiet depth marker, density rhythm, and branch stem motif */

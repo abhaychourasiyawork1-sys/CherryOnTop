@@ -1,3 +1,24 @@
+/*
+ * Locked responsive strategy: desktop (>1100px), tablet (768–1100px), and
+ * mobile (<768px). Components stay fluid inside each range; these rules only
+ * change how the product surfaces are arranged, never what they contain.
+ */
+
+/* Guard every surface against horizontal overflow from long mono values. */
+.execution-node,
+.mandate-panel,
+.execution-timeline__event,
+.decision-receipt,
+.decision-receipt__field,
+.memory-timeline__run,
+.benchmark-evidence,
+.architecture-explorer__layer,
+.architecture-explorer__child {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* Tablet: the header collapses to the menu and graphs use two columns. */
 @media (max-width: 1100px) {
   .container {
     padding-inline: var(--space-5);
@@ -6,9 +27,23 @@
   .site-section {
     padding-block: var(--space-9);
   }
+
+  .site-header__nav,
+  .site-header__cta {
+    display: none;
+  }
+
+  .site-header__menu-trigger {
+    display: inline-flex;
+  }
+
+  .organization__nodes {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 
-@media (max-width: 768px) {
+/* Mobile */
+@media (max-width: 767.98px) {
   .grid-12 {
     grid-template-columns: 1fr;
   }
@@ -25,7 +60,103 @@
     font-size: var(--font-size-subheading);
   }
 
+  /* Organization graph → vertical flow joined by a single stem. */
+  .organization__nodes {
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--space-3);
+    padding-left: var(--space-4);
+    border-left: 1px solid var(--color-border);
+  }
+
+  /* Dashboards → stacked cards. */
+  .organization__inspector,
+  .mandate-panel__authority,
+  .benchmark-evidence__metrics,
+  .long-running-sequence,
+  .memory-timeline,
+  .recovery-sequence,
+  .launch-form__row {
+    flex-direction: column;
+    flex-wrap: nowrap;
+    gap: var(--space-3);
+  }
+
+  .memory-timeline__step {
+    flex-wrap: wrap;
+  }
+
+  /* Horizontal execution timeline → vertical timeline. */
   .execution-timeline {
     flex-direction: column;
+    flex-wrap: nowrap;
+    gap: var(--space-3);
+    padding-left: var(--space-4);
+    border-left: 1px solid var(--color-border);
+  }
+
+  /* Receipt fields read top to bottom, one per row. */
+  .decision-receipt__summary {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .decision-receipt__fields {
+    flex-direction: column;
+  }
+
+  /* Architecture graph → vertical expandable stack. */
+  .architecture-explorer__children {
+    flex-direction: column;
+    flex-wrap: nowrap;
+    padding-inline: var(--space-3);
+  }
+
+  .architecture-explorer__child {
+    min-width: 0;
+  }
+
+  .architecture-explorer__title,
+  .architecture-explorer__summary {
+    padding-inline: var(--space-4);
+  }
+
+  /* Comfortable tap targets for every expandable/inspectable control. */
+  .execution-node,
+  .mandate-panel__review,
+  .decision-receipt__toggle,
+  .architecture-explorer__title--button,
+  .promo-video__transcript-toggle,
+  .site-header__menu-trigger,
+  .site-header__mobile-link,
+  .site-header__mobile-cta,
+  .launch-form__submit {
+    min-height: 44px;
+  }
+
+  .launch-section {
+    max-width: none;
+  }
+}
+
+/*
+ * Hover → tap-to-expand. Every hover affordance is also a click target; on
+ * touch devices drop the sticky hover highlight and show tap feedback instead,
+ * so the only persistent emphasis is the explicit selected/expanded state.
+ */
+@media (hover: none) {
+  .execution-node:hover:not(:focus-visible):not(.execution-node--selected),
+  .mandate-panel__review:hover:not(:focus-visible),
+  .decision-receipt__toggle:hover:not(:focus-visible),
+  .architecture-explorer__title--button:hover:not(:focus-visible),
+  .promo-video__transcript-toggle:hover:not(:focus-visible) {
+    border-color: var(--color-border);
+  }
+
+  .execution-node:active,
+  .mandate-panel__review:active,
+  .decision-receipt__toggle:active,
+  .architecture-explorer__title--button:active,
+  .promo-video__transcript-toggle:active {
+    border-color: var(--color-cherry);
   }
 }
