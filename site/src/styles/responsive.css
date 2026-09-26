@@ -24,4 +24,8 @@
   .site-section__title {
     font-size: var(--font-size-subheading);
   }
+
+  .execution-timeline {
+    flex-direction: column;
+  }
 }

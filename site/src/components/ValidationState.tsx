@@ -15,11 +15,19 @@ export function ValidationState(props: {
 }): JSX.Element {
   const { passed, total, state } = props;
   return (
-    <div className="validation-state">
+    <div className={`validation-state${state === 'verified' ? ' validation-state--verified' : ''}`}>
       <span className="validation-state__count">
         {passed} / {total}
       </span>
       <StatusIndicator status={STATE_TO_STATUS[state]} />
+      {state === 'verified' ? (
+        <>
+          <p className="validation-state__summary">
+            {passed} / {total} checks passed
+          </p>
+          <p className="validation-state__outcome">VERIFIED</p>
+        </>
+      ) : null}
     </div>
   );
 }

@@ -164,3 +164,132 @@
   font-size: var(--font-size-ui);
   color: var(--color-text-primary);
 }
+
+.mandate-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+}
+
+.mandate-section__explanation {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.mandate-section__explanation-text {
+  font-size: var(--font-size-technical);
+  color: var(--color-text-secondary);
+}
+
+.mandate-section__followup {
+  color: var(--color-text-secondary);
+}
+
+.depth-indicator {
+  display: inline-flex;
+  gap: var(--space-3);
+  font-size: var(--font-size-technical);
+  color: var(--color-text-muted);
+}
+
+.depth-indicator__level--current {
+  color: var(--color-text-primary);
+  font-weight: 600;
+}
+
+.execution-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+}
+
+.execution-timeline {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-4);
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.execution-timeline__event {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: var(--space-3) var(--space-4);
+  background: var(--color-panel);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-card);
+}
+
+.execution-timeline__time {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-technical);
+  color: var(--color-text-muted);
+}
+
+.execution-timeline__label {
+  color: var(--color-text-primary);
+}
+
+.execution-timeline__detail {
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-technical);
+}
+
+/*
+ * Failure is shown calmly: no flashing alert treatment, just a still panel
+ * that stays legible next to the events that already happened.
+ */
+.execution-section__failure {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-5);
+  background: var(--color-panel);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-card);
+}
+
+.execution-section__failure-label {
+  color: var(--color-attention);
+  font-weight: 600;
+}
+
+.execution-section__failure-body {
+  color: var(--color-text-secondary);
+}
+
+.recovery-sequence {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.recovery-sequence__step {
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-button);
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-technical);
+}
+
+.validation-state--verified {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-2);
+}
+
+.validation-state__summary {
+  color: var(--color-text-secondary);
+}
+
+.validation-state__outcome {
+  color: var(--color-verified);
+  font-weight: 700;
+  letter-spacing: 0.06em;
+}

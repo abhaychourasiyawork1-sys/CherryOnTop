@@ -5,6 +5,8 @@ import { HeroSection } from './sections/HeroSection';
 import { PromoVideo } from './components/PromoVideo';
 import { ProblemSection } from './sections/ProblemSection';
 import { OrganizationSection } from './sections/OrganizationSection';
+import { MandateSection } from './sections/MandateSection';
+import { ExecutionSection } from './sections/ExecutionSection';
 import { DemoControllerProvider } from './demo/controller';
 import { SITE_CONTENT } from './content';
 
@@ -59,15 +61,19 @@ export default function App(): JSX.Element {
             </Reveal>
           </Section>
 
-          <Section id="mandate" title="Autonomy without a blank cheque.">
+          <Section
+            id="mandate"
+            title={SITE_CONTENT.mandate.headline}
+            body={SITE_CONTENT.mandate.body}
+          >
             <Reveal>
-              <p>Mandate placeholder.</p>
+              <MandateSection />
             </Reveal>
           </Section>
 
-          <Section id="execution" title="Real work doesn't always go perfectly.">
+          <Section id="execution" title={SITE_CONTENT.execution.headline}>
             <Reveal>
-              <p>Execution placeholder.</p>
+              <ExecutionSection />
             </Reveal>
           </Section>
 

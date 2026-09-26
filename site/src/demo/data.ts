@@ -1,5 +1,12 @@
 import type { DemoCounters, DemoNodeId, DemoState } from './types';
 
+export interface DemoTimelineEvent {
+  id: string;
+  time: string;
+  label: string;
+  detail?: string;
+}
+
 /**
  * The recurring illustrative scenario used everywhere the product demo appears:
  * one goal, organized into accountable responsibilities, that hits a real
@@ -62,6 +69,32 @@ export const DEMO_STATE_SEQUENCE: DemoState[] = [
   'receipt',
   'memory',
 ];
+
+/**
+ * The compact execution event stream showing the approved concrete signals.
+ * Events are only ever revealed, never removed, as the lifecycle advances —
+ * `TIMELINE_INDEX_BY_STATE` maps each demo state to how far into this list
+ * the visible history reaches. Failure, recovery, and validation have their
+ * own dedicated components rather than duplicating text into this list.
+ */
+export const DEMO_TIMELINE_EVENTS: DemoTimelineEvent[] = [
+  { id: 'files-read', time: '00:04', label: '18 files read' },
+  { id: 'files-changed', time: '00:09', label: '12 files changed' },
+  { id: 'commands', time: '00:13', label: '31 commands' },
+];
+
+export const TIMELINE_INDEX_BY_STATE: Record<DemoState, number> = {
+  goal: -1,
+  organization: -1,
+  mandate: -1,
+  executing: 2,
+  failure: 2,
+  recovering: 2,
+  validating: 2,
+  verified: 2,
+  receipt: 2,
+  memory: 2,
+};
 
 const BUDGET = 5;
 const VERIFIED_SPEND = 2.31;
