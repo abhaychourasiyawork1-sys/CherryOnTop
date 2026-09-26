@@ -311,8 +311,18 @@
 }
 
 .promo-video__fallback {
+  display: grid;
+  gap: var(--space-2);
   color: var(--color-attention);
   font-size: var(--font-size-ui);
+}
+
+.promo-video__fallback-poster {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  height: auto;
+  border-radius: var(--radius-card);
 }
 
 .promo-video__transcript-link {
