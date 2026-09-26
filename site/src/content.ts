@@ -14,10 +14,18 @@ export interface ArchitectureLayerContent {
   children: { title: string; details: string }[];
 }
 
+export interface FooterGroup {
+  title: string;
+  links: NavLink[];
+}
+
 export interface SiteContent {
   nav: {
     links: NavLink[];
     cta: string;
+  };
+  footer: {
+    groups: FooterGroup[];
   };
   hero: {
     eyebrow: string;
@@ -59,7 +67,13 @@ export interface SiteContent {
   };
   receipt: {
     headline: string;
+    decision: string;
     fields: ReceiptField[];
+  };
+  longRunning: {
+    headline: string;
+    steps: string[];
+    budgetLine: string;
   };
   memory: {
     headline: string;
@@ -104,6 +118,39 @@ export const SITE_CONTENT: SiteContent = {
     ],
     cta: 'Get CherryOnTop',
   },
+  footer: {
+    groups: [
+      {
+        title: 'Product',
+        links: [
+          { label: 'Product', href: '#product' },
+          { label: 'Architecture', href: '#architecture' },
+          { label: 'Benchmarks', href: '#benchmarks' },
+        ],
+      },
+      {
+        title: 'Resources',
+        links: [
+          { label: 'Documentation', href: '/docs' },
+          { label: 'Benchmark methodology', href: '/docs/marketing/benchmarks.md' },
+        ],
+      },
+      {
+        title: 'Company',
+        links: [
+          { label: 'Trust', href: '#trust' },
+          { label: 'Security', href: '/security' },
+        ],
+      },
+      {
+        title: 'Legal',
+        links: [
+          { label: 'Privacy', href: '/privacy' },
+          { label: 'Terms', href: '/terms' },
+        ],
+      },
+    ],
+  },
   hero: {
     eyebrow: 'THE ACCOUNTABLE AI RUNTIME',
     headline: 'AI teams you can hold accountable.',
@@ -144,6 +191,7 @@ export const SITE_CONTENT: SiteContent = {
   },
   receipt: {
     headline: 'Every important decision leaves a receipt.',
+    decision: 'Ship the verified customer platform build.',
     fields: [
       { label: 'OBJECTIVE', value: 'Build customer platform' },
       { label: 'AUTHORITY', value: 'Development mandate' },
@@ -155,6 +203,19 @@ export const SITE_CONTENT: SiteContent = {
       { label: 'HUMAN INTERVENTION', value: '1 approval' },
       { label: 'OUTCOME', value: 'VERIFIED' },
     ],
+  },
+  longRunning: {
+    headline: 'Work that keeps going.',
+    steps: [
+      'Goal received',
+      'Organization formed',
+      'Execution',
+      'Issue discovered',
+      'Recovery',
+      'Validation',
+      'Verified',
+    ],
+    budgetLine: '$2.84 / $5',
   },
   memory: {
     headline: 'The organization remembers what it learned.',

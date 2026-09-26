@@ -7,6 +7,14 @@ import { ProblemSection } from './sections/ProblemSection';
 import { OrganizationSection } from './sections/OrganizationSection';
 import { MandateSection } from './sections/MandateSection';
 import { ExecutionSection } from './sections/ExecutionSection';
+import { AccountabilitySection } from './sections/AccountabilitySection';
+import { LongRunningMemorySection } from './sections/LongRunningMemorySection';
+import { BenchmarkSection } from './sections/BenchmarkSection';
+import { ArchitectureSection } from './sections/ArchitectureSection';
+import { TrustSection } from './sections/TrustSection';
+import { LaunchSection } from './sections/LaunchSection';
+import { SiteHeader } from './components/SiteHeader';
+import { SiteFooter } from './components/SiteFooter';
 import { DemoControllerProvider } from './demo/controller';
 import { SITE_CONTENT } from './content';
 
@@ -22,9 +30,7 @@ const PROMO_VIDEO_TRANSCRIPT =
 export default function App(): JSX.Element {
   return (
     <div className="site-shell">
-      <header className="site-header">
-        <div className="container">CherryOnTop</div>
-      </header>
+      <SiteHeader />
 
       <main>
         <DemoControllerProvider>
@@ -77,47 +83,45 @@ export default function App(): JSX.Element {
             </Reveal>
           </Section>
 
-          <Section id="proof" title="Every important decision leaves a receipt.">
+          <Section id="proof" title={SITE_CONTENT.receipt.headline}>
             <Reveal>
-              <p>Decision receipt placeholder.</p>
+              <AccountabilitySection />
             </Reveal>
           </Section>
 
-          <Section id="memory" title="The organization remembers what it learned.">
+          <Section id="memory" title={SITE_CONTENT.longRunning.headline}>
             <Reveal>
-              <p>Memory placeholder.</p>
+              <LongRunningMemorySection />
             </Reveal>
           </Section>
 
-          <Section id="benchmarks" title="Spend intelligence where it matters.">
+          <Section id="benchmarks" title={SITE_CONTENT.benchmarks.headline}>
             <Reveal>
-              <p>Benchmark placeholder.</p>
+              <BenchmarkSection />
             </Reveal>
           </Section>
 
-          <Section id="architecture" title="Under the interface is a real execution system.">
+          <Section id="architecture" title={SITE_CONTENT.architecture.headline}>
             <Reveal>
-              <p>Architecture placeholder.</p>
+              <ArchitectureSection />
             </Reveal>
           </Section>
 
-          <Section id="trust" title="Built to be inspected.">
+          <Section id="trust" title={SITE_CONTENT.trust.headline}>
             <Reveal>
-              <p>Trust placeholder.</p>
+              <TrustSection />
             </Reveal>
           </Section>
 
-          <Section id="launch" title="CherryOnTop is launching soon.">
+          <Section id="launch" title={SITE_CONTENT.launch.headline}>
             <Reveal>
-              <p>Launch placeholder.</p>
+              <LaunchSection />
             </Reveal>
           </Section>
         </DemoControllerProvider>
       </main>
 
-      <footer className="site-footer">
-        <div className="container">CherryOnTop</div>
-      </footer>
+      <SiteFooter />
     </div>
   );
 }
