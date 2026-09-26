@@ -98,7 +98,6 @@ export default function App(): JSX.Element {
           <Section
             id="mandate"
             title={SITE_CONTENT.mandate.headline}
-            body={SITE_CONTENT.mandate.body}
             depth="product"
             rhythm="focused"
           >

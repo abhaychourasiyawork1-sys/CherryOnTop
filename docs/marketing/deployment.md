@@ -72,7 +72,8 @@ read at start-up; `VITE_*` variables are read at **site build time**.
 5. **Trusted proxy flag.** Set `MARKETING_TRUST_PROXY=true` **only** when every request passes
    through a proxy you control that overwrites `X-Forwarded-For`. Otherwise leave it off: with it
    on and no proxy, clients can forge their address and evade rate limits. Raw client IPs are used
-   in memory for rate limiting only and are never persisted.
+   in memory for rate limiting only, are evicted once their one-minute window expires, and are
+   never persisted. Limits are per process: running several instances multiplies the effective limit.
 6. **DNS.** Point the public hostname at the proxy/CDN, not at the marketing process directly.
 7. **Media origin and CSP.** The default CSP allows media only from `'self'`. If
    `VITE_PROMO_VIDEO_URL` is on another origin, set `MARKETING_MEDIA_ORIGIN` to exactly that origin

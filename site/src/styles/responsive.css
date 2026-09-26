@@ -24,8 +24,10 @@
     padding-inline: var(--space-5);
   }
 
-  .site-section {
-    padding-block: var(--space-9);
+  :root {
+    --space-section: var(--space-9);
+    --space-section-quiet: 112px;
+    --space-section-dense: var(--space-8);
   }
 
   .site-header__nav,
@@ -52,8 +54,18 @@
     padding-inline: var(--space-4);
   }
 
-  .site-section {
-    padding-block: var(--space-8);
+  :root {
+    --space-section: var(--space-8);
+    --space-section-quiet: 80px;
+    --space-section-dense: var(--space-7);
+  }
+
+  .hero-section {
+    padding-block: var(--space-7);
+  }
+
+  .hero__headline {
+    font-size: var(--font-size-hero-mobile);
   }
 
   .site-section__title {

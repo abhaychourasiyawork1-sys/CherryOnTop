@@ -1,12 +1,15 @@
 # CherryOnTop Landing Page Implementation Plan
 
-> **Implementation status (2026-09-26):** Tasks 1–15 done. Task 16 mobile CSS + Playwright spec in
-> place. Tasks 20–25 implemented (production wiring, export/ops tooling, narrative e2e suite +
-> real-API fixture, static visual audit, launch security audit, documentation); Task 19's media
-> contract (poster-first lazy video, offscreen pause) is in place. Tasks 17 (accessibility
-> test file) and 18 (robots/sitemap/share image/SEO test) remain open. Playwright specs have not
-> been executed in the build sandbox (browsers unavailable) — run `npm run marketing:e2e` on a
-> machine with Playwright browsers before launch. Canonical copy of the plan: this file mirrors
+> **Implementation status (2026-09-26):** Tasks 1–25 implemented. Verified in the build sandbox:
+> root `typecheck` and `test` (marketing backend), site `typecheck`, site unit tests (incl.
+> accessibility and SEO), and the production build. Task 23 (visual polish) was a code-level
+> review against the locked visual grammar — no real-browser visual QA was possible. Task 24 audit
+> fixed in-memory rate-limit key retention and dimmed-node text contrast. **Not verified:**
+> `npm run marketing:e2e` (and therefore `marketing:verify`) — Playwright browsers cannot be
+> installed in the sandbox; all 32 desktop/mobile specs fail at browser launch. Run it on a
+> machine with Playwright browsers before launch, and complete the benchmark confirmation in
+> `docs/marketing/operations.md`. The Electron GUI and runtime daemon are not in this repository,
+> so their suites were not run here. Canonical copy of the plan: this file mirrors
 > `docs/cherryontop-landing-page-plan.md`.
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.

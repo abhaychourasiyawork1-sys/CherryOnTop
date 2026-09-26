@@ -66,3 +66,18 @@ it on a schedule (e.g. daily) with the retention period stated in your privacy n
    run the smoke checks in `docs/marketing/deployment.md`.
 5. When moving hosts, stop the old server first, take an online backup, restore it on the new host
    and point `MARKETING_DB_PATH` at it.
+
+## Before launch: confirm benchmark evidence
+
+`docs/marketing/benchmarks.md` is published with the site. It states only what the landing-page
+spec sources: SWE-bench Verified, 6 tasks × 3 repetitions = 18 runs, controlled paired
+comparison, 18 / 18 resolved, ~15% lower mean cost/run and ~15% fewer mean tokens/run. The
+repository holds no raw run data behind these figures. Before launch, the benchmark owner must
+confirm them against the run records and, if they are to be published, add to that document:
+
+1. what the comparison arm was (described without competitor, provider, or model names);
+2. what "cost" includes (e.g. API spend only, or infrastructure too) and how tokens were counted;
+3. the resolution criterion used and the comparison arm's own resolved count;
+4. what was held constant between arms, and when the runs were made.
+
+Any figure change must update `benchmarks.md` and `site/src/content.ts` together.

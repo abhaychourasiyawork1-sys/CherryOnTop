@@ -6,26 +6,28 @@ checkable comparison rather than a standalone marketing assertion.
 
 ## Headline figures
 
-- **18 / 18 resolved** — every task attempted in this comparison was resolved.
-- **~15% lower mean cost/run** — measured against the paired baseline run.
-- **~15% fewer mean tokens/run** — measured against the paired baseline run.
+- **18 / 18 resolved** — all 18 CherryOnTop runs in this comparison resolved
+  their task.
+- **~15% lower mean cost/run** — relative to the paired comparison arm.
+- **~15% fewer mean tokens/run** — relative to the paired comparison arm.
 
 ## Methodology
 
 - **Benchmark:** SWE-bench Verified.
-- **Task population:** 6 tasks, drawn from the SWE-bench Verified set.
+- **Task population:** 6 tasks from the SWE-bench Verified set.
 - **Repetitions:** 3 repetitions per task.
 - **Total runs:** 18 runs (6 tasks × 3 repetitions).
-- **Comparison design:** controlled paired comparison. Each task/repetition
-  pair is run once under the CherryOnTop-organized workflow and once under
-  the baseline workflow, holding the task, model access, and environment
-  constant between the two arms of the pair.
-- **Metrics:** cost/run (API and infrastructure spend to reach a resolved
-  state) and tokens/run (total tokens consumed to reach a resolved state).
-  Both are reported as means across the 18 paired runs.
-- **Resolution criterion:** a run is counted as resolved only if it passes
-  the task's own hidden test suite, matching the standard SWE-bench Verified
-  grading rule.
+- **Comparison design:** controlled paired comparison — each task/repetition
+  is run under CherryOnTop and under a comparison arm, so every CherryOnTop
+  run has a matched counterpart on the same task.
+- **Metrics:**
+  - *resolved* — the run's result for its task was counted as resolved;
+  - *cost/run* — spend recorded for one run, reported as the mean over the
+    18 runs;
+  - *tokens/run* — tokens consumed by one run, reported as the mean over the
+    18 runs.
+- **Rounding:** the percentage deltas are rounded and shown as approximate
+  ("~15%"); they are not precise to the percentage point.
 
 ## Limitations
 

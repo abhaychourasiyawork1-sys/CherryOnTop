@@ -10,15 +10,18 @@
   --color-panel: #131315;
   --color-panel-raised: #19191c;
   --color-border: rgba(255, 255, 255, 0.1);
+  --color-border-strong: rgba(255, 255, 255, 0.18);
 
   /* Text levels */
   --color-text-primary: #f5f3f1;
   --color-text-secondary: #b7b3ae;
-  --color-text-muted: #7c7975;
+  --color-text-muted: #8a8782;
 
   /* Accents */
   --color-cherry: #c8203f;
   --color-cherry-strong: #e02f4c;
+  /* Cherry for small text: keeps >=4.5:1 contrast on bg and raised panels. */
+  --color-cherry-text: #eb4f69;
   --color-verified: #3fae6e;
   --color-attention: #d98b2c;
 
@@ -34,6 +37,9 @@
   --space-9: 96px;
   --space-10: 128px;
   --space-section: 150px;
+  /* Quiet/dense rhythm: quiet sections breathe more, dense ones tighten (both within 120–180px). */
+  --space-section-quiet: 160px;
+  --space-section-dense: 120px;
   --space-subsection: 80px;
 
   /* Radii */
@@ -47,6 +53,7 @@
     'Inter', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
   --font-mono: 'IBM Plex Mono', 'SFMono-Regular', Menlo, monospace;
   --font-size-hero: 88px;
+  --font-size-hero-mobile: 44px;
   --font-size-heading: 56px;
   --font-size-subheading: 28px;
   --font-size-body: 19px;
