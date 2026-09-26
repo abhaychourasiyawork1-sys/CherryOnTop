@@ -5,6 +5,7 @@ import type { IntelligenceBundle } from '../intelligence/coordinator.js';
 import type { DecideExecutionResult } from '../engines/decide-execution.js';
 import { nextAfterValidation, type ValidationResult } from '../validation/engine.js';
 import { strategyRetryAllowed } from '../recovery/engine.js';
+import { SpendGuardStop } from '../efficiency/spend-guard.js';
 
 export interface NodeMachineContext {
   nodeId: string;
@@ -88,7 +89,7 @@ export const nodeMachine = setup({
     /** Buys the cheapest evidence that clears this task's contract. Injected so
      *  the machine holds no opinion about what counts as proof, and so a
      *  deployment with no verifier still validates — at V2, and says so. */
-    validate: fromPromise<ValidationVerdict, { nodeId: string; goal: string; succeeded: boolean }>(async () => {
+    validate: fromPromise<ValidationVerdict, { nodeId: string; goal: string; succeeded: boolean; guardStopped: boolean }>(async () => {
       throw new Error('validate actor not provided');
     }),
   },
@@ -170,7 +171,16 @@ export const nodeMachine = setup({
         // failed result and the loop can re-plan around it.
         onError: {
           target: 'VALIDATE',
-          actions: assign({ lastResult: ({ event }) => ({ succeeded: false, message: String(event.error), events: [], usage: { ...ZERO_USAGE } }) }),
+          actions: assign({
+            lastResult: ({ event }) => ({
+              succeeded: false, message: String(event.error), events: [], usage: { ...ZERO_USAGE },
+              // The guard refusing to open a sandbox is not the work failing —
+              // it is the daemon's own resource ceiling, and VALIDATE needs to
+              // tell the two apart before it decides whether a retry is worth
+              // refusing.
+              guardStopped: event.error instanceof SpendGuardStop,
+            }),
+          }),
         },
       },
     },
@@ -250,6 +260,7 @@ export const nodeMachine = setup({
         input: ({ context }) => ({
           nodeId: context.nodeId, goal: context.goal,
           succeeded: context.lastResult?.succeeded === true,
+          guardStopped: context.lastResult?.guardStopped === true,
         }),
         onDone: [
           {

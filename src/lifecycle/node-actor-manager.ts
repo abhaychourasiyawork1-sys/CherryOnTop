@@ -67,7 +67,7 @@ import { observationFrom } from '../learning/hierarchical.js';
 import { buildCounterfactualObservation } from '../learning/counterfactual.js';
 import type { ExecutionStrategy } from '../decision/strategy-gate.js';
 import { policyVersion } from '../efficiency/policy-version.js';
-import { evaluateSpendGuard, type SpendGuardState } from '../efficiency/spend-guard.js';
+import { evaluateSpendGuard, SpendGuardStop, type SpendGuardState } from '../efficiency/spend-guard.js';
 import { summarizeExecutionTrajectory, executionSnapshot, UNKNOWN_PROGRESS } from '../efficiency/progress-signals.js';
 import { executionPolicyForGoal, calibrate, effectiveTurnCap, currentPolicyVersions, EXECUTION_POLICY_VERSION } from '../efficiency/policy.js';
 import { activePolicyChanges } from '../learning/policy-experiments.js';
@@ -86,7 +86,7 @@ import {
 } from './economic-runtime.js';
 import { tombstoneFor } from '../recovery/engine.js';
 import { evaluateFallback, mustBlockAction, detectFaults } from '../decision/fallback.js';
-import { validate, type ValidationEvidence, type ValidationResult } from '../validation/engine.js';
+import { validate, failureSignatureFor, type ValidationEvidence, type ValidationResult } from '../validation/engine.js';
 import { contractFor } from '../validation/contract.js';
 import { validationProfileFor, contractForProfile, meetsMinimumLevel } from '../validation/profile.js';
 import { taskEconomicsFor } from '../efficiency/task-economics.js';
@@ -1443,7 +1443,7 @@ async function dispatch<T>(db: Db, nodeId: string, task: () => Promise<T>, prior
         // transcript needs to see that the run stopped on money rather than on
         // an error.
         publishProgress(db, nodeId, message);
-        throw new Error(message);
+        throw new SpendGuardStop(message, guard.hard);
       }
       if (guard.state === 'STOP') {
         publishProgress(db, nodeId, `${guard.reason} Continuing on the pivot just decided rather than stopping.`);
@@ -1825,8 +1825,8 @@ function productionMachine(db: Db, nodeId: string) {
         publish({ id: decisionEventId, nodeId, type: 'decision.made', payload: decisionPayload, createdAt: decidedAt });
         return result;
       }),
-      validate: fromPromise(async ({ input }: { input: { nodeId: string; goal: string; succeeded: boolean } }) =>
-        runValidation(db, input.nodeId, input.succeeded)),
+      validate: fromPromise(async ({ input }: { input: { nodeId: string; goal: string; succeeded: boolean; guardStopped: boolean } }) =>
+        runValidation(db, input.nodeId, input.succeeded, input.guardStopped)),
       escalate: fromPromise(async ({ input }: { input: { nodeId: string; reason: string } }) =>
         escalate(input.nodeId, input.reason, { insertApproval: (record) => insertApproval(db, record) }),
       ),
@@ -2498,7 +2498,7 @@ function recordEfficiency(db: Db, nodeId: string, outcome: EfficiencyOutcome): v
  *  stops at V2 — a green check in the run's own trace. Recorded as
  *  `V3:no_verifier` rather than silently, so the ceiling is visible in the
  *  telemetry rather than inferred from its absence. */
-function runValidation(db: Db, nodeId: string, succeeded: boolean): ValidationVerdict {
+function runValidation(db: Db, nodeId: string, succeeded: boolean, guardStopped = false): ValidationVerdict {
   const node = getNode(db, nodeId);
   const goal = node?.contract.goal ?? '';
   // Closed *here*, not at the terminal transition, and the ordering is
@@ -2569,9 +2569,10 @@ function runValidation(db: Db, nodeId: string, succeeded: boolean): ValidationVe
     strategy: delegated ? 'SERIAL_DELEGATED' : 'MANAGED',
     // What failed, in the stable form the trajectory fingerprint uses, so two
     // attempts that died the same way are recognisable as such.
-    failureSignature: gated.passed
-      ? 'none'
-      : `validation:${gated.level}:${gated.reasonCodes.filter((code) => !code.startsWith('V')).join('|') || 'insufficient_evidence'}`,
+    failureSignature: failureSignatureFor({
+      passed: gated.passed, underlyingPassed: result.passed, level: gated.level,
+      reasonCodes: gated.reasonCodes, guardStopped,
+    }),
     progress: signals.progressSignal,
   };
 }

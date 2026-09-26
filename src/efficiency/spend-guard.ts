@@ -26,6 +26,19 @@
 
 export type GuardState = 'GREEN' | 'AMBER' | 'RED' | 'STOP';
 
+/** Thrown when the guard refuses to open a sandbox, distinguishable from an
+ *  ordinary dispatch error so a caller can tell "the daemon's own resource
+ *  ceiling stopped this" from "the work itself went wrong" — see
+ *  `src/validation/engine.ts`'s `failureSignatureFor`, which needs exactly
+ *  that distinction to avoid punishing a retry for a resource limit rather
+ *  than a strategy that does not work. */
+export class SpendGuardStop extends Error {
+  constructor(message: string, public readonly hard: boolean) {
+    super(message);
+    this.name = 'SpendGuardStop';
+  }
+}
+
 export interface SpendGuardState {
   state: GuardState;
   spentUsd: number;

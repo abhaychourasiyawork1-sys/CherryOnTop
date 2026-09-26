@@ -75,6 +75,14 @@ export interface ExecuteStepResult {
    *  does not refill between attempts a few minutes apart — so this is what
    *  the node machine's retry loop checks before spending another attempt. */
   rateLimited?: boolean;
+  /** This attempt never opened a sandbox at all: the daemon's own hard
+   *  turn/spend guard (`src/efficiency/spend-guard.ts`) refused it before it
+   *  could start. Set from `node-machine.ts`'s `SELF_EXECUTE.onError`, not by
+   *  `executeStep` itself, which never sees this — the guard sits in front of
+   *  it, in `dispatch()`. Distinct from a dispatch that ran and produced an
+   *  incomplete answer: `failureSignatureFor` uses it to tell "the resource
+   *  ran out" from "the approach does not work" before a retry is refused. */
+  guardStopped?: boolean;
   /** Token counts for this dispatch, read from the runtime's final result
    *  event. All zeros when the runtime reported none. */
   usage: import('./tokens.js').DispatchUsage;
