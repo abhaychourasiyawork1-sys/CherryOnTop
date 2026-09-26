@@ -136,3 +136,44 @@ export function observationsFromEvents(events: StructuredEvent[], nodeId: string
 export function observationBytes(observations: Observation[]): number {
   return observations.reduce((sum, observation) => sum + observation.raw.length, 0);
 }
+
+const EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit']);
+/** A test runner as the command itself (after an optional `cd … &&`), not a
+ *  command that mentions one: `pip install pytest` passes and proves nothing. */
+const TEST_COMMAND = /^\s*(?:cd\s+\S+\s*&&\s*)?(?:\w+=\S+\s+)*(?:python3?\s+(?:-\w+\s+)*-m\s+)?(?:pytest|py\.test|unittest|tox|nox|vitest|jest|mocha|go\s+test|cargo\s+test|npm\s+(?:run\s+)?test|make\s+test|\S*runtests?\.py|\S*bin\/test)\b/;
+/** Whether a shell command *verifies* something: it runs tests, a build or
+ *  type check, or a script that exercises the code. Judged on the command
+ *  itself (after an optional `cd … &&`, `timeout N` and env assignments), never
+ *  on words it contains: `grep … test_requests.py; ls test*.py` once passed
+ *  validation as an observed test, while the `python -c` repro the same agent
+ *  ran to prove its fix counted for nothing. */
+const VERIFY_LEAD = /^\s*(?:cd\s+\S+\s*&&\s*)?(?:timeout\s+\S+\s+)?(?:\w+=\S*\s+)*(?:\S*\/)?(?:(?:python[\d.]*|py\.test)\s+(?:-[\w-]+\s+)*(?:-m\s+(?:pytest|unittest|tox|nox)\b|-c\s|(?!-)\S+\.py\b)|(?:pytest|tox|nox|vitest|jest|mocha)\b|(?:npm|pnpm|yarn)\s+(?:run\s+)?(?:test|build|lint|typecheck)\b|npx\s+(?:tsc|vitest|jest|eslint)\b|tsc\b|eslint\b|cargo\s+(?:test|build|check)\b|go\s+(?:test|build|vet)\b|make\b|node\s+(?!-)\S+\.(?:m?js|ts)\b)/;
+
+export function isVerifyingCommand(command: string): boolean {
+  if (/^\s*(?:\S*\/)?python[\d.]*\s+(?:-m\s+pip|setup\.py\s+(?:install|develop))\b/.test(command)) return false;
+  return VERIFY_LEAD.test(command);
+}
+
+/** A pipe hides the runner's exit status (`pytest | tail` exits 0 on failure). */
+const PIPED = /(?<!\|)\|(?!\|)/;
+const FAILURE_OUTPUT = /\b\d+ (?:failed|errors?)\b|^FAILED\b|^ERROR\b|Traceback \(most recent call last\)/m;
+
+/** The run was stopped by its turn cap *after* it changed a file and the last
+ *  test command it ran after that change passed.
+ *
+ *  That is a finished fix that ran out of turns to report, not a failed one.
+ *  Only the ordering makes it safe: a green test *before* the last edit proves
+ *  nothing about the code as it was left. */
+export function verifiedChangeAtTurnCap(events: StructuredEvent[]): boolean {
+  const last = events.filter((event) => event.type === 'result').at(-1);
+  if ((last?.payload as { subtype?: unknown } | undefined)?.subtype !== 'error_max_turns') return false;
+  const observations = observationsFromEvents(events, '');
+  const lastEdit = observations.filter((o) => EDIT_TOOLS.has(o.tool.name) && o.execution.succeeded).at(-1);
+  if (!lastEdit) return false;
+  const lastTest = observations.filter((o) => o.tool.name === 'Bash'
+    && o.execution.sequence > lastEdit.execution.sequence
+    && TEST_COMMAND.test(String(o.invocation.input.command ?? ''))).at(-1);
+  return lastTest !== undefined && lastTest.execution.succeeded
+    && !PIPED.test(String(lastTest.invocation.input.command))
+    && !FAILURE_OUTPUT.test(lastTest.raw);
+}

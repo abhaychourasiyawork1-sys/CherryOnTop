@@ -1,0 +1,194 @@
+<title>Harness Matrix: SWE-bench</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Condensed:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+:root{
+  --ground:#F2F4F3; --panel:#FFFFFF; --ink:#16201C; --muted:#5B6863; --rule:#D5DCD8; --faint:#E7ECE9;
+  --a-direct:#44699E; --a-laya:#16876A; --a-off:#B7812A;
+  --good:#1F7A4D; --bad:#B4453A; --warn:#A87412;
+  color-scheme:light;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --ground:#0F1513; --panel:#161E1B; --ink:#E2EAE6; --muted:#98A6A0; --rule:#2A3531; --faint:#1D2723;
+    --a-direct:#7FA3D8; --a-laya:#3FC19B; --a-off:#E0AE55;
+    --good:#4CC28A; --bad:#E07A6F; --warn:#E0B052; color-scheme:dark;
+  }
+}
+:root[data-theme="dark"]{
+  --ground:#0F1513; --panel:#161E1B; --ink:#E2EAE6; --muted:#98A6A0; --rule:#2A3531; --faint:#1D2723;
+  --a-direct:#7FA3D8; --a-laya:#3FC19B; --a-off:#E0AE55;
+  --good:#4CC28A; --bad:#E07A6F; --warn:#E0B052; color-scheme:dark;
+}
+*{box-sizing:border-box}
+body{background:var(--ground);color:var(--ink);font:15px/1.55 "IBM Plex Sans",system-ui,sans-serif;margin:0}
+.wrap{max-width:1080px;margin:0 auto;padding-inline:20px;padding-block:28px 56px}
+h1,h2,h3{font-family:"IBM Plex Sans Condensed","Arial Narrow",system-ui,sans-serif;text-wrap:balance;margin:0}
+h1{font-size:clamp(28px,4vw,40px);line-height:1.1;font-weight:700;letter-spacing:-.01em}
+h2{font-size:21px;font-weight:600;margin-bottom:4px}
+.eyebrow{font:500 12px/1 "IBM Plex Mono",ui-monospace,monospace;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+.lede{font-size:17px;max-width:68ch;margin:12px 0 0}
+.sub{color:var(--muted);max-width:70ch;margin:2px 0 14px;font-size:14px}
+.mono,td.n,.tile .v{font-family:"IBM Plex Mono",ui-monospace,monospace;font-variant-numeric:tabular-nums}
+section{margin-top:40px}
+header{display:grid;gap:6px}
+.legend{display:flex;flex-wrap:wrap;gap:16px;margin-top:16px;font-size:13px}
+.legend span{display:inline-flex;align-items:center;gap:7px}
+.sw{width:12px;height:12px;border-radius:2px;display:inline-block}
+.tiles{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px;margin-top:20px}
+@media (max-width:720px){.tiles{grid-template-columns:1fr}}
+.tile{background:var(--panel);border:1px solid var(--rule);border-radius:6px;padding:16px;display:grid;gap:10px}
+.tile{align-content:start}
+.tile h3{font-size:16px;display:flex;align-items:flex-start;gap:8px;min-height:2.6em}
+.tile h3 .sw{margin-top:.3em;flex:none}
+.tile dl{display:grid;grid-template-columns:1fr auto;gap:4px 12px;margin:0;font-size:14px}
+.tile dt{color:var(--muted)} .tile dd{margin:0;text-align:right}
+.tile .v{font-size:30px;font-weight:500;line-height:1}
+.tile .vl{font-size:12px;color:var(--muted)}
+.chart{background:var(--panel);border:1px solid var(--rule);border-radius:6px;padding:12px;overflow-x:auto}
+svg text{fill:var(--muted);font:13px "IBM Plex Sans",system-ui,sans-serif}
+svg .lbl{fill:var(--ink);font-weight:500}
+svg .grid{stroke:var(--faint)} svg .axis{stroke:var(--rule)}
+.tablewrap{overflow-x:auto;background:var(--panel);border:1px solid var(--rule);border-radius:6px}
+table{border-collapse:collapse;width:100%;font-size:14px;min-width:640px}
+th,td{padding:8px 12px;border-bottom:1px solid var(--faint);text-align:left;vertical-align:top}
+th{font-weight:600;font-size:12px;letter-spacing:.04em;text-transform:uppercase;color:var(--muted)}
+td.n{text-align:right;white-space:nowrap}
+tr:last-child td{border-bottom:0}
+.pill{display:inline-block;font:500 11px/1 "IBM Plex Mono",monospace;padding:4px 7px;border-radius:99px;border:1px solid currentColor}
+.pill.good{color:var(--good)} .pill.bad{color:var(--bad)} .pill.warn{color:var(--warn)}
+.findings{display:grid;gap:10px;padding:0;margin:0;list-style:none}
+.findings li{background:var(--panel);border:1px solid var(--rule);border-left:3px solid var(--rule);border-radius:4px;padding:12px 14px}
+.findings li.good{border-left-color:var(--good)} .findings li.bad{border-left-color:var(--bad)} .findings li.warn{border-left-color:var(--warn)}
+.findings b{font-weight:600}
+.grid-res{display:grid;gap:4px}
+.cellrow{display:grid;grid-template-columns:minmax(140px,210px) repeat(3,1fr);gap:8px;align-items:center;font-size:13px}
+.reps{display:flex;gap:3px}
+.rep{width:26px;height:22px;border-radius:3px;display:grid;place-items:center;font:500 11px "IBM Plex Mono",monospace;color:#fff}
+.rep.no{background:transparent;border:1.5px solid var(--rule);color:var(--muted)}
+.rep.na{background:var(--faint);color:var(--muted)}
+footer{margin-top:44px;color:var(--muted);font-size:13px;max-width:75ch}
+@media (max-width:560px){.cellrow{grid-template-columns:1fr;}.rep{width:22px}}
+</style>
+
+<div class="wrap">
+<header>
+  <div class="eyebrow" id="meta"></div>
+  <h1 id="headline"></h1>
+  <p class="lede" id="lede"></p>
+  <div class="legend" id="legend"></div>
+</header>
+
+<div class="tiles" id="tiles"></div>
+
+<section>
+  <h2>Resolved by the official SWE-bench harness</h2>
+  <p class="sub">Each square is one run (rep 1–3). Filled = the hidden tests pass. Hollow = not resolved. Grey = not recorded.</p>
+  <div class="chart"><div class="grid-res" id="resgrid"></div></div>
+</section>
+
+<section>
+  <h2>Cost of every run</h2>
+  <p class="sub">One dot per run, dollars on the model's own bill. The tick is the arm's mean on that instance.</p>
+  <div class="chart" id="strip"></div>
+</section>
+
+<section>
+  <h2>Turns and tokens, averaged per instance</h2>
+  <p class="sub">Turns drive cost: every turn re-reads the cached context. Tokens include cache reads and writes.</p>
+  <div class="tablewrap"><table id="pertable"></table></div>
+</section>
+
+<section>
+  <h2>Paired differences</h2>
+  <p class="sub">Same instance, same repetition slot. Negative cost means cheaper than the comparison arm. 95% bootstrap intervals over the paired runs.</p>
+  <div class="tablewrap"><table id="pairs"></table></div>
+</section>
+
+<section>
+  <h2>Findings</h2>
+  <ul class="findings" id="findings"></ul>
+</section>
+
+<footer id="foot"></footer>
+</div>
+
+<script>
+const DATA = /*DATA*/null;
+const FINDINGS = /*FINDINGS*/[];
+const META = /*META*/{};
+const ARMS = ['direct','cherryontop','cherryontop-nolaya'];
+const COLOR = {direct:'var(--a-direct)', cherryontop:'var(--a-laya)', 'cherryontop-nolaya':'var(--a-off)'};
+const NAME = {direct:'Claude Code', cherryontop:'CherryOnTop + Laya', 'cherryontop-nolaya':'CherryOnTop, Laya off'};
+const short = (i) => i.replace(/^[^_]+__/, '');
+const $ = (id) => document.getElementById(id);
+const usd = (x, d=2) => x == null ? '—' : '$' + x.toFixed(d);
+const pct = (x) => x == null ? '—' : Math.round(x * 100) + '%';
+const esc = (s) => String(s).replace(/[&<>]/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+
+$('meta').textContent = META.eyebrow || '';
+$('headline').textContent = META.headline || '';
+$('lede').textContent = META.lede || '';
+$('legend').innerHTML = ARMS.map(a => `<span><i class="sw" style="background:${COLOR[a]}"></i>${NAME[a]}</span>`).join('');
+
+$('tiles').innerHTML = ARMS.filter(a => DATA.arms[a]).map(a => {
+  const s = DATA.arms[a];
+  return `<div class="tile"><h3><i class="sw" style="background:${COLOR[a]}"></i>${NAME[a]}</h3>
+    <div><div class="v">${s.resolved}/${s.runs}</div><div class="vl">resolved (${pct(s.resolveRate)})</div></div>
+    <dl>
+      <dt>Mean cost per run</dt><dd class="mono">${usd(s.meanCost,3)}</dd>
+      <dt>Cost per resolved task</dt><dd class="mono">${usd(s.costPerResolved,3)}</dd>
+      <dt>Mean turns</dt><dd class="mono">${s.meanTurns.toFixed(1)}</dd>
+      <dt>Mean tokens</dt><dd class="mono">${(s.meanTokens/1e6).toFixed(2)}M</dd>
+      <dt>Total spend</dt><dd class="mono">${usd(s.totalCost)}</dd>
+      ${a !== 'direct' ? `<dt>Laya judgments (fallbacks)</dt><dd class="mono">${s.system1Judgments} (${s.system1Fallbacks})</dd>` : ''}
+    </dl></div>`;
+}).join('');
+
+const insts = Object.keys(DATA.perInstance);
+const reps = [...new Set(DATA.cells.map(c => c.rep))].sort();
+$('resgrid').innerHTML = `<div class="cellrow" style="color:var(--muted);font-size:12px"><span></span>${ARMS.map(a=>`<span>${NAME[a]}</span>`).join('')}</div>` +
+  insts.map(i => `<div class="cellrow"><span class="mono">${short(i)}</span>${ARMS.map(a => `<span class="reps">${reps.map((r,k) => {
+    const c = DATA.cells.find(x => x.instance===i && x.arm===a && x.rep===r);
+    if (!c) return `<span class="rep na" title="not recorded">·</span>`;
+    return c.resolved ? `<span class="rep" style="background:${COLOR[a]}" title="rep ${k+1}: resolved, ${usd(c.costUsd)}">${k+1}</span>`
+                      : `<span class="rep no" title="rep ${k+1}: not resolved${c.graded?'':' (ungraded)'}, ${usd(c.costUsd)}">${k+1}</span>`;
+  }).join('')}</span>`).join('')}</div>`).join('');
+
+(function strip(){
+  const W = 960, rowH = 46, top = 20, left = 190, right = 20, H = top + insts.length*rowH + 34;
+  const max = Math.max(0.5, ...DATA.cells.map(c => c.costUsd)) * 1.05;
+  const x = v => left + (W-left-right) * v / max;
+  const step = max > 2 ? 0.5 : 0.25;
+  let s = `<svg viewBox="0 0 ${W} ${H}" width="100%" style="min-width:600px" role="img" aria-label="Cost per run by instance and arm">`;
+  for (let v = 0; v <= max; v += step) s += `<line class="grid" x1="${x(v)}" x2="${x(v)}" y1="${top-6}" y2="${H-30}"/><text x="${x(v)}" y="${H-12}" text-anchor="middle">$${v.toFixed(2)}</text>`;
+  insts.forEach((i, r) => {
+    const y0 = top + r*rowH;
+    s += `<text class="lbl" x="${left-12}" y="${y0+rowH/2+4}" text-anchor="end">${short(i)}</text>`;
+    ARMS.forEach((a, k) => {
+      const y = y0 + 10 + k*13;
+      const cs = DATA.cells.filter(c => c.instance===i && c.arm===a);
+      cs.forEach(c => s += `<circle cx="${x(c.costUsd)}" cy="${y}" r="4.5" fill="${COLOR[a]}" fill-opacity="${c.resolved?0.95:0.35}" stroke="${COLOR[a]}"><title>${NAME[a]} rep ${c.rep}: ${usd(c.costUsd)}, ${c.turns} turns, ${c.resolved?'resolved':'not resolved'}</title></circle>`);
+      if (cs.length) { const m = cs.reduce((t,c)=>t+c.costUsd,0)/cs.length; s += `<line x1="${x(m)}" x2="${x(m)}" y1="${y-7}" y2="${y+7}" stroke="${COLOR[a]}" stroke-width="2.5"/>`; }
+    });
+    s += `<line class="axis" x1="${left}" x2="${W-right}" y1="${y0+rowH-2}" y2="${y0+rowH-2}"/>`;
+  });
+  $('strip').innerHTML = s + `</svg>`;
+})();
+
+$('pertable').innerHTML = `<thead><tr><th>Instance</th>${ARMS.map(a=>`<th style="text-align:right">${NAME[a]}<br>turns · tokens · $</th>`).join('')}</tr></thead><tbody>` +
+  insts.map(i => `<tr><td class="mono">${short(i)}</td>${ARMS.map(a => { const p = DATA.perInstance[i][a];
+    return p ? `<td class="n">${p.meanTurns.toFixed(1)} · ${(p.meanTokens/1e6).toFixed(2)}M · ${usd(p.meanCost)}</td>` : '<td class="n">—</td>'; }).join('')}</tr>`).join('') + '</tbody>';
+
+const PAIRNAME = {'cherryontop_vs_direct':'CherryOnTop + Laya vs Claude Code','cherryontop-nolaya_vs_direct':'CherryOnTop, Laya off vs Claude Code','cherryontop_vs_cherryontop-nolaya':'Laya on vs Laya off (CherryOnTop)'};
+const ci = (c, f) => c ? `[${f(c[0])}, ${f(c[1])}]` : '';
+const sgn = (v, f) => (v > 0 ? '+' : '') + f(v);
+$('pairs').innerHTML = `<thead><tr><th>Comparison</th><th style="text-align:right">Pairs</th><th style="text-align:right">Cost / run</th><th style="text-align:right">Turns / run</th><th style="text-align:right">Resolved rate</th></tr></thead><tbody>` +
+  Object.entries(DATA.pairs).map(([k,p]) => `<tr><td>${PAIRNAME[k]||k}</td><td class="n">${p.n}</td>
+    <td class="n">${sgn(p.costUsd.meanDiff, v=>'$'+v.toFixed(3))} (${sgn(p.costUsd.relative, v=>Math.round(v*100)+'%')})<br><span style="color:var(--muted)">${ci(p.costUsd.ci95, v=>v.toFixed(3))}</span></td>
+    <td class="n">${sgn(p.turns.meanDiff, v=>v.toFixed(1))}<br><span style="color:var(--muted)">${ci(p.turns.ci95, v=>v.toFixed(1))}</span></td>
+    <td class="n">${sgn(p.resolved.meanDiff*100, v=>v.toFixed(0)+' pts')}<br><span style="color:var(--muted)">${ci(p.resolved.ci95, v=>Math.round(v*100))}</span></td></tr>`).join('') + '</tbody>';
+
+$('findings').innerHTML = FINDINGS.map(f => `<li class="${f.tone}"><b>${esc(f.title)}</b> ${esc(f.body)}</li>`).join('');
+$('foot').textContent = META.footer || '';
+</script>

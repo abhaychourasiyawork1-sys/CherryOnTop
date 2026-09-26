@@ -12,7 +12,7 @@
  *  signals never trip the guard's stall branch. Being unsure must look like
  *  being unsure, not like a verdict. */
 import type { StructuredEvent } from '../adapters/adapter.js';
-import { observationsFromEvents, type Observation } from '../execution/observation.js';
+import { observationsFromEvents, isVerifyingCommand, type Observation } from '../execution/observation.js';
 // The shape `decision/trajectory.ts` compares. Imported rather than restated so
 // the producer of a fingerprint and the comparison over it cannot disagree
 // about the fields.
@@ -48,10 +48,6 @@ const WRITE_TOOLS = new Set(['Edit', 'MultiEdit', 'Write', 'NotebookEdit', 'Upda
  *  a run look productive by writing todo lists. */
 const INERT_TOOLS = new Set(['TodoWrite', 'ExitPlanMode']);
 
-/** A shell command that proves something: the test run, the build, the linter.
- *  Passing one is the strongest evidence of progress a trajectory can offer,
- *  and failing one repeatedly is the strongest evidence against. */
-const VERIFYING = /\b(?:test|tests|vitest|jest|pytest|build|tsc|typecheck|lint|eslint|check|cargo|go\s+test|make)\b/i;
 
 /** `Bash:git/status` — the operation, where the tool has one. */
 function identity(observation: Observation): string {
@@ -112,7 +108,9 @@ export function summarizeExecutionTrajectory(events: StructuredEvent[]): Progres
     // command that passed is the strongest progress there is; one that failed
     // is not progress, but it is not searching either — it is an attempt.
     const command = shellCommand(observation);
-    if (VERIFYING.test(command)) {
+    // A command that proves something (tests, a build, a script exercising the
+    // code), judged by the command itself: see isVerifyingCommand.
+    if (isVerifyingCommand(command)) {
       if (observation.execution.succeeded) { productive += 1; verified += 1; }
       continue;
     }
@@ -233,7 +231,9 @@ export function executionSnapshot(input: SnapshotInput): ExecutionSnapshot {
       continue;
     }
     const command = shellCommand(observation);
-    if (VERIFYING.test(command)) {
+    // A command that proves something (tests, a build, a script exercising the
+    // code), judged by the command itself: see isVerifyingCommand.
+    if (isVerifyingCommand(command)) {
       if (observation.execution.succeeded) productive += 1;
       if (target) activeTargets.add(target);
       continue;

@@ -76,6 +76,9 @@ and a detailed tour of Mission Control (Desk, Cases, a case's four views, Mandat
 - Docker, plus [`kind`](https://kind.sigs.k8s.io/) and `kubectl` — the runtime provisions a
   local Kubernetes cluster (via `kind`) to sandbox agent work
 - A Claude subscription (`claude login`) or an Anthropic API key (`ANTHROPIC_API_KEY`)
+- Recommended: [Laya](https://github.com/NandhaKishorM/laya) for System-1 decisions
+  (`pip install "laya[serve]"`). The daemon starts it on its own. Without it the runtime
+  still works, but it does not split a goal across agents unless you explicitly ask it to.
 
 ## Quickstart
 
@@ -182,6 +185,14 @@ Environment variables useful during development:
 - `ORG_MAX_CONCURRENT_SANDBOXES` — raise the default cap of 2 concurrent sandboxes if you're
   billing against an API key rather than a subscription quota.
 - `ORG_DB_PATH` — point at an alternate SQLite database (used by `npm run seed:demo`).
+- `ORG_SYSTEM1` — `laya` (default), `jev` or `off`. See [USAGE.md](USAGE.md#system-1-decisions-laya).
+
+System-1 live tests are opt-in and never part of `npm test`:
+
+```bash
+SYSTEM1_LIVE_TESTS=1 VITEST_SUITE=integration npx vitest run src/system1/live-laya.integration.test.ts   # needs laya-serve on PATH or ORG_LAYA_URL
+SYSTEM1_LIVE_TESTS=1 VITEST_SUITE=integration npx vitest run src/system1/live-claude.integration.test.ts  # needs a logged-in claude
+```
 
 ## Verifying the record
 

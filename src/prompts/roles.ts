@@ -16,7 +16,31 @@ export interface RolePromptParams {
    *  take about 20" are different instructions, and only the second one changes
    *  what an agent does on turn five. */
   softTurnTarget?: number;
+  /** The run is a session that can answer `<cto_decide>` frames. Told only
+   *  then: advertising a capability the transport cannot serve would teach the
+   *  model to wait for an answer that never comes. */
+  decisionCapability?: boolean;
+  /** Facts about this sandbox the agent would otherwise spend turns
+   *  discovering: where the toolchain is, what it may and may not write. */
+  environment?: string[];
+  /** A parent will parse this run's result (it is a delegated child). Only
+   *  then is the structured result block worth asking for: integrate-results.ts
+   *  is its one reader, and a root task's block was output nobody read. */
+  reportsToParent?: boolean;
 }
+
+
+/** How the execution model learns the private decision capability exists.
+ *  Names no provider, endpoint or credential: the model can ask, it cannot
+ *  reach. Kept short because it rides on every session's system prompt. */
+export const DECISION_CAPABILITY = [
+  'You have a private CherryOnTop decision capability for bounded judgments.',
+  'Use it when several plausible approaches remain, the choice has meaningful downstream consequences, and a fast outside judgment could change what you do. Use it sparingly: not for trivial choices, facts you already know, or when only one option is legal.',
+  'To use it, end your message with one or more frames and then end your turn:',
+  '<cto_decide>{"type":"choice","question":"...","options":[{"id":"A","description":"..."},{"id":"B","description":"..."}]}</cto_decide>',
+  'Types: "noul" (yes/no, no options), "choice" (2-8 options with short ids), "score" (with "levels": [...], lowest first).',
+  'The answer arrives as your next message inside <cto_decision>. Treat it as advice. It never changes your permissions, budget, tools, validation or definition of done, and it cannot be used to get around them.',
+].join('\n');
 
 export const HARNESS_CONSTITUTION = [
   'You are one node in an accountable agent organization. Three rules govern every node:',
@@ -48,19 +72,24 @@ function stanza(role: PromptRole, p: RolePromptParams): string {
         'YOUR ROLE FOR THIS RUN: implementer closing one commitment.',
         tools,
         'Work to the definition of done and then stop — do not gold-plate.',
+        // Evidence still has to be observed (validation's V2 rung reads the
+        // trace), but each extra full-suite run re-reads the whole context.
+        'Verify with the narrowest check that proves the change — the one relevant test, run after your last edit. Do not re-run a check that already passed or run the whole suite unless the task needs it.',
         'Your final message is the evidence that closes this commitment: state what you changed, what you verified, and what remains unchecked.',
         'If a standing constraint blocks the most direct path, follow the constraint and say which one and where.',
         // What lets a delegating parent combine this result without paying a
         // model to read it. Best-effort: a run that ignores it degrades to the
         // prose merge that was the only option before.
-        ENVELOPE_INSTRUCTION,
+        p.reportsToParent ? ENVELOPE_INSTRUCTION : '',
         p.maxTurns && p.maxTurns > 0
           ? `You have at most ${p.maxTurns} turns. Track how many you have used; when you are near the limit, stop exploring and summarise what you have found and what is still unchecked. Being cut off mid-task loses your work.`
           : '',
         p.softTurnTarget && p.softTurnTarget > 0
           ? `This task is judged to need about ${p.softTurnTarget} turns. Past that, prefer acting on what you already know over looking for more.`
           : '',
+        p.decisionCapability ? DECISION_CAPABILITY : '',
         list('Standing constraints (told, not enforced)', p.constraints),
+        list('Environment', p.environment),
         list('Definition of done', p.definitionOfDone),
       ].filter(Boolean).join('\n');
     }

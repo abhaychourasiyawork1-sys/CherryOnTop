@@ -5,6 +5,8 @@ import { runChecks, probeModels, type DoctorCheck } from '../../doctor/checks.js
 import { isClusterReachable, ensureLocalCluster } from '../../k8s/kind.js';
 import os from 'node:os';
 import { hasOauthCredentials, checkCredentials } from '../../execution/credentials.js';
+import { probeSystem1 } from '../../system1/runtime.js';
+import { createDaemonClient } from '../../daemon/client.js';
 
 // Probe args are per-binary on purpose: kubectl rejects `--version` (it wants
 // `version --client`), so a shared flag would report an installed kubectl as
@@ -128,6 +130,19 @@ export const CHECKS: DoctorCheck[] = [
       }
       if (process.env.ANTHROPIC_API_KEY) return { ok: true, message: 'using ANTHROPIC_API_KEY' };
       return { ok: false, message: 'no Claude auth found — run `claude login` to use your subscription, or export ANTHROPIC_API_KEY (get one at https://console.anthropic.com/settings/keys)' };
+    },
+  },
+  {
+    name: 'System-1 (Laya)',
+    // The running daemon's answer wins: it is the process that asks, and its
+    // PATH and environment can differ from this shell's.
+    run: async () => {
+      const ping = await createDaemonClient().daemon.ping.query().catch(() => null);
+      if (!ping?.system1) return probeSystem1();
+      if (ping.system1.mode === 'off') return { ok: true, message: 'disabled in the running daemon (ORG_SYSTEM1=off)' };
+      return ping.system1.ready
+        ? { ok: true, message: `${ping.system1.mode} ready in the running daemon` }
+        : { ok: false, message: `the running daemon's ${ping.system1.mode} is not ready (see the daemon log; laya-serve must be on the daemon's PATH or set ORG_LAYA_COMMAND). Decisions are using their fallbacks.` };
     },
   },
   {

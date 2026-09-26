@@ -2,6 +2,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { mkdirSync } from 'node:fs';
 import { buildServer } from './app.js';
+import { installSystem1 } from '../system1/runtime.js';
 
 const DAEMON_PORT = Number(process.env.ORG_DAEMON_PORT ?? 4177);
 const DB_PATH = process.env.ORG_DB_PATH ?? path.join(os.homedir(), '.org', 'state.db');
@@ -30,6 +31,19 @@ process.on('uncaughtException', (err) => {
 });
 
 const app = buildServer(DB_PATH);
+
+// Laya, resident for the daemon's lifetime. Started here rather than in
+// buildServer so tests that build a server never spawn a model.
+const s1 = installSystem1(path.dirname(DB_PATH));
+s1.laya?.ready().then(async (ok) => {
+  if (ok) await s1.warm();
+  console.error(ok
+    ? `System-1 ready: Laya at ${s1.laya!.url}`
+    : `System-1 unavailable (${s1.laya!.failure()}); decisions use their deterministic fallbacks`);
+});
+for (const signal of ['SIGINT', 'SIGTERM'] as const) {
+  process.once(signal, () => { void s1.stop().finally(() => process.exit(0)); });
+}
 
 app.listen({ port: DAEMON_PORT, host: '127.0.0.1' }).catch((err) => {
   app.log.error(err);

@@ -228,3 +228,20 @@ describe('executionSnapshot — the fingerprint', () => {
     expect(at([], { tokensConsumed: -5 }).tokensConsumed).toBe(0);
   });
 });
+
+describe('what counts as an observed check', () => {
+  const run = (id: string, command: string) => [
+    { type: 'assistant', payload: { message: { content: [{ type: 'tool_use', id, name: 'Bash', input: { command } }] } } },
+    { type: 'user', payload: { message: { content: [{ type: 'tool_result', tool_use_id: id, content: 'ok', is_error: false }] } } },
+  ];
+  it('is a command that exercises the code, not one that mentions tests', () => {
+    // requests-1142: `grep … test_requests.py` passed validation as a test, and
+    // the `python -c` repro that actually proved the fix was never seen.
+    const snap = executionSnapshot({
+      events: [...run('a', 'grep -rn "Content-Length" test_requests.py; ls test*.py'), ...run('b', 'python -c "import requests"'), ...run('c', 'ls tests')],
+      sequence: 0, tokensConsumed: 0,
+    });
+    expect(snap.activeTargets.some((t) => t.includes('python -c'))).toBe(true);
+    expect(snap.activeTargets.some((t) => t.includes('grep') || t.startsWith('ls'))).toBe(false);
+  });
+});

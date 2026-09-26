@@ -1,6 +1,12 @@
 import { router, publicProcedure } from '../trpc.js';
 import { getOrgStats } from '../../db/queries/stats.js';
 import { sandboxLimiter, maxConcurrentFromEnv } from '../../execution/dispatch-limit.js';
+import { orgEnvDigest } from '../../daemon/manager.js';
+import { system1Config } from '../../config/system1.js';
+import { system1 } from '../../system1/guard.js';
+
+/** When this daemon process started, so a caller can tell it predates a build. */
+const STARTED_AT = Date.now();
 
 export const daemonRouter = router({
   // hasApiKey reports the *daemon's* env, not the CLI's. They diverge whenever
@@ -22,6 +28,12 @@ export const daemonRouter = router({
      *  Names rather than a version number, so nobody has to remember to bump
      *  anything: adding a router is the only step. */
     routers: ctx.routerNames,
+    /** Whether *this* daemon's System-1 can answer. The CLI's own PATH says
+     *  nothing about it: a benchmark ran with "laya-serve ENOENT" in the
+     *  daemon log while everything else looked fine. */
+    system1: { mode: system1Config().mode, ready: system1().ready() },
+    envDigest: orgEnvDigest(process.env),
+    startedAt: STARTED_AT,
   })),
 
   stats: publicProcedure.query(({ ctx }) => getOrgStats(ctx.db)),

@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import { dispatchOptionsFor, planCacheTtlHours, repoMapTokenBudget, rolePromptsEnabled } from './efficiency.js';
+import { executeTimeoutMs, dispatchOptionsFor, planCacheTtlHours, repoMapTokenBudget, rolePromptsEnabled } from './efficiency.js';
 
 const KEYS = [
   'ORG_MODEL_PLAN', 'ORG_MODEL_EXECUTE', 'ORG_MODEL_SYNTHESIZE',
@@ -10,7 +10,7 @@ afterEach(() => { for (const k of KEYS) delete process.env[k]; });
 
 describe('dispatchOptionsFor', () => {
   it('defaults plan and synthesize to haiku with turn caps, execute to no model', () => {
-    expect(dispatchOptionsFor('plan')).toEqual({ model: 'haiku', maxTurns: 2 });
+    expect(dispatchOptionsFor('plan')).toEqual({ model: 'haiku', maxTurns: 6 });
     expect(dispatchOptionsFor('synthesize')).toEqual({ model: 'haiku', maxTurns: 1 });
     expect(dispatchOptionsFor('execute')).toEqual({ maxTurns: 60 });
   });
@@ -69,5 +69,16 @@ describe('scalar knobs', () => {
       process.env.ORG_ROLE_PROMPTS = v;
       expect(rolePromptsEnabled()).toBe(false);
     }
+  });
+});
+
+describe('executeTimeoutMs', () => {
+  it('puts no wall clock on an execute dispatch unless one is configured', () => {
+    const saved = process.env.ORG_EXECUTE_TIMEOUT_MS;
+    delete process.env.ORG_EXECUTE_TIMEOUT_MS;
+    expect(executeTimeoutMs()).toBe(Number.POSITIVE_INFINITY);
+    process.env.ORG_EXECUTE_TIMEOUT_MS = '900000';
+    expect(executeTimeoutMs()).toBe(900_000);
+    if (saved === undefined) delete process.env.ORG_EXECUTE_TIMEOUT_MS; else process.env.ORG_EXECUTE_TIMEOUT_MS = saved;
   });
 });

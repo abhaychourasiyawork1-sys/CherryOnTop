@@ -39,6 +39,15 @@ describe('tokensByRole', () => {
     expect(exec.inputTokens).toBe(9000);
   });
 
+  it('counts cache writes, which are billed and were left out', () => {
+    const db = createDb(DB);
+    recordDispatchUsage(db, {
+      nodeId: 'a', role: 'execute', model: null, costUsd: 0.1, createdAt: '2026-09-08T00:00:00.000Z',
+      usage: { ...usage(10, 5), cacheCreationTokens: 32_000 },
+    });
+    expect(tokensByRole(db).rows[0].cacheCreationTokens).toBe(32_000);
+  });
+
   it('scopes to a case (subtree) when caseId is given, excluding rows outside it', () => {
     const db = createDb(DB);
     const t = '2026-09-08T00:00:00.000Z';

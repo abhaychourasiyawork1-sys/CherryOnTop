@@ -103,6 +103,14 @@ export function toContainerPath(hostPath: string): string {
   return path.posix.join(HOST_MOUNT_PATH, relative);
 }
 
+/** The inverse of `toContainerPath`: the real host path behind a `/host/...`
+ *  path, or null for a path that is not under the mount. */
+export function fromContainerPath(containerPath: string): string | null {
+  const relative = path.posix.relative(HOST_MOUNT_PATH, containerPath);
+  if (relative === '' || relative.startsWith('..') || path.posix.isAbsolute(relative)) return null;
+  return path.join(os.homedir(), relative);
+}
+
 export async function ensureLocalCluster(): Promise<void> {
   const alreadyUp = (await hasExistingKubeconfigContext()) && (await isClusterReachable());
   const mount = await hasHostMount();

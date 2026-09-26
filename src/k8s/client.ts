@@ -175,6 +175,9 @@ export async function followJobLogs(
   namespace: string,
   onLine: (line: string) => void,
   podWaitTimeoutMs = 120_000,
+  /** Called when the followed stream closes, for whatever reason. A session
+   *  that is steered by the live stream needs to know it went blind. */
+  onClose?: () => void,
 ): Promise<() => void> {
   const { kc } = loadApis();
   const podName = await waitForRunnablePod(jobName, namespace, podWaitTimeoutMs);
@@ -183,6 +186,7 @@ export async function followJobLogs(
   const passthrough = new PassThrough();
   const rl = createInterface({ input: passthrough, crlfDelay: Infinity });
   rl.on('line', onLine);
+  if (onClose) rl.on('close', onClose);
 
   let controller: AbortController;
   try {
@@ -196,5 +200,37 @@ export async function followJobLogs(
   return () => {
     controller.abort();
     rl.close();
+  };
+}
+
+export interface StdinChannel {
+  send(line: string): void;
+  end(): void;
+}
+
+/** A write-only channel to the runner container's stdin, and nothing else.
+ *
+ *  Attach, not exec: exec would be a general way to run anything in the pod,
+ *  and all the private decision round trip needs is to hand the runtime its
+ *  next message. stdout and stderr are not requested, because output already
+ *  has a proven path (log follow plus backfill). Ending the channel closes the
+ *  websocket, and with `stdinOnce` that is EOF for the runtime. */
+export async function attachStdin(
+  jobName: string,
+  namespace: string,
+  podWaitTimeoutMs = 120_000,
+): Promise<StdinChannel> {
+  const { kc } = loadApis();
+  const podName = await waitForRunnablePod(jobName, namespace, podWaitTimeoutMs);
+  if (!podName) throw new Error(`no pod started for ${jobName} within ${podWaitTimeoutMs}ms`);
+  const stdin = new PassThrough();
+  const ws = await new k8s.Attach(kc).attach(namespace, podName, 'runner', null, null, stdin, false);
+  // A dropped socket is EOF for the runtime, which then finishes its turn and
+  // exits. It must never become an unhandled error in the daemon.
+  (ws as { on?: (event: string, fn: () => void) => void }).on?.('error', () => {});
+  let open = true;
+  return {
+    send(line) { if (open) stdin.write(`${line}\n`); },
+    end() { if (!open) return; open = false; stdin.end(); },
   };
 }

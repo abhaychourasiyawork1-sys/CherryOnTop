@@ -1,0 +1,11 @@
+2026-09-25T15:24:06.780Z matrix start: 1 instances x 3 reps x 2 arms, $3 per run
+2026-09-25T15:30:07.081Z scikit-learn__scikit-learn-14710 cherryontop-nolaya rep 51: COMPLETE $0.4371 20 turns s1=0/0fb [5h 0.67 7d 0.76]
+2026-09-25T15:38:05.459Z scikit-learn__scikit-learn-14710 cherryontop rep 51: COMPLETE $0.6489 24 turns s1=0/0fb [5h 0.72 7d 0.76]
+2026-09-25T15:45:29.028Z scikit-learn__scikit-learn-14710 cherryontop-nolaya rep 52: COMPLETE $0.4128 24 turns s1=0/0fb [5h 0.75 7d 0.76]
+2026-09-25T15:55:12.390Z scikit-learn__scikit-learn-14710 cherryontop rep 52: COMPLETE $0.3624 24 turns s1=0/0fb [5h 0.77 7d 0.76]
+2026-09-25T16:01:30.680Z scikit-learn__scikit-learn-14710 cherryontop-nolaya rep 53: COMPLETE $0.4755 25 turns s1=0/0fb [5h 0.8 7d 0.77]
+2026-09-25T16:07:17.792Z scikit-learn__scikit-learn-14710 cherryontop rep 53: COMPLETE $0.591 31 turns s1=1/0fb [5h 0.95 7d 0.78]
+2026-09-25T16:07:17.792Z matrix runs finished: 6/6 cells recorded
+2026-09-25T16:07:17.792Z grading with SWE-bench
+2026-09-25T16:14:30.524Z grading exited 0
+2026-09-25T16:14:30.618Z analysis exited 0; MATRIX COMPLETE

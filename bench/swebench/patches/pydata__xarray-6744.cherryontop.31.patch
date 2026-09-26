@@ -1,0 +1,49 @@
+diff --git a/doc/whats-new.rst b/doc/whats-new.rst
+index f0b1c341..8d94e799 100644
+--- a/doc/whats-new.rst
++++ b/doc/whats-new.rst
+@@ -54,6 +54,10 @@ Bug fixes
+ - :py:meth:`open_dataset` with dask and ``~`` in the path now resolves the home directory
+   instead of raising an error. (:issue:`6707`, :pull:`6710`)
+   By `Michael Niklas <https://github.com/headtr1ck>`_.
++- Fix ``center`` kwarg being ignored when manually iterating over a rolling object
++  (e.g. ``for label, window in da.rolling(x=3, center=True)``), which previously
++  always yielded right-aligned windows regardless of ``center``.
++  By `Claude Sonnet 5 <https://claude.com/claude-code>`_.
+ 
+ Documentation
+ ~~~~~~~~~~~~~
+diff --git a/xarray/core/rolling.py b/xarray/core/rolling.py
+index aef290f6..b2a2accd 100644
+--- a/xarray/core/rolling.py
++++ b/xarray/core/rolling.py
+@@ -272,7 +272,12 @@ class DataArrayRolling(Rolling["DataArray"]):
+             raise ValueError("__iter__ is only supported for 1d-rolling")
+         stops = np.arange(1, len(self.window_labels) + 1)
+         starts = stops - int(self.window[0])
+-        starts[: int(self.window[0])] = 0
++        if self.center[0]:
++            offset = (int(self.window[0]) - 1) // 2
++            starts = starts + offset
++            stops = stops + offset
++        starts[starts < 0] = 0
++        stops[stops > len(self.window_labels)] = len(self.window_labels)
+         for (label, start, stop) in zip(self.window_labels, starts, stops):
+             window = self.obj.isel({self.dim[0]: slice(start, stop)})
+ 
+diff --git a/xarray/tests/test_rolling.py b/xarray/tests/test_rolling.py
+index 2d6efff7..e40ba16a 100644
+--- a/xarray/tests/test_rolling.py
++++ b/xarray/tests/test_rolling.py
+@@ -27,8 +27,9 @@ pytestmark = [
+ 
+ class TestDataArrayRolling:
+     @pytest.mark.parametrize("da", (1, 2), indirect=True)
+-    def test_rolling_iter(self, da) -> None:
+-        rolling_obj = da.rolling(time=7)
++    @pytest.mark.parametrize("center", (True, False))
++    def test_rolling_iter(self, da, center) -> None:
++        rolling_obj = da.rolling(time=7, center=center)
+         rolling_obj_mean = rolling_obj.mean()
+ 
+         assert len(rolling_obj.window_labels) == len(da["time"])

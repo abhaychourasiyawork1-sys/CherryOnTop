@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { Readable } from 'node:stream';
-import { claudeCodeAdapter } from './claude-code.js';
+import { claudeCodeAdapter, CODING_TOOLS } from './claude-code.js';
 
 // Captured from a real `claude --print --output-format stream-json --verbose`
 // run, not invented — gap G8 was found precisely because the previous fixtures
@@ -25,8 +25,19 @@ describe('claudeCodeAdapter', () => {
     const command = claudeCodeAdapter.buildCommand('implement OAuth login');
     expect(command).toEqual([
       'claude', '--print', '--output-format', 'stream-json', '--verbose',
+      '--tools', CODING_TOOLS.join(','), '--disable-slash-commands',
       '--dangerously-skip-permissions', 'implement OAuth login',
     ]);
+  });
+
+  it('names exactly the coding tools when nothing narrower was granted, and never lists skills', () => {
+    const open = claudeCodeAdapter.buildCommand('g');
+    expect(open[open.indexOf('--tools') + 1]).toBe('Bash,Read,Edit,Write,Glob,Grep,WebFetch,WebSearch');
+    expect(open).not.toContain('Task');
+    const narrowed = claudeCodeAdapter.buildCommand('g', { allowedTools: ['Read'], readOnly: true });
+    expect(narrowed).not.toContain('--tools');
+    expect(narrowed).toContain('--allowedTools');
+    for (const cmd of [open, narrowed]) expect(cmd).toContain('--disable-slash-commands');
   });
 
   it('wraps every real Claude Code line as {type, payload: <raw line>}, losing none of them', async () => {
@@ -97,6 +108,22 @@ describe('dispatch options', () => {
   it('still puts the grant allowlist and the goal in the right places alongside opts', () => {
     const cmd = claudeCodeAdapter.buildCommand('do it', { allowedTools: ['Read'], readOnly: true }, { model: 'haiku' });
     expect(cmd[cmd.indexOf('--allowedTools') + 1]).toBe('Read');
+    expect(cmd.at(-1)).toBe('do it');
+  });
+});
+
+describe('claudeCodeAdapter session mode', () => {
+  it('reads stream-json from stdin and keeps the goal out of argv', () => {
+    const cmd = claudeCodeAdapter.buildCommand('do it', undefined, { session: true });
+    expect(cmd.slice(0, 4)).toEqual(['claude', '--print', '--input-format', 'stream-json']);
+    expect(cmd).toContain('--output-format');
+    expect(cmd).not.toContain('do it');
+    expect(claudeCodeAdapter.supportsSession).toBe(true);
+  });
+
+  it('text mode is unchanged', () => {
+    const cmd = claudeCodeAdapter.buildCommand('do it');
+    expect(cmd).not.toContain('--input-format');
     expect(cmd.at(-1)).toBe('do it');
   });
 });

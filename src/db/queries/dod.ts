@@ -40,7 +40,9 @@ export function setDodState(
   id: string,
   state: DodState,
   evidence: { artifactId?: string | null; eventId?: number | null; note?: string | null },
-  checkedAt: string,
+  /** When a *person* ruled. Null for the runtime's own automatic ruling,
+   *  which is recomputed on every attempt; a person's ruling is final. */
+  checkedAt: string | null,
 ): void {
   db.update(dodItems).set({
     state,

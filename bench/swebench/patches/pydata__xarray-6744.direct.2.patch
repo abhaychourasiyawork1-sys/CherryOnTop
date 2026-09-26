@@ -1,0 +1,64 @@
+diff --git a/doc/whats-new.rst b/doc/whats-new.rst
+index f0b1c341..085f3af4 100644
+--- a/doc/whats-new.rst
++++ b/doc/whats-new.rst
+@@ -54,6 +54,10 @@ Bug fixes
+ - :py:meth:`open_dataset` with dask and ``~`` in the path now resolves the home directory
+   instead of raising an error. (:issue:`6707`, :pull:`6710`)
+   By `Michael Niklas <https://github.com/headtr1ck>`_.
++- Fixed ``iter`` for :py:class:`~xarray.core.rolling.DataArrayRolling` to now correctly
++  return centered windows when ``center=True`` is passed to :py:meth:`DataArray.rolling`.
++  (:issue:`6739`)
++  By `Abhay Chourasiya <https://github.com/Abhay06102003>`_.
+ 
+ Documentation
+ ~~~~~~~~~~~~~
+diff --git a/xarray/core/rolling.py b/xarray/core/rolling.py
+index aef290f6..c63e09b5 100644
+--- a/xarray/core/rolling.py
++++ b/xarray/core/rolling.py
+@@ -270,13 +270,17 @@ class DataArrayRolling(Rolling["DataArray"]):
+     def __iter__(self) -> Iterator[tuple[RollingKey, DataArray]]:
+         if self.ndim > 1:
+             raise ValueError("__iter__ is only supported for 1d-rolling")
++        dim0 = self.dim[0]
++        window0 = int(self.window[0])
++        offset = (window0 - 1) // 2 if self.center[0] else 0
+         stops = np.arange(1, len(self.window_labels) + 1)
+-        starts = stops - int(self.window[0])
+-        starts[: int(self.window[0])] = 0
++        starts = stops - window0
++        stops = np.minimum(stops + offset, len(self.window_labels))
++        starts = np.maximum(starts + offset, 0)
+         for (label, start, stop) in zip(self.window_labels, starts, stops):
+-            window = self.obj.isel({self.dim[0]: slice(start, stop)})
++            window = self.obj.isel({dim0: slice(start, stop)})
+ 
+-            counts = window.count(dim=self.dim[0])
++            counts = window.count(dim=dim0)
+             window = window.where(counts >= self.min_periods)
+ 
+             yield (label, window)
+diff --git a/xarray/tests/test_rolling.py b/xarray/tests/test_rolling.py
+index 2d6efff7..1e0fea3c 100644
+--- a/xarray/tests/test_rolling.py
++++ b/xarray/tests/test_rolling.py
+@@ -49,6 +49,18 @@ class TestDataArrayRolling:
+                     expected.values[expected.values.nonzero()],
+                 )
+ 
++    def test_rolling_iter_center(self) -> None:
++        # GH6739: __iter__ should respect center, matching the reduction
++        da = DataArray(np.arange(1, 10), dims="x")
++        for window in range(1, 7):
++            for center in (True, False):
++                rolling_obj = da.rolling(x=window, center=center)
++                expected = rolling_obj.mean().values
++                actual = [
++                    window_da.mean("x").values.item() for _, window_da in rolling_obj
++                ]
++                np.testing.assert_allclose(actual, expected)
++
+     @pytest.mark.parametrize("da", (1,), indirect=True)
+     def test_rolling_repr(self, da) -> None:
+         rolling_obj = da.rolling(time=7)

@@ -1,4 +1,5 @@
 import { describe, it, expect, afterEach, beforeEach, vi, type Mock } from 'vitest';
+import { useFakeLaya } from '../system1/fake-provider.js';
 import { existsSync, unlinkSync, mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
@@ -10,6 +11,8 @@ import { listEventsForNode } from '../db/queries/events.js';
 import { startNodeActor } from './node-actor-manager.js';
 import type { ExecuteStepInput, ExecuteStepResult } from '../execution/execute-step.js';
 import { ZERO_USAGE } from '../execution/tokens.js';
+import { successfulRunEvents } from './run-fixtures.js';
+import { insertDodItems } from '../db/queries/dod.js';
 
 // Same shape as the execute-dispatch test: stubbing the module is what makes
 // the prompt each dispatch is given observable at all. Everything else — the
@@ -55,7 +58,11 @@ async function runDelegating(db: ReturnType<typeof createDb>, repoPath: string, 
   const calls: ExecuteStepInput[] = [];
   stub.mockImplementation(async (input: ExecuteStepInput) => {
     calls.push(input);
-    return result(planAnswer);
+    // Streamed the way the real executeStep does, so the run's result lands
+    // as an artifact and validation sees what production would.
+    const r = result(planAnswer);
+    r.events.forEach((event) => input.onEvent?.(event));
+    return r;
   });
 
   const id = randomUUID();
@@ -76,6 +83,12 @@ async function runDelegating(db: ReturnType<typeof createDb>, repoPath: string, 
   );
   return calls;
 }
+
+// These paths sit behind the decomposability judgment; a fake Laya that says
+// "this splits" is what lets them be reached without the old regex verdict.
+let restoreSystem1: () => void = () => {};
+beforeEach(() => { restoreSystem1 = useFakeLaya(0.9).restore; });
+afterEach(() => restoreSystem1());
 
 afterEach(() => {
   for (const suffix of ['', '-journal', '-wal', '-shm']) {
@@ -113,13 +126,42 @@ describe('the planning dispatch', () => {
     const first = await runDelegating(db, repoPath, '[]');
     expect(first.filter(isPlanning)).toHaveLength(1);
 
-    // Same goal, same committed HEAD, so the answer cannot have changed — and
-    // an audit is investigative, so it runs read-only and its answer is
-    // result-cache eligible too. The node pays for neither a planner nor a
-    // sandbox the second time: no call at all, planning or execute.
+    // Same goal, same committed HEAD, so the planner's answer cannot have
+    // changed. The work itself is run again: the goal says "add tests", a
+    // change request, so it runs with edit tools and is not result-cacheable.
+    // (It used to be read-only because "audit" appeared in it.)
     const second = await runDelegating(db, repoPath, '[]');
     expect(second.filter(isPlanning)).toHaveLength(0);
-    expect(second).toHaveLength(0);
+    expect(second.length).toBeGreaterThan(0);
+    expect(second.every((call) => call.grant?.readOnly !== true)).toBe(true);
+  });
+
+  it('does not cache a planner that ran out of turns as "does not split"', async () => {
+    const db = createDb(TEST_DB);
+    const repoPath = tmpRepo();
+    const isPlanning = (input: ExecuteStepInput) => input.goal.includes('Split this goal');
+    const calls: ExecuteStepInput[] = [];
+    stub.mockImplementation(async (input: ExecuteStepInput) => {
+      calls.push(input);
+      return isPlanning(input)
+        ? { succeeded: false, message: 'max turns', events: [{ type: 'result', payload: { is_error: true, subtype: 'error_max_turns' } }], usage: { ...ZERO_USAGE } }
+        : result('done');
+    });
+    const id = randomUUID();
+    insertNode(db, {
+      id, parentId: null, goal: GOAL, repoPath, state: 'CREATED', createdAt: 't0', updatedAt: 't0',
+      contract: { goal: GOAL, definition_of_done: ['every module audited'], authority: { tools: [], spawn_children: true, max_child_count: 3, budget_usd: 10 }, constraints: [] },
+    });
+    startNodeActor(db, id, GOAL);
+    await vi.waitFor(() => expect(['COMPLETE', 'FAILED', 'CANCELLED']).toContain(getNode(db, id)?.state), { timeout: 10_000 });
+    const notes = listEventsForNode(db, id).filter((e) => e.type === 'step.progress').map((e) => (e.payload as { message: string }).message);
+    expect(notes.some((m) => /planner stopped: error_max_turns/.test(m))).toBe(true);
+    expect(notes.some((m) => /does not split/.test(m))).toBe(false);
+
+    // The next run of the same goal and HEAD plans again instead of reusing a
+    // failure as a verdict.
+    const again = await runDelegating(db, repoPath, JSON.stringify(['Audit src/cart for unhandled errors', 'Add tests for src/cart']));
+    expect(again.filter(isPlanning)).toHaveLength(1);
   });
 
   it('still reuses a real split from the cache', async () => {
@@ -158,7 +200,7 @@ describe('the planning dispatch', () => {
     // already been handed a map of. Planning is look-then-answer; a cap that
     // only lives in config/efficiency.ts and never reaches the dispatch is not
     // a cap at all.
-    expect(plan.maxTurns).toBe(2);
+    expect(plan.maxTurns).toBe(6);
 
     // The work dispatch gets a circuit breaker rather than a budget. It was
     // uncapped, on the reasoning that a whole-codebase investigation needs its
@@ -185,18 +227,58 @@ describe('the planning dispatch', () => {
     // dispatch -> collection. This goal is the one that was recorded splitting
     // five ways off the single word "codebase"; it has full spawn authority and
     // a $10 budget here, so nothing but the classification stops it.
+    // What live Laya (typed-decisions) answers for this goal's twin, "Review
+    // the codebase and check for bugs, no edits": 0.35 on "many" before
+    // calibration. The classification is now System-1's, so that is the input
+    // this test has to feed it.
+    restoreSystem1();
+    restoreSystem1 = useFakeLaya(0.35).restore;
     const db = createDb(TEST_DB);
     const calls = await runDelegating(
       db, tmpRepo(), '[]',
       'Review the codebase and find bugs. Do not modify anything.',
     );
 
+    const root = listNodes(db).find((node) => node.parentId === null)!;
+    const judged = listEventsForNode(db, root.id).find((e) => e.type === 'system1.judgment');
+    expect((judged?.payload as { economicResult: { worthSplitting: boolean } }).economicResult.worthSplitting).toBe(false);
     expect(calls).toHaveLength(1);
     expect(calls[0].goal).not.toContain('Split this goal');
     // Still the strong model: not splitting must not mean not thinking.
     expect(calls[0].model).toBeUndefined();
     // No children, so nothing to synthesise.
     expect(listNodes(db).filter((node) => node.parentId !== null)).toHaveLength(0);
+  });
+
+  it('completes a delegated parent on its children\'s verified work instead of redoing it alone', async () => {
+    // opt rep 61 (seaborn): two children made and tested the fix, the parent
+    // was judged on its own empty rows, failed, and re-ran the whole task
+    // itself twice — 91 turns for a fix its children had already delivered.
+    const db = createDb(TEST_DB);
+    const calls: ExecuteStepInput[] = [];
+    stub.mockImplementation(async (input: ExecuteStepInput) => {
+      calls.push(input);
+      const r = input.goal.includes('Split this goal')
+        ? result(JSON.stringify(['Fix checkout error handling in src/cart/checkout.ts', 'Add tests for checkout in src/cart/checkout.test.ts']))
+        : { succeeded: true, message: 'done', usage: { ...ZERO_USAGE }, events: successfulRunEvents({ editedPath: 'src/cart/checkout.ts', verifyCommand: 'npx vitest run src/cart' }) };
+      r.events.forEach((event) => input.onEvent?.(event));
+      return r;
+    });
+    const id = randomUUID();
+    insertNode(db, {
+      id, parentId: null, goal: GOAL, repoPath: tmpRepo(), state: 'CREATED', createdAt: 't0', updatedAt: 't0',
+      contract: { goal: GOAL, definition_of_done: [GOAL], authority: { tools: [], spawn_children: true, max_child_count: 3, budget_usd: 10 }, constraints: [] },
+    });
+    insertDodItems(db, id, [GOAL], 't0', () => randomUUID());
+    startNodeActor(db, id, GOAL);
+    await vi.waitFor(() => expect(['COMPLETE', 'FAILED', 'CANCELLED']).toContain(getNode(db, id)?.state), { timeout: 10_000 });
+
+    expect(getNode(db, id)?.state).toBe('COMPLETE');
+    // Planning and the synthesis that merges the children's reports are the
+    // parent's own jobs; re-running the task itself is not.
+    const parentSelfRuns = calls.filter((c) => c.nodeId === id
+      && !c.goal.includes('Split this goal') && !c.goal.startsWith('THE ORIGINAL GOAL'));
+    expect(parentSelfRuns).toHaveLength(0);
   });
 
   it('still fans out, but no wider than the default cap', async () => {

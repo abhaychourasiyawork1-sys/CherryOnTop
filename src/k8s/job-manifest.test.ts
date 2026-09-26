@@ -2,6 +2,18 @@ import { describe, it, expect } from 'vitest';
 import { buildExecutionJob } from './job-manifest.js';
 
 describe('buildExecutionJob', () => {
+  it('passes plain env and extra host mounts through, each with its own volume', () => {
+    const job = buildExecutionJob({
+      nodeId: 'n1', namespace: 'org-exec', image: 'i', command: ['c'], worktreePath: '/host/wt', secretName: 's',
+      env: [{ name: 'CLAUDE_CODE_DISABLE_BACKGROUND_TASKS', value: '1' }],
+      extraMounts: [{ hostPath: '/host/repo/.git', mountPath: '/home/u/repo/.git', readOnly: true }],
+    });
+    const container = job.spec!.template.spec!.containers[0];
+    expect(container.env).toEqual([{ name: 'CLAUDE_CODE_DISABLE_BACKGROUND_TASKS', value: '1' }]);
+    expect(container.volumeMounts).toContainEqual({ name: 'extra-0', mountPath: '/home/u/repo/.git', readOnly: true });
+    expect(job.spec!.template.spec!.volumes).toContainEqual({ name: 'extra-0', hostPath: { path: '/host/repo/.git', type: 'Directory' } });
+  });
+
   it('builds a Job manifest with the worktree mounted and the secret referenced', () => {
     const job = buildExecutionJob({
       nodeId: 'n1',
@@ -66,4 +78,17 @@ it('adds no OAuth volume when not requested', () => {
   });
   expect(job.spec?.template.spec?.containers[0].volumeMounts).toHaveLength(1);
   expect(job.spec?.template.spec?.volumes).toHaveLength(1);
+});
+
+it('opens stdin once, without a TTY, only on the runner container of a session job', () => {
+  const params = {
+    nodeId: 'n1', namespace: 'org-exec', image: 'img', command: ['claude'],
+    worktreePath: '/tmp/w', secretName: 's',
+  };
+  const session = buildExecutionJob({ ...params, interactive: true }).spec!.template.spec!.containers;
+  expect(session).toHaveLength(1);
+  expect(session[0]).toMatchObject({ name: 'runner', stdin: true, stdinOnce: true, tty: false });
+  const plain = buildExecutionJob(params).spec!.template.spec!.containers[0];
+  expect(plain.stdin).toBeUndefined();
+  expect(plain.tty).toBeUndefined();
 });

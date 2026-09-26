@@ -37,6 +37,44 @@
 
 ---
 
+## Architecture Review (2026-09-24) — Evidence-Backed Amendments
+
+The plan was critiqued against its own Purpose/Goal statements, the current code, the
+shipped Laya package (`laya==0.3.11`, read in full: `laya/serve.py`, `laya/agent.py`), and
+the documented Claude Code stream-json protocol. An amendment is made only where the
+evidence shows the original design is wrong, incomplete, or strictly weaker. Everything
+not listed here stands as written.
+
+| # | Original plan | Amendment | Evidence |
+|---|---|---|---|
+| A1 | Write `scripts/laya_server.py` (+ its test) as a bespoke resident HTTP server. | **Supervise upstream `laya-serve`** instead. `laya-process.ts` starts/attaches it on `127.0.0.1` with a per-daemon `LAYA_API_KEY` kept in a 0600 file (so a restarted daemon reattaches instead of loading a second checkpoint), `LAYA_MODELS=typed-decisions`, and health-checks `GET /health`. No Python code lives in this repo. | `laya/serve.py` already provides exactly the plan's requirements: resident preloaded `Router`, one inference worker off the event loop, `GET /health`, bearer auth, 413 request limits, and 422 for invalid questions. A second server would be a fork of it that we would have to maintain. |
+| A2 | Separate Laya and JEV provider implementations. | **One HTTP provider speaking the Jev `/v1/systemone` wire protocol**, configured twice (`laya` → local supervised server; `jev` → hosted endpoint + key). | `laya-serve` is explicitly "schema-identical to what Jev returns" (`answers` + `{input_tokens, output_tokens}`), so the provider-neutral contract comes for free and cannot drift between providers. |
+| A3 | "Use one request per batch." | **One request per *shared state*.** Laya evaluates N typed questions against one `state` in one forward pass; independent questions about the same epoch state are packed into one `questions` map, and different states become different requests. | `Router.predict(state, questions)` takes one state. No `/predict/batch` route exists in `laya-serve`. |
+| A4 | Compiler emits "compact summaries". | **Hard character budget (3,000 chars) with deterministic priority truncation, recorded as `truncated` in the receipt.** | The typed-decisions checkpoint has a 1,024-token context and silently truncates the state. Anything over budget is invisible to the model, so the compiler must decide *what* is dropped, not the tokenizer. |
+| A5 | Identity calibration applied to provider output. | Kept, and the receipt records that **provider temperature scaling was already applied**. CherryOnTop's layer (`identity@1`) must never re-apply temperature. | `agent.py::_decode_answers` already divides logits by per-type/per-option-count fitted temperatures (`temperature_by_options`). A second temperature pass would double-scale. |
+| A6 | `@@CTO_DECIDE {...}` single-line frame, parsed from raw output chunks. | **`<cto_decide>{json}</cto_decide>`** (the spec §25.1 syntax), parsed **only from completed assistant `text` content blocks** of stream-json events. Frames are honoured only when the assistant turn ends with them. | (a) The plan's syntax diverged from the spec. (b) The closing tag makes multi-line JSON unambiguous. (c) `execute-step` already line-buffers NDJSON, and without `--include-partial-messages` each text block arrives complete. Chunk-boundary parsing solves a problem that does not exist, and raw-stream parsing adds a real bug: a `tool_result` that *contains* the frame syntax (the model reading this repo's own prompt code) would fire a decision. |
+| A7 | "Inject the result through stdin and continue in the same logical session." Session end not specified. | **Explicit turn protocol:** the model ends its turn after emitting frames; the harness answers with one stream-json user message; when a turn's `result` arrives with no pending frame, the harness **closes stdin**, the CLI exits, and the Job completes. | Verified locally with `claude 2.1.280`: one process accepts successive stdin user messages, emits one `result` per turn in the same session, and exits on stdin EOF. A text frame does not pause generation, so without "end your turn" the model would continue before the answer arrived. Without an explicit EOF rule the Job would never complete. |
+| A8 | Accounting "exactly once". Multi-turn accounting not addressed. | **Session result merge:** intermediate `result` events are re-typed `session.turn_result`. The final `result` carries **summed per-turn `usage`/`num_turns`** and the **last `total_cost_usd`**. | Claude Code docs (streaming input mode): "`usage` covers only that turn … `total_cost_usd` … carry the running total". `usageFromEvents`/`costFromEvents`/answer extraction read only the last `result`, so they would under-count tokens and publish the decision turn's text as the node's answer. |
+| A9 | "K8s manifest enables stdin; narrow stdin channel." | **Kubernetes Attach (stdin only, `tty:false`) on a container with `stdin:true, stdinOnce:true`.** stdout stays on the existing, proven log-follow + backfill path. The goal is delivered as the first stdin message. If Attach cannot be established, the Job is deleted and the dispatch reruns in text mode, so the capability degrades and the work never fails. Frames seen only in the post-completion backfill are recorded `unanswered` and not charged. | `@kubernetes/client-node` `Attach.attach(ns, pod, container, stdout, stderr, stdin, tty)`. `stdinOnce` guarantees EOF when the harness detaches, so a crashed daemon cannot leave a session waiting forever. With stream-json input the CLI blocks until the first message arrives, so connecting late is safe. |
+| A10 | Task 9 rewrites `decompose.ts`/`coordinator.ts`/`decide-execution.ts`/`engine.ts`. | **Integrate at the machine's existing async `assessUncertainty` actor.** `assessDecomposition` stays pure signal extraction (preserved). A new `decideDecomposability` fills `worthSplitting` from Laya's P(decomposable) through a **decision boundary derived from the existing economics constants** rather than a magic threshold: split iff `p·gain ≥ (1−p)·waste`, where `gain = value − costs` (delegation surplus, `defaultEconomicsInput`) and `waste = modelCost + latencyCost` (a planner run that returns `notDelegatable`). `decideExecution`/`authorizeExecution` are unchanged. | Spec §9.1 forbids a universal `p > 0.5`, and §14 forbids probability as a utility multiplier. Multiplying `value·p` (the naive reading of §9.3) would make every medium-complexity goal non-delegable (`0.7p − 0.4 ≥ 0.3 ⇒ p ≥ 1`). That silently undoes the documented 1e-9-tolerance fix that made medium goals delegable. The error-cost boundary keeps those economics intact: medium splits at p ≥ 1/3, high at p ≥ 1/5, and low never does (gain ≤ 0, so **Laya is not even asked**, which is §16's admission rule). |
+| A11 | Task 10 lets Choice fill "uncertain semantic fields" of next-action. | **`action.helpful` scales only benefit terms of an intervention candidate, conditioned on successful execution** ("assuming it is carried out as described…"), so it composes with `failureRisk` without double counting. **Admission:** ask only when the choice differs between p=0 and p=1 bounds (computed with the existing `evaluateActionUtility`). **`runtime.next_action` (Choice) is consulted only to break an exact utility tie**, replacing the arbitrary id tie-break, and never to override utility. Integration point: the async `economicBoundary` (the only live consumer of `chooseEconomicAction` decisions), not the synchronous per-event `runDecisionCycle`. | `utility.ts` discounts the net by `confidence·(1−failureRisk)`, so an unconditional "helpful" probability would count failure twice. The decision cycle is synchronous and runs on the event path, so an awaited network call there would stall event processing. |
+| A12 | Receipts "prefer the existing decisions JSON payload". | **Receipts are `system1.judgment` events on the existing append-only event chain** (`src/system1/receipts.ts`). System-1 overhead goes to the efficiency ledger (`recordSystem1`) exactly once per epoch. No migration and no new table. *(Revised during implementation. The first draft said "a new `DecisionSchema` member".)* | Readers of the `decisions` table assume every row is an execution or runtime choice. `server/routers/approval.ts` reads "the escalation is always the most recent decision" to show what an approval is about, and the GUI titles every row "Chose how to execute". A judgment row landing after an escalation would silently become the reason an approval shows. The event chain is already the replayable audit record, and both transcripts skip event types they do not narrate, so receipts cannot flood the UI (Review Focus 6, plan Task 13 "raw provider details do not flood transcript UI"). |
+| A13 | Provider failure → "conservative fallback". | Per surface: decomposition → `worthSplitting=false` unless there is an explicit split request (spec §17), with a visible progress note. Helpfulness → candidate left **unscaled** (no fabricated probability). Tie-break → existing id order. Model-initiated → the model receives `cto_decision unavailable`. `org doctor` gains a System-1 check so a missing provider is visible instead of silent. | Past incidents in this repo came from failures that were silent (memory: "invisible-failure class"). |
+| A14 | In-process inference was not considered. | **Rejected: `@receptron/laya` (ONNX in Node).** | It ships no `typed-decisions` checkpoint (the fine-tuned one, 0.766 vs base), holds about 2 GB in the daemon heap with no crash isolation, and runs CPU-only. A supervised Python process keeps the GPU path and isolates model crashes from the daemon. |
+| A15 | `execution.decomposable` asked as a Noul (spec §9.1). | **Asked as a described two-way Choice** (`one` = one coherent piece of work, `many` = separate independent deliverables). P(decomposable) is the calibrated probability of `many`. Harness options keep their declared order (`fixedOrder`). | Measured with live Laya (`typed-decisions`, RTX 3060) on 40 labelled goals (`bench/system1-calibration/decomposable-goals.json`). Ranking quality (AUC): bare Noul 0.80, Noul with criteria 0.86 (unstable across a train/test split: 0.73/1.00), described Choice **0.89** (stable: 0.89/0.89). Laya is sensitive to option order: the same Choice with options sorted by id scored 0.835. |
+| A16 | "Initial calibration method is temperature scaling" (spec §11). Plan: identity. | **Per-surface Platt scaling for `execution.decomposable`** (`platt-decomposable@1`). Identity stays for every surface that has no labelled data. Refit with `node bench/system1-calibrate.mjs`, which asks the exact production question. | Raw probabilities ranked well but sat on a biased centre: single-unit tasks scored 0.35–0.70, so every economics-derived threshold split nearly everything (first live run: 4 of 7 workload classes right, and the historical "Review the codebase" case **split**). Temperature scaling cannot move a centre because it is symmetric around 0.5, while Platt scaling adds a bias term. Leave-one-out on the 40 goals: log loss 0.569 → **0.492**, pipeline decision accuracy **0.700** vs **0.575** for the regex heuristic it replaces. Live decision cases after the change: 6 of 7, with the historical review at P=0.017 (not split). |
+| A17 | Health/key check unspecified. | The key probe sends a request `laya-serve` rejects **after auth and before any model work** (`questions: []` → 400; bad key → 401). | Found live: an empty but *valid* question set makes Laya's router auto-select a checkpoint and start downloading one that was never preloaded, which blocks the single inference worker. |
+
+**Resulting file-level changes to the tasks below:** Task 3 drops `scripts/laya_server.py`
+and `scripts/laya_server_test.py`, and the HTTP client is a Jev-wire client. Task 6 uses
+`<cto_decide>` and event-level parsing. Task 7 adds `src/k8s/attach.ts` (stdin-only) and
+the session result merge. Task 9 touches `coordinator.ts` (async bundle) and
+`node-actor-manager.ts` (actor), and adds `src/system1/decomposability.ts`, leaving
+`decompose.ts`, `decide-execution.ts` and `engine.ts` behaviour unchanged. Task 13 writes
+receipts to the event chain and leaves `DecisionSchema` unchanged.
+
+---
+
 ## Task 1 — Freeze Proven Control-Plane Invariants
 
 **Purpose:** Current CherryOnTop already has tested behavior for hard gates, utility, trust, lifecycle, validation, recovery, context budgets, fan-out accounting, and cancellation.
@@ -832,3 +870,56 @@ When new orchestration overhead is the problem, first reduce unnecessary decisio
 ~~~
 
 Each task ends with focused tests and a focused commit. Do not mix unrelated refactors into this implementation.
+
+---
+
+# Implementation Traceability (Task 17)
+
+Every spec §29 invariant, the code that owns it, and the test that fails if it breaks.
+
+| # | Invariant | Owner | Test |
+|---|---|---|---|
+| 1 | Hard constraints before economic ranking | `decision/engine.ts` (`hardGates`, `chooseEconomicAction`), `system1/decomposability.ts` gates | `decision/system1-regression.test.ts`, `system1/preservation-gates.test.ts` |
+| 2 | System-1 cannot grant authority | `system1/decomposability.ts` (no-spawn gate), `engines/decide-execution.ts` | `preservation-gates.test.ts` ("grants no spawn authority", "cannot buy past the budget floor") |
+| 3 | System-1 cannot create illegal candidates | `decision/system1-decision.ts` (asks only about proposed, allowed candidates), `system1/types.ts` (`assertValidJudgment`: selected id must be offered) | `system1-decision.test.ts`, `types.test.ts` |
+| 4 | Provider probability ≠ success probability | `system1/economic-mapping.ts` (helpfulness scales benefit only, `failureRisk` untouched) | `economic-mapping.test.ts` |
+| 5 | Choice = semantic preference among legal options | `decision/system1-decision.ts` (Choice only breaks exact ties) | `system1-decision.test.ts` ("never overrides a utility difference"), `system1.integration.test.ts` |
+| 6 | Calibration separate from inference | `system1/calibration.ts` (per surface, versioned, applied in the guard) | `economic-mapping.test.ts`, `guard.test.ts`, `decomposability.test.ts` |
+| 7 | Trust separate from semantic probability | `system1/calibration.ts` keeps `orchestration` beside `probability`; `decision/trust.ts` unchanged | `economic-mapping.test.ts`, `decision/trust.test.ts` |
+| 8 | Uncertainty does not imply more orchestration | `decision/system1-decision.ts` (demand gate: ask only if the answer flips the action); no re-asking on low confidence | `system1-decision.test.ts` |
+| 9 | Validation is the only path to COMPLETE | `lifecycle/node-machine.ts`, `validation/engine.ts` (unchanged); model path has no route to either | `system1-regression.test.ts`, `preservation-gates.test.ts` (import isolation) |
+| 10 | Retries consume the same budget | `system1/guard.ts` | `guard.test.ts` ("a retry spends from the same budget"), `system1.integration.test.ts` |
+| 11 | Stale decisions are not applied | `system1/guard.ts` (version re-read after answer), `lifecycle/economic-runtime.ts` (`observedStateVersion`, side-effect-free peek) | `guard.test.ts`, `system1.integration.test.ts`, `economic-runtime.test.ts` |
+| 12 | No hidden legacy semantic brain | `system1/decomposability.ts` (fallback = no split unless explicit; never `assessDecomposition().worthSplitting`) | `decomposability.test.ts` ("does not consult the old heuristic") |
+| 13 | Non-intervention is legitimate | `decision/engine.ts` (`continue` fallback), unanswerable helpfulness leaves candidates unscaled | `system1-decision.test.ts` ("a useless verdict … continue") |
+| 14 | Invocation must be decision-relevant | `decompositionBoundary` (null when the answer cannot change economics), `helpfulnessMatters` | `decomposability.test.ts`, `system1-decision.test.ts`, live case "single-file change: not asked" |
+| 15 | Model can request judgment, cannot reach the provider | `system1/model-gateway.ts`, `model-session-controller.ts`, `prompts/roles.ts` (no endpoint/provider named), adapter registers no tool/MCP | `model-gateway.test.ts`, `roles.test.ts`, `execute-step.session.test.ts`, `execute-step.session.k8s.test.ts` (real attach) |
+| 16 | Model judgment cannot override authority/policy | Gateway answer is advice text only; import isolation from lifecycle/authority/validation | `preservation-gates.test.ts` |
+| 17 | Whole-harness benchmark is the target | `bench/tier-b` (Claude Code vs CherryOnTop + Laya) with `system1` diagnostics; `docs/superpowers/benchmarking-system1.md` | `bench/system1-decision-cases.test.mjs`, `bench/metrics/economic.test.mjs`. **Tier-B not yet run.** |
+
+**Review checklist**
+
+- [x] Laya is the live provider (`installSystem1` → supervised `laya-serve`, `typed-decisions`, verified live).
+- [x] JEV stays a provider behind the same client (`ORG_SYSTEM1=jev`).
+- [x] The private protocol is outside the Claude tool/MCP surface (argv test, prompt test).
+- [x] Model awareness is explicit, and only advertised when System-1 is `ready()`.
+- [x] Hard controls and validation stay deterministic (regression and preservation tests).
+- [x] No hidden legacy semantic fallback.
+- [x] Only one proven component changed ownership (the regex split verdict), with replacement evidence (leave-one-out 0.700 vs 0.575). Its signal extraction is kept.
+- [x] Live Claude private-decision round trip (3/3 with live Laya).
+- [ ] Whole-harness benchmark (Tier-B, levels 2–3): spends real usage, not yet run.
+
+**Pre-existing bug found during review, fixed in this branch:** `economicStateFor`
+rebuilt state at version 0, so `runDecisionCycle`'s cadence marked every boundary after
+a node's first as `not_due`. The deep path, and with it `action.helpful` and
+`runtime.next_action`, only ever ran at a node's first dispatch. The state version is
+now the node's runtime event count (`economic-runtime.test.ts`: a regression test
+verified to fail before the fix, plus a check that it still backs off when nothing
+changed). Offline `bench:guard` and `bench:deterministic` are byte-identical before and
+after. The live effect (more boundaries evaluated) is unmeasured until Tier-B runs.
+
+**Live Claude round trip:** passes 3/3 against real Claude Code and real Laya, after
+fixing a protocol bug the first run exposed. The model wrote its frame and then one more
+sentence; frames were only honoured at the very end of a message, so the request was
+ignored and leaked. Every complete frame in the model's own text is now honoured and
+hidden.

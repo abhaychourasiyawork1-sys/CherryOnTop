@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { executeStep } from './execute-step.js';
-import type { RuntimeAdapter } from '../adapters/adapter.js';
+import type { RuntimeAdapter, StructuredEvent } from '../adapters/adapter.js';
 import type { ExecuteStepDeps } from './execute-step.js';
 
 const fakeAdapter: RuntimeAdapter = {
@@ -231,5 +231,52 @@ describe('executeStep dispatch options', () => {
     );
     expect(result.events).toHaveLength(0);
     expect(result.startupMs).toBeGreaterThanOrEqual(0);
+  });
+});
+
+describe('executeStep without a wall clock', () => {
+  const claudeLike: RuntimeAdapter = {
+    name: 'fake', buildCommand: () => ['x'],
+    parseLine: (line) => { try { const o = JSON.parse(line); return { type: o.type, payload: o }; } catch { return null; } },
+    parseEventStream: async () => [],
+  };
+  const step = (id: string, cacheRead: number) => JSON.stringify({
+    type: 'assistant', message: { id, model: 'claude-sonnet-5', usage: { input_tokens: 10, cache_read_input_tokens: cacheRead, output_tokens: 5 } },
+  });
+
+  it('stops the Job once live spend reaches the run\'s budget', async () => {
+    let finish: () => void = () => {};
+    const deps = {
+      ...fakeDepsThatCompleteImmediately(),
+      followJobLogs: vi.fn(async (_j: string, _n: string, onLine: (l: string) => void) => {
+        // 3M cache-read tokens per step on Sonnet 5 is $0.60 a step.
+        setTimeout(() => { for (let i = 0; i < 10; i++) onLine(step(`m${i}`, 3_000_000)); }, 0);
+        return () => {};
+      }),
+      waitForJobCompletion: vi.fn(() => new Promise<{ succeeded: boolean; message: string }>((r) => { finish = () => r({ succeeded: false, message: 'Job was cancelled' }); })),
+      deleteJob: vi.fn(async () => { finish(); }),
+    };
+    const published: StructuredEvent[] = [];
+    const out = await executeStep({ nodeId: 'n', goal: 'g', namespace: 'ns', worktreePath: '/w', credentials: {}, adapter: claudeLike, image: 'i', spendLimitUsd: 1, onEvent: (e) => published.push(e) }, deps);
+    expect(out.succeeded).toBe(false);
+    expect(out.message).toMatch(/\$1\.00 spend limit/);
+    expect(deps.deleteJob).toHaveBeenCalled();
+    // The stopped run still leaves a costed result, so the task's spend guard
+    // (which reads result events) can see what it spent.
+    const result = published.find((e) => e.type === 'result')?.payload as { is_error: boolean; total_cost_usd: number; result: string };
+    expect(result.is_error).toBe(true);
+    expect(result.result).toBe('');
+    expect(result.total_cost_usd).toBeGreaterThan(1);
+  });
+
+  it('allows DNS to the kube-dns pods by label, not only to the Service IP', async () => {
+    const deps = fakeDepsThatCompleteImmediately();
+    await executeStep({ nodeId: 'n', goal: 'g', namespace: 'ns', worktreePath: '/w', credentials: {}, adapter: claudeLike, image: 'i' }, deps);
+    const policy = (deps.applyNetworkPolicy as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    const dns = policy.spec.egress.find((rule: { ports?: { port: number }[] }) => rule.ports?.some((p) => p.port === 53));
+    expect(dns.to).toContainEqual({
+      namespaceSelector: { matchLabels: { 'kubernetes.io/metadata.name': 'kube-system' } },
+      podSelector: { matchLabels: { 'k8s-app': 'kube-dns' } },
+    });
   });
 });

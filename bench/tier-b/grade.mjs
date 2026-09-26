@@ -88,8 +88,23 @@ if (existsSync(rewardFile)) {
   if (fileReward < 1) { resolved = false; reward = fileReward; }
 }
 
+// The verifier's own printed verdict. vba-userform-port writes no reward.txt
+// and its pytest wrapper passes (4/4) even when every trace fails, while the
+// same log ends "Trace pass rate: 0/28 ... Reward: 0.0". The earlier comment
+// above claimed this task prints "Reward: 1.0" when solved -- which is true --
+// but it also prints "Reward: 0.0" when not, and nothing read it, so a run
+// that failed every trace was graded resolved. The last printed reward, when
+// present, can only lower the verdict (same rule as reward.txt).
+const printed = [...dockerLog.matchAll(/^\s*Reward:\s*([0-9.]+)\s*$/gm)].pop();
+if (printed) {
+  const printedReward = Number(printed[1]);
+  if (Number.isFinite(printedReward) && printedReward < 1) { resolved = false; reward = printedReward; }
+}
+const trace = dockerLog.match(/Trace pass rate:\s*(\d+)\/(\d+)/);
+
 const row = {
   tier: 'B', task_id: task.id, arm, repetition,
+  ...(trace ? { tracesPassed: Number(trace[1]), tracesTotal: Number(trace[2]) } : {}),
   resolved,
   reward,
   dockerRunFailed: dockerFailed,
