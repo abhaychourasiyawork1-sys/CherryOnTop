@@ -1055,6 +1055,49 @@ function rememberAnswer(db: Db, nodeId: string, text: string, at: string): void 
   }
 }
 
+/** Writes the command that just verified this run's change into the cross-run
+ *  knowledge store, so a later run against the same repository can read how
+ *  to run its tests instead of rediscovering it by trial and error.
+ *
+ *  Measured cost of not having this: on requests-1142, whose suite needs a
+ *  separate Python 2.7 environment, the agent burned several turns per run
+ *  trying different unittest-loader invocations before it found the one that
+ *  produced an observed pass. `historicalEvidenceSource` already surfaces
+ *  matching `knowledge` rows at execution boundaries (`economic-runtime.ts`) —
+ *  this is the write side, same store `rememberAnswer` uses, just keyed on the
+ *  command instead of the answer. */
+function rememberVerifiedCommands(
+  db: Db, nodeId: string, observedChecks: ValidationEvidence['observedChecks'], at: string,
+): void {
+  const passing = observedChecks.filter((check) => check.passed);
+  if (passing.length === 0) return;
+  try {
+    const node = getNode(db, nodeId);
+    const worktreePath = node?.repoPath ?? process.env.ORG_WORKTREE_PATH;
+    if (!worktreePath) return;
+    const repository = repoIdentity(worktreePath);
+    const revision = repoHead(worktreePath);
+    // Same rule as `rememberAnswer`: knowledge that cannot say which
+    // repository or revision it is about is knowledge nothing can reuse.
+    if (!repository || !revision) return;
+    for (const check of passing) {
+      putKnowledge(db, {
+        kind: 'fact',
+        content: `A command that runs this repository's tests and passed: \`${check.command}\``,
+        repository,
+        revision,
+        confidence: 1,
+        // An observed pass, not a self-report: the strongest thing this store
+        // records, so it outranks an asserted item at the same overlap.
+        validated: true,
+        createdAt: at,
+      });
+    }
+  } catch (err) {
+    console.error(`Failed to remember the verified command for node ${nodeId}:`, err);
+  }
+}
+
 /** Combines what the children reported into the one answer the root owes.
  *
  *  A delegating node used to finish with "All 3 delegated pieces completed" — a
@@ -2480,8 +2523,9 @@ function runValidation(db: Db, nodeId: string, succeeded: boolean): ValidationVe
     freshVerifierAvailable: false,
   });
 
+  const evidence = validationEvidenceFor(db, nodeId, succeeded);
   const result = validate({
-    evidence: validationEvidenceFor(db, nodeId, succeeded),
+    evidence,
     contract: contractForProfile(profile),
   });
 
@@ -2503,6 +2547,7 @@ function runValidation(db: Db, nodeId: string, succeeded: boolean): ValidationVe
   };
   const id = appendEvent(db, { nodeId, type: 'validation.result', payload, createdAt: now });
   publish({ id, nodeId, type: 'validation.result', payload, createdAt: now });
+  if (gated.passed) rememberVerifiedCommands(db, nodeId, evidence.observedChecks, now);
 
   const pending = pendingResults.get(nodeId);
   pendingResults.delete(nodeId);

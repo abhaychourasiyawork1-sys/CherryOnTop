@@ -68,6 +68,15 @@ export async function assessDecomposability(
     : input.existingChildren > 0 ? 'already-delegated'
     : explicit ? 'explicit-split-request'
     : !boundary ? 'economics-would-not-delegate'
+    // The heuristic itself already named this one coherent (single work type,
+    // no separate items) — asking System-1 anyway lets a noisy probability
+    // override a call the rule was confident about. Measured on SWE-bench: a
+    // requests-1142 run scored coherent_single_task=1 here and was asked
+    // anyway; System-1 answered 0.59 (just past its 0.33 threshold) and
+    // delegated a single bug-fix report, paying for a planning dispatch that
+    // could never fan out into real children. Only the confident case is
+    // gated — an ambiguous one (workTypes>1 or a conjunction) still asks.
+    : signals.coherent_single_task === 1 ? 'coherent-single-task'
     : undefined;
   if (gate) {
     signals[`system1_gate_${gate.replace(/-/g, '_')}`] = 1;
