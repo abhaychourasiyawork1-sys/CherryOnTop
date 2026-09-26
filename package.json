@@ -2,10 +2,13 @@
   "name": "cherryontop",
   "private": true,
   "version": "0.1.0",
+  "type": "module",
   "engines": {
     "node": ">=22"
   },
   "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
     "marketing:dev": "npm --prefix site run dev",
     "marketing:api": "tsx scripts/marketing-server.ts",
     "marketing:build": "npm --prefix site run build",
@@ -14,7 +17,14 @@
     "marketing:typecheck": "npm --prefix site run typecheck",
     "marketing:verify": "npm run marketing:typecheck && npm run marketing:test && npm run marketing:build && npm test -- src/marketing && npm run marketing:e2e"
   },
+  "dependencies": {
+    "better-sqlite3": "^13.0.3",
+    "fastify": "^5.12.5",
+    "zod": "^4.6.5"
+  },
   "devDependencies": {
+    "@types/better-sqlite3": "^9.6.0",
+    "@types/node": "^26.6.3",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2",
     "vitest": "^2.1.8"

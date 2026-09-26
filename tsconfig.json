@@ -1,0 +1,17 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "lib": ["ES2022"],
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "noUncheckedIndexedAccess": true,
+    "types": ["node"]
+  },
+  "include": ["src/marketing", "scripts"],
+  "exclude": ["node_modules", "site"]
+}
