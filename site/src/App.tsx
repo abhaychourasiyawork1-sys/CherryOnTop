@@ -20,7 +20,7 @@ import { DemoControllerProvider } from './demo/controller';
 import { PageDepthIndicator } from './components/DepthIndicator';
 import { SITE_CONTENT } from './content';
 
-const PROMO_VIDEO_SRC = import.meta.env.VITE_PROMO_VIDEO_URL ?? '/media/cherryontop-promo.mp4';
+const PROMO_VIDEO_SRC = import.meta.env.VITE_PROMO_VIDEO_URL || '/media/cherryontop-promo.mp4';
 const PROMO_VIDEO_POSTER = '/media/cherryontop-promo-poster.jpg';
 const PROMO_VIDEO_TRANSCRIPT_URL = '/media/cherryontop-promo-transcript.txt';
 const PROMO_VIDEO_TRANSCRIPT =

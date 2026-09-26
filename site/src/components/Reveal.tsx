@@ -1,12 +1,5 @@
 import { useEffect, useRef, useState, type JSX } from 'react';
-
-function prefersReducedMotion(): boolean {
-  return (
-    typeof window !== 'undefined' &&
-    typeof window.matchMedia === 'function' &&
-    window.matchMedia('(prefers-reduced-motion: reduce)').matches
-  );
-}
+import { useReducedMotion } from '../hooks/useReducedMotion';
 
 export function Reveal(props: {
   children: React.ReactNode;
@@ -15,10 +8,11 @@ export function Reveal(props: {
 }): JSX.Element {
   const { children, once = true, threshold = 0.2 } = props;
   const ref = useRef<HTMLDivElement>(null);
-  const [visible, setVisible] = useState(() => prefersReducedMotion());
+  const reducedMotion = useReducedMotion();
+  const [visible, setVisible] = useState(reducedMotion);
 
   useEffect(() => {
-    if (prefersReducedMotion()) {
+    if (reducedMotion) {
       setVisible(true);
       return;
     }
@@ -46,10 +40,10 @@ export function Reveal(props: {
 
     observer.observe(node);
     return () => observer.disconnect();
-  }, [once, threshold]);
+  }, [once, threshold, reducedMotion]);
 
   return (
-    <div ref={ref} className={`reveal${visible ? ' reveal--visible' : ''}`}>
+    <div ref={ref} className={`reveal${visible || reducedMotion ? ' reveal--visible' : ''}`}>
       {children}
     </div>
   );

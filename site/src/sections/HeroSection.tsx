@@ -54,7 +54,7 @@ export function HeroSection(): JSX.Element {
         <p className="hero__support">{hero.supportLine}</p>
       </div>
 
-      <div className="hero__demo" data-testid="hero-demo" aria-live="polite">
+      <div className="hero__demo" data-testid="hero-demo" data-demo-state={snapshot.state} aria-live="polite">
         <p className="hero__demo-goal">{DEMO_PROJECT}</p>
         <StatusIndicator
           status={HERO_STATE_STATUS[snapshot.state]}

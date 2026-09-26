@@ -10,6 +10,7 @@ import {
 } from 'react';
 import { createInitialSnapshot, transition } from './state-machine';
 import type { DemoEvent, DemoSnapshot, DemoState } from './types';
+import { useReducedMotion } from '../hooks/useReducedMotion';
 
 /**
  * Single source of truth for playback timing, in milliseconds. The demo
@@ -27,14 +28,6 @@ export const DEMO_TIMING: Record<Exclude<DemoState, 'memory'>, number> = {
   receipt: 2600,
 };
 
-function prefersReducedMotion(): boolean {
-  return (
-    typeof window !== 'undefined' &&
-    typeof window.matchMedia === 'function' &&
-    window.matchMedia('(prefers-reduced-motion: reduce)').matches
-  );
-}
-
 interface DemoControllerValue {
   snapshot: DemoSnapshot;
   dispatch: (event: DemoEvent) => void;
@@ -47,7 +40,7 @@ const DemoControllerContext = createContext<DemoControllerValue | null>(null);
 export function DemoControllerProvider(props: { children: React.ReactNode }): JSX.Element {
   const { children } = props;
   const [snapshot, dispatch] = useReducer(transition, undefined, createInitialSnapshot);
-  const reducedMotion = useMemo(() => prefersReducedMotion(), []);
+  const reducedMotion = useReducedMotion();
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
