@@ -101,9 +101,15 @@ export interface SiteContent {
     headline: string;
     subline: string;
     emailLabel: string;
+    intentLabel: string;
+    intentOptions: string[];
+    consentLabel: string;
     submitLabel: string;
     successHeadline: string;
     successBody: string;
+    invalidEmailMessage: string;
+    rateLimitedMessage: string;
+    genericErrorMessage: string;
   };
 }
 
@@ -294,8 +300,14 @@ export const SITE_CONTENT: SiteContent = {
     headline: 'CherryOnTop is launching soon.',
     subline: 'Be among the first to get access.',
     emailLabel: 'Email address',
+    intentLabel: 'What brings you here? (optional)',
+    intentOptions: ['Software development', 'Research', 'Automation', 'Operations', 'Other'],
+    consentLabel: 'I agree to be contacted about CherryOnTop.',
     submitLabel: 'Join the launch',
     successHeadline: "You're on the list.",
     successBody: "We'll let you know when CherryOnTop is ready.",
+    invalidEmailMessage: 'Enter a valid email address.',
+    rateLimitedMessage: 'Too many attempts. Please try again in a moment.',
+    genericErrorMessage: 'Something went wrong. Please try again.',
   },
 };
