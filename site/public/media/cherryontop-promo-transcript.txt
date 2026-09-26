@@ -1,0 +1,31 @@
+CherryOnTop — product demonstration transcript (PLACEHOLDER — for human review, not a verbatim caption transcript)
+
+[0:00–0:05] Goal
+On-screen text: "Build a customer platform."
+
+[0:05–0:12] Organization
+Caption: "One goal. An accountable organization."
+The goal resolves into specialized responsibilities: Frontend, Backend, Data, Verification.
+
+[0:12–0:19] Mandate
+Caption: "Autonomy without a blank cheque."
+A budget of $5.00 and a Development authority boundary are shown for the organization.
+
+[0:19–0:30] Execution
+The teams move to Executing. Budgets tick upward. Files, commands, and checks stream by as the work progresses.
+
+[0:30–0:37] Recovery
+Caption: "Caught. Corrected. Re-tested."
+The Verification team reports a failed check. A recovery path leads back to Backend, a fix is applied, and the check re-runs.
+
+[0:37–0:45] Validation
+A checklist completes: build, unit tests, integration tests, and required checks all pass. Status changes to VERIFIED.
+
+[0:45–0:52] Receipt
+A Decision Receipt assembles: objective, authority, budget, spend, actions, artifacts, validation, and outcome.
+
+[0:52–0:60] Resolve
+Caption: "AI teams you can hold accountable."
+CherryOnTop. Launching soon.
+
+Note: this transcript is a plausible reconstruction of the promo video's narration/on-screen text based on the documented storyboard (assets/brag/brag-plan.md). It has not been verified against the final rendered video audio track and should be reviewed by a human before being treated as an accurate caption source.

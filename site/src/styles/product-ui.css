@@ -97,6 +97,10 @@
   border-color: var(--color-cherry-strong);
 }
 
+.execution-node--dimmed {
+  opacity: 0.55;
+}
+
 .execution-node__header {
   display: flex;
   align-items: center;
