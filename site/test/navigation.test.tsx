@@ -1,5 +1,5 @@
 import '@testing-library/jest-dom/vitest';
-import { describe, expect, it, beforeEach, afterEach } from 'vitest';
+import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest';
 import { fireEvent, render, screen, within } from '@testing-library/react';
 import { SiteHeader } from '../src/components/SiteHeader';
 import { SiteFooter } from '../src/components/SiteFooter';
@@ -174,7 +174,12 @@ describe('LaunchForm', () => {
     expect(screen.getByRole('alert')).toBeInTheDocument();
   });
 
-  it('shows the success copy after a valid submission, without a live network call', async () => {
+  it('shows the success copy after a valid submission against the waitlist API', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(new Response(JSON.stringify({ accepted: true }), { status: 202 }));
+    vi.stubGlobal('fetch', fetchMock);
+
     let succeeded = false;
     render(<LaunchForm onSuccess={() => { succeeded = true; }} />);
     fireEvent.change(screen.getByLabelText(SITE_CONTENT.launch.emailLabel), {
@@ -185,6 +190,8 @@ describe('LaunchForm', () => {
     expect(await screen.findByText(SITE_CONTENT.launch.successHeadline)).toBeInTheDocument();
     expect(screen.getByText(SITE_CONTENT.launch.successBody)).toBeInTheDocument();
     expect(succeeded).toBe(true);
+    expect(fetchMock).toHaveBeenCalledWith('/api/waitlist', expect.objectContaining({ method: 'POST' }));
+    vi.unstubAllGlobals();
   });
 
   it('does not hardcode pricing anywhere in the launch copy', () => {
