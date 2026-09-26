@@ -29,3 +29,39 @@ to touch the Electron GUI or runtime daemon, there is nothing here to
 accidentally touch — the constraint still matters for when this branch is
 eventually merged alongside the runtime code, so keep `site/` and
 `src/marketing/` isolated and additive exactly as specified.
+
+## Developer workflow
+
+```bash
+npm ci && npm ci --prefix site     # root: marketing API; site/: React/Vite app
+
+# Terminal 1 — marketing API (waitlist + analytics) on 127.0.0.1:4178
+npm run marketing:api
+# Terminal 2 — Vite dev server; proxies /api/* to the API above
+npm run marketing:dev
+```
+
+One-command verification (typecheck, site unit tests, production build, API tests, Playwright):
+
+```bash
+npm run marketing:verify
+```
+
+Playwright needs its browsers once per machine (`npx --prefix site playwright install chromium`);
+`npm run marketing:e2e` builds the site and serves it with the real API from
+`site/e2e/fixtures/test-api.ts` on a temporary database.
+
+Production: `npm run marketing:build && npm run marketing:start` serves the built site and
+`/api/*` from one process. Operations: `npm run marketing:export -- <file.csv>`,
+`npm run marketing:prune-telemetry -- <days>`.
+
+## Documentation
+
+- `docs/marketing/deployment.md` — same-origin serving, reverse proxy / trusted proxy, CSP and
+  media origin, caching, smoke checks.
+- `docs/marketing/operations.md` — DB backup, waitlist export, telemetry pruning, health,
+  configuration rotation.
+- `docs/marketing/content-policy.md` — model-agnostic, proprietary, product-first guardrails.
+- `docs/marketing/analytics.md` — approved events, safe metadata, batching, retention, no-PII.
+- `docs/marketing/benchmarks.md` — the controlled comparison behind the benchmark section
+  (published with the site and linked from it).
