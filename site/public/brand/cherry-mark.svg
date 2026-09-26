@@ -1,0 +1,21 @@
+<svg width="64" height="64" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="CherryOnTop cherry mark">
+  <path
+    d="M32 26 C32 16, 38 10, 46 7"
+    stroke="#F5F3F1"
+    stroke-width="2.5"
+    stroke-linecap="round"
+    fill="none"
+  />
+  <path
+    d="M45 6 C48.5 4.5, 52.5 5.5, 54 9 C50.5 10.5, 46.5 9.5, 45 6 Z"
+    fill="#3FAE6E"
+  />
+  <circle cx="32" cy="42" r="17" fill="#C8203F" />
+  <path
+    d="M24 36 C26 33, 29.5 31.5, 33 32"
+    stroke="rgba(255,255,255,0.35)"
+    stroke-width="2"
+    stroke-linecap="round"
+    fill="none"
+  />
+</svg>
