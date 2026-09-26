@@ -115,6 +115,21 @@ export function Mandates({ onChanged }: { onChanged: () => void }) {
                 >
                   {comparing === mandate.id ? 'stop comparing' : 'compare'}
                 </button>
+                <button
+                  type="button"
+                  className="linkish"
+                  onClick={() => {
+                    setEditingId(null);
+                    setDraft({
+                      name: `${mandate.name} copy`, description: mandate.description,
+                      authority: { ...mandate.authority, tools: [...mandate.authority.tools] },
+                      constraints: [...mandate.constraints],
+                    });
+                    setError(null);
+                  }}
+                >
+                  duplicate
+                </button>
                 {!mandate.builtin && (
                   <button type="button" className="linkish linkish-danger" onClick={() => void remove(mandate.id)}>
                     delete
@@ -159,8 +174,16 @@ function Editor(props: {
   compareWith: Mandate | null;
 }) {
   const { draft } = props;
+  const [customTool, setCustomTool] = useState('');
   const setAuthority = (patch: Partial<Authority>) =>
     props.onChange({ ...draft, authority: { ...draft.authority, ...patch } });
+
+  const addCustomTool = () => {
+    const tool = customTool.trim();
+    if (!tool || draft.authority.tools.includes(tool)) { setCustomTool(''); return; }
+    setAuthority({ tools: [...draft.authority.tools, tool] });
+    setCustomTool('');
+  };
 
   const envelope = useSimulation(draft.authority, draft.constraints);
   const other = useSimulation(
@@ -212,6 +235,15 @@ function Editor(props: {
             runtime offers. Pick tools to make this a real boundary.
           </p>
         )}
+        <div className="field-inline-add">
+          <input
+            value={customTool}
+            placeholder="Grant a specific tool by name (e.g. mcp__github__create_pr)"
+            onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); addCustomTool(); } }}
+            onChange={(event) => setCustomTool(event.target.value)}
+          />
+          <button type="button" className="ghost-button" onClick={addCustomTool}>Add</button>
+        </div>
       </fieldset>
 
       <label className="field field-inline">
@@ -228,22 +260,52 @@ function Editor(props: {
 
       {draft.authority.spawn_children && (
         <label className="field">
-          <span>Most agents it may build: <span className="figure">{draft.authority.max_child_count}</span></span>
-          <input
-            type="range" min={1} max={8} step={1}
-            value={draft.authority.max_child_count}
-            onChange={(event) => setAuthority({ max_child_count: Number(event.target.value) })}
-          />
+          <span>
+            Most agents it may build, whole organization, any depth:{' '}
+            <span className="figure">{draft.authority.max_child_count}</span>
+          </span>
+          <div className="field-slider-number">
+            <input
+              type="range" min={1} max={50} step={1}
+              value={Math.min(draft.authority.max_child_count, 50)}
+              onChange={(event) => setAuthority({ max_child_count: Number(event.target.value) })}
+            />
+            <input
+              type="number" min={1} step={1}
+              value={draft.authority.max_child_count}
+              onChange={(event) => {
+                const value = Math.max(1, Math.round(Number(event.target.value) || 1));
+                setAuthority({ max_child_count: value });
+              }}
+            />
+          </div>
+          <p className="field-hint">
+            No ceiling here — the slider tops out at 50 for a comfortable drag, but you can type
+            any number. A single delegation round may still fan out narrower than this depending
+            on deployment settings; nested delegation composes across rounds to reach the total.
+          </p>
         </label>
       )}
 
       <label className="field">
         <span>Total it may spend: <span className="figure">{money(draft.authority.budget_usd)}</span></span>
-        <input
-          type="range" min={0.5} max={100} step={0.5}
-          value={draft.authority.budget_usd}
-          onChange={(event) => setAuthority({ budget_usd: Number(event.target.value) })}
-        />
+        <div className="field-slider-number">
+          <input
+            type="range" min={0} max={500} step={0.5}
+            value={Math.min(draft.authority.budget_usd, 500)}
+            onChange={(event) => setAuthority({ budget_usd: Number(event.target.value) })}
+          />
+          <input
+            type="number" min={0} step={0.5}
+            value={draft.authority.budget_usd}
+            onChange={(event) => setAuthority({ budget_usd: Math.max(0, Number(event.target.value) || 0) })}
+          />
+        </div>
+        <p className="field-hint">
+          $0 means nobody has costed this mandate yet, not that it is out of money — spend is only
+          enforced once this is above zero. No ceiling: the slider tops out at $500, type any
+          amount above that.
+        </p>
       </label>
 
       <label className="field">
