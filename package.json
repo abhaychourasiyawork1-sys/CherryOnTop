@@ -1,0 +1,22 @@
+{
+  "name": "cherryontop",
+  "private": true,
+  "version": "0.1.0",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "marketing:dev": "npm --prefix site run dev",
+    "marketing:api": "tsx scripts/marketing-server.ts",
+    "marketing:build": "npm --prefix site run build",
+    "marketing:test": "npm --prefix site test -- --run",
+    "marketing:e2e": "npm --prefix site run e2e",
+    "marketing:typecheck": "npm --prefix site run typecheck",
+    "marketing:verify": "npm run marketing:typecheck && npm run marketing:test && npm run marketing:build && npm test -- src/marketing && npm run marketing:e2e"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  }
+}

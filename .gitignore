@@ -1,0 +1,9 @@
+node_modules/
+site/dist/
+site/node_modules/
+site/playwright-report/
+site/test-results/
+*.log
+.env
+.env.marketing
+.cherryontop/
