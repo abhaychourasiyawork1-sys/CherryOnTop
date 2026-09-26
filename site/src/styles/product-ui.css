@@ -30,3 +30,133 @@
 .product-metric__value--mono {
   font-family: var(--font-mono);
 }
+
+/*
+ * Status vocabulary: every status is conveyed through the icon glyph and the
+ * text label together, never through color alone.
+ */
+.status-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--font-size-ui);
+}
+
+.status-indicator__icon {
+  display: inline-flex;
+  font-size: var(--font-size-ui);
+  line-height: 1;
+}
+
+.status-indicator__label {
+  color: var(--color-text-secondary);
+}
+
+.status-indicator--working .status-indicator__icon,
+.status-indicator--working .status-indicator__label {
+  color: var(--color-text-primary);
+}
+
+.status-indicator--attention .status-indicator__icon,
+.status-indicator--attention .status-indicator__label {
+  color: var(--color-attention);
+}
+
+.status-indicator--recovering .status-indicator__icon,
+.status-indicator--recovering .status-indicator__label {
+  color: var(--color-attention);
+}
+
+.status-indicator--verified .status-indicator__icon,
+.status-indicator--verified .status-indicator__label {
+  color: var(--color-verified);
+}
+
+.execution-node {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  width: 100%;
+  text-align: left;
+  background: var(--color-panel);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-card);
+  padding: var(--space-4);
+  color: var(--color-text-primary);
+  font: inherit;
+  cursor: pointer;
+  transition: border-color var(--duration-base) var(--easing-standard);
+}
+
+.execution-node:hover,
+.execution-node:focus-visible {
+  border-color: var(--color-cherry);
+}
+
+.execution-node--selected {
+  border-color: var(--color-cherry-strong);
+}
+
+.execution-node__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.execution-node__title {
+  font-weight: 600;
+}
+
+.execution-node__role {
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-technical);
+}
+
+.mandate-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  background: var(--color-panel);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-card);
+  padding: var(--space-5);
+}
+
+.mandate-panel__action {
+  font-size: var(--font-size-ui);
+  color: var(--color-text-primary);
+}
+
+.mandate-panel__authority {
+  display: flex;
+  gap: var(--space-6);
+}
+
+.mandate-panel__review {
+  align-self: flex-start;
+  background: transparent;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-button);
+  color: var(--color-text-primary);
+  padding: var(--space-2) var(--space-4);
+  font: inherit;
+  cursor: pointer;
+}
+
+.mandate-panel__review:hover,
+.mandate-panel__review:focus-visible {
+  border-color: var(--color-cherry);
+}
+
+.validation-state {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.validation-state__count {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-ui);
+  color: var(--color-text-primary);
+}
