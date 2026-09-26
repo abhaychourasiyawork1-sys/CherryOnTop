@@ -49,6 +49,7 @@ import { executeTimeoutMs, dispatchOptionsFor, planCacheTtlHours, repoMapTokenBu
 import { routeModel } from '../intelligence/model-router.js';
 import { assessDecomposition } from '../intelligence/decompose.js';
 import { repoHead, repoDirty, repoIdentity } from '../execution/git-state.js';
+import { autoCommitAndPush, autoCommitEnabled, isDisposableFork } from './auto-commit.js';
 import { putKnowledge } from '../evidence/store.js';
 import { extractAnchors } from '../efficiency/task-economics.js';
 import { planCacheKey, getCachedPlan, putCachedPlan } from '../db/queries/plan-cache.js';
@@ -2651,6 +2652,29 @@ function createAndRun(db: Db, nodeId: string, goal: string, persisted: unknown):
       closeDefinitionOfDone(db, nodeId, String(snapshot.value), now);
       recordEfficiency(db, nodeId, snapshot.value === 'COMPLETE' ? 'success'
         : snapshot.value === 'CANCELLED' ? 'partial' : 'failure');
+      // Opt-in (`ORG_AUTO_COMMIT=1`): a sandbox can never commit its own work
+      // (`.git` is read-only in there by design), so nothing ever turned a
+      // verified COMPLETE into a commit without a human doing it by hand. Only
+      // a node's own repoPath, never a child's disposable fork — see
+      // `auto-commit.ts`'s doc comment for why. Best-effort: a failure here is
+      // narrated, not thrown, so it can never take the node's own outcome with it.
+      if (snapshot.value === 'COMPLETE' && autoCommitEnabled()) {
+        const repoPath = getNode(db, nodeId)?.repoPath;
+        if (repoPath && !isDisposableFork(repoPath)) {
+          try {
+            const result = autoCommitAndPush(repoPath, goal, nodeId);
+            if (result.committed) {
+              publishProgress(db, nodeId, result.pushed
+                ? `Auto-committed and pushed verified changes (${result.sha?.slice(0, 7)})`
+                : `Auto-committed verified changes (${result.sha?.slice(0, 7)}) — ${result.reason}`);
+            } else if (result.attempted) {
+              publishProgress(db, nodeId, `Auto-commit did not run: ${result.reason}`);
+            }
+          } catch (err) {
+            console.error(`Auto-commit failed for node ${nodeId}:`, err);
+          }
+        }
+      }
       const evidence = listArtifactsForNode(db, nodeId).map((a) => a.id);
       for (const commitment of listCommitmentsForNode(db, nodeId)) {
         updateCommitmentStatus(db, commitment.id, outcome, now);
