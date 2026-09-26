@@ -4,9 +4,11 @@ import { createMarketingDb, type MarketingDb } from './db.js';
 import { createRateLimiter } from './rate-limit.js';
 import { waitlistRequestSchema } from './schemas.js';
 import { addToWaitlist } from './waitlist.js';
+import { analyticsBatchSchema, createTelemetryStore } from './telemetry.js';
 
 const MAX_BODY_BYTES = 20 * 1024;
 const WAITLIST_RATE_LIMIT = { windowMs: 60_000, max: 20 };
+const ANALYTICS_RATE_LIMIT = { windowMs: 60_000, max: 120 };
 
 export interface MarketingApp extends FastifyInstance {
   marketingDb: MarketingDb;
@@ -16,6 +18,8 @@ export function buildMarketingApp(configOverrides: Partial<MarketingConfig> = {}
   const config: MarketingConfig = { ...loadMarketingConfig(process.env), ...configOverrides };
   const db = createMarketingDb(config.dbPath);
   const limiter = createRateLimiter(WAITLIST_RATE_LIMIT);
+  const analyticsLimiter = createRateLimiter(ANALYTICS_RATE_LIMIT);
+  const telemetry = createTelemetryStore(db);
 
   const fastify = Fastify({
     trustProxy: config.trustProxy,
@@ -71,6 +75,29 @@ export function buildMarketingApp(configOverrides: Partial<MarketingConfig> = {}
     try {
       const result = addToWaitlist(db, parsed.data);
       return reply.code(202).send(result);
+    } catch {
+      return reply.code(500).send({ error: 'internal_error' });
+    }
+  });
+
+  app.post('/api/analytics', async (request, reply) => {
+    const contentType = request.headers['content-type'] ?? '';
+    if (!contentType.includes('application/json')) {
+      return reply.code(400).send({ error: 'invalid_request' });
+    }
+
+    if (!analyticsLimiter.consume(request.ip)) {
+      return reply.code(429).send({ error: 'rate_limited' });
+    }
+
+    const parsed = analyticsBatchSchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.code(400).send({ error: 'invalid_request' });
+    }
+
+    try {
+      const accepted = telemetry.insertBatch(parsed.data.sessionId, parsed.data.events);
+      return reply.code(202).send({ accepted });
     } catch {
       return reply.code(500).send({ error: 'internal_error' });
     }

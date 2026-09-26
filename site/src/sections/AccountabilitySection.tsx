@@ -1,6 +1,7 @@
 import { useState, type JSX } from 'react';
 import { SITE_CONTENT } from '../content';
 import { useDemoController } from '../demo/controller';
+import { track } from '../analytics/tracker';
 import { DecisionReceipt, type ReceiptViewModel } from '../components/DecisionReceipt';
 
 function fieldValue(label: string): string {
@@ -43,7 +44,10 @@ export function AccountabilitySection(): JSX.Element {
       <DecisionReceipt
         receipt={RECEIPT}
         expanded={expanded}
-        onToggle={() => setExpanded((value) => !value)}
+        onToggle={() => {
+          if (!expanded) track('receipt_opened');
+          setExpanded((value) => !value);
+        }}
       />
     </div>
   );

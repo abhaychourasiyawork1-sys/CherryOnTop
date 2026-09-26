@@ -1,5 +1,6 @@
 import type { JSX } from 'react';
 import { SITE_CONTENT } from '../content';
+import { track } from '../analytics/tracker';
 import { DEMO_PROJECT } from '../demo/data';
 import { useDemoController } from '../demo/controller';
 import { StatusIndicator } from '../components/StatusIndicator';
@@ -43,7 +44,7 @@ export function HeroSection(): JSX.Element {
         <h1 className="hero__headline">{hero.headline}</h1>
         <p className="hero__body">{hero.body}</p>
         <div className="hero__ctas">
-          <a className="hero__cta hero__cta--primary" href="#launch">
+          <a className="hero__cta hero__cta--primary" href="#launch" onClick={() => track('hero_cta_clicked')}>
             {hero.primaryCta}
           </a>
           <a className="hero__cta hero__cta--secondary" href="#how-it-works">

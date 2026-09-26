@@ -2,6 +2,7 @@ import { useState, type JSX } from 'react';
 import { SITE_CONTENT } from '../content';
 import { MandatePanel } from '../components/MandatePanel';
 import { DepthIndicator } from '../components/DepthIndicator';
+import { track } from '../analytics/tracker';
 
 export function MandateSection(): JSX.Element {
   const { mandate } = SITE_CONTENT;
@@ -14,7 +15,10 @@ export function MandateSection(): JSX.Element {
         currentAuthority={mandate.currentAuthority}
         requiredAuthority={mandate.requiredAuthority}
         approved={false}
-        onReview={() => setReviewed(true)}
+        onReview={() => {
+          if (!reviewed) track('mandate_explored');
+          setReviewed(true);
+        }}
       />
       {reviewed ? (
         <div className="mandate-section__explanation" data-testid="mandate-explanation">

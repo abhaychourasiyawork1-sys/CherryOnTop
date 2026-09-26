@@ -2,6 +2,7 @@ import { useState, type FormEvent, type JSX } from 'react';
 import { SITE_CONTENT } from '../content';
 import { MARKETING_CONSENT_VERSION } from '../marketingConfig';
 import { submitWaitlist, WaitlistApiError } from '../api/waitlist';
+import { track } from '../analytics/tracker';
 
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -30,6 +31,7 @@ export function LaunchForm(props: { onSuccess?: () => void }): JSX.Element {
   function markStarted() {
     if (!hasStarted) {
       setHasStarted(true);
+      track('launch_form_started');
     }
   }
 
@@ -56,6 +58,7 @@ export function LaunchForm(props: { onSuccess?: () => void }): JSX.Element {
         intent: intent || undefined,
         consentVersion: requiresConsent ? MARKETING_CONSENT_VERSION : null,
       });
+      track('launch_form_submitted');
       setState('success');
       onSuccess?.();
     } catch (error) {

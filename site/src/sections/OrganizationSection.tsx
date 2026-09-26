@@ -3,8 +3,10 @@ import { DEMO_NODES, DEMO_PROJECT } from '../demo/data';
 import { useDemoController } from '../demo/controller';
 import type { DemoNodeId, DemoState } from '../demo/types';
 import type { Status } from '../types';
+import { track } from '../analytics/tracker';
 import { ExecutionNode } from '../components/ExecutionNode';
 import { ProductMetric } from '../components/ProductMetric';
+import { BranchStem } from '../components/BranchStem';
 
 const DEEP_STATES = new Set<DemoState>([
   'executing',
@@ -36,7 +38,8 @@ export function OrganizationSection(): JSX.Element {
   if (state === 'goal') {
     return (
       <div className="organization">
-        <p className="organization__goal">{DEMO_PROJECT}</p>
+        <BranchStem variant="organization" />
+      <p className="organization__goal">{DEMO_PROJECT}</p>
       </div>
     );
   }
@@ -50,6 +53,7 @@ export function OrganizationSection(): JSX.Element {
       dispatch({ type: 'CLOSE_INSPECTOR' });
     } else {
       dispatch({ type: 'INSPECT_NODE', nodeId });
+      track('organization_explored', { node: nodeId });
     }
   }
 

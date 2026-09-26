@@ -1,6 +1,7 @@
 import type { JSX } from 'react';
 import { SITE_CONTENT } from '../content';
 import { useDemoController } from '../demo/controller';
+import { BranchStem } from '../components/BranchStem';
 import { DEMO_TIMELINE_EVENTS, TIMELINE_INDEX_BY_STATE } from '../demo/data';
 import { ExecutionTimeline } from '../components/ExecutionTimeline';
 import { RecoverySequence } from '../components/RecoverySequence';
@@ -25,6 +26,7 @@ export function ExecutionSection(): JSX.Element {
 
   return (
     <div className="execution-section">
+      <BranchStem variant="evidence" />
       <ExecutionTimeline events={DEMO_TIMELINE_EVENTS} activeIndex={activeIndex} />
 
       {showRecovery ? (

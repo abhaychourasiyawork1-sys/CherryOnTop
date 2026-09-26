@@ -1,4 +1,5 @@
-import { useState, type JSX } from 'react';
+import { useRef, useState, type JSX } from 'react';
+import { track } from '../analytics/tracker';
 
 export function PromoVideo(props: {
   src: string;
@@ -9,6 +10,7 @@ export function PromoVideo(props: {
   const { src, poster, transcript, title } = props;
   const [errored, setErrored] = useState(false);
   const [transcriptOpen, setTranscriptOpen] = useState(false);
+  const startedRef = useRef(false);
 
   return (
     <div className="promo-video">
@@ -29,6 +31,12 @@ export function PromoVideo(props: {
         loop
         preload="none"
         onError={() => setErrored(true)}
+        onPlay={() => {
+          if (!startedRef.current) {
+            startedRef.current = true;
+            track('video_started');
+          }
+        }}
       />
       {errored ? (
         <p className="promo-video__fallback">
