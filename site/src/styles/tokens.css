@@ -1,0 +1,71 @@
+/*
+ * Design tokens for the CherryOnTop public site.
+ * Core visual rule: the cherry accent is a signal, not a dominant page color.
+ * Values below are centralized here so components never hardcode raw colors,
+ * spacing, radii, type sizes, z-index layers, or motion durations.
+ */
+:root {
+  /* Background / surface levels */
+  --color-bg: #0b0b0c;
+  --color-panel: #131315;
+  --color-panel-raised: #19191c;
+  --color-border: rgba(255, 255, 255, 0.1);
+
+  /* Text levels */
+  --color-text-primary: #f5f3f1;
+  --color-text-secondary: #b7b3ae;
+  --color-text-muted: #7c7975;
+
+  /* Accents */
+  --color-cherry: #c8203f;
+  --color-cherry-strong: #e02f4c;
+  --color-verified: #3fae6e;
+  --color-attention: #d98b2c;
+
+  /* Spacing scale */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+  --space-7: 48px;
+  --space-8: 64px;
+  --space-9: 96px;
+  --space-10: 128px;
+  --space-section: 150px;
+  --space-subsection: 80px;
+
+  /* Radii */
+  --radius-container: 22px;
+  --radius-card: 16px;
+  --radius-button: 11px;
+  --radius-control: 8px;
+
+  /* Typography */
+  --font-sans:
+    'Inter', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  --font-mono: 'IBM Plex Mono', 'SFMono-Regular', Menlo, monospace;
+  --font-size-hero: 88px;
+  --font-size-heading: 56px;
+  --font-size-subheading: 28px;
+  --font-size-body: 19px;
+  --font-size-ui: 14px;
+  --font-size-technical: 12px;
+
+  /* Layout */
+  --container-max-width: 1320px;
+  --grid-columns: 12;
+  --nav-height: 68px;
+
+  /* Z-index layers */
+  --z-nav: 100;
+  --z-overlay: 200;
+  --z-modal: 300;
+
+  /* Motion durations */
+  --duration-fast: 120ms;
+  --duration-base: 240ms;
+  --duration-slow: 480ms;
+  --easing-standard: cubic-bezier(0.4, 0, 0.2, 1);
+}

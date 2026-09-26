@@ -1,6 +1,11 @@
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import App from './App';
+import './styles/globals.css';
+import './styles/layout.css';
+import './styles/product-ui.css';
+import './styles/motion.css';
+import './styles/responsive.css';
 
 const container = document.getElementById('root');
 if (!container) {

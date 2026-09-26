@@ -1,0 +1,32 @@
+.product-panel {
+  background: var(--color-panel);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-card);
+  padding: var(--space-5);
+}
+
+.product-panel--raised {
+  background: var(--color-panel-raised);
+}
+
+.product-metric {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.product-metric__label {
+  font-size: var(--font-size-technical);
+  color: var(--color-text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.product-metric__value {
+  font-size: var(--font-size-ui);
+  color: var(--color-text-primary);
+}
+
+.product-metric__value--mono {
+  font-family: var(--font-mono);
+}
