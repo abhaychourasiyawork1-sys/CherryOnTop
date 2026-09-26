@@ -1,4 +1,5 @@
 import { useState, type JSX } from 'react';
+import { track } from '../analytics/tracker';
 
 export interface ArchitectureLayer {
   id: string;
@@ -12,6 +13,7 @@ export function ArchitectureExplorer(props: { layers: ArchitectureLayer[] }): JS
   const [openLayerId, setOpenLayerId] = useState<string | null>(null);
 
   function toggleLayer(layerId: string) {
+    if (openLayerId !== layerId) track('architecture_explored', { layer: layerId });
     setOpenLayerId((current) => (current === layerId ? null : layerId));
   }
 

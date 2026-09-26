@@ -195,3 +195,62 @@ describe('ValidationState', () => {
     expect(screen.getByText('Verified')).toBeInTheDocument();
   });
 });
+
+describe('full page composition', () => {
+  it('renders the main headings in the approved narrative order', () => {
+    render(<App />);
+    const headings = screen
+      .getAllByRole('heading')
+      .filter((heading) => heading.tagName === 'H1' || heading.tagName === 'H2')
+      .map((heading) => heading.textContent ?? '');
+    const expected = [
+      'AI teams you can hold accountable.',
+      'See how it works',
+      'AI can do the work. But who controls it?',
+      'One goal. An accountable AI organization.',
+      'Autonomy without a blank cheque.',
+      "Real work doesn't always go perfectly.",
+      'Every important decision leaves a receipt.',
+      'Work that keeps going.',
+      'Spend intelligence where it matters.',
+      'Under the interface is a real execution system.',
+      'Built to be inspected.',
+      'CherryOnTop is launching soon.',
+    ];
+    const positions = expected.map((text) => headings.findIndex((heading) => heading.includes(text)));
+    expect(positions.every((position) => position >= 0)).toBe(true);
+    expect([...positions].sort((a, b) => a - b)).toEqual(positions);
+  });
+
+  it('marks sections with Story → Product → Technical depth without a progress bar', () => {
+    const { container } = render(<App />);
+    const depths = Array.from(container.querySelectorAll('[data-depth]')).map((node) =>
+      node.getAttribute('data-depth'),
+    );
+    const rank = { story: 0, product: 1, technical: 2 } as Record<string, number>;
+    const ranks = depths.map((depth) => rank[depth ?? ''] ?? -1);
+    expect(ranks.length).toBeGreaterThan(5);
+    expect(ranks.every((value, index) => value >= 0 && (index === 0 || value >= (ranks[index - 1] ?? 0)))).toBe(true);
+    expect(new Set(depths)).toEqual(new Set(['story', 'product', 'technical']));
+    expect(container.querySelector('[role="progressbar"]')).toBeNull();
+    expect(screen.getByTestId('page-depth-indicator')).toBeInTheDocument();
+  });
+
+  it('gives each section a density rhythm', () => {
+    const { container } = render(<App />);
+    expect(container.querySelector('#organization')).toHaveAttribute('data-rhythm', 'dense');
+    expect(container.querySelector('#launch')).toHaveAttribute('data-rhythm', 'quiet');
+  });
+
+  it('reuses the branch stem motif across organization, recovery, and architecture', () => {
+    const { container } = render(<App />);
+    for (const id of ['organization', 'execution', 'architecture']) {
+      expect(container.querySelector(`#${id} [data-motif="branch-stem"]`)).not.toBeNull();
+    }
+  });
+
+  it('mounts exactly one demo lifecycle for the whole story', () => {
+    const { container } = render(<App />);
+    expect(container.querySelectorAll('[data-demo-root]')).toHaveLength(1);
+  });
+});

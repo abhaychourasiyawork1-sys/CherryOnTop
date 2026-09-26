@@ -399,3 +399,69 @@
     gap: var(--space-4);
   }
 }
+
+/* Page composition: quiet depth marker, density rhythm, and branch stem motif */
+.page-depth {
+  position: fixed;
+  right: 20px;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 5;
+  opacity: 0.55;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11px;
+  pointer-events: none;
+}
+
+.page-depth .depth-indicator {
+  flex-direction: column;
+}
+
+@media (max-width: 1100px) {
+  .page-depth {
+    display: none;
+  }
+}
+
+.site-section[data-rhythm='sparse'],
+.site-section[data-rhythm='still'],
+.site-section[data-rhythm='quiet'] {
+  padding-block: 160px;
+}
+
+.site-section[data-rhythm='dense'],
+.site-section[data-rhythm='active'],
+.site-section[data-rhythm='rich'] {
+  padding-block: 120px;
+}
+
+.branch-stem {
+  display: block;
+  width: 40px;
+  height: 40px;
+  margin-bottom: 16px;
+  fill: none;
+  stroke: var(--color-border-strong, rgba(255, 255, 255, 0.18));
+  stroke-width: 1.5;
+  stroke-linecap: round;
+}
+
+.branch-stem__branch {
+  transition: d 600ms ease;
+}
+
+.branch-stem__fruit {
+  fill: var(--color-cherry);
+  stroke: none;
+  opacity: 0.8;
+}
+
+.branch-stem--mark {
+  stroke: var(--color-cherry);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .branch-stem__branch {
+    transition: none;
+  }
+}

@@ -91,3 +91,8 @@ export function useDemoController(): DemoControllerValue {
   }
   return context;
 }
+
+/** Like useDemoController, but returns null outside a provider (for sections that also render standalone). */
+export function useOptionalDemoController(): DemoControllerValue | null {
+  return useContext(DemoControllerContext);
+}
