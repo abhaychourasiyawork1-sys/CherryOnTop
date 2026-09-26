@@ -11,13 +11,14 @@ export function ExecutionNode(props: {
   status: Status;
   budget: string;
   selected?: boolean;
+  dimmed?: boolean;
   onInspect: () => void;
 }): JSX.Element {
-  const { id, title, role, status, budget, selected = false, onInspect } = props;
+  const { id, title, role, status, budget, selected = false, dimmed = false, onInspect } = props;
   return (
     <button
       type="button"
-      className={`execution-node${selected ? ' execution-node--selected' : ''}`}
+      className={`execution-node${selected ? ' execution-node--selected' : ''}${dimmed ? ' execution-node--dimmed' : ''}`}
       data-node-id={id}
       aria-pressed={selected}
       onClick={onInspect}

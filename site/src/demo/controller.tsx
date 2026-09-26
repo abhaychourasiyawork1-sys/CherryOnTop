@@ -51,7 +51,7 @@ export function DemoControllerProvider(props: { children: React.ReactNode }): JS
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
-    if (snapshot.state === 'memory') {
+    if (snapshot.state === 'memory' || snapshot.activeNodeId !== null) {
       return undefined;
     }
 
@@ -66,7 +66,7 @@ export function DemoControllerProvider(props: { children: React.ReactNode }): JS
         timeoutRef.current = null;
       }
     };
-  }, [snapshot.state, reducedMotion]);
+  }, [snapshot.state, snapshot.activeNodeId, reducedMotion]);
 
   const replay = useCallback(() => {
     if (timeoutRef.current !== null) {
