@@ -56,10 +56,12 @@ export function useCaseReceipt(caseId: string | null, stamp: string) {
 }
 
 /** A case's whole history plus whatever has arrived live since it was read. */
-export function useCaseEvents(caseId: string | null, stamp: string, live: OrgEvent[], scope: Set<string>) {
+export function useCaseEvents(caseId: string | null, stamp: string, live: OrgEvent[], scope: Set<string>, limit?: number) {
+  // `limit` keeps the newest events only — enough for "what happened last"
+  // without paying for a whole transcript.
   const history = useDaemonQuery<OrgEvent[]>(
-    () => (caseId ? daemon().events.forCase.query({ id: caseId }) as Promise<OrgEvent[]> : Promise.resolve([])),
-    [caseId, stamp],
+    () => (caseId ? daemon().events.forCase.query({ id: caseId, ...(limit ? { limit } : {}) }) as Promise<OrgEvent[]> : Promise.resolve([])),
+    [caseId, stamp, limit],
   );
   const events = useMemo(
     () => mergeEvents(history.data ?? [], live.filter((event) => scope.has(event.nodeId))),

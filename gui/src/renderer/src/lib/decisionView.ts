@@ -136,13 +136,35 @@ function receiptView(event: OrgEvent): DecisionView | null {
   };
 }
 
-/** Every decision in a case, oldest first. */
+/** A scored staffing record and the engine's receipt for the same choice are
+ *  one decision told twice. */
+const SAME_CHOICE: Record<string, string> = { SELF_EXECUTE: 'RUN_MODEL', DELEGATE: 'SPAWN_AGENT' };
+const PAIR_WINDOW_MS = 120_000;
+
+/** Every decision in a case, oldest first. A record that matches a receipt on
+ *  the same node takes the receipt's reason and alternatives, so it appears
+ *  once, fully explained, instead of twice with half an explanation each. */
 export function decisionsOf(rows: DecisionRow[], events: OrgEvent[]): DecisionView[] {
-  const views = [
-    ...rows.map(recordView),
-    ...events.filter((event) => event.type === 'decision.receipt').map(receiptView).filter((v): v is DecisionView => v !== null),
-  ];
-  return views.sort((a, b) => a.at.localeCompare(b.at));
+  const receipts = events.filter((event) => event.type === 'decision.receipt').map(receiptView).filter((v): v is DecisionView => v !== null);
+  const used = new Set<string>();
+  const records = rows.map((row) => {
+    const view = recordView(row);
+    const chosen = SAME_CHOICE[row.outcome];
+    if (!chosen) return view;
+    const match = receipts.find((receipt) =>
+      !used.has(receipt.id) && receipt.nodeId === row.nodeId && receipt.title === CHOSEN[chosen]
+      && Math.abs(Date.parse(receipt.at) - Date.parse(row.createdAt)) <= PAIR_WINDOW_MS);
+    if (!match) return view;
+    used.add(match.id);
+    return {
+      ...view,
+      why: [match.why, view.why].filter(Boolean).join(' ').trim(),
+      alternatives: match.alternatives,
+      engineConfidence: match.engineConfidence,
+      gate: match.gate,
+    };
+  });
+  return [...records, ...receipts.filter((receipt) => !used.has(receipt.id))].sort((a, b) => a.at.localeCompare(b.at));
 }
 
 /** The decisions a reader cares about by default: what shape the work took
@@ -241,9 +263,14 @@ export function confidenceOf(engine: number | null, evidence: Evidence[]): Confi
   const verified = evidence.some((item) => item.type === 'verified');
   const failedChecks = evidence.some((item) => item.provenance.kind === 'event' && item.type === 'observed' && item.summary.includes('did not pass'));
   if (!verified && failedChecks) return 'low';
-  const claimed: Confidence = engine === null ? 'medium' : engine >= 0.8 ? 'high' : engine >= 0.55 ? 'medium' : 'low';
+  const claimed = engineLevel(engine);
   if (!verified && claimed === 'high') return 'medium';
   return claimed;
+}
+
+/** What the engine's own number would say, before evidence limits it. */
+export function engineLevel(engine: number | null): Confidence {
+  return engine === null ? 'medium' : engine >= 0.8 ? 'high' : engine >= 0.55 ? 'medium' : 'low';
 }
 
 export function countByType(evidence: Evidence[]): Record<EvidenceType, number> {

@@ -19,6 +19,8 @@ interface Props {
   mandates: Mandate[];
   mandateId: string | null;
   onSelectMandate: (id: string) => void;
+  /** Opens the plain-words authority summary for this Workspace. */
+  onAuthority?: () => void;
   /** Why work cannot be started here. Questions still work. */
   blockedReason: string | null;
   offline: boolean;
@@ -147,8 +149,12 @@ export function Composer(props: Props) {
         />
         <div className="composer2-foot">
           {props.mandates.length > 0 && (
-            <label className="authority-chip" title="What new work is allowed to do">
-              <Icon name="shield" size={13} />
+            <span className="authority-chip" title="What new work is allowed to do">
+              {props.onAuthority ? (
+                <button type="button" className="authority-open" aria-label="Review what new work may do" title="Review what new work may do" onClick={props.onAuthority}>
+                  <Icon name="shield" size={13} />
+                </button>
+              ) : <Icon name="shield" size={13} />}
               <select
                 value={props.mandateId ?? ''}
                 aria-label="Mandate new work runs under"
@@ -156,7 +162,7 @@ export function Composer(props: Props) {
               >
                 {props.mandates.map((mandate) => <option key={mandate.id} value={mandate.id}>{mandate.name}</option>)}
               </select>
-            </label>
+            </span>
           )}
           {props.liveRun && intent !== 'question' ? (
             <div className="intent-toggle" role="radiogroup" aria-label="What to do with the current run">

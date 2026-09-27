@@ -65,7 +65,7 @@ export function FilesSurface() {
 function FileRow({ file }: { file: FileEntry }) {
   const ws = useWorkspace();
   const name = file.display.split('/').at(-1) ?? file.display;
-  const dir = file.display.slice(0, file.display.length - name.length);
+  const dir = file.display.slice(0, file.display.length - name.length).replace(/\/$/, '');
   return (
     <li>
       <button

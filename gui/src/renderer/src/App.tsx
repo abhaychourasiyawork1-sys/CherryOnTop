@@ -7,7 +7,7 @@ import { REPO } from './lib/bridge.js';
 import { toWorkspaces, workspaceKeyOf, workspaceNameOf, workspaceState, type Workspace } from './lib/workspaces.js';
 import { homeModel } from './lib/home.js';
 import { groupAttention, attentionCount, scopeAttention } from './lib/attention.js';
-import { lastSeen, markSeen, localKey } from './lib/sync.js';
+import { lastSeen, markSeen, localKey, store } from './lib/sync.js';
 import { useLocalState } from './lib/useLocalState.js';
 import { useLayout } from './lib/useLayout.js';
 import { caseStamp } from './lib/useCase.js';
@@ -217,6 +217,7 @@ export function App() {
       ] : []),
       { id: 'go-home', kind: 'action', title: 'Go Home' },
       { id: 'toggle-sidebar', kind: 'action', title: collapsed ? 'Expand the sidebar' : 'Collapse the sidebar' },
+      { id: 'toggle-theme', kind: 'action', title: document.documentElement.dataset.theme === 'light' ? 'Use the dark theme' : 'Use the light theme', keywords: 'theme appearance' },
       ...workspaces.map((ws) => ({ id: ws.key, kind: 'workspace' as const, title: ws.name, subtitle: ws.running ? 'Working' : undefined, workspaceKey: ws.key })),
     ];
     for (const ws of workspaces) {
@@ -236,6 +237,11 @@ export function App() {
     if (item.id === 'go-home') navigate({ name: 'home' });
     if (item.id === 'toggle-sidebar') setCollapsed((v) => !v);
     if (item.id === 'reset-layout') surfaces.reset();
+    if (item.id === 'toggle-theme') {
+      const next = document.documentElement.dataset.theme === 'light' ? 'dark' : 'light';
+      document.documentElement.dataset.theme = next;
+      store.set('cot.theme.v1', next);
+    }
     if (item.id === 'go-plan') surfaces.open('plan', activeCase?.id ?? null);
     if (item.id === 'go-files') surfaces.open('files');
     if (item.id === 'go-memory') surfaces.open('memory');
@@ -271,6 +277,7 @@ export function App() {
       mandates={mandates.data ?? []}
       mandateId={mandateId}
       onSelectMandate={setMandateId}
+      onAuthority={variant === 'docked' ? () => openSection('authority') : undefined}
       blockedReason={variant === 'hero' && !REPO.container ? (REPO.error ?? 'Open CherryOnTop from a git repository to start work.') : variant === 'hero' ? null : blockedReason}
       offline={offline}
       draftScope={variant === 'hero' ? 'home' : `${workspace?.key ?? ''}:${currentBranch}`}

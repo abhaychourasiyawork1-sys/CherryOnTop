@@ -108,7 +108,7 @@ function RevertButton({ root, files }: { root: OrgNode; files: string[] }) {
 export function FailureCard(props: { root: OrgNode; subtree: OrgNode[]; file: CaseSummary | null; stamp: string }) {
   const ws = useWorkspace();
   const scope = useMemo(() => new Set(props.subtree.map((node) => node.id)), [props.subtree]);
-  const { events } = useCaseEvents(props.root.id, props.stamp, ws.org.events, scope);
+  const { events } = useCaseEvents(props.root.id, props.stamp, ws.org.events, scope, 300);
   const failure = failureOf(props.root, events, props.file?.artifacts ?? []);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);

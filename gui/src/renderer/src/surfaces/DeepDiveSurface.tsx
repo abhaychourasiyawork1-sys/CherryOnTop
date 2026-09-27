@@ -5,7 +5,7 @@ import { Receipt } from '../panels/Receipt.js';
 import { daemon } from '../lib/client.js';
 import { useDaemonQuery } from '../lib/useDaemonQuery.js';
 import {
-  confidenceOf, countByType, evidenceOf, CONFIDENCE_LABEL, EVIDENCE_LABEL,
+  confidenceOf, countByType, evidenceOf, engineLevel, CONFIDENCE_LABEL, EVIDENCE_LABEL,
   type Evidence, type EvidenceType,
 } from '../lib/decisionView.js';
 import { subtreeOf } from '../lib/tasks.js';
@@ -53,7 +53,11 @@ function DecisionDeepDive({ caseId, decisionId }: { caseId: string; decisionId: 
       </header>
 
       <DeepSection title="Summary">
-        <p>{decision.title}. Confidence: <strong data-confidence={confidence}>{CONFIDENCE_LABEL[confidence]}</strong>{decision.engineConfidence !== null && ` (the engine reported ${Math.round(decision.engineConfidence * 100)}%, limited by the evidence on record)`}.</p>
+        <p>
+          {decision.title}. Confidence: <strong data-confidence={confidence}>{CONFIDENCE_LABEL[confidence]}</strong>
+          {decision.engineConfidence !== null && ` — the engine reported ${Math.round(decision.engineConfidence * 100)}%`}
+          {engineLevel(decision.engineConfidence) !== confidence && ', lowered to what the evidence on record supports'}.
+        </p>
         {decision.gate && <p className="deep-note">Decided by a rule, “{decision.gate}”, rather than by comparing options.</p>}
       </DeepSection>
 

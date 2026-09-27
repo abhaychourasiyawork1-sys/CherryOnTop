@@ -27,6 +27,16 @@ describe('decision view', () => {
     });
   });
 
+  it('tells a record and its matching receipt once, with the receipt’s reason', () => {
+    const views = decisionsOf([row('SELF_EXECUTE')], [receipt({
+      chosen: 'RUN_MODEL', reason: 'one unit of work', confidence: 0.9,
+      alternatives: [{ type: 'SPAWN_AGENT', reason: 'split it' }],
+    })]);
+    expect(views).toHaveLength(1);
+    expect(views[0]).toMatchObject({ source: 'record', title: 'Do the work as one agent', why: 'One unit of work', engineConfidence: 0.9 });
+    expect(views[0].alternatives).toHaveLength(1);
+  });
+
   it('ignores malformed receipts and orders by time', () => {
     const views = decisionsOf([row('SELF_EXECUTE')], [receipt(null), receipt({ chosen: 'STOP' }, 8)]);
     expect(views.map((v) => v.title)).toEqual(['Do the work as one agent', 'Stop here']);

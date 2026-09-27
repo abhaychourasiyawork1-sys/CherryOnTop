@@ -81,7 +81,7 @@ export function AdaptiveWorkspace(props: { children: React.ReactNode; attention:
 
   return (
     <div className="workspace-body" data-deep={layout.deepDive ? 'true' : 'false'}>
-      <div className="primary">
+      <div className="primary-area">
         {layout.deepDive ? (
           <div className="deep-host">
             <div className="deep-bar">
