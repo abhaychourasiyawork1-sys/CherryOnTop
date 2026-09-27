@@ -1,6 +1,8 @@
 import { describe, expect, it, afterEach } from 'vitest';
 import { existsSync, unlinkSync } from 'node:fs';
 import { buildServer } from '../app.js';
+import { createDb } from '../../db/client.js';
+import { insertNode } from '../../db/queries/nodes.js';
 
 const TEST_DB = './test-desktop-foundation-router.db';
 
@@ -56,6 +58,14 @@ describe('Desktop 2.0 foundation routers', () => {
     const workspace = await trpc(app, 'workspace.create', { name: 'Engineering', description: '', settings: {} }, 'POST');
     const project = await trpc(app, 'project.create', { workspaceId: workspace.id, name: 'CherryOnTop', description: '', settings: {} }, 'POST');
     const chat = await trpc(app, 'conversation.create', { workspaceId: workspace.id, projectId: project.id, title: 'Investigate regression' }, 'POST');
+    const db = createDb(TEST_DB);
+    insertNode(db, {
+      id: 'root-node-1', parentId: null, goal: 'Investigate benchmark regression', state: 'CREATED',
+      contract: { goal: 'Investigate benchmark regression', definition_of_done: ['done'],
+        authority: { tools: [], spawn_children: false, max_child_count: 0, budget_usd: 1 }, constraints: [] },
+      repoPath: null, runtime: null, mandateId: null, replayOf: null, snapshot: null,
+      createdAt: '2026-09-27T00:00:00.000Z', updatedAt: '2026-09-27T00:00:00.000Z',
+    });
     const run = await trpc(app, 'run.create', {
       conversationId: chat.id, caseId: 'root-node-1', goal: 'Investigate benchmark regression', mandateSnapshot: {},
     }, 'POST');
