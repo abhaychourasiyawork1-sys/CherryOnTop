@@ -11,6 +11,7 @@ export interface CaseFile {
   node: {
     id: string; goal: string; state: string; runtime?: string | null;
     repoPath?: string | null; createdAt: string; updatedAt: string;
+    supersededBy?: string | null;
     contract: { definition_of_done: string[] };
   };
   mandate: Mandate | null;
@@ -90,7 +91,7 @@ export function CaseHeader({ file, running = 0, onReplay, onStopped }: {
   onStopped?: () => void;
 }) {
   const [showEnvelope, setShowEnvelope] = useState(false);
-  const tone = toneOf(file.node.state);
+  const tone = toneOf(file.node.state, file.node.supersededBy);
   const pending = file.approvals.filter((a) => a.status === 'pending').length;
   const decisions = file.approvals.filter((a) => a.status === 'approved' || a.status === 'rejected').length;
 
@@ -113,7 +114,7 @@ export function CaseHeader({ file, running = 0, onReplay, onStopped }: {
       <dl className="case-facts">
         <div>
           <dt>State</dt>
-          <dd><span className="pill">{labelOf(file.node.state)}</span></dd>
+          <dd><span className="pill">{labelOf(file.node.state, file.node.supersededBy)}</span></dd>
         </div>
         <div>
           <dt>Organization</dt>

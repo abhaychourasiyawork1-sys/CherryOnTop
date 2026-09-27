@@ -20,7 +20,7 @@ interface Props {
 
 export function NodeCard(props: Props) {
   const { node, place, costUsd } = props;
-  const tone = props.needsApproval ? 'at-risk' : toneOf(node.state);
+  const tone = props.needsApproval ? 'at-risk' : toneOf(node.state, node.supersededBy);
   const budget = node.contract.authority.budget_usd;
   const spent = budget > 0 ? Math.min(costUsd / budget, 1) : 0;
 
@@ -47,7 +47,7 @@ export function NodeCard(props: Props) {
       <span className="node-goal">{node.goal}</span>
 
       <span className="node-row">
-        <span className="node-state">{labelOf(node.state)}</span>
+        <span className="node-state">{labelOf(node.state, node.supersededBy)}</span>
         {props.delegatedAuthority && (
           <span className="authority-mark" title="Runs under narrowed authority">⛨</span>
         )}

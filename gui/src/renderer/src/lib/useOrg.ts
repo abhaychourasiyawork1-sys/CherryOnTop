@@ -16,6 +16,9 @@ export interface OrgNode {
     deadline?: { expected_at?: string; hard_at?: string };
   };
   repoPath?: string | null;
+  /** Set once a fresh sibling picked this (failed) node's work back up. See
+   *  markNodeSuperseded, src/db/queries/nodes.ts. */
+  supersededBy?: string | null;
   createdAt: string;
   updatedAt: string;
   /** From node.overview: spend rolled up through this node's subtree, and how

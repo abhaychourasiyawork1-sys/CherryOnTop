@@ -85,7 +85,7 @@ export function Inspector(props: Props) {
   useEffect(() => { setTab('overview'); setError(null); }, [nodeId]);
   useEffect(() => { if (detail?.answer) setTab('answer'); }, [detail?.answer]);
 
-  const tone = props.approval ? 'at-risk' : toneOf(props.node.state);
+  const tone = props.approval ? 'at-risk' : toneOf(props.node.state, props.node.supersededBy);
   const lines = useMemo(() => toLines(props.events, nodeId), [props.events, nodeId]);
   const custody = useDaemonQuery<CustodyChain>(
     () => daemon().case.custody.query({ nodeId }) as Promise<CustodyChain>,
@@ -116,7 +116,7 @@ export function Inspector(props: Props) {
   return (
     <aside className="inspector" style={{ ['--state' as string]: `var(--${tone})` }}>
       <header className="inspect-head">
-        <span className="node-state">{labelOf(props.node.state)}</span>
+        <span className="node-state">{labelOf(props.node.state, props.node.supersededBy)}</span>
         <button type="button" onClick={props.onClose} aria-label="Close details">✕</button>
       </header>
 
@@ -272,8 +272,8 @@ function Overview({ node, detail }: { node: OrgNode; detail: Detail | null }) {
           <ul className="children">
             {detail.children.map((child) => (
               <li key={child.id}>
-                <span className="node-state" style={{ ['--state' as string]: `var(--${toneOf(child.state)})` }}>
-                  {labelOf(child.state)}
+                <span className="node-state" style={{ ['--state' as string]: `var(--${toneOf(child.state, child.supersededBy)})` }}>
+                  {labelOf(child.state, child.supersededBy)}
                 </span>
                 <span>{child.goal}</span>
               </li>

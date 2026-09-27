@@ -20,7 +20,14 @@ const TONES: Record<string, Tone> = {
   FAILED: 'failed',
 };
 
-export function toneOf(state: string): Tone {
+/** A FAILED node a parent has already replaced with a fresh child reads as
+ *  settled, not failed: the honest history stays FAILED underneath (see
+ *  markNodeSuperseded, src/db/queries/nodes.ts) so the transcript is never
+ *  lost, but a tree or graph view showing it plain red would tell whoever is
+ *  watching that something is still wrong here, when the actual answer is
+ *  "this was retried and the retry is what to look at". */
+export function toneOf(state: string, supersededBy?: string | null): Tone {
+  if (state === 'FAILED' && supersededBy) return 'settled';
   return TONES[state] ?? 'planning';
 }
 
@@ -46,6 +53,7 @@ const LABELS: Record<string, string> = {
   FAILED: 'Failed',
 };
 
-export function labelOf(state: string): string {
+export function labelOf(state: string, supersededBy?: string | null): string {
+  if (state === 'FAILED' && supersededBy) return 'Replaced';
   return LABELS[state] ?? state.toLowerCase().replace(/_/g, ' ');
 }
