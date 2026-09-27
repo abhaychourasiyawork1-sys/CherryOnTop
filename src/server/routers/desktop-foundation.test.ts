@@ -12,12 +12,20 @@ afterEach(() => {
   }
 });
 
-async function trpc(app: ReturnType<typeof buildServer>, path: string, input: unknown, method: 'GET' | 'POST' = 'GET') {
-  const encoded = encodeURIComponent(JSON.stringify(input));
+async function getTrpc(app: ReturnType<typeof buildServer>, path: string, input: unknown) {
   const response = await app.inject({
-    method,
-    url: '/trpc/' + path + '?input=' + encoded,
-    payload: method === 'POST' ? input : undefined,
+    method: 'GET',
+    url: '/trpc/' + path + '?input=' + encodeURIComponent(JSON.stringify(input)),
+  });
+  expect(response.statusCode).toBe(200);
+  return JSON.parse(response.body).result.data;
+}
+
+async function postTrpc(app: ReturnType<typeof buildServer>, path: string, input: unknown) {
+  const response = await app.inject({
+    method: 'POST',
+    url: '/trpc/' + path,
+    payload: input as Record<string, unknown>,
   });
   expect(response.statusCode).toBe(200);
   return JSON.parse(response.body).result.data;
@@ -26,38 +34,38 @@ async function trpc(app: ReturnType<typeof buildServer>, path: string, input: un
 describe('Desktop 2.0 foundation routers', () => {
   it('creates and lists a workspace', async () => {
     const app = buildServer(TEST_DB, () => {});
-    const created = await trpc(app, 'workspace.create', {
+    const created = await postTrpc(app, 'workspace.create', {
       name: 'Engineering', description: 'Engineering', settings: {},
-    }, 'POST');
+    });
     expect(created.name).toBe('Engineering');
-    expect((await trpc(app, 'workspace.list', {}))[0].name).toBe('Engineering');
+    expect((await postTrpc(app, 'workspace.list', {}))[0].name).toBe('Engineering');
   });
 
   it('scopes project creation to an existing workspace', async () => {
     const app = buildServer(TEST_DB, () => {});
-    const workspace = await trpc(app, 'workspace.create', { name: 'Engineering', description: '', settings: {} }, 'POST');
-    const project = await trpc(app, 'project.create', {
+    const workspace = await getTrpc(app, 'workspace.create', { name: 'Engineering', description: '', settings: {} });
+    const project = await postTrpc(app, 'project.create', {
       workspaceId: workspace.id, name: 'CherryOnTop', description: '', settings: {},
-    }, 'POST');
+    });
     expect(project.workspaceId).toBe(workspace.id);
-    expect((await trpc(app, 'project.list', { workspaceId: workspace.id }))[0].id).toBe(project.id);
+    expect((await postTrpc(app, 'project.list', { workspaceId: workspace.id }))[0].id).toBe(project.id);
   });
 
   it('creates conversations and lists them by project', async () => {
     const app = buildServer(TEST_DB, () => {});
-    const workspace = await trpc(app, 'workspace.create', { name: 'Engineering', description: '', settings: {} }, 'POST');
-    const project = await trpc(app, 'project.create', { workspaceId: workspace.id, name: 'CherryOnTop', description: '', settings: {} }, 'POST');
-    const chat = await trpc(app, 'conversation.create', {
+    const workspace = await getTrpc(app, 'workspace.create', { name: 'Engineering', description: '', settings: {} });
+    const project = await postTrpc(app, 'project.create', { workspaceId: workspace.id, name: 'CherryOnTop', description: '', settings: {} });
+    const chat = await postTrpc(app, 'conversation.create', {
       workspaceId: workspace.id, projectId: project.id, title: 'Investigate regression',
-    }, 'POST');
-    expect((await trpc(app, 'conversation.list', { projectId: project.id }))[0].id).toBe(chat.id);
+    });
+    expect((await postTrpc(app, 'conversation.list', { projectId: project.id }))[0].id).toBe(chat.id);
   });
 
   it('links a product run to an existing root case/node', async () => {
     const app = buildServer(TEST_DB, () => {});
-    const workspace = await trpc(app, 'workspace.create', { name: 'Engineering', description: '', settings: {} }, 'POST');
-    const project = await trpc(app, 'project.create', { workspaceId: workspace.id, name: 'CherryOnTop', description: '', settings: {} }, 'POST');
-    const chat = await trpc(app, 'conversation.create', { workspaceId: workspace.id, projectId: project.id, title: 'Investigate regression' }, 'POST');
+    const workspace = await getTrpc(app, 'workspace.create', { name: 'Engineering', description: '', settings: {} });
+    const project = await postTrpc(app, 'project.create', { workspaceId: workspace.id, name: 'CherryOnTop', description: '', settings: {} });
+    const chat = await postTrpc(app, 'conversation.create', { workspaceId: workspace.id, projectId: project.id, title: 'Investigate regression' });
     const db = createDb(TEST_DB);
     insertNode(db, {
       id: 'root-node-1', parentId: null, goal: 'Investigate benchmark regression', state: 'CREATED',
@@ -66,11 +74,11 @@ describe('Desktop 2.0 foundation routers', () => {
       repoPath: null, runtime: null, mandateId: null, replayOf: null, snapshot: null,
       createdAt: '2026-09-27T00:00:00.000Z', updatedAt: '2026-09-27T00:00:00.000Z',
     });
-    const run = await trpc(app, 'run.create', {
+    const run = await postTrpc(app, 'run.create', {
       conversationId: chat.id, caseId: 'root-node-1', goal: 'Investigate benchmark regression', mandateSnapshot: {},
-    }, 'POST');
+    });
     expect(run.conversationId).toBe(chat.id);
     expect(run.caseId).toBe('root-node-1');
-    expect((await trpc(app, 'run.list', { conversationId: chat.id }))[0].id).toBe(run.id);
+    expect((await getTrpc(app, 'run.list', { conversationId: chat.id }))[0].id).toBe(run.id);
   });
 });
