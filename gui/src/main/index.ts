@@ -1,4 +1,4 @@
-import { app, BrowserWindow, Notification, shell, dialog, ipcMain } from 'electron';
+import { app, BrowserWindow, Notification, shell, dialog, ipcMain, Menu, clipboard, type MenuItemConstructorOptions } from 'electron';
 import { writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
@@ -38,6 +38,30 @@ function createWindow(detachedTarget?: string): BrowserWindow {
   window.webContents.setWindowOpenHandler(({ url }) => {
     shell.openExternal(url);
     return { action: 'deny' };
+  });
+
+  // Electron ships no right-click menu. Text fields without cut/copy/paste
+  // (and spelling fixes) are the first thing a desktop user misses.
+  window.webContents.on('context-menu', (_event, params) => {
+    const items: MenuItemConstructorOptions[] = [];
+    for (const suggestion of params.dictionarySuggestions.slice(0, 4)) {
+      items.push({ label: suggestion, click: () => window.webContents.replaceMisspelling(suggestion) });
+    }
+    if (params.misspelledWord) {
+      items.push({ label: 'Add to dictionary', click: () => window.webContents.session.addWordToSpellCheckerDictionary(params.misspelledWord) });
+      items.push({ type: 'separator' });
+    }
+    if (params.linkURL) {
+      items.push({ label: 'Open link', click: () => void shell.openExternal(params.linkURL) });
+      items.push({ label: 'Copy link', click: () => clipboard.writeText(params.linkURL) });
+      items.push({ type: 'separator' });
+    }
+    if (params.isEditable) {
+      items.push({ role: 'undo' }, { role: 'redo' }, { type: 'separator' }, { role: 'cut' }, { role: 'copy' }, { role: 'paste' }, { role: 'selectAll' });
+    } else if (params.selectionText) {
+      items.push({ role: 'copy' }, { role: 'selectAll' });
+    }
+    if (items.length > 0) Menu.buildFromTemplate(items).popup({ window });
   });
 
   // Renderer errors are otherwise invisible from a terminal, which makes a
@@ -86,6 +110,16 @@ app.whenReady().then(() => {
 
   // Choosing a folder to work in. Main only owns the dialog; whether the folder
   // is usable is decided by the daemon (daemon.resolveRepo), in one place.
+  // Work finished while the window was in the background.
+  ipcMain.on('notify', (event, title: unknown, body: unknown) => {
+    if (typeof title !== 'string' || typeof body !== 'string') return;
+    const owner = BrowserWindow.fromWebContents(event.sender);
+    if (owner?.isFocused()) return;
+    const note = new Notification({ title: title.slice(0, 120), body: body.slice(0, 240) });
+    note.on('click', () => { owner?.show(); owner?.focus(); });
+    note.show();
+  });
+
   ipcMain.handle('pick-folder', async (event) => {
     const owner = BrowserWindow.fromWebContents(event.sender) ?? window;
     const result = await dialog.showOpenDialog(owner, {

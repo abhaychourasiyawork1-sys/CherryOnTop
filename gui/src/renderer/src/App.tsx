@@ -7,7 +7,9 @@ import { REPO } from './lib/bridge.js';
 import { toWorkspaces, workspaceKeyOf, workspaceNameOf, workspaceState, type Workspace } from './lib/workspaces.js';
 import { homeModel } from './lib/home.js';
 import { groupAttention, attentionCount, scopeAttention } from './lib/attention.js';
-import { lastSeen, markSeen, localKey, store } from './lib/sync.js';
+import { lastSeen, markSeen, localKey } from './lib/sync.js';
+import { applyTheme } from './lib/theme.js';
+import { SettingsDialog } from './navigation/SettingsDialog.js';
 import { useLocalState } from './lib/useLocalState.js';
 import { useLayout } from './lib/useLayout.js';
 import { caseStamp } from './lib/useCase.js';
@@ -29,7 +31,7 @@ import { AdaptiveWorkspace } from './shell/AdaptiveWorkspace.js';
 import { OrganizationView } from './shell/OrganizationView.js';
 import { WorkspaceContext, type WorkspaceApi } from './shell/WorkspaceContext.js';
 import { ErrorBoundary } from './shell/ErrorBoundary.js';
-import { Composer } from './panels/Composer.js';
+import { Composer, compose } from './panels/Composer.js';
 import { Thread } from './surfaces/Thread.js';
 import { AttentionSurface, useAttention } from './surfaces/AttentionSurface.js';
 import type { AskExchange, AskResult } from './panels/Conversation.js';
@@ -95,6 +97,8 @@ export function App() {
 
   const [collapsed, setCollapsed] = useLocalState<boolean>(localKey('sidebar'), (raw) => raw === 'true', String);
   const [paletteOpen, setPaletteOpen] = useState(false);
+  const [settings, setSettings] = useState<'settings' | 'shortcuts' | null>(null);
+  const [notifyOnFinish, setNotifyOnFinish] = useLocalState<boolean>(localKey('draft', 'notify-finish'), (raw) => raw !== 'false', String);
   const [exchanges, setExchanges] = useState<AskExchange[]>([]);
 
   // "While you were away" is measured from when the window was last hidden.
@@ -124,6 +128,24 @@ export function App() {
     }
   }, [org.approvals]);
 
+  // Like any chat app: when work finishes while you are elsewhere, say so.
+  const settled = useRef<Map<string, string> | null>(null);
+  useEffect(() => {
+    const roots = org.nodes.filter((node) => !node.parentId);
+    const previous = settled.current;
+    settled.current = new Map(roots.map((root) => [root.id, root.state]));
+    if (!previous || !org.authoritative || !notifyOnFinish) return;
+    if (document.hasFocus() && document.visibilityState === 'visible') return;
+    for (const root of roots) {
+      const before = previous.get(root.id);
+      if (!before || before === root.state || !['COMPLETE', 'FAILED', 'CANCELLED'].includes(root.state)) continue;
+      window.mission?.notify?.(
+        root.state === 'COMPLETE' ? 'Work finished' : 'Work did not finish',
+        titleOf(root.goal),
+      );
+    }
+  }, [org.nodes, org.authoritative, notifyOnFinish]);
+
   const attentionQuery = useAttention(org.revision);
   const allAttention = attentionQuery.data ?? [];
   const globalAttention = attentionCount(groupAttention(allAttention));
@@ -152,6 +174,22 @@ export function App() {
     const ids = new Set(threadCaseIds);
     return workspace?.cases.find((c) => ids.has(c.id) && isLive(phaseOf(c, subtreeOf(org.nodes, c.id)))) ?? null;
   }, [workspace, threadCaseIds, org.nodes]);
+
+  // Recent runs in this Workspace for the sidebar, as a chat app lists recent
+  // conversations; starred ones stay at the top.
+  const [starred, setStarred] = useLocalState<string[]>(localKey('draft', 'starred-runs'), decodeKeys);
+  const recents = useMemo(() => {
+    if (view.name !== 'workspace' || !workspace) return [];
+    const star = new Set(starred);
+    const ordered = [...workspace.cases.filter((c) => star.has(c.id)), ...workspace.cases.filter((c) => !star.has(c.id)).slice(0, 12)];
+    return ordered.map((c) => ({
+      id: c.id,
+      title: titleOf(c.goal),
+      live: isLive(phaseOf(c, subtreeOf(org.nodes, c.id))),
+      starred: star.has(c.id),
+      current: c.id === activeCase?.id,
+    }));
+  }, [view.name, workspace, starred, org.nodes, activeCase?.id]);
 
   const scopedAttention = useMemo(() => scopeAttention(allAttention, new Set(allCaseIds)), [allAttention, allCaseIds]);
   const wsAttention = attentionCount(groupAttention(scopedAttention));
@@ -252,6 +290,10 @@ export function App() {
     },
     detach: window.mission?.openDetached ? (target) => void window.mission!.openDetached!(target) : undefined,
     contextRefs,
+    branchFrom: (caseId) => {
+      const root = org.nodes.find((n) => n.id === caseId);
+      branchFrom(root ? titleOf(root.goal) : 'Focused conversation', caseId);
+    },
   } : null;
 
   // ---- keyboard -----------------------------------------------------------
@@ -261,6 +303,9 @@ export function App() {
       const editing = event.target instanceof HTMLElement && (event.target.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(event.target.tagName));
       if (mod && event.key.toLowerCase() === 'k') { event.preventDefault(); setPaletteOpen((v) => !v); }
       if (mod && event.key === '\\') { event.preventDefault(); setCollapsed((v) => !v); }
+      if (mod && event.shiftKey && event.key.toLowerCase() === 'o') { event.preventDefault(); newWork(); }
+      if (mod && event.key === ',') { event.preventDefault(); setSettings('settings'); }
+      if (mod && event.key === '/') { event.preventDefault(); setSettings('shortcuts'); }
       // Layout is UI state, so it gets ordinary undo.
       if (mod && !event.shiftKey && event.key.toLowerCase() === 'z' && !editing) {
         if (surfaces.undo()) event.preventDefault();
@@ -268,7 +313,7 @@ export function App() {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [surfaces, setCollapsed]);
+  });
 
   // ---- palette ------------------------------------------------------------
   const paletteItems = useMemo<SearchItem[]>(() => {
@@ -282,7 +327,10 @@ export function App() {
         { id: 'new-branch', kind: 'action' as const, title: 'Start a focused conversation', keywords: 'branch conversation' },
         { id: 'reset-layout', kind: 'action' as const, title: 'Reset the layout', keywords: 'surfaces panels clean' },
       ] : []),
+      { id: 'new-work', kind: 'action', title: 'New work', keywords: 'new chat start task' },
       { id: 'go-home', kind: 'action', title: 'Go Home' },
+      { id: 'open-settings', kind: 'action', title: 'Settings', keywords: 'preferences appearance theme notifications' },
+      { id: 'open-shortcuts', kind: 'action', title: 'Keyboard shortcuts', keywords: 'keys help' },
       { id: 'toggle-sidebar', kind: 'action', title: collapsed ? 'Expand the sidebar' : 'Collapse the sidebar' },
       { id: 'toggle-theme', kind: 'action', title: document.documentElement.dataset.theme === 'light' ? 'Use the dark theme' : 'Use the light theme', keywords: 'theme appearance' },
       ...workspaces.map((ws) => ({ id: ws.key, kind: 'workspace' as const, title: ws.name, subtitle: ws.running ? 'Working' : undefined, workspaceKey: ws.key })),
@@ -304,11 +352,10 @@ export function App() {
     if (item.id === 'go-home') navigate({ name: 'home' });
     if (item.id === 'toggle-sidebar') setCollapsed((v) => !v);
     if (item.id === 'reset-layout') surfaces.reset();
-    if (item.id === 'toggle-theme') {
-      const next = document.documentElement.dataset.theme === 'light' ? 'dark' : 'light';
-      document.documentElement.dataset.theme = next;
-      store.set('cot.theme.v1', next);
-    }
+    if (item.id === 'toggle-theme') applyTheme(document.documentElement.dataset.theme === 'light' ? 'dark' : 'light');
+    if (item.id === 'new-work') newWork();
+    if (item.id === 'open-settings') setSettings('settings');
+    if (item.id === 'open-shortcuts') setSettings('shortcuts');
     if (item.id === 'go-plan') surfaces.open('plan', activeCase?.id ?? null);
     if (item.id === 'go-files') surfaces.open('files');
     if (item.id === 'go-memory') surfaces.open('memory');
@@ -317,11 +364,17 @@ export function App() {
     if (item.id === 'new-branch') branchFrom('Focused conversation');
   };
 
-  const branchFrom = (name: string) => {
+  const branchFrom = (name: string, fromCaseId: string | null = activeCase?.id ?? null) => {
     const id = `b-${Date.now().toString(36)}`;
-    setConversations((state) => createBranch(state, name, activeCase?.id ?? null, id, new Date().toISOString()));
+    setConversations((state) => createBranch(state, name, fromCaseId, id, new Date().toISOString()));
     setBranch(id);
   };
+
+  /** New work, from anywhere: Home, with the composer focused and empty. */
+  function newWork() {
+    navigate({ name: 'home' });
+    setTimeout(() => compose(''), 0);
+  }
 
   // ---- composer handlers ---------------------------------------------------
   const ask = async (text: string) => {
@@ -345,6 +398,10 @@ export function App() {
       mandateId={mandateId}
       onSelectMandate={setMandateId}
       onAuthority={variant === 'docked' ? () => openSection('authority') : undefined}
+      onStop={variant === 'docked' && liveCase ? async () => {
+        await daemon().node.cancelCase.mutate({ id: liveCase.id });
+        org.refresh();
+      } : undefined}
       blockedReason={blockedReason}
       leading={variant === 'hero' ? (
         <WorkspacePicker
@@ -500,6 +557,11 @@ export function App() {
           setTimeout(() => surfaces.open('attention'), 0);
         }}
         onSearch={() => setPaletteOpen(true)}
+        onSettings={() => setSettings('settings')}
+        onNewWork={newWork}
+        recents={recents}
+        onOpenRun={(id) => focusCase(id)}
+        onToggleStar={(id) => setStarred((list) => (list.includes(id) ? list.filter((x) => x !== id) : [id, ...list]))}
         connected={!offline}
         authoritative={org.authoritative}
       />
@@ -512,6 +574,16 @@ export function App() {
         {stale.length > 0 && <div className="banner">{outOfDateMessage(stale)}</div>}
         {main}
       </main>
+      <SettingsDialog
+        open={settings !== null}
+        focus={settings ?? 'settings'}
+        onClose={() => setSettings(null)}
+        mandates={mandates.data ?? []}
+        mandateId={mandateId}
+        onMandate={setMandateId}
+        notifyOnFinish={notifyOnFinish}
+        onNotifyOnFinish={setNotifyOnFinish}
+      />
       <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} items={paletteItems} onChoose={chooseFromPalette} />
     </div>
   );

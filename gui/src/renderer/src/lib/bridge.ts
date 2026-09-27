@@ -15,6 +15,7 @@ declare global {
       openDetached?: (target: string) => Promise<boolean>;
       pathForFile?: (file: File) => string;
       pickFolder?: () => Promise<string | null>;
+      notify?: (title: string, body: string) => void;
     };
   }
 }

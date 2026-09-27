@@ -19,6 +19,8 @@ interface Props {
   mandates: Mandate[];
   mandateId: string | null;
   onSelectMandate: (id: string) => void;
+  /** Stops the live run; offered on the send button while nothing is typed. */
+  onStop?: () => Promise<void>;
   /** Shown first in the footer — on Home, where the work will happen. */
   leading?: React.ReactNode;
   /** Opens the plain-words authority summary for this Workspace. */
@@ -31,6 +33,13 @@ interface Props {
   onQuestion: (text: string) => Promise<void>;
   onWork: (text: string, refs: ContextRef[]) => Promise<void>;
   onRedirect: (text: string, refs: ContextRef[]) => Promise<void>;
+}
+
+/** Window event that puts text in the composer (Edit request, New work). */
+export const COMPOSE_EVENT = 'cot:compose';
+
+export function compose(text: string | null = null): void {
+  window.dispatchEvent(new CustomEvent(COMPOSE_EVENT, { detail: text === null ? {} : { text } }));
 }
 
 const HINT: Record<Intent, string> = {
@@ -51,9 +60,40 @@ export function Composer(props: Props) {
   const [dragging, setDragging] = useState(false);
   const box = useRef<HTMLTextAreaElement>(null);
 
+  const fileInput = useRef<HTMLInputElement>(null);
+  const [confirmStop, setConfirmStop] = useState(false);
+
   useEffect(() => {
     if (props.autoFocus) box.current?.focus();
   }, [props.autoFocus, props.draftScope]);
+
+  // "Edit request" and "New work" put text here from elsewhere in the window.
+  useEffect(() => {
+    const onCompose = (event: Event) => {
+      const detail = (event as CustomEvent<{ text?: string }>).detail;
+      if (typeof detail?.text === 'string') setText(detail.text);
+      requestAnimationFrame(() => {
+        box.current?.focus();
+        const end = box.current?.value.length ?? 0;
+        box.current?.setSelectionRange(end, end);
+      });
+    };
+    window.addEventListener(COMPOSE_EVENT, onCompose);
+    return () => window.removeEventListener(COMPOSE_EVENT, onCompose);
+  }, [setText]);
+
+  useEffect(() => {
+    if (!confirmStop) return;
+    const timer = setTimeout(() => setConfirmStop(false), 4000);
+    return () => clearTimeout(timer);
+  }, [confirmStop]);
+
+  const attach = (files: FileList | null) => {
+    for (const file of Array.from(files ?? [])) {
+      const path = window.mission?.pathForFile?.(file) || file.name;
+      setRefs((current) => addRef(current, { kind: 'file', id: path, label: file.name }));
+    }
+  };
 
   useEffect(() => { grow(); });
 
@@ -96,10 +136,7 @@ export function Composer(props: Props) {
       setRefs((current) => addRef(current, dropped));
       return;
     }
-    for (const file of Array.from(event.dataTransfer.files)) {
-      const path = window.mission?.pathForFile?.(file) || file.name;
-      setRefs((current) => addRef(current, { kind: 'file', id: path, label: file.name }));
-    }
+    attach(event.dataTransfer.files);
   };
 
   const offered = props.suggestions.filter((s) => !refs.some((r) => r.kind === s.kind && r.id === s.id)).slice(0, 3);
@@ -150,6 +187,16 @@ export function Composer(props: Props) {
           }}
         />
         <div className="composer2-foot">
+          <button type="button" className="icon-button attach" aria-label="Attach files as context" title="Attach files" onClick={() => fileInput.current?.click()}>
+            <Icon name="attach" />
+          </button>
+          <input
+            ref={fileInput}
+            type="file"
+            multiple
+            hidden
+            onChange={(event) => { attach(event.target.files); event.target.value = ''; }}
+          />
           {props.leading}
           {props.mandates.length > 0 && (
             <span className="authority-chip" title="What new work is allowed to do">
@@ -167,7 +214,7 @@ export function Composer(props: Props) {
               </select>
             </span>
           )}
-          {props.liveRun && intent !== 'question' ? (
+          {props.liveRun && intent !== 'question' && text.trim() ? (
             <div className="intent-toggle" role="radiogroup" aria-label="What to do with the current run">
               <button type="button" role="radio" aria-checked={intent === 'work'} onClick={() => setOverride('work')}>Add as new work</button>
               <button type="button" role="radio" aria-checked={intent === 'redirect'} onClick={() => setOverride('redirect')}>Redirect current run</button>
@@ -175,15 +222,34 @@ export function Composer(props: Props) {
           ) : (
             <span className="intent-hint" id="composer-hint">{text.trim() ? HINT[intent] : ''}</span>
           )}
-          <button
-            type="submit"
-            className="send"
-            aria-label={HINT[intent]}
-            title={HINT[intent]}
-            disabled={busy || !text.trim() || workBlocked}
-          >
-            <Icon name="send" size={16} />
-          </button>
+          {props.liveRun && props.onStop && !text.trim() ? (
+            // Like any chat app: while work is running and nothing is typed,
+            // the send button stops it. Two presses, because it ends agents.
+            <button
+              type="button"
+              className="send stop"
+              data-confirm={confirmStop}
+              aria-label={confirmStop ? 'Press again to stop the current run' : 'Stop the current run'}
+              title={confirmStop ? 'Press again to stop' : 'Stop the current run'}
+              onClick={() => {
+                if (!confirmStop) { setConfirmStop(true); return; }
+                setConfirmStop(false);
+                void props.onStop!().catch((err: unknown) => setError(err instanceof Error ? err.message : String(err)));
+              }}
+            >
+              {confirmStop ? <span className="stop-label">Stop?</span> : <span className="stop-square" aria-hidden="true" />}
+            </button>
+          ) : (
+            <button
+              type="submit"
+              className="send"
+              aria-label={HINT[intent]}
+              title={HINT[intent]}
+              disabled={busy || !text.trim() || workBlocked}
+            >
+              <Icon name="send" size={16} />
+            </button>
+          )}
         </div>
       </form>
       {workBlocked && text.trim() && (

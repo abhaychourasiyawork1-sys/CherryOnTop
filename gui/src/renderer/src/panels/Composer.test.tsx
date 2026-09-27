@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { Composer } from './Composer.js';
+import { Composer, compose } from './Composer.js';
 import { act } from 'react';
 import { render, typeInto, key, flush } from '../testing/render.js';
 
@@ -95,5 +95,27 @@ describe('composer', () => {
     const second = setup();
     expect(second.box.value).toBe('half a thought');
     second.unmount();
+  });
+
+  it('stops a live run only on a second press, and only when nothing is typed', async () => {
+    const onStop = vi.fn(async () => {});
+    const { container, box, unmount } = setup({ liveRun: { id: 'r1', title: 'Auth' }, onStop });
+    const stop = () => container.querySelector('.send.stop') as HTMLButtonElement | null;
+    act(() => stop()!.click());
+    expect(onStop).not.toHaveBeenCalled();
+    expect(stop()!.getAttribute('aria-label')).toMatch(/again/);
+    act(() => stop()!.click());
+    await flush();
+    expect(onStop).toHaveBeenCalledTimes(1);
+    typeInto(box, 'more work');
+    expect(stop()).toBeNull();
+    unmount();
+  });
+
+  it('takes text from “Edit request” without losing focus', () => {
+    const { box, unmount } = setup();
+    act(() => compose('Refactor the auth flow'));
+    expect(box.value).toBe('Refactor the auth flow');
+    unmount();
   });
 });

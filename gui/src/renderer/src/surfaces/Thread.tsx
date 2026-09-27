@@ -7,6 +7,10 @@ import { phaseOf, isLive, titleOf } from '../lib/run.js';
 import { caseStamp, useCaseFile } from '../lib/useCase.js';
 import { ago, when } from '../lib/format.js';
 import { useWorkspace } from '../shell/WorkspaceContext.js';
+import { Icon } from '../shell/Icon.js';
+import { compose } from '../panels/Composer.js';
+import { copyText } from '../panels/Markdown.js';
+import { daemon } from '../lib/client.js';
 import type { OrgNode, Approval } from '../lib/useOrg.js';
 
 const PAGE = 8;
@@ -35,15 +39,30 @@ export function Thread(props: { caseIds: string[]; exchanges: AskExchange[]; emp
     if (element && pinned.current) element.scrollTop = element.scrollHeight;
   }, [tail]);
 
+  const [awayFromEnd, setAwayFromEnd] = useState(false);
+
   if (roots.length === 0 && props.exchanges.length === 0) return <>{props.empty}</>;
 
   return (
+    <div className="thread-wrap">
+    {awayFromEnd && (
+        <button
+          type="button"
+          className="jump-latest"
+          aria-label="Jump to the latest"
+          title="Jump to the latest"
+          onClick={() => scroller.current?.scrollTo({ top: scroller.current.scrollHeight, behavior: 'smooth' })}
+        >
+          <Icon name="arrowDown" size={14} />
+        </button>
+    )}
     <div
       className="thread-scroll"
       ref={scroller}
       onScroll={(event) => {
         const el = event.currentTarget;
         pinned.current = el.scrollHeight - el.scrollTop - el.clientHeight < 120;
+        setAwayFromEnd(!pinned.current);
       }}
     >
       <div className="thread2">
@@ -65,6 +84,7 @@ export function Thread(props: { caseIds: string[]; exchanges: AskExchange[]; emp
           <AskAnswer key={exchange.key} exchange={exchange} />
         ))}
       </div>
+    </div>
     </div>
   );
 }
@@ -105,6 +125,14 @@ const Exchange = memo(function Exchange(props: {
               {showGoal ? 'Show less' : 'Show full request'}
             </button>
           )}
+          <button
+            type="button"
+            className="quiet-link msg-edit"
+            title="Put this request back in the composer to change and send as new work"
+            onClick={() => compose(root.goal)}
+          >
+            <Icon name="edit" size={12} /> Edit
+          </button>
         </p>
       </header>
 
@@ -128,12 +156,63 @@ const Exchange = memo(function Exchange(props: {
         ) : (
           <FailureCard root={root} subtree={subtree} file={file.data} stamp={stamp} />
         )}
+        {!live && <MessageActions root={root} answer={file.data?.answer ?? null} />}
       </div>
 
       {props.exchanges.map((exchange) => <AskAnswer key={exchange.key} exchange={exchange} />)}
     </article>
   );
 });
+
+/** The small row every chat reply has: copy it, run it again, take it
+ *  somewhere new. Quiet until you look for it. */
+function MessageActions({ root, answer }: { root: OrgNode; answer: string | null }) {
+  const ws = useWorkspace();
+  const [copied, setCopied] = useState<'yes' | 'no' | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const again = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      const created = await daemon().node.replay.mutate({ nodeId: root.id, mandateId: ws.mandateId });
+      ws.org.refresh();
+      ws.focusCase((created as { id: string }).id);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="msg-actions" role="toolbar" aria-label="Reply actions">
+      {answer && (
+        <button
+          type="button"
+          className="icon-button"
+          aria-label={copied === 'yes' ? 'Copied' : 'Copy the answer'}
+          title={copied === 'yes' ? 'Copied' : copied === 'no' ? 'Could not copy' : 'Copy the answer'}
+          onClick={() => void copyText(answer).then((ok) => { setCopied(ok ? 'yes' : 'no'); setTimeout(() => setCopied(null), 1500); })}
+        >
+          <Icon name={copied === 'yes' ? 'check' : 'copy'} size={14} />
+        </button>
+      )}
+      {!ws.blockedReason && (
+        <button type="button" className="icon-button" aria-label="Run this request again" title="Run again" disabled={busy} onClick={() => void again()}>
+          <Icon name="refresh" size={14} />
+        </button>
+      )}
+      {ws.branchFrom && (
+        <button type="button" className="icon-button" aria-label="Start a focused conversation from this run" title="Branch from here" onClick={() => ws.branchFrom!(root.id)}>
+          <Icon name="branch" size={14} />
+        </button>
+      )}
+      {error && <span className="inline-error">{error}</span>}
+    </div>
+  );
+}
 
 /** An approval, answerable where it is read. The runtime continues on its own
  *  once it is answered. */

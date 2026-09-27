@@ -20,6 +20,8 @@ contextBridge.exposeInMainWorld('mission', {
     ipcRenderer.invoke('export-receipt', caseId, html),
   /** Opens a Deep Dive in its own window. Only on request; never automatic. */
   openDetached: (target: string): Promise<boolean> => ipcRenderer.invoke('open-detached', target),
+  /** A desktop notification, shown only when the window is not focused. */
+  notify: (title: string, body: string) => ipcRenderer.send('notify', title, body),
   /** Asks the person for a project folder. Null when they cancel. */
   pickFolder: (): Promise<string | null> => ipcRenderer.invoke('pick-folder'),
   /** The real path of a file dropped on the window, for composer context. */

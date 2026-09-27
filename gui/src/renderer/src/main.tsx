@@ -2,13 +2,12 @@ import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { App } from './App.js';
 import { DetachedDeepDive } from './shell/DetachedDeepDive.js';
-import { store } from './lib/sync.js';
+import { applyTheme } from './lib/theme.js';
 import './styles.css';
 import './styles/desktop.css';
 
-// A theme choice is a per-person convenience; dark is the default.
-const theme = store.get('cot.theme.v1');
-if (theme === 'light' || theme === 'dark') document.documentElement.dataset.theme = theme;
+// A theme choice is a per-person convenience: system by default.
+applyTheme();
 
 // A detached Deep Dive window is the same renderer opened on one target.
 const detached = new URLSearchParams(location.hash.slice(1)).get('detached');

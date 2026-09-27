@@ -31,6 +31,12 @@ interface Props {
   attention: number;
   onAttention: () => void;
   onSearch: () => void;
+  onSettings: () => void;
+  onNewWork: () => void;
+  /** This Workspace's runs, newest first, starred ones first of all. */
+  recents: { id: string; title: string; live: boolean; starred: boolean; current: boolean }[];
+  onOpenRun: (id: string) => void;
+  onToggleStar: (id: string) => void;
   connected: boolean;
   authoritative: boolean;
 }
@@ -51,6 +57,9 @@ export function Sidebar(props: Props) {
       </div>
 
       <ul className="side-list">
+        <li>
+          <SideButton icon="plus" label="New work" hint="Ctrl ⇧ O" collapsed={props.collapsed} onClick={props.onNewWork} />
+        </li>
         <li>
           <SideButton icon="home" label="Home" current={props.atHome} collapsed={props.collapsed} onClick={props.onHome} />
         </li>
@@ -95,6 +104,39 @@ export function Sidebar(props: Props) {
         </div>
       )}
 
+      {!props.collapsed && props.recents.length > 0 && (
+        <div className="side-group side-recents">
+          <p className="side-group-label" id="recents-label">Recent</p>
+          <ul className="side-list" aria-labelledby="recents-label">
+            {props.recents.map((run) => (
+              <li key={run.id} className="recent-row" data-current={run.current}>
+                <button
+                  type="button"
+                  className="side-item recent-item"
+                  aria-current={run.current ? 'true' : undefined}
+                  title={run.title}
+                  onClick={() => props.onOpenRun(run.id)}
+                >
+                  {run.live && <span className="recent-live" aria-label="Working" />}
+                  <span className="side-label">{run.title}</span>
+                </button>
+                <button
+                  type="button"
+                  className="recent-star"
+                  data-on={run.starred}
+                  aria-pressed={run.starred}
+                  aria-label={run.starred ? `Unstar ${run.title}` : `Star ${run.title}`}
+                  title={run.starred ? 'Unstar' : 'Star'}
+                  onClick={() => props.onToggleStar(run.id)}
+                >
+                  <Icon name="star" size={12} />
+                </button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
       <div className="sidebar-foot">
         {props.attention > 0 && (
           <button type="button" className="side-attention" onClick={props.onAttention} aria-label={`${props.attention} need your attention`}>
@@ -112,6 +154,9 @@ export function Sidebar(props: Props) {
             <span className="conn-dot" aria-hidden="true" />
             {!props.collapsed && (!props.connected ? 'Offline' : props.authoritative ? 'Connected' : 'Syncing')}
           </span>
+          <button type="button" className="icon-button" onClick={props.onSettings} aria-label="Settings" title="Settings (Ctrl ,)">
+            <Icon name="settings" />
+          </button>
           <button
             type="button"
             className="icon-button"

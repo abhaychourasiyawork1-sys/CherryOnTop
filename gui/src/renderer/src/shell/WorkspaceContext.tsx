@@ -31,6 +31,8 @@ export interface WorkspaceApi {
   resume: (nodeId: string) => Promise<void>;
   /** Detaches a Deep Dive into its own window, when running in Electron. */
   detach?: (target: string) => void;
+  /** Starts a focused conversation seeded with this run. */
+  branchFrom?: (caseId: string) => void;
   /** Context the composer should offer, from what is open. */
   contextRefs: ContextRef[];
 }
