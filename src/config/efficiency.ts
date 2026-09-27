@@ -47,11 +47,27 @@ const MODEL_DEFAULT: Record<DispatchRole, string | undefined> = {
 // measured spread was 19-42, so it costs nothing today and bounds the one term
 // nothing bounded. `ORG_MAX_TURNS_EXECUTE=0` removes it, which is the behaviour
 // this branch shipped with.
+// `plan` was 2. Measured on Terminal-Bench vba-userform-port: 3 of 3 planner
+// runs stopped at the cap (error_max_turns) before answering, so the split Laya
+// had judged worthwhile (P=0.94) never happened. A planner on a real task
+// looks at a README and a manifest before it can split anything; 6 leaves
+// room for that and still stops a planner that starts doing the work.
 const MAX_TURNS_DEFAULT: Partial<Record<DispatchRole, number>> = {
-  plan: 2,
+  plan: 6,
   synthesize: 1,
   execute: 60,
 };
+
+/** Wall-clock limit on one execute dispatch, in ms. 0 (the default) means
+ *  none: a run is bounded by its turn cap and by its task's spend budget,
+ *  enforced live by the spend watchdog in execute-step.ts. The old fixed ten
+ *  minutes decided long tasks on the clock: on Terminal-Bench
+ *  vba-userform-port every attempt was killed mid-build, and each retry
+ *  started over in a fresh session. */
+export function executeTimeoutMs(): number {
+  const ms = envInt('ORG_EXECUTE_TIMEOUT_MS', 0);
+  return ms > 0 ? ms : Number.POSITIVE_INFINITY;
+}
 
 export function dispatchOptionsFor(role: DispatchRole): { model?: string; maxTurns?: number } {
   const opts: { model?: string; maxTurns?: number } = {};
@@ -80,6 +96,24 @@ export function dispatchOptionsFor(role: DispatchRole): { model?: string; maxTur
  *  own `max_child_count` authority still applies and can only lower this. */
 export function maxChildJobs(): number {
   return Math.max(1, envInt('ORG_MAX_CHILD_JOBS', 2));
+}
+
+/** When the planner loses its veto over a DELEGATE decision.
+ *
+ *  Two independent judges have to agree the goal splits: System-1's calibrated
+ *  P(decomposable) *and* the deterministic split score. Neither alone is
+ *  enough — live Laya scored a single seaborn bug report 0.91, above the
+ *  webpage redesign it should have split (0.78); the split score is what
+ *  separates them (3.5 vs 5). When both clear their bar the planner is asked
+ *  how to split, not whether, and runs on the standard model rather than the
+ *  fast tier that declined the redesign in one turn without opening the repo.
+ *  Returns false for a missing value, so a run with System-1 off keeps the
+ *  planner's veto exactly as before. */
+export function planVetoOverridden(pDecomposable: number | undefined, splitScore: number | undefined): boolean {
+  const minP = Number(process.env.ORG_PLAN_OVERRIDE_P ?? 0.75);
+  const minSplit = Number(process.env.ORG_PLAN_OVERRIDE_SPLIT ?? 4);
+  return typeof pDecomposable === 'number' && typeof splitScore === 'number'
+    && pDecomposable >= minP && splitScore >= minSplit;
 }
 
 /** 0 disables the plan cache entirely. */

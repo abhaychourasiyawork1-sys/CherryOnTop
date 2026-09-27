@@ -20,7 +20,7 @@ describe('plan cache', () => {
     putCachedPlan(db, key, ['sub a', 'sub b'], 'head1', '2026-09-08T00:00:00.000Z');
 
     const fresh = new Date('2026-09-08T05:00:00.000Z');
-    expect(getCachedPlan(db, key, 24, fresh)).toEqual(['sub a', 'sub b']);
+    expect(getCachedPlan(db, key, 24, fresh)).toEqual({ subgoals: ['sub a', 'sub b'], after: [] });
 
     const stale = new Date('2026-09-10T00:00:00.000Z');
     expect(getCachedPlan(db, key, 24, stale)).toBeNull();
@@ -56,6 +56,6 @@ it('round-trips "this goal does not split", which costs a whole sandbox to recom
   putCachedPlan(db, key, [], 'headN', new Date().toISOString());
   // Distinguishable from a miss: null means "never asked", [] means "asked, and
   // the answer was no". Collapsing the two is what made the answer un-cacheable.
-  expect(getCachedPlan(db, key, 24)).toEqual([]);
+  expect(getCachedPlan(db, key, 24)).toEqual({ subgoals: [], after: [] });
   expect(getCachedPlan(db, planCacheKey('something else', 'headN'), 24)).toBeNull();
 });

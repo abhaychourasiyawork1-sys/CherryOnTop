@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { router, publicProcedure } from '../trpc.js';
 import { AuthoritySchema } from '../../schemas/node-contract.js';
 import {
-  listMandates, getMandate, insertMandate, updateMandate, deleteMandate,
+  listMandates, getMandate, insertMandate, updateMandate, deleteMandate, resetMandateToDefault,
 } from '../../db/queries/mandates.js';
 import { simulateAuthority, summarizeAuthority } from '../../engines/simulate-authority.js';
 
@@ -60,6 +60,13 @@ export const mandateRouter = router({
     .input(z.object({ id: z.string() }))
     .mutation(({ input, ctx }) => {
       deleteMandate(ctx.db, input.id);
+      return { ok: true as const };
+    }),
+
+  reset: publicProcedure
+    .input(z.object({ id: z.string() }))
+    .mutation(({ input, ctx }) => {
+      resetMandateToDefault(ctx.db, input.id);
       return { ok: true as const };
     }),
 });

@@ -27,7 +27,8 @@ export function registerRunCommand(program: Command): void {
     .option('--budget <usd>', 'budget in USD (a child costs 1; below that, delegation escalates)', nonNegativeNumber('--budget'), 0)
     .option('--max-children <n>', 'maximum children, which also bounds delegation depth', nonNegativeNumber('--max-children'), 0)
     .option('--repo <path>', 'local repository the node should operate on (defaults to the current directory)')
-    .action(async (goal: string, options: { spawn: boolean; budget: number; maxChildren: number; repo?: string }) => {
+    .option('--mandate <name-or-id>', 'run under a saved mandate\'s authority and constraints, instead of --spawn/--budget/--max-children')
+    .action(async (goal: string, options: { spawn: boolean; budget: number; maxChildren: number; repo?: string; mandate?: string }) => {
       // Validated here, at the boundary closest to the user, so a path the
       // sandbox cannot see fails before a node is ever created. The .git check
       // is the second half of that guard: the mounted directory is handed to an
@@ -70,16 +71,34 @@ export function registerRunCommand(program: Command): void {
         await waitForDaemon();
         client = createDaemonClient();
       }
+      let authority = {
+        tools: [] as string[],
+        spawn_children: options.spawn,
+        max_child_count: options.maxChildren,
+        budget_usd: options.budget,
+      };
+      let constraints: string[] = [];
+      if (options.mandate) {
+        const mandates = await client.mandate.list.query();
+        const needle = options.mandate.toLowerCase();
+        const mandate = mandates.find((m) => m.id === options.mandate || m.name.toLowerCase() === needle);
+        if (!mandate) {
+          console.error(`No mandate named or with id "${options.mandate}". Available: ${mandates.map((m) => m.name).join(', ')}`);
+          process.exitCode = 1;
+          return;
+        }
+        if (options.spawn || options.budget || options.maxChildren) {
+          console.log(`Using mandate "${mandate.name}" — ignoring --spawn/--budget/--max-children.`);
+        }
+        authority = mandate.authority;
+        constraints = mandate.constraints;
+        console.log(`Running under mandate: ${mandate.name}`);
+      }
       const result = await client.node.create.mutate({
         goal,
         definition_of_done: [goal],
-        authority: {
-          tools: [],
-          spawn_children: options.spawn,
-          max_child_count: options.maxChildren,
-          budget_usd: options.budget,
-        },
-        constraints: [],
+        authority,
+        constraints,
         repoPath,
       });
       console.log(`Root node created: ${result.id}`);

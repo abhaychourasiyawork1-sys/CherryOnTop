@@ -39,3 +39,19 @@ describe('investigativeExecuteGrant', () => {
     expect(investigativeExecuteGrant(grant, true)).toBe(grant);
   });
 });
+
+describe('unprovableWithoutChanges', () => {
+  const unproven = { passed: false, reasonCodes: ['V1:durable_outcome_produced', 'V2:no_observed_verification'] };
+  it('does not re-run a report-only run just to prove a change that does not exist', async () => {
+    const { unprovableWithoutChanges } = await import('./dispatch-helpers.js');
+    expect(unprovableWithoutChanges(unproven, false)).toBe(true);
+  });
+  it('still retries when files changed, or when validation failed for another reason', async () => {
+    const { unprovableWithoutChanges } = await import('./dispatch-helpers.js');
+    expect(unprovableWithoutChanges(unproven, true)).toBe(false);
+    expect(unprovableWithoutChanges({ passed: false, reasonCodes: ['V1:no_durable_outcome'] }, false)).toBe(false);
+    expect(unprovableWithoutChanges({ passed: true, reasonCodes: [] }, false)).toBe(false);
+    // A crash leaves no report; it must still be retried.
+    expect(unprovableWithoutChanges({ passed: false, reasonCodes: ['V1:no_durable_outcome', 'V2:no_observed_verification'] }, false)).toBe(false);
+  });
+});

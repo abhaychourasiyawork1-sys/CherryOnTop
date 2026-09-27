@@ -221,3 +221,18 @@ describe('calibrate', () => {
       .toBeCloseTo(base.contextBudget * 2);
   });
 });
+
+describe('an explicitly configured execute turn cap', () => {
+  afterEach(() => { delete process.env.ORG_MAX_TURNS_EXECUTE; });
+
+  it('can raise the cap above the complexity band, not only lower it', () => {
+    const goal = 'Fix the typo in README.md';
+    delete process.env.ORG_MAX_TURNS_EXECUTE;
+    const banded = executionPolicyFor(taskEconomicsFor(goal)).hardTurnCap;
+    expect(banded).toBeLessThan(120);
+    process.env.ORG_MAX_TURNS_EXECUTE = '120';
+    const policy = executionPolicyFor(taskEconomicsFor(goal));
+    expect(policy.hardTurnCap).toBe(120);
+    expect(effectiveTurnCap(120, policy)).toBe(120);
+  });
+});

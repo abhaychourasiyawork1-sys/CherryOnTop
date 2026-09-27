@@ -35,6 +35,26 @@ describe('strategyRetryAllowed', () => {
     expect(strategyRetryAllowed({ ...base, progress: 0.6 })).toBe(true);
   });
 
+  it('does not re-run a finished change that failed validation the same way again, however busy it was', () => {
+    // SWE-bench requests-1142: the change was in place every time and only an
+    // observed passing test was missing. Each attempt edited and grepped, so
+    // "progress" was always high, and four full dispatches followed.
+    const sig = 'validation:V1:below_required_confidence|below_minimum_level:V2';
+    expect(strategyRetryAllowed({ ...base, failureSignature: sig, previousFailureSignatures: [sig], progress: 0.6 })).toBe(false);
+  });
+
+  it('does allow a repeat when the shortfall was the guard cutting it off, not the work', () => {
+    // Same repeated-failure shape as requests-1142 above, but this time the
+    // evidence never contradicted success -- the daemon's own hard turn/spend
+    // guard cut the dispatch off before it could reach the proof
+    // (`failureSignatureFor` in `src/validation/engine.ts` is what labels this
+    // case `guard-truncated:` instead of `validation:`). A fresh dispatch gets
+    // a fresh allotment of exactly the resource that ran out, so retrying is a
+    // genuinely different attempt, not the same wall again.
+    const sig = 'guard-truncated:V1';
+    expect(strategyRetryAllowed({ ...base, failureSignature: sig, previousFailureSignatures: [sig], progress: 0.6 })).toBe(true);
+  });
+
   it('allows a first attempt, which has nothing to repeat', () => {
     expect(strategyRetryAllowed({
       ...base, previousStrategies: [], previousFailureSignatures: [],

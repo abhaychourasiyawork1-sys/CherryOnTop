@@ -59,7 +59,12 @@ const EMPTY: Filters = { search: '', outcomes: [], mandateIds: [], runtimes: [],
  *  the old window could show you the task you were looking at and the ones in a
  *  rail beside it, and nothing else — there was no way to ask "what did the
  *  read-only mandate cost us last week". */
-export function Cases({ onOpenCase, revision }: { onOpenCase: (id: string) => void; revision: number }) {
+export function Cases({ onOpenCase, revision, scope }: {
+  onOpenCase: (id: string) => void;
+  revision: number;
+  /** Repository paths to keep the list to — a Workspace's. */
+  scope?: string[];
+}) {
   const [filters, setFilters] = useState<Filters>(EMPTY);
   const active = countActive(filters);
 
@@ -69,14 +74,14 @@ export function Cases({ onOpenCase, revision }: { onOpenCase: (id: string) => vo
       outcomes: filters.outcomes.length ? filters.outcomes : undefined,
       mandateIds: filters.mandateIds.length ? filters.mandateIds : undefined,
       runtimes: filters.runtimes.length ? filters.runtimes : undefined,
-      repoPaths: filters.repoPaths.length ? filters.repoPaths : undefined,
+      repoPaths: filters.repoPaths.length ? filters.repoPaths : scope?.length ? scope : undefined,
       dod: filters.dod,
       intervened: filters.intervened,
     }) as Promise<CaseSummary[]>,
     // `revision` is what makes this list live. Without it the page showed
     // whatever existed when it mounted and never changed again — a case you
     // started while looking at it simply never appeared.
-    [JSON.stringify(filters), revision],
+    [JSON.stringify(filters), revision, scope?.join('|')],
   );
 
   const facets = useDaemonQuery<Facets>(() => daemon().case.facets.query() as Promise<Facets>, [revision]);
@@ -88,9 +93,9 @@ export function Cases({ onOpenCase, revision }: { onOpenCase: (id: string) => vo
     <div className="cases">
       <header className="cases-head">
         <div className="cases-title">
-          <h1>Cases</h1>
+          <h1>Runs</h1>
           <p className="figure cases-tally">
-            {rows.length} {rows.length === 1 ? 'case' : 'cases'} · {money(spend)}
+            {rows.length} {rows.length === 1 ? 'run' : 'runs'} · {money(spend)}
           </p>
         </div>
 

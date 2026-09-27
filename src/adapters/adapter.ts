@@ -23,6 +23,10 @@ export interface BuildCommandOptions {
   maxTurns?: number;
   /** Appended to the runtime's built-in system prompt (Task 12). */
   systemPrompt?: string;
+  /** Run as a multi-turn session fed over stdin instead of a one-shot prompt.
+   *  The goal is then *not* in argv; the caller sends it as the first message.
+   *  Only honoured by an adapter that declares `supportsSession`. */
+  session?: boolean;
 }
 
 export interface RuntimeAdapter {
@@ -38,6 +42,9 @@ export interface RuntimeAdapter {
    *  into argv is not the same question as the runtime accepting the value —
    *  see codex.ts, which takes `--model` and then rejects a Claude alias. */
   servesModel?(model: string): boolean;
+  /** Whether this runtime can hold a stdin-fed session (the private decision
+   *  round trip needs one). Absent means it cannot. */
+  supportsSession?: boolean;
   /** Wraps one raw output line as a StructuredEvent, or null if it is not a
    *  recognizable event (blank, malformed JSON, or missing a `type` field). */
   parseLine(line: string): StructuredEvent | null;

@@ -1,0 +1,32 @@
+diff --git a/sympy/simplify/fu.py b/sympy/simplify/fu.py
+index ad1130ef96..2ede6c7146 100644
+--- a/sympy/simplify/fu.py
++++ b/sympy/simplify/fu.py
+@@ -501,6 +501,8 @@ def _f(rv):
+         if not (rv.is_Pow and rv.base.func == f):
+             return rv
+ 
++        if rv.exp.is_extended_real is False:
++            return rv
+         if (rv.exp < 0) == True:
+             return rv
+         if (rv.exp > max) == True:
+diff --git a/sympy/simplify/tests/test_fu.py b/sympy/simplify/tests/test_fu.py
+index 54be6e1dca..30a4b816ad 100644
+--- a/sympy/simplify/tests/test_fu.py
++++ b/sympy/simplify/tests/test_fu.py
+@@ -89,6 +89,14 @@ def test_TR6():
+     assert TR6(cos(x)**4) == (-sin(x)**2 + 1)**2
+ 
+ 
++def test_TR5_TR6_I():
++    # gh-17114: exponents that are not extended real used to raise
++    # TypeError when compared with < or >
++    assert TR5(sin(x)**I) == sin(x)**I
++    assert TR6(cos(x)**I) == cos(x)**I
++    assert TR6(cos(x)**(1 + I)) == cos(x)**(1 + I)
++
++
+ def test_TR7():
+     assert TR7(cos(x)**2) == cos(2*x)/2 + S(1)/2
+     assert TR7(cos(x)**2 + 1) == cos(2*x)/2 + S(3)/2

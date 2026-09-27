@@ -24,6 +24,10 @@ export interface DelegateInput {
   /** The goals to hand out, one per child. Empty means the planner could not
    *  split the goal. */
   subgoals?: string[];
+  /** Aligned with `subgoals`: the indexes each one must wait for. Absent or
+   *  empty means every piece is free to run at once, as before ordering could
+   *  be expressed. */
+  after?: number[][];
   /** The parent's own authority, so the plan can be checked against it before
    *  any child exists. Absent means the structural checks that need it are
    *  skipped — every pre-validator caller behaves exactly as before. */
@@ -164,13 +168,40 @@ export interface DelegateChildDeps {
   createChildNode: (parentId: string, goal: string, siblingCount: number, approvedBudgetUsd?: number) => string;
   recordCommitment: (childId: string, goal: string) => void;
   startChild: (childId: string, goal: string) => void;
-  waitForChild: (childId: string) => Promise<{ succeeded: boolean }>;
+  /** `cancelled` means someone stopped that child on purpose: it is never
+   *  replaced, and nothing that depends on it starts. */
+  waitForChild: (childId: string) => Promise<{ succeeded: boolean; cancelled?: boolean }>;
+  /** True once the delegating node itself has been stopped. Checked before
+   *  every child is created: the delegation loop is plain async code that
+   *  outlives its node's cancellation, and without this it kept creating
+   *  children under a cancelled parent. Optional; absent means never. */
+  parentStopped?: () => boolean;
   /** What the work graph said and what it cost. Optional: a deployment with no
    *  telemetry sink schedules exactly the same, it just says nothing about it. */
   recordSchedule?: (schedule: DelegationSchedule) => void;
   /** Why a plan was funded or refused. Optional, for the same reason. */
   recordPlanValidation?: (validation: DelegationValidationResult) => void;
+  /** The failed child's own final report, read back so a replacement can be
+   *  told what was already tried rather than starting cold. Optional: a
+   *  deployment with no answer store still replaces the child, just without
+   *  handing the replacement anything about the attempt it is picking up
+   *  from. */
+  getFindings?: (childId: string) => string;
+  /** Links a failed child to the sibling dispatched to pick its work back up.
+   *  Optional, for the same reason as the rest of the recording hooks — a
+   *  deployment with nothing to record still replaces the child. */
+  markSuperseded?: (failedId: string, replacementId: string) => void;
 }
+
+/** How many *agents* one piece of delegated work gets, including the first —
+ *  not how many times one agent's own dispatch may retry (that is
+ *  `MAX_EXECUTION_ATTEMPTS` in `validation/engine.ts`, a different axis: a
+ *  fresh attempt here is a whole new child, with its own sandbox and its own
+ *  turn budget, not another turn inside the same one). Kept small and flat
+ *  for the same reason that constant is: unbounded replacement on a genuinely
+ *  unfinishable piece of work would spend the whole delegation's budget on
+ *  one subgoal instead of ever reporting that it could not be done. */
+const MAX_CHILD_ATTEMPTS = 3;
 
 /** The subgoals, as a graph the scheduler can reason about.
  *
@@ -187,13 +218,16 @@ export interface DelegateChildDeps {
  *
  *  ponytail: anchors are a heuristic for write paths; a planner that emitted
  *  explicit file claims per subgoal would replace this whole function. */
-export function workstreamNodesFor(subgoals: string[]): WorkstreamNode[] {
+export function workstreamNodesFor(subgoals: string[], after: number[][] = []): WorkstreamNode[] {
   return subgoals.map((goal, index) => {
     const anchors = extractAnchors(goal);
-    const readOnly = assessDecomposition(goal).investigative;
+    const readOnly = assessDecomposition(goal).explanationOnly;
     return {
       id: String(index),
-      inputDependencies: [],
+      // The planner's own ordering, when it gave one: "build the site after
+      // both research pieces" is a real input dependency, and before it could
+      // be said the planner's only honest answer to such a goal was [].
+      inputDependencies: (after[index] ?? []).map(String),
       informationDependencies: anchors,
       outputDependencies: [],
       validationDependencies: [],
@@ -227,6 +261,82 @@ export interface DelegationSchedule {
  *  every planned child, which starts two children writing the same file at the
  *  same moment and keeps paying for children whose prerequisite has already
  *  failed. Groups run in order; within a group, concurrently. */
+/** One piece of delegated work, dispatched to a fresh child each time the
+ *  previous one fails, up to `MAX_CHILD_ATTEMPTS`.
+ *
+ *  The failed child's own row is never touched beyond `markSuperseded`: its
+ *  state stays FAILED, its transcript stays real evidence, and the parent
+ *  reads it once, for a reason — the replacement is told what the failed
+ *  attempt found, and what to do about it, rather than starting cold on a
+ *  problem an entire sandbox already made progress on. What comes back to
+ *  the caller is the *last* attempt, so a group's success/failure and a
+ *  dependent's "doomed" reason are always about whether the *work* landed,
+ *  never about how many tries it took to get there. */
+/** A dependent piece's goal, with what the pieces it waited for reported.
+ *  Their files already reached its tree (each child's fork is integrated as it
+ *  finishes, and a new fork carries the parent's working tree); the reports
+ *  say where to look, so it does not rediscover them. */
+function withPrerequisites(goal: string, reports: { goal: string; findings: string }[]): string {
+  const usable = reports.filter((report) => report.findings.trim());
+  if (usable.length === 0) return goal;
+  const clip = (text: string) => (text.length > 4_000 ? `${text.slice(0, 4_000)}\n[…clipped]` : text);
+  return `${goal}\n\nThis piece builds on work already finished. What it reported:\n\n${usable
+    .map((report) => `### ${report.goal}\n${clip(report.findings.trim())}`).join('\n\n')}`;
+}
+
+function continuationGoal(originalGoal: string, findings: string | undefined): string {
+  // Told what was already tried, not just that it failed: a replacement that
+  // re-reads the whole goal from nothing re-derives what the failed attempt
+  // already found, at full price, for the same chance.
+  return findings?.trim()
+    ? `${originalGoal}\n\nA previous attempt at this exact piece of work did not finish. What it found before stopping:\n\n${findings.trim()}\n\nContinue from there — do not repeat what it already verified as done or established as true.`
+    : `${originalGoal}\n\nA previous attempt at this exact piece of work did not finish and left no usable report. Start fresh.`;
+}
+
+/** Picks a failed child's work back up with a fresh sibling, up to
+ *  `MAX_CHILD_ATTEMPTS` in total (the one already spent, plus this).
+ *
+ *  Deliberately a *second* phase, run only for the children that already
+ *  failed their first attempt — never interleaved with the initial fan-out.
+ *  That fan-out has its own concurrency guarantee (every sibling started
+ *  before any of them is waited on, so a wide split takes as long as its
+ *  slowest piece, not the sum of every piece); folding replacement into that
+ *  same loop would make a slow, healthy sibling's start wait behind a failed
+ *  one's whole retry chain. The failed child's own row is never touched
+ *  beyond `markSuperseded`: its state stays FAILED and its transcript stays
+ *  real evidence — the replacement is told what it found, once, and that is
+ *  the only thing "reading" it here means. */
+async function replaceFailedChild(
+  input: DelegateInput,
+  deps: DelegateChildDeps,
+  failed: { id: string; childId: string; goal: string },
+  siblingCount: number,
+): Promise<{ id: string; childId: string; goal: string; succeeded: boolean; cancelled?: boolean }> {
+  let previousId = failed.childId;
+  let childId = failed.childId;
+  let succeeded = false;
+  let cancelled = false;
+
+  for (let attempt = 2; attempt <= MAX_CHILD_ATTEMPTS; attempt++) {
+    if (deps.parentStopped?.()) break;
+    const attemptGoal = continuationGoal(failed.goal, deps.getFindings?.(previousId));
+    childId = deps.createChildNode(input.parentId, attemptGoal, siblingCount, input.approvedBudgetUsd);
+    deps.recordCommitment(childId, attemptGoal);
+    // Before the child starts, not after: the envelope is what its first
+    // dispatch reads, and a child that started first would read nothing.
+    deps.recordEnvelope?.(childId, attemptGoal, input.approvedBudgetUsd ?? 0);
+    deps.markSuperseded?.(previousId, childId);
+    deps.startChild(childId, attemptGoal);
+    const outcome = await deps.waitForChild(childId);
+    succeeded = outcome.succeeded;
+    cancelled = outcome.cancelled === true;
+    if (succeeded || cancelled) break;
+    previousId = childId;
+  }
+
+  return { id: failed.id, childId, goal: failed.goal, succeeded, ...(cancelled ? { cancelled } : {}) };
+}
+
 export async function delegateToChildren(
   input: DelegateInput,
   deps: DelegateChildDeps,
@@ -258,7 +368,7 @@ export async function delegateToChildren(
     };
   }
 
-  const nodes = workstreamNodesFor(subgoals);
+  const nodes = workstreamNodesFor(subgoals, input.after);
 
   // Checked before authority is allocated and before any child exists, because
   // every way a plan is bad is cheap to detect now and expensive to discover
@@ -300,8 +410,14 @@ export async function delegateToChildren(
   // failures land rather than once at the end, because the point is to not pay
   // for the child at all.
   const doomed = new Map<string, string>();
+  // Which child finally did each piece, so a dependent can be handed its report.
+  const doneBy = new Map<string, string>();
 
   for (const group of plan.parallelGroups) {
+    if (deps.parentStopped?.()) {
+      for (const id of group) cancelled.push({ goal: subgoals[Number(id)], reason: 'the task was stopped' });
+      continue;
+    }
     const runnable = group.filter((id) => {
       const reason = doomed.get(id);
       if (!reason) return true;
@@ -315,7 +431,14 @@ export async function delegateToChildren(
     // avoid. Siblings in *different* groups do not, because the plan put them
     // apart for a reason.
     const started = runnable.map((id) => {
-      const goal = subgoals[Number(id)];
+      const prerequisites = nodes[Number(id)].inputDependencies;
+      const goal = prerequisites.length === 0 ? subgoals[Number(id)] : withPrerequisites(
+        subgoals[Number(id)],
+        prerequisites.map((dep) => ({
+          goal: subgoals[Number(dep)],
+          findings: doneBy.has(dep) ? deps.getFindings?.(doneBy.get(dep)!) ?? '' : '',
+        })),
+      );
       const childId = deps.createChildNode(input.parentId, goal, subgoals.length, input.approvedBudgetUsd);
       deps.recordCommitment(childId, goal);
       // Before the child starts, not after: the envelope is what its first
@@ -325,16 +448,29 @@ export async function delegateToChildren(
       return { id, childId, goal };
     });
 
-    const settled = await Promise.all(
+    const firstAttempt = await Promise.all(
       started.map(async (child) => ({ ...child, ...(await deps.waitForChild(child.childId)) })),
     );
 
+    // A failed first attempt gets picked up by a fresh sibling; a healthy one
+    // is untouched. This second phase only ever contains children that need
+    // it, so a group where everyone succeeded the first time costs nothing
+    // beyond the one `Promise.all` it already needed.
+    const settled = await Promise.all(
+      firstAttempt.map((child) => (child.succeeded || child.cancelled || deps.parentStopped?.()
+        ? child
+        : replaceFailedChild(input, deps, child, subgoals.length))),
+    );
+
     for (const child of settled) {
-      results.push({ childId: child.childId, goal: child.goal, succeeded: child.succeeded });
+      doneBy.set(child.id, child.childId);
+      results.push({ childId: child.childId, goal: subgoals[Number(child.id)], succeeded: child.succeeded });
       if (child.succeeded) continue;
       failedIds.push(child.id);
       for (const dependent of dependentsOf(nodes, child.id)) {
-        if (!doomed.has(dependent)) doomed.set(dependent, `depends on the failed piece: ${child.goal}`);
+        if (!doomed.has(dependent)) {
+          doomed.set(dependent, `depends on the ${child.cancelled ? 'stopped' : 'failed'} piece: ${subgoals[Number(child.id)]}`);
+        }
       }
     }
   }

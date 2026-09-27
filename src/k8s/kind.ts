@@ -103,6 +103,14 @@ export function toContainerPath(hostPath: string): string {
   return path.posix.join(HOST_MOUNT_PATH, relative);
 }
 
+/** The inverse of `toContainerPath`: the real host path behind a `/host/...`
+ *  path, or null for a path that is not under the mount. */
+export function fromContainerPath(containerPath: string): string | null {
+  const relative = path.posix.relative(HOST_MOUNT_PATH, containerPath);
+  if (relative === '' || relative.startsWith('..') || path.posix.isAbsolute(relative)) return null;
+  return path.join(os.homedir(), relative);
+}
+
 export async function ensureLocalCluster(): Promise<void> {
   const alreadyUp = (await hasExistingKubeconfigContext()) && (await isClusterReachable());
   const mount = await hasHostMount();
@@ -139,6 +147,46 @@ export async function ensureLocalCluster(): Promise<void> {
   // egress policy already implies deny-by-default for pods it selects; this is
   // the namespace-wide backstop for anything reaching org-exec another way.
   await applyDefaultDenyPolicy(NAMESPACE);
+  await ensureClusterDns();
+}
+
+/** Resolvers the sandbox cluster forwards public names to. kind's CoreDNS
+ *  forwards to Docker's embedded DNS, which forwards to the host's stub
+ *  resolver; on a home network that chain timed out (CoreDNS logged `read udp
+ *  … 172.18.0.1:53: i/o timeout` for api.anthropic.com and github.com), so
+ *  web fetches, git and even model calls in a sandbox failed or crawled.
+ *  `ORG_SANDBOX_DNS=host` keeps the host chain (a network that blocks public
+ *  DNS); otherwise a space-separated list of resolvers. */
+export function sandboxDnsServers(env: NodeJS.ProcessEnv = process.env): string[] | null {
+  const raw = (env.ORG_SANDBOX_DNS ?? '8.8.8.8 1.1.1.1').trim();
+  if (raw === 'host' || raw === '') return null;
+  const servers = raw.split(/[\s,]+/).filter((s) => /^[\d.:a-fA-F]+$/.test(s));
+  return servers.length > 0 ? servers : null;
+}
+
+/** The Corefile with public names forwarded to `servers` instead of
+ *  /etc/resolv.conf. Idempotent; returns the input unchanged when there is
+ *  nothing to rewrite. */
+export function withForwarders(corefile: string, servers: string[]): string {
+  return corefile.replace(/forward \. [^{\n]+\{/, `forward . ${servers.join(' ')} {`);
+}
+
+/** Points the cluster's CoreDNS at reliable resolvers. Best-effort: a failure
+ *  leaves DNS as it was and says so, it never stops the cluster coming up. */
+export async function ensureClusterDns(env: NodeJS.ProcessEnv = process.env): Promise<void> {
+  const servers = sandboxDnsServers(env);
+  if (!servers) return;
+  try {
+    const { stdout } = await execa('kubectl', ['-n', 'kube-system', 'get', 'configmap', 'coredns', '-o', 'jsonpath={.data.Corefile}']);
+    const next = withForwarders(stdout, servers);
+    if (next === stdout) return;
+    const patch = JSON.stringify({ data: { Corefile: next } });
+    await execa('kubectl', ['-n', 'kube-system', 'patch', 'configmap', 'coredns', '--type', 'merge', '-p', patch]);
+    // The reload plugin notices within ~30s; a restart makes it immediate.
+    await execa('kubectl', ['-n', 'kube-system', 'rollout', 'restart', 'deployment/coredns']);
+  } catch (err) {
+    console.warn(`Could not point the sandbox DNS at ${servers.join(', ')}: ${err instanceof Error ? err.message : String(err)}`);
+  }
 }
 
 // kubectl rather than the API client: `create --dry-run | apply` is the one-liner

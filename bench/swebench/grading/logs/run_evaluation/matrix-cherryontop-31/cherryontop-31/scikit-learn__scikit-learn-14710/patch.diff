@@ -1,0 +1,44 @@
+diff --git a/sklearn/ensemble/_hist_gradient_boosting/gradient_boosting.py b/sklearn/ensemble/_hist_gradient_boosting/gradient_boosting.py
+index ad6a5a8ca3..70a507d09c 100644
+--- a/sklearn/ensemble/_hist_gradient_boosting/gradient_boosting.py
++++ b/sklearn/ensemble/_hist_gradient_boosting/gradient_boosting.py
+@@ -426,11 +426,15 @@ class BaseHistGradientBoosting(BaseEstimator, ABC):
+ 
+         Scores are computed on validation data or on training data.
+         """
++        if is_classifier(self):
++            y_small_train = self.classes_[y_small_train.astype(int)]
+         self.train_score_.append(
+             self.scorer_(self, X_binned_small_train, y_small_train)
+         )
+ 
+         if self._use_validation_data:
++            if is_classifier(self):
++                y_val = self.classes_[y_val.astype(int)]
+             self.validation_score_.append(
+                 self.scorer_(self, X_binned_val, y_val)
+             )
+diff --git a/sklearn/ensemble/_hist_gradient_boosting/tests/test_gradient_boosting.py b/sklearn/ensemble/_hist_gradient_boosting/tests/test_gradient_boosting.py
+index 1eebdefd52..2619209606 100644
+--- a/sklearn/ensemble/_hist_gradient_boosting/tests/test_gradient_boosting.py
++++ b/sklearn/ensemble/_hist_gradient_boosting/tests/test_gradient_boosting.py
+@@ -57,6 +57,19 @@ def test_invalid_classification_loss():
+         binary_clf.fit(np.zeros(shape=(3, 2)), np.arange(3))
+ 
+ 
++def test_string_target_early_stopping():
++    # Regression test for #14709: the scorer used for early stopping was
++    # receiving encoded (integer) targets while predictions are made of the
++    # original (string) classes, so scorers relying on np.union1d (e.g.
++    # accuracy_score) would raise a TypeError.
++    rng = np.random.RandomState(42)
++    X = rng.normal(size=(100, 10))
++    y = np.array(['x'] * 50 + ['y'] * 50, dtype=object)
++    gbrt = HistGradientBoostingClassifier(n_iter_no_change=10,
++                                          scoring='accuracy')
++    gbrt.fit(X, y)
++
++
+ @pytest.mark.parametrize(
+     'scoring, validation_fraction, n_iter_no_change, tol', [
+         ('neg_mean_squared_error', .1, 5, 1e-7),  # use scorer

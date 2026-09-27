@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createDb } from '../db/client.js';
 import { getNode, insertNode } from '../db/queries/nodes.js';
-import { realDelegateDeps, integrateFork } from './node-actor-manager.js';
+import { realDelegateDeps, integrateFork, settleFork } from './node-actor-manager.js';
 import { forkWorkspace } from '../execution/workspace-fork.js';
 
 // Two failure modes this closes, both real and both observed: a benchmark run
@@ -152,6 +152,41 @@ describe('integrating a fork back onto its base', () => {
     const base = repo();
     const fork = forkWorkspace(base, 'HEAD', 'child-1')!;
     expect(integrateFork(fork)).toBe(true);
+    fork.release();
+  });
+});
+
+describe('a child that did not pass', () => {
+  it('still hands its work back to the task tree, and stays failed', () => {
+    const base = repo();
+    const fork = forkWorkspace(base, 'HEAD', 'failed-child')!;
+    writeFileSync(join(fork.path, 'backend.py'), 'app = "built but not validated"\n');
+    const result = settleFork(fork, { succeeded: false, message: 'validation failed' });
+    expect(result.succeeded).toBe(false);
+    expect(readFileSync(join(base, 'backend.py'), 'utf8')).toContain('built but not validated');
+    expect(existsSync(fork.path)).toBe(false);
+  });
+});
+
+describe('a fork sees the tree the run sees, not just HEAD', () => {
+  it('carries the base\'s uncommitted work, and integrates only the child\'s own', () => {
+    // A piece ordered after another forks once the earlier one is integrated —
+    // uncommitted. Forked from HEAD alone it never saw the research it was
+    // waiting for.
+    const base = repo();
+    writeFileSync(join(base, 'a.ts'), 'export const a = 2;\n');
+    writeFileSync(join(base, 'notes.md'), 'research from an earlier piece\n');
+
+    const fork = forkWorkspace(base, 'HEAD', 'dependent-child')!;
+    expect(readFileSync(join(fork.path, 'notes.md'), 'utf8')).toBe('research from an earlier piece\n');
+    expect(readFileSync(join(fork.path, 'a.ts'), 'utf8')).toBe('export const a = 2;\n');
+
+    writeFileSync(join(fork.path, 'page.html'), '<h1>built from the notes</h1>\n');
+    expect(integrateFork(fork)).toBe(true);
+    expect(readFileSync(join(base, 'page.html'), 'utf8')).toBe('<h1>built from the notes</h1>\n');
+    expect(readFileSync(join(base, 'a.ts'), 'utf8')).toBe('export const a = 2;\n');
+    // The base's own index is untouched: notes.md is still untracked there.
+    expect(execFileSync('git', ['status', '--porcelain'], { cwd: base, encoding: 'utf8' })).toContain('?? notes.md');
     fork.release();
   });
 });

@@ -35,3 +35,37 @@ export function investigativeExecuteGrant(grant: ToolGrant, investigative: boole
   if (!investigative || grant.allowedTools !== null) return grant;
   return { allowedTools: [...READ_ONLY_TOOLS], readOnly: true };
 }
+
+/** Turns a verification pass may take: run a test, read its output, report. */
+export const PROOF_PASS_TURNS = 15;
+
+export const PROOF_PASS_INSTRUCTION = [
+  'Your change is already in place in this working tree from the previous attempt; do not redo it.',
+  'The only thing missing is proof: run the narrowest existing test (or a short script) that exercises the change and show it passing.',
+  'If no test can run in this environment, say exactly why in one sentence and stop. Do not rewrite the fix.',
+].join(' ');
+
+/** Whether the last validation rejected a change only for want of an observed
+ *  check: something durable was produced (V1) and nothing was seen verifying
+ *  it (V2). Re-running the whole task cannot supply that any better than a
+ *  short pass that is asked for exactly that; measured on SWE-bench
+ *  requests-1142, the full re-runs cost 3-4 dispatches and re-read the whole
+ *  codebase each time. */
+export function needsProofOnly(lastValidation: unknown): boolean {
+  const v = lastValidation as { passed?: boolean; reasonCodes?: string[] } | undefined;
+  if (!v || v.passed !== false || !Array.isArray(v.reasonCodes)) return false;
+  return v.reasonCodes.includes('V1:durable_outcome_produced') && v.reasonCodes.includes('V2:no_observed_verification');
+}
+
+/** A run that changed no files and was rejected only because nothing was seen
+ *  verifying it has nothing a retry could prove: the proof pass would ask for a
+ *  test of a change that does not exist (measured: an agent correctly reporting
+ *  "GitHub isn't logged in" was re-dispatched and told to prove "the fix").
+ *  Such a run ends with its own report instead of being run again. */
+export function unprovableWithoutChanges(validation: { passed?: boolean; reasonCodes?: string[] }, changedFiles: boolean): boolean {
+  if (changedFiles || validation.passed !== false || !Array.isArray(validation.reasonCodes)) return false;
+  // Only a run that finished and reported: a crashed attempt produced nothing,
+  // and retrying it is exactly what the retry is for.
+  return validation.reasonCodes.includes('V1:durable_outcome_produced')
+    && validation.reasonCodes.includes('V2:no_observed_verification');
+}

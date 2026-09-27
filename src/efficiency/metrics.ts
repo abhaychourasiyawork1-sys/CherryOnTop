@@ -168,6 +168,24 @@ export interface EfficiencyInput {
   validationTokens: number;
   /** Tokens spent looking around, as opposed to acting. */
   explorationTokens: number;
+  /** System-1 diagnostics. Attributed apart from the task's own spend, since
+   *  whether System-1 paid for itself is decided by comparing whole-harness
+   *  outcomes, and that is impossible if its overhead is folded into them.
+   *  Optional so a record written before System-1 existed still builds. */
+  system1Calls?: number;
+  system1Questions?: number;
+  system1CachedAnswers?: number;
+  system1LatencyMs?: number;
+  system1InputTokens?: number;
+  system1Failures?: number;
+  system1Fallbacks?: number;
+  /** Decision epochs: how many times the harness reached a point where it
+   *  *could* ask, whether or not it did. */
+  system1Epochs?: number;
+  /** Legal candidates offered across all questions. */
+  system1Candidates?: number;
+  /** `<cto_decide>` frames the execution model emitted. */
+  modelDecisionRequests?: number;
 }
 
 export interface EfficiencyRecord extends EfficiencyInput {
@@ -234,6 +252,9 @@ export const EMPTY_TOTALS = {
   reconciledInterventions: 0, orchestrationTokens: 0, totalRegret: 0,
   duplicatedInformationTokens: 0, memoryNetValue: 0,
   evidenceTokens: 0, validationTokens: 0, explorationTokens: 0,
+  system1Calls: 0, system1Questions: 0, system1CachedAnswers: 0, system1LatencyMs: 0,
+  system1InputTokens: 0, system1Failures: 0, system1Fallbacks: 0, system1Epochs: 0,
+  system1Candidates: 0, modelDecisionRequests: 0,
 } as const;
 
 /** The attribution fields a task carries that are not counters: they are the

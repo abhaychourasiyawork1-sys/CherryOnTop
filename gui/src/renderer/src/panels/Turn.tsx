@@ -23,7 +23,7 @@ interface Props {
 }
 
 export function Turn({ turn, node, index, introduces, onOpenNode }: Props) {
-  const tone = node ? toneOf(node.state) : 'planning';
+  const tone = node ? toneOf(node.state, node.supersededBy) : 'planning';
 
   return (
     <article
@@ -45,7 +45,7 @@ export function Turn({ turn, node, index, introduces, onOpenNode }: Props) {
             <button type="button" className="turn-name" onClick={() => onOpenNode(turn.nodeId)}>
               {node ? (node.parentId ? agentName(node.goal) : 'Root agent') : 'Agent'}
             </button>
-            {node && <span className="turn-state">{labelOf(node.state)}</span>}
+            {node && <span className="turn-state">{labelOf(node.state, node.supersededBy)}</span>}
             {node && node.costUsd > 0 && <span className="turn-cost figure">{money(node.costUsd)}</span>}
           </header>
         )}

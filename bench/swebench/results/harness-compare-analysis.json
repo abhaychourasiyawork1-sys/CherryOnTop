@@ -1,0 +1,231 @@
+{
+  "model_both_arms": "claude-sonnet-5",
+  "n_instances": 6,
+  "reps_per_instance": 2,
+  "direct": {
+    "per_instance": {
+      "pallets__flask-5014": {
+        "n_reps": 2,
+        "mean_cost_usd": 0.21358320000000003,
+        "mean_tokens": 575516.5,
+        "mean_input_tokens": 23,
+        "mean_output_tokens": 2139,
+        "mean_cache_read_tokens": 552966,
+        "mean_turns": 11.5,
+        "mean_wall_seconds": 46,
+        "states": [
+          "COMPLETE",
+          "COMPLETE"
+        ],
+        "complete_rate": 1.0
+      },
+      "psf__requests-1142": {
+        "n_reps": 2,
+        "mean_cost_usd": 0.3063026,
+        "mean_tokens": 842493.5,
+        "mean_input_tokens": 32,
+        "mean_output_tokens": 4554,
+        "mean_cache_read_tokens": 813403,
+        "mean_turns": 16,
+        "mean_wall_seconds": 57.5,
+        "states": [
+          "COMPLETE",
+          "COMPLETE"
+        ],
+        "complete_rate": 1.0
+      },
+      "pydata__xarray-6744": {
+        "n_reps": 2,
+        "mean_cost_usd": 0.5121998000000001,
+        "mean_tokens": 1277955.5,
+        "mean_input_tokens": 42,
+        "mean_output_tokens": 10782,
+        "mean_cache_read_tokens": 1227429,
+        "mean_turns": 21.5,
+        "mean_wall_seconds": 187.5,
+        "states": [
+          "COMPLETE",
+          "COMPLETE"
+        ],
+        "complete_rate": 1.0
+      },
+      "mwaskom__seaborn-3187": {
+        "n_reps": 2,
+        "mean_cost_usd": 0.6354982,
+        "mean_tokens": 1013677,
+        "mean_input_tokens": 32,
+        "mean_output_tokens": 5668.5,
+        "mean_cache_read_tokens": 981483,
+        "mean_turns": 16,
+        "mean_wall_seconds": 200.5,
+        "states": [
+          "COMPLETE",
+          "COMPLETE"
+        ],
+        "complete_rate": 1.0
+      },
+      "scikit-learn__scikit-learn-14710": {
+        "n_reps": 2,
+        "mean_cost_usd": 0.5222947,
+        "mean_tokens": 1474825.5,
+        "mean_input_tokens": 47,
+        "mean_output_tokens": 7148,
+        "mean_cache_read_tokens": 1426263.5,
+        "mean_turns": 23.5,
+        "mean_wall_seconds": 194,
+        "states": [
+          "COMPLETE",
+          "COMPLETE"
+        ],
+        "complete_rate": 1.0
+      },
+      "sympy__sympy-17139": {
+        "n_reps": 2,
+        "mean_cost_usd": 0.2121436,
+        "mean_tokens": 512495,
+        "mean_input_tokens": 20,
+        "mean_output_tokens": 3070,
+        "mean_cache_read_tokens": 488478,
+        "mean_turns": 10,
+        "mean_wall_seconds": 57.5,
+        "states": [
+          "COMPLETE",
+          "COMPLETE"
+        ],
+        "complete_rate": 1.0
+      }
+    },
+    "overall": {
+      "n_instances": 6,
+      "mean_cost_usd": 0.40033701666666666,
+      "mean_tokens": 949493.8333333334,
+      "mean_input_tokens": 32.666666666666664,
+      "mean_output_tokens": 5560.25,
+      "mean_cache_read_tokens": 915003.75,
+      "mean_turns": 16.416666666666668,
+      "mean_wall_seconds": 123.83333333333333,
+      "complete_rate": 1.0
+    },
+    "per_success": {
+      "n_valid_rows": 12,
+      "n_successes": 12,
+      "success_rate": 1.0,
+      "cost_per_success": 0.4003370166666667,
+      "tokens_per_success": 949493.8333333334,
+      "turns_per_success": 16.416666666666668
+    }
+  },
+  "cherryontop": {
+    "per_instance": {
+      "pallets__flask-5014": {
+        "n_reps": 2,
+        "mean_cost_usd": 0.34299999999999997,
+        "mean_tokens": 943292,
+        "mean_input_tokens": 53,
+        "mean_output_tokens": 5054,
+        "mean_cache_read_tokens": 938185,
+        "mean_turns": 26.5,
+        "mean_wall_seconds": 116.5,
+        "states": [
+          "COMPLETE",
+          "COMPLETE"
+        ],
+        "complete_rate": 1.0
+      },
+      "psf__requests-1142": {
+        "n_reps": 2,
+        "mean_cost_usd": 0.673,
+        "mean_tokens": 1630727.5,
+        "mean_input_tokens": 77,
+        "mean_output_tokens": 17362.5,
+        "mean_cache_read_tokens": 1613288,
+        "mean_turns": 38.5,
+        "mean_wall_seconds": 211,
+        "states": [
+          "COMPLETE",
+          "COMPLETE"
+        ],
+        "complete_rate": 1.0
+      },
+      "mwaskom__seaborn-3187": {
+        "n_reps": 2,
+        "mean_cost_usd": 1.1129499999999999,
+        "mean_tokens": 3287061,
+        "mean_input_tokens": 120,
+        "mean_output_tokens": 14803.5,
+        "mean_cache_read_tokens": 3272137.5,
+        "mean_turns": 61,
+        "mean_wall_seconds": 616,
+        "states": [
+          "FAILED",
+          "FAILED"
+        ],
+        "complete_rate": 0.0
+      },
+      "scikit-learn__scikit-learn-14710": {
+        "n_reps": 2,
+        "mean_cost_usd": 0.51355,
+        "mean_tokens": 1505337,
+        "mean_input_tokens": 60,
+        "mean_output_tokens": 7808.5,
+        "mean_cache_read_tokens": 1497468.5,
+        "mean_turns": 30.5,
+        "mean_wall_seconds": 113.5,
+        "states": [
+          "COMPLETE",
+          "FAILED"
+        ],
+        "complete_rate": 0.5
+      },
+      "sympy__sympy-17139": {
+        "n_reps": 2,
+        "mean_cost_usd": 0.29275,
+        "mean_tokens": 830792,
+        "mean_input_tokens": 46,
+        "mean_output_tokens": 5537,
+        "mean_cache_read_tokens": 825209,
+        "mean_turns": 23,
+        "mean_wall_seconds": 112,
+        "states": [
+          "COMPLETE",
+          "COMPLETE"
+        ],
+        "complete_rate": 1.0
+      },
+      "pydata__xarray-6744": {
+        "n_reps": 2,
+        "mean_cost_usd": 0.2475,
+        "mean_tokens": 304213.5,
+        "mean_input_tokens": 16,
+        "mean_output_tokens": 7569.5,
+        "mean_cache_read_tokens": 296628,
+        "mean_turns": 8,
+        "mean_wall_seconds": 85,
+        "states": [
+          "FAILED",
+          "FAILED"
+        ],
+        "complete_rate": 0.0
+      }
+    },
+    "overall": {
+      "n_instances": 6,
+      "mean_cost_usd": 0.5304583333333333,
+      "mean_tokens": 1416903.8333333333,
+      "mean_input_tokens": 62,
+      "mean_output_tokens": 9689.166666666666,
+      "mean_cache_read_tokens": 1407152.6666666667,
+      "mean_turns": 31.25,
+      "mean_wall_seconds": 209.0,
+      "complete_rate": 0.5833333333333334
+    },
+    "per_success": {
+      "n_valid_rows": 12,
+      "n_successes": 7,
+      "success_rate": 0.5833333333333334,
+      "cost_per_success": 0.44484285714285715,
+      "tokens_per_success": 1154063.7142857143,
+      "turns_per_success": 28.857142857142858
+    }
+  }
+}

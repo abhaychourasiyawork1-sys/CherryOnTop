@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { buildRolePrompt, HARNESS_CONSTITUTION } from './roles.js';
+import { ENVELOPE_INSTRUCTION } from '../intelligence/result-envelope.js';
 
 describe('buildRolePrompt', () => {
   it('every role starts with the constitution', () => {
@@ -55,4 +56,39 @@ describe('buildRolePrompt', () => {
       expect(buildRolePrompt(role, { constraints: ['x'], definitionOfDone: ['y'], allowedTools: ['Read'] }).split(/\s+/).length).toBeLessThan(500);
     }
   });
+});
+
+describe('private decision capability', () => {
+  const withCapability = buildRolePrompt('execute', { decisionCapability: true });
+
+  it('tells the execution model the capability exists, how to call it, and every primitive', () => {
+    expect(withCapability).toMatch(/private CherryOnTop decision capability/);
+    expect(withCapability).toContain('<cto_decide>');
+    for (const primitive of ['"noul"', '"choice"', '"score"']) expect(withCapability).toContain(primitive);
+    expect(withCapability).toMatch(/sparingly/);
+    expect(withCapability).toMatch(/end your turn/);
+  });
+
+  it('exposes no provider, endpoint, protocol or credential', () => {
+    expect(withCapability).not.toMatch(/laya|jev|http|mcp|api key|token|endpoint|systemone/i);
+  });
+
+  it('forbids using it to get around permissions, budget or validation', () => {
+    expect(withCapability).toMatch(/never changes your permissions, budget, tools, validation or definition of done/);
+  });
+
+  it('is only advertised to a run that can answer it, and stays small', () => {
+    expect(buildRolePrompt('execute')).not.toContain('cto_decide');
+    expect(buildRolePrompt('plan', { decisionCapability: true })).not.toContain('cto_decide');
+    // Rides on every session's system prompt: about 300 tokens, not more.
+    expect(withCapability.length - buildRolePrompt('execute').length).toBeLessThan(1_300);
+  });
+});
+
+describe('token weight of the execute prompt', () => {
+  it('asks for the structured result block only from a run whose parent reads it', () => {
+    expect(buildRolePrompt('execute', {})).not.toContain(ENVELOPE_INSTRUCTION);
+    expect(buildRolePrompt('execute', { reportsToParent: true })).toContain(ENVELOPE_INSTRUCTION);
+  });
+
 });

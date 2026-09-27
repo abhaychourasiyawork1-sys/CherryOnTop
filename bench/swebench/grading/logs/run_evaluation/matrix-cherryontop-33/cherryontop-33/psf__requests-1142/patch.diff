@@ -1,0 +1,42 @@
+diff --git a/requests/models.py b/requests/models.py
+index 99260453..42351417 100644
+--- a/requests/models.py
++++ b/requests/models.py
+@@ -386,13 +386,14 @@ class PreparedRequest(RequestEncodingMixin, RequestHooksMixin):
+         self.body = body
+ 
+     def prepare_content_length(self, body):
+-        self.headers['Content-Length'] = '0'
+         if hasattr(body, 'seek') and hasattr(body, 'tell'):
+             body.seek(0, 2)
+             self.headers['Content-Length'] = str(body.tell())
+             body.seek(0, 0)
+         elif body is not None:
+             self.headers['Content-Length'] = str(len(body))
++        elif self.method not in ('GET', 'HEAD'):
++            self.headers['Content-Length'] = '0'
+ 
+     def prepare_auth(self, auth):
+         """Prepares the given HTTP auth data."""
+diff --git a/test_requests.py b/test_requests.py
+index c974e980..01f3f61b 100644
+--- a/test_requests.py
++++ b/test_requests.py
+@@ -58,6 +58,17 @@ class RequestsTestCase(unittest.TestCase):
+         assert pr.body == 'life=42'
+ 
+ 
++    def test_no_content_length_on_bodyless_get_or_head(self):
++        get_req = requests.Request('GET', 'http://kennethreitz.org/').prepare()
++        self.assertTrue('Content-Length' not in get_req.headers)
++
++        head_req = requests.Request('HEAD', 'http://kennethreitz.org/').prepare()
++        self.assertTrue('Content-Length' not in head_req.headers)
++
++        post_req = requests.Request('POST', 'http://kennethreitz.org/').prepare()
++        self.assertEqual(post_req.headers['Content-Length'], '0')
++
++
+     def test_path_is_not_double_encoded(self):
+         request = requests.Request('GET', "http://0.0.0.0/get/test case").prepare()
+ 

@@ -1,5 +1,8 @@
 import { describe, it, expect, vi } from 'vitest';
-import { validate, canClaimSuccess, NO_EVIDENCE, type ValidationEvidence, type FreshVerifier } from './engine.js';
+import {
+  validate, canClaimSuccess, failureSignatureFor, NO_EVIDENCE,
+  type ValidationEvidence, type FreshVerifier,
+} from './engine.js';
 import {
   LEVEL_MODEL, VALIDATION_LEVELS, requiredConfidence, DEFAULT_VALIDATION_CONTRACT,
   contractFor, MINIMUM_QUALITY_FLOOR, MAXIMUM_DERIVED_FLOOR,
@@ -343,5 +346,44 @@ describe('a durable outcome that is not a file', () => {
       contract: { qualityFloor: 0.4, requiredChecks: [], allowedUncertainty: 0.6 },
     });
     expect(result.evidenceIds).toEqual(['artifact-1', 'finding:1']);
+  });
+});
+
+describe('failureSignatureFor', () => {
+  // Non-V-prefixed codes only: the function strips every per-level `V0:`..`V3:`
+  // diagnostic code (there is one for each level the ladder walked, most just
+  // "unavailable"), keeping the codes that actually distinguish one failure
+  // from another -- exactly like the real reasonCodes `runValidation` gates.
+  const base = { passed: false, underlyingPassed: false, level: 'V1' as const, reasonCodes: ['required_checks_unmet:1'], guardStopped: false };
+
+  it('is "none" whenever validation actually passed', () => {
+    expect(failureSignatureFor({ ...base, passed: true })).toBe('none');
+  });
+
+  it('labels a genuinely contradicted result as an ordinary validation failure', () => {
+    // An observed check failed: the underlying verdict is false too, so this
+    // is real evidence against the work, not a truncated proof of it.
+    const sig = failureSignatureFor({ ...base, underlyingPassed: false, level: 'V2' });
+    expect(sig).toBe('validation:V2:required_checks_unmet:1');
+  });
+
+  it('labels a guard-truncated shortfall distinctly from a genuine failure', () => {
+    // The work was never contradicted (underlyingPassed) -- it was just cut
+    // off by the daemon's own turn/spend guard before it could prove enough.
+    const sig = failureSignatureFor({ ...base, underlyingPassed: true, guardStopped: true });
+    expect(sig).toBe('guard-truncated:V1');
+  });
+
+  it('does not use the guard-truncated label when the guard was not what stopped it', () => {
+    // Same underlying pass-but-under-leveled shape, but nothing says a hard
+    // guard cut it off -- treat it as an ordinary insufficient-evidence
+    // failure, exactly as before this distinction existed.
+    const sig = failureSignatureFor({ ...base, underlyingPassed: true, guardStopped: false });
+    expect(sig).toBe('validation:V1:required_checks_unmet:1');
+  });
+
+  it('falls back to a generic label when nothing but per-level noise explains the failure', () => {
+    const sig = failureSignatureFor({ ...base, reasonCodes: ['V1:no_durable_outcome'] });
+    expect(sig).toBe('validation:V1:insufficient_evidence');
   });
 });

@@ -5,7 +5,7 @@ import { restoreNodeActor, resumesFreely, getNodeActor } from './node-actor-mana
 import { strandOrphanedNodes, type StrandDeps } from './orphans.js';
 import { deleteNodeJobs } from '../k8s/cleanup.js';
 
-const TERMINAL = new Set(['COMPLETE', 'FAILED', 'CANCELLED']);
+export const TERMINAL = new Set(['COMPLETE', 'FAILED', 'CANCELLED']);
 
 /** A node whose actor stopped mid-work and can be started again from where it
  *  was. Not a failure: nothing went wrong with the work, the process holding it

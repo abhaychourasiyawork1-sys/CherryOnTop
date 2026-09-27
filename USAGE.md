@@ -500,6 +500,59 @@ tokens and cost, with a total row and how many dispatches were served from the p
 instead of a fresh model call. Pass a case id to scope it to one case; omit it for
 everything recorded.
 
+## System-1 decisions (Laya)
+
+Some decisions are semantic judgments, not arithmetic: *does this goal really come apart
+into independent pieces?* and *would this intervention actually help here?* These go to
+**Laya**, a small non-generative decision model that answers typed questions (yes/no,
+choice, score) in tens of milliseconds, with probabilities. Everything that is a rule
+stays a rule. Budget, authority, approvals, lifecycle, validation and tool permissions are
+never decided by Laya, and a confident answer cannot override them.
+
+**Setup.** `pip install "laya[serve]"`. That is all. The daemon starts `laya-serve` on
+`127.0.0.1:8765` with the fine-tuned `typed-decisions` checkpoint, keeps it resident, and
+reattaches to it after a restart. The first start downloads the model (about 1.7 GB).
+`org doctor` has a **System-1 (Laya)** row that says whether it is answering, installed,
+or missing.
+
+**What Laya decides**
+
+| Question | When it is asked | What it changes |
+|---|---|---|
+| Is this goal decomposable into independent workstreams? | Only when splitting is allowed (spawn authority, room for 2+ children, no children yet) and economics would delegate on a "yes". | Whether delegation economics is *offered* a split. The economics still decides. |
+| Would this intervention help? | At an execution boundary, only for an intervention whose value could flip the decision. | The intervention's expected benefit, before the unchanged ranking. |
+| Which of these equally-scored actions? | Only on an exact economic tie. | The tie-break (previously alphabetical by id). |
+
+**The agent can ask too.** A running agent is told it has a private decision capability.
+It ends a message with `<cto_decide>{...}</cto_decide>`, the runtime answers from Laya
+inside the same session, and the agent continues. The frame never appears in the
+transcript, and Laya is never exposed as a tool, endpoint or credential. Each run may ask
+a bounded number of new questions (`ORG_SYSTEM1_MAX_MODEL_REQUESTS`, default 6). Repeated
+questions are answered free.
+
+**If Laya is unavailable**, every decision falls back to a fixed conservative rule, never
+to the old keyword heuristic. A goal is not split unless you explicitly asked for a split
+("in parallel", "across 3 agents"). Interventions keep their plain estimates. The agent is
+told to use its own judgment. A note in the conversation says when this happened.
+
+**Settings**
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `ORG_SYSTEM1` | `laya` | `laya`, `jev` (hosted, same wire protocol) or `off` |
+| `ORG_LAYA_URL` | *(unset)* | Use an already-running `laya-serve` (e.g. on a GPU box) instead of starting one |
+| `ORG_LAYA_API_KEY` | *(generated)* | Key for `ORG_LAYA_URL`. A local server uses a key kept in `~/.org/laya.key` |
+| `ORG_LAYA_PORT` / `ORG_LAYA_DEVICE` | `8765` / auto | Where the supervised server listens, and `cuda`/`cpu`/`mps` |
+| `ORG_JEV_URL` / `ORG_JEV_API_KEY` | *(unset)* | JEV endpoint, for `ORG_SYSTEM1=jev` |
+| `ORG_SYSTEM1_TIMEOUT_MS` | `5000` | Latency budget per decision, retries included |
+| `ORG_SYSTEM1_MAX_CALLS` | `12` | Provider calls one agent may spend, harness and model together |
+| `ORG_SYSTEM1_MAX_MODEL_REQUESTS` | `6` | New `<cto_decide>` questions per run |
+
+Every judgment is recorded as a `system1.judgment` event with its full provenance
+(question version, input digest, state version, raw and calibrated output, latency, cost,
+and fallback reason). The efficiency record carries System-1 calls, questions, latency,
+failures and fallbacks separately from the task's own spend.
+
 ## What it actually does
 
 Each node plans, decides for itself whether to do the work directly or delegate it to a child node (based on a transparent scoring formula you can inspect via `org decision`), and executes inside an isolated, network-restricted Kubernetes sandbox — not directly on your machine. Only the repository you point it at is visible inside that sandbox.

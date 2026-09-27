@@ -39,6 +39,8 @@ export interface RoleTokenRow {
   inputTokens: number;
   outputTokens: number;
   cacheReadTokens: number;
+  /** Billed at 1.25x input; leaving them out under-reported a run's tokens. */
+  cacheCreationTokens: number;
   costUsd: number;
 }
 
@@ -110,12 +112,13 @@ export function tokensByRole(db: Db, caseId?: string): { rows: RoleTokenRow[]; p
     if (hit) { hits[hit]++; continue; }
     const model = v.model ?? '(default)';
     const bucket = `${v.role}\0${model}`;
-    const cur = acc.get(bucket) ?? { role: v.role, model, dispatches: 0, turns: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, costUsd: 0 };
+    const cur = acc.get(bucket) ?? { role: v.role, model, dispatches: 0, turns: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, costUsd: 0 };
     cur.dispatches += 1;
     cur.turns += v.usage?.numTurns ?? 0;
     cur.inputTokens += v.usage?.inputTokens ?? 0;
     cur.outputTokens += v.usage?.outputTokens ?? 0;
     cur.cacheReadTokens += v.usage?.cacheReadTokens ?? 0;
+    cur.cacheCreationTokens += v.usage?.cacheCreationTokens ?? 0;
     cur.costUsd += v.costUsd ?? 0;
     acc.set(bucket, cur);
   }

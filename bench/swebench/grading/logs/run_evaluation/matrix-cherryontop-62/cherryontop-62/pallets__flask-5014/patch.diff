@@ -1,0 +1,53 @@
+diff --git a/CHANGES.rst b/CHANGES.rst
+index 498d5e51..afec1b01 100644
+--- a/CHANGES.rst
++++ b/CHANGES.rst
+@@ -23,6 +23,8 @@ Unreleased
+     -   Calling setup methods on blueprints after registration is an error instead of a
+         warning. :pr:`4997`
+ 
++-   A ``Blueprint`` must have a non-empty name, otherwise a ``ValueError`` is
++    raised. :issue:`5010`
+ -   Importing ``escape`` and ``Markup`` from ``flask`` is deprecated. Import them
+     directly from ``markupsafe`` instead. :pr:`4996`
+ -   The ``app.got_first_request`` property is deprecated. :pr:`4997`
+diff --git a/src/flask/blueprints.py b/src/flask/blueprints.py
+index eb50585d..c679afe1 100644
+--- a/src/flask/blueprints.py
++++ b/src/flask/blueprints.py
+@@ -159,6 +159,9 @@ class Blueprint(Scaffold):
+         automatic detection can fail, so the path can be specified
+         manually instead.
+ 
++    .. versionchanged:: 2.3
++        The ``name`` may not be empty.
++
+     .. versionchanged:: 1.1.0
+         Blueprints have a ``cli`` group to register nested CLI commands.
+         The ``cli_group`` parameter controls the name of the group under
+@@ -190,6 +193,9 @@ class Blueprint(Scaffold):
+             root_path=root_path,
+         )
+ 
++        if not name:
++            raise ValueError("'name' may not be empty.")
++
+         if "." in name:
+             raise ValueError("'name' may not contain a dot '.' character.")
+ 
+diff --git a/tests/test_blueprints.py b/tests/test_blueprints.py
+index d46b769b..bc5b6978 100644
+--- a/tests/test_blueprints.py
++++ b/tests/test_blueprints.py
+@@ -251,6 +251,11 @@ def test_templates_list(test_apps):
+     assert templates == ["admin/index.html", "frontend/index.html"]
+ 
+ 
++def test_empty_name_not_allowed(app, client):
++    with pytest.raises(ValueError):
++        flask.Blueprint("", __name__)
++
++
+ def test_dotted_name_not_allowed(app, client):
+     with pytest.raises(ValueError):
+         flask.Blueprint("app.ui", __name__)

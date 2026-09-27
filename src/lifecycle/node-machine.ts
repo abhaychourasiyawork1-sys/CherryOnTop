@@ -3,8 +3,9 @@ import type { ExecuteStepResult } from '../execution/execute-step.js';
 import { ZERO_USAGE } from '../execution/tokens.js';
 import type { IntelligenceBundle } from '../intelligence/coordinator.js';
 import type { DecideExecutionResult } from '../engines/decide-execution.js';
-import { nextAfterValidation, type ValidationResult } from '../validation/engine.js';
+import { nextAfterValidation, MAX_EXECUTION_ATTEMPTS, type ValidationResult } from '../validation/engine.js';
 import { strategyRetryAllowed } from '../recovery/engine.js';
+import { SpendGuardStop } from '../efficiency/spend-guard.js';
 
 export interface NodeMachineContext {
   nodeId: string;
@@ -50,13 +51,20 @@ function money(value: number | undefined): string {
  *  extra fields are optional so a caller that only has a verdict still works —
  *  it just gets the old, cap-bounded retry behaviour. */
 export interface ValidationVerdict extends ValidationResult {
+  /** False when another attempt could not change the verdict. */
+  retriable?: boolean;
   strategy?: string;
   failureSignature?: string;
   progress?: number;
 }
 
 const MAX_GATE_ATTEMPTS = 3;
-const MAX_EXECUTION_ATTEMPTS = 3;
+// MAX_EXECUTION_ATTEMPTS itself comes from validation/engine.ts (imported
+// above) — this is the same cap `nextAfterValidation` uses, kept as one
+// number so a crashed dispatch and a validated-but-insufficient one give up
+// after the same number of tries instead of two constants silently drifting
+// apart. It bounds retry *count*, not cost — budget is a separate axis,
+// enforced by the spend guard, not by scaling this with budget size.
 
 export const nodeMachine = setup({
   types: {
@@ -88,7 +96,7 @@ export const nodeMachine = setup({
     /** Buys the cheapest evidence that clears this task's contract. Injected so
      *  the machine holds no opinion about what counts as proof, and so a
      *  deployment with no verifier still validates — at V2, and says so. */
-    validate: fromPromise<ValidationVerdict, { nodeId: string; goal: string; succeeded: boolean }>(async () => {
+    validate: fromPromise<ValidationVerdict, { nodeId: string; goal: string; succeeded: boolean; guardStopped: boolean }>(async () => {
       throw new Error('validate actor not provided');
     }),
   },
@@ -170,7 +178,16 @@ export const nodeMachine = setup({
         // failed result and the loop can re-plan around it.
         onError: {
           target: 'VALIDATE',
-          actions: assign({ lastResult: ({ event }) => ({ succeeded: false, message: String(event.error), events: [], usage: { ...ZERO_USAGE } }) }),
+          actions: assign({
+            lastResult: ({ event }) => ({
+              succeeded: false, message: String(event.error), events: [], usage: { ...ZERO_USAGE },
+              // The guard refusing to open a sandbox is not the work failing —
+              // it is the daemon's own resource ceiling, and VALIDATE needs to
+              // tell the two apart before it decides whether a retry is worth
+              // refusing.
+              guardStopped: event.error instanceof SpendGuardStop,
+            }),
+          }),
         },
       },
     },
@@ -250,6 +267,7 @@ export const nodeMachine = setup({
         input: ({ context }) => ({
           nodeId: context.nodeId, goal: context.goal,
           succeeded: context.lastResult?.succeeded === true,
+          guardStopped: context.lastResult?.guardStopped === true,
         }),
         onDone: [
           {
@@ -258,7 +276,7 @@ export const nodeMachine = setup({
               executionSucceeded: context.lastResult?.succeeded === true,
               validation: event.output,
               executionAttempts: context.executionAttempts ?? 0,
-              retriable: context.lastResult?.rateLimited !== true,
+              retriable: context.lastResult?.rateLimited !== true && event.output.retriable !== false,
             }) === 'COMPLETE',
             actions: assign({ lastValidation: ({ event }) => event.output }),
           },
@@ -268,7 +286,7 @@ export const nodeMachine = setup({
               executionSucceeded: context.lastResult?.succeeded === true,
               validation: event.output,
               executionAttempts: context.executionAttempts ?? 0,
-              retriable: context.lastResult?.rateLimited !== true,
+              retriable: context.lastResult?.rateLimited !== true && event.output.retriable !== false,
             }) === 'RECOVER'
               // ...and only if the next attempt would be a different one. The
               // attempt cap alone bounds the *number* of identical retries; it

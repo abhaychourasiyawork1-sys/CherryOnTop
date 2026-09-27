@@ -1,0 +1,52 @@
+2026-09-25T15:24:06.780Z matrix start: 1 instances x 3 reps x 2 arms, $3 per run
+2026-09-25T15:30:07.081Z scikit-learn__scikit-learn-14710 cherryontop-nolaya rep 51: COMPLETE $0.4371 20 turns s1=0/0fb [5h 0.67 7d 0.76]
+2026-09-25T15:38:05.459Z scikit-learn__scikit-learn-14710 cherryontop rep 51: COMPLETE $0.6489 24 turns s1=0/0fb [5h 0.72 7d 0.76]
+2026-09-25T15:45:29.028Z scikit-learn__scikit-learn-14710 cherryontop-nolaya rep 52: COMPLETE $0.4128 24 turns s1=0/0fb [5h 0.75 7d 0.76]
+2026-09-25T15:55:12.390Z scikit-learn__scikit-learn-14710 cherryontop rep 52: COMPLETE $0.3624 24 turns s1=0/0fb [5h 0.77 7d 0.76]
+2026-09-25T16:01:30.680Z scikit-learn__scikit-learn-14710 cherryontop-nolaya rep 53: COMPLETE $0.4755 25 turns s1=0/0fb [5h 0.8 7d 0.77]
+2026-09-25T16:07:17.792Z scikit-learn__scikit-learn-14710 cherryontop rep 53: COMPLETE $0.591 31 turns s1=1/0fb [5h 0.95 7d 0.78]
+2026-09-25T16:07:17.792Z matrix runs finished: 6/6 cells recorded
+2026-09-25T16:07:17.792Z grading with SWE-bench
+cherryontop-nolaya-51 1
+cherryontop-51 1
+cherryontop-nolaya-52 1
+cherryontop-52 1
+cherryontop-nolaya-53 1
+cherryontop-53 1
+=== grading scikit-learn__scikit-learn-14710 for cherryontop-51
+Instances with errors: 0
+Unstopped containers: 0
+Unremoved images: 1
+Report written to /home/abhay06102003/Desktop/CherryOnTop/bench/swebench/grading/matrix-reports/cherryontop-51.matrix-cherryontop-51.json
+=== grading scikit-learn__scikit-learn-14710 for cherryontop-52
+Instances with errors: 0
+Unstopped containers: 0
+Unremoved images: 1
+Report written to /home/abhay06102003/Desktop/CherryOnTop/bench/swebench/grading/matrix-reports/cherryontop-52.matrix-cherryontop-52.json
+=== grading scikit-learn__scikit-learn-14710 for cherryontop-53
+Instances with errors: 0
+Unstopped containers: 0
+Unremoved images: 1
+Report written to /home/abhay06102003/Desktop/CherryOnTop/bench/swebench/grading/matrix-reports/cherryontop-53.matrix-cherryontop-53.json
+=== grading scikit-learn__scikit-learn-14710 for cherryontop-nolaya-51
+Instances with errors: 0
+Unstopped containers: 0
+Unremoved images: 1
+Report written to /home/abhay06102003/Desktop/CherryOnTop/bench/swebench/grading/matrix-reports/cherryontop-nolaya-51.matrix-cherryontop-nolaya-51.json
+=== grading scikit-learn__scikit-learn-14710 for cherryontop-nolaya-52
+Instances with errors: 0
+Unstopped containers: 0
+Unremoved images: 1
+Report written to /home/abhay06102003/Desktop/CherryOnTop/bench/swebench/grading/matrix-reports/cherryontop-nolaya-52.matrix-cherryontop-nolaya-52.json
+=== grading scikit-learn__scikit-learn-14710 for cherryontop-nolaya-53
+Instances with errors: 0
+Unstopped containers: 0
+Unremoved images: 1
+Report written to /home/abhay06102003/Desktop/CherryOnTop/bench/swebench/grading/matrix-reports/cherryontop-nolaya-53.matrix-cherryontop-nolaya-53.json
+grading done
+2026-09-25T16:14:30.524Z grading exited 0
+CherryOnTop + Laya       runs  3 resolved  3/3 (graded 3)  mean $0.5341  turns 26.3333  $/resolved 0.5341  laya calls 1
+CherryOnTop, Laya off    runs  3 resolved  3/3 (graded 3)  mean $0.4418  turns 23  $/resolved 0.4418  laya calls 0
+cherryontop_vs_cherryontop-nolaya n 3 cost {'meanDiff': 0.0923, 'ci95': [-0.0504, 0.2118], 'relative': 0.209} resolved {'meanDiff': 0, 'ci95': [0, 0]}
+wrote /home/abhay06102003/Desktop/CherryOnTop/bench/swebench/results/verify-notes-analysis.json
+2026-09-25T16:14:30.618Z analysis exited 0; MATRIX COMPLETE

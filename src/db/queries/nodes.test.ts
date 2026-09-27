@@ -1,7 +1,7 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { existsSync, unlinkSync } from 'node:fs';
 import { createDb } from '../client.js';
-import { insertNode, getNode, updateNodeState, listNodes, subtreeNodeIds } from './nodes.js';
+import { insertNode, getNode, updateNodeState, listNodes, subtreeNodeIds, markNodeSuperseded } from './nodes.js';
 
 const TEST_DB = './test-nodes.db';
 
@@ -83,5 +83,17 @@ describe('node queries', () => {
     expect(subtreeNodeIds(db, 'a').sort()).toEqual(['a', 'a1']);
     // A leaf is its own subtree, and an unknown id yields just itself.
     expect(subtreeNodeIds(db, 'a1')).toEqual(['a1']);
+  });
+
+  it('marks a node superseded without touching its state', () => {
+    const db = createDb(TEST_DB);
+    insertNode(db, { id: 'failed', parentId: 'root', goal: 'g', contract: CONTRACT, state: 'FAILED', createdAt: 't0', updatedAt: 't0' });
+    markNodeSuperseded(db, 'failed', 'replacement', 't1');
+    const node = getNode(db, 'failed');
+    // The honest record of what happened to this node is untouched — only a
+    // reader deciding what to *show* should treat it differently now.
+    expect(node?.state).toBe('FAILED');
+    expect(node?.supersededBy).toBe('replacement');
+    expect(node?.updatedAt).toBe('t1');
   });
 });

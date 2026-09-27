@@ -97,8 +97,13 @@ describe('delegateToChildren', () => {
     expect(calls.filter((c) => c.startsWith('create:'))).toHaveLength(1);
   });
 
-  it('fails when any sibling fails, and names which', async () => {
-    const { deps } = spyDeps((goal) => goal !== 'Add cart tests');
+  it('fails when a sibling cannot be fixed even after replacement, and names which', async () => {
+    // Genuinely unfixable work (matched by a stable substring, since a
+    // replacement's goal is the original plus a continuation note, not the
+    // original goal verbatim) still ends up reported as failed once every
+    // attempt is spent — replacement is a chance to recover, not a way to
+    // launder a failure into a success.
+    const { deps } = spyDeps((goal) => !goal.startsWith('Add cart tests'));
     const result = await delegateToChildren(
       { parentId: 'n1', goal: 'g', subgoals: ['Audit auth', 'Add cart tests'] },
       deps,
@@ -106,6 +111,86 @@ describe('delegateToChildren', () => {
     expect(result.succeeded).toBe(false);
     expect(result.message).toContain('Add cart tests');
     expect(result.message).toContain('1 of 2');
+  });
+});
+
+describe('delegateToChildren replacing a failed child', () => {
+  it('gives a failed piece of work to a fresh sibling instead of accepting the failure', async () => {
+    const created: string[] = [];
+    let attempts = 0;
+    const deps = {
+      createChildNode: (_p: string, goal: string) => { created.push(goal); return `c${created.length}`; },
+      recordCommitment: () => {},
+      startChild: () => {},
+      waitForChild: async () => ({ succeeded: ++attempts >= 2 }), // fails once, then succeeds
+    };
+    const result = await delegateToChildren(
+      { parentId: 'n1', goal: 'g', subgoals: ['Ship the feature'] },
+      deps,
+    );
+    expect(result.succeeded).toBe(true);
+    expect(created).toHaveLength(2); // the original attempt, and its replacement
+  });
+
+  it('tells the replacement what the failed attempt found', async () => {
+    let firstChildId = '';
+    const goals: string[] = [];
+    const deps = {
+      createChildNode: (_p: string, goal: string) => {
+        goals.push(goal);
+        const id = firstChildId ? 'c2' : 'c1';
+        if (!firstChildId) firstChildId = id;
+        return id;
+      },
+      recordCommitment: () => {},
+      startChild: () => {},
+      waitForChild: async (id: string) => ({ succeeded: id !== 'c1' }),
+      getFindings: (id: string) => (id === 'c1' ? 'Confirmed the schema migration is safe; ran out of turns before applying it.' : ''),
+    };
+    await delegateToChildren({ parentId: 'n1', goal: 'Ship the feature', subgoals: ['Ship the feature'] }, deps);
+    expect(goals[0]).toBe('Ship the feature');
+    expect(goals[1]).toContain('Ship the feature');
+    expect(goals[1]).toContain('Confirmed the schema migration is safe');
+    expect(goals[1]).toContain('Continue from there');
+  });
+
+  it('marks the failed child as superseded by its replacement', async () => {
+    const superseded: [string, string][] = [];
+    let n = 0;
+    const deps = {
+      createChildNode: () => `c${++n}`,
+      recordCommitment: () => {},
+      startChild: () => {},
+      waitForChild: async (id: string) => ({ succeeded: id !== 'c1' }),
+      markSuperseded: (failedId: string, replacementId: string) => { superseded.push([failedId, replacementId]); },
+    };
+    await delegateToChildren({ parentId: 'n1', goal: 'g', subgoals: ['a'] }, deps);
+    expect(superseded).toEqual([['c1', 'c2']]);
+  });
+
+  it('gives up after exhausting every attempt, not forever', async () => {
+    let dispatches = 0;
+    const deps = {
+      createChildNode: () => { dispatches++; return `c${dispatches}`; },
+      recordCommitment: () => {},
+      startChild: () => {},
+      waitForChild: async () => ({ succeeded: false }), // never succeeds
+    };
+    const result = await delegateToChildren({ parentId: 'n1', goal: 'g', subgoals: ['a'] }, deps);
+    expect(result.succeeded).toBe(false);
+    expect(dispatches).toBe(3); // MAX_CHILD_ATTEMPTS: the original plus two replacements
+  });
+
+  it('does not touch a sibling that succeeded on its first try', async () => {
+    const created: string[] = [];
+    const deps = {
+      createChildNode: (_p: string, goal: string) => { created.push(goal); return `c${created.length}`; },
+      recordCommitment: () => {},
+      startChild: () => {},
+      waitForChild: async () => ({ succeeded: true }),
+    };
+    await delegateToChildren({ parentId: 'n1', goal: 'g', subgoals: ['a', 'b'] }, deps);
+    expect(created).toHaveLength(2); // no replacements dispatched
   });
 });
 
@@ -257,5 +342,92 @@ describe('delegateToChildren scheduling', () => {
     const first = schedules[0] as { plan: { parallelGroups: string[][]; sharedEvidenceIds: string[] } };
     expect(first.plan.parallelGroups).toEqual([['0', '1']]);
     expect(first.plan.sharedEvidenceIds).toContain('src/a.ts');
+  });
+});
+
+describe('delegateToChildren: ordered pieces', () => {
+  it('starts a dependent piece only after its prerequisites, and hands it their reports', async () => {
+    const order: string[] = [];
+    const goals = new Map<string, string>();
+    let next = 0;
+    const result = await delegateToChildren(
+      {
+        parentId: 'p', goal: 'Redesign the landing page',
+        subgoals: ['Research the product; write docs/brief.md', 'Research design references; write docs/design.md', 'Build the page from docs/brief.md and docs/design.md'],
+        after: [[], [], [0, 1]],
+      },
+      {
+        createChildNode: (_p, goal) => { const id = `c${++next}`; goals.set(id, goal); return id; },
+        recordCommitment: () => {},
+        startChild: (id) => { order.push(`start:${id}`); },
+        waitForChild: async (id) => {
+          await new Promise((r) => setTimeout(r, 1));
+          order.push(`done:${id}`);
+          return { succeeded: true };
+        },
+        getFindings: (id) => `report from ${id}`,
+      },
+    );
+    expect(result.succeeded).toBe(true);
+    // Both research pieces run together; the build waits for both.
+    expect(order.slice(0, 2)).toEqual(['start:c1', 'start:c2']);
+    expect(order.indexOf('start:c3')).toBeGreaterThan(order.indexOf('done:c1'));
+    expect(order.indexOf('start:c3')).toBeGreaterThan(order.indexOf('done:c2'));
+    expect(goals.get('c3')).toContain('report from c1');
+    expect(goals.get('c3')).toContain('report from c2');
+    expect(goals.get('c1')).not.toContain('builds on work');
+  });
+
+  it('does not start a piece whose prerequisite failed for good', async () => {
+    const started: string[] = [];
+    let next = 0;
+    const result = await delegateToChildren(
+      { parentId: 'p', goal: 'g', subgoals: ['research the product', 'build the page'], after: [[], [0]] },
+      {
+        createChildNode: (_p, goal) => `c${++next}:${goal}`,
+        recordCommitment: () => {},
+        startChild: (id) => { started.push(id); },
+        waitForChild: async (id) => ({ succeeded: !id.includes('research') }),
+      },
+    );
+    expect(result.succeeded).toBe(false);
+    expect(started.some((id) => id.includes('build the page'))).toBe(false);
+  });
+});
+
+describe('delegateToChildren: stopping', () => {
+  // Found live: cancelling a task made its delegation loop "replace" the
+  // cancelled child, and cancelling the replacement made another.
+  it('never replaces a child that was stopped on purpose, nor starts what depends on it', async () => {
+    const created: string[] = [];
+    const result = await delegateToChildren(
+      { parentId: 'p', goal: 'g', subgoals: ['research the product', 'build the page'], after: [[], [0]] },
+      {
+        createChildNode: (_p, goal) => { created.push(goal); return `c${created.length}`; },
+        recordCommitment: () => {},
+        startChild: () => {},
+        waitForChild: async () => ({ succeeded: false, cancelled: true }),
+      },
+    );
+    expect(created).toEqual(['research the product']);
+    expect(result.succeeded).toBe(false);
+  });
+
+  it('creates no child at all once the parent itself is stopped', async () => {
+    let stopped = false;
+    const created: string[] = [];
+    await delegateToChildren(
+      { parentId: 'p', goal: 'g', subgoals: ['research the product', 'build the page'], after: [[], [0]] },
+      {
+        createChildNode: (_p, goal) => { created.push(goal); return `c${created.length}`; },
+        recordCommitment: () => {},
+        startChild: () => {},
+        // The whole task is cancelled while the first piece runs; the piece
+        // itself reports a plain failure (killed mid-run).
+        waitForChild: async () => { stopped = true; return { succeeded: false }; },
+        parentStopped: () => stopped,
+      },
+    );
+    expect(created).toEqual(['research the product']);
   });
 });

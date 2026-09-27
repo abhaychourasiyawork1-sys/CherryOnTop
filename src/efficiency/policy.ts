@@ -88,7 +88,16 @@ export function executionPolicyFor(signals: TaskEconomicsSignals): ExecutionPoli
   const banded = TURNS_BY_BAND[signals.complexityBand] * (1 + (1 - signals.confidence) * 0.25);
   // The operator's breaker still wins when they set one; `undefined` is the
   // documented "uncapped", and this must not quietly re-impose a cap there.
-  const hardTurnCap = configured === undefined ? Math.round(banded) : Math.min(configured, Math.round(banded));
+  // An operator who *explicitly* sets ORG_MAX_TURNS_EXECUTE gets exactly that
+  // cap, up as well as down. Before, the band always won when lower, so a long
+  // task could not be given more than ~60-75 turns however it was configured,
+  // which is below what the same model used alone on Terminal-Bench
+  // vba-userform-port (93). The live spend watchdog now bounds what the extra
+  // turns can cost. With nothing set, the default cap and the band apply as
+  // before.
+  const explicit = Number(process.env.ORG_MAX_TURNS_EXECUTE) > 0 ? configured : undefined;
+  const hardTurnCap = explicit !== undefined ? explicit
+    : configured === undefined ? Math.round(banded) : Math.min(configured, Math.round(banded));
 
   return normalizeExecutionPolicy({
     optimizationBudget: context.optimizationBudget,

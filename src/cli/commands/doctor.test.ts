@@ -17,9 +17,9 @@ describe('doctor Node version check (corrected floor)', () => {
 });
 
 describe('doctor check list', () => {
-  it('checks Node, Docker, kind, kubectl, the cluster, the runner image, the API key and callable models', () => {
+  it('checks Node, Docker, kind, kubectl, the cluster, the runner image, the API key, System-1 and callable models', () => {
     expect(CHECKS.map((c) => c.name)).toEqual([
-      'Node.js version', 'Docker', 'kind', 'kubectl', 'Kubernetes cluster', 'Runner image', 'Claude authentication', 'callable models',
+      'Node.js version', 'Docker', 'kind', 'kubectl', 'Kubernetes cluster', 'Runner image', 'Claude authentication', 'System-1 (Laya)', 'callable models',
     ]);
   });
 });

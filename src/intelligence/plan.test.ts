@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import { buildPlanPrompt, parseSubgoals } from './plan.js';
+import { buildPlanPrompt, parsePlan, parseSubgoals } from './plan.js';
 import { buildRolePrompt } from '../prompts/roles.js';
 
 afterEach(() => { delete process.env.ORG_MAX_CHILD_JOBS; });
@@ -77,5 +77,56 @@ describe('parseSubgoals', () => {
     expect(parseSubgoals('[not json', 3)).toEqual([]);
     expect(parseSubgoals('[1, 2, 3]', 3)).toEqual([]);
     expect(parseSubgoals('["real", 42, "  ", "also real"]', 3)).toEqual(['real', 'also real']);
+  });
+});
+
+describe('buildPlanPrompt: one problem is one unit', () => {
+  it('still forbids splitting a bug report into phases', () => {
+    // A seaborn bug report was split into "investigate" and "implement".
+    expect(buildPlanPrompt('Legend values are wrong for large ranges', 3))
+      .toContain('One bug report or one question is a single unit of work');
+  });
+
+  it('allows a feature to split into research followed by the build', () => {
+    // The webpage redesign was vetoed because the phase rule applied to every
+    // goal, and the plan format had no way to say "build after research".
+    const prompt = buildPlanPrompt('Redesign the landing page', 3);
+    expect(prompt).toContain('"after"');
+    expect(prompt).toContain('followed by the build that uses it');
+  });
+
+  it('takes [] off the table once the split is settled', () => {
+    expect(buildPlanPrompt('x', 3)).toContain('Reply with exactly []');
+    const forced = buildPlanPrompt('x', 3, { mustSplit: true });
+    expect(forced).not.toContain('Reply with exactly []');
+    expect(forced).toContain('how, not whether');
+  });
+});
+
+describe('parsePlan: ordered pieces', () => {
+  it('reads strings and {goal, after} entries together', () => {
+    process.env.ORG_MAX_CHILD_JOBS = '3';
+    const text = 'Here is the plan:\n```json\n["Research the product", "Research design references", {"goal": "Build the page", "after": [0, 1]}]\n```';
+    expect(parsePlan(text, 3)).toEqual({
+      subgoals: ['Research the product', 'Research design references', 'Build the page'],
+      after: [[], [], [0, 1]],
+    });
+  });
+
+  it('drops forward, self and dangling references, so the graph is acyclic', () => {
+    process.env.ORG_MAX_CHILD_JOBS = '3';
+    const text = '[{"goal": "a", "after": [1]}, {"goal": "b", "after": [1, 7, "0"]}, {"goal": "c", "after": [0, 0]}]';
+    expect(parsePlan(text, 3).after).toEqual([[], [], [0]]);
+  });
+
+  it('remaps indexes past a blank entry the planner emitted', () => {
+    process.env.ORG_MAX_CHILD_JOBS = '3';
+    expect(parsePlan('["a", "  ", {"goal": "c", "after": [2, 0]}]', 3))
+      .toEqual({ subgoals: ['a', 'c'], after: [[], [0]] });
+  });
+
+  it('drops references to pieces cut by the child cap', () => {
+    expect(parsePlan('["a", "b", {"goal": "c", "after": [1]}]', 2))
+      .toEqual({ subgoals: ['a', 'b'], after: [[], []] });
   });
 });

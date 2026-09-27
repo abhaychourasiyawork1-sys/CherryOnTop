@@ -1,0 +1,33 @@
+diff --git a/seaborn/_core/scales.py b/seaborn/_core/scales.py
+index 55874bf2..554eed93 100644
+--- a/seaborn/_core/scales.py
++++ b/seaborn/_core/scales.py
+@@ -379,6 +379,13 @@ class ContinuousBase(Scale):
+             locs = axis.major.locator()
+             locs = locs[(vmin <= locs) & (locs <= vmax)]
+             labels = axis.major.formatter.format_ticks(locs)
++            if isinstance(axis.major.formatter, ScalarFormatter):
++                # Avoid having an offset / scale factor that is not shown anywhere
++                # in the legend, which would make the labels misleading (#3187)
++                if axis.major.formatter.get_offset():
++                    axis.major.formatter.set_useOffset(False)
++                    axis.major.formatter.set_scientific(False)
++                    labels = axis.major.formatter.format_ticks(locs)
+             new._legend = list(locs), list(labels)
+ 
+         return new
+diff --git a/seaborn/utils.py b/seaborn/utils.py
+index 2407853c..4153bd51 100644
+--- a/seaborn/utils.py
++++ b/seaborn/utils.py
+@@ -699,6 +699,10 @@ def locator_to_legend_entries(locator, limits, dtype):
+         formatter = mpl.ticker.LogFormatter()
+     else:
+         formatter = mpl.ticker.ScalarFormatter()
++        # Avoid having an offset / scale factor that is not shown anywhere
++        # in the legend, which would make the labels misleading (#3187)
++        formatter.set_useOffset(False)
++        formatter.set_scientific(False)
+     formatter.axis = dummy_axis()
+ 
+     # TODO: The following two lines should be replaced

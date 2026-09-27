@@ -215,6 +215,46 @@ export function validate(input: ValidateInput): ValidationResult {
   };
 }
 
+/** The stable label two attempts that failed "the same way" share, so
+ *  `strategyRetryAllowed` (`src/recovery/engine.ts`) can tell a genuine retry
+ *  from a repeat of the exact same dead end.
+ *
+ *  One distinction it needs that `passed: false` alone cannot give it:
+ *  evidence that actively *contradicted* success (an observed check that
+ *  failed) is a different situation from evidence that was merely cut short
+ *  before it could reach the level the task demanded. The first is "the work
+ *  is wrong"; retrying the same way buys nothing, which is exactly the
+ *  failure mode `strategyRetryAllowed` exists to refuse a third attempt at
+ *  (measured on `requests-1142`: four dispatches rejected for the same
+ *  missing observed test, one of them a correct fix marked FAILED). The
+ *  second is "the work was never contradicted, only under-proven" — and when
+ *  that shortfall is because the daemon's own hard turn/spend guard cut the
+ *  dispatch off before it could run its own verification (`guardStopped`),
+ *  the next attempt gets a fresh allotment of exactly the resource that ran
+ *  out. That is a materially different circumstance, not "the same wall
+ *  again", so it is labelled distinctly and left outside the blanket
+ *  `validation:`-prefix refusal — the ordinary "no progress" check in
+ *  `strategyRetryAllowed` still applies to it. */
+export function failureSignatureFor(input: {
+  /** The gated verdict actually returned to the caller — `false` whenever
+   *  the level/confidence floor was not met, even if nothing was observed to
+   *  be wrong. */
+  passed: boolean;
+  /** The verdict *before* the level/confidence floor was applied. `true` here
+   *  with `passed: false` above means the evidence never contradicted
+   *  success — it just was not enough of it yet. */
+  underlyingPassed: boolean;
+  level: ValidationLevel;
+  reasonCodes: string[];
+  /** Whether this attempt was cut off by the daemon's own hard resource
+   *  guard (turn cap or spend cap) rather than a clean, voluntary stop. */
+  guardStopped: boolean;
+}): string {
+  if (input.passed) return 'none';
+  if (input.guardStopped && input.underlyingPassed) return `guard-truncated:${input.level}`;
+  return `validation:${input.level}:${input.reasonCodes.filter((code) => !code.startsWith('V')).join('|') || 'insufficient_evidence'}`;
+}
+
 /** Whether a finished execution may be recorded as a successful task.
  *
  *  The one predicate that stands between `EXECUTION_FINISHED` and

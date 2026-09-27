@@ -357,8 +357,15 @@ export function tokensAt(
 }
 
 /** Whether the full-artifact level is genuinely available for this candidate. */
+/** Below this a file is a stub (an `__init__.py`, a re-export): its description
+ *  already says everything in it. Its reading cost was so small that its net
+ *  value came out highest, so it was the file sent in full every time.
+ *  ponytail: a size floor stands in for relevance; score the request on the
+ *  goal's terms if a small file ever turns out to be the one that mattered. */
+export const MIN_FULL_ARTIFACT_TOKENS = 128;
+
 export function offersFullArtifact(candidate: Pick<ContextCandidate, 'fullArtifactTokens'>): boolean {
-  return Number.isFinite(candidate.fullArtifactTokens) && (candidate.fullArtifactTokens as number) > 0;
+  return Number.isFinite(candidate.fullArtifactTokens) && (candidate.fullArtifactTokens as number) >= MIN_FULL_ARTIFACT_TOKENS;
 }
 
 export function estimateTokens(text: string): number {

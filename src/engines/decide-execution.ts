@@ -38,7 +38,7 @@ const THRESHOLD = 0.3;
  *  child's derived share must clear. */
 export const MIN_AGENT_BUDGET_USD = 0.5;
 
-function defaultEconomicsInput(complexity: DecideExecutionInput['complexity']): EconomicsInput {
+export function defaultEconomicsInput(complexity: DecideExecutionInput['complexity']): EconomicsInput {
   return {
     estimatedValue: VALUE_BY_COMPLEXITY[complexity],
     modelCost: 0.1,

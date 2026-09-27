@@ -40,8 +40,13 @@ function repo(): string {
   execFileSync('git', ['config', 'user.email', 't@t'], { cwd: dir });
   execFileSync('git', ['config', 'user.name', 't'], { cwd: dir });
   mkdirSync(join(dir, 'src', 'auth'), { recursive: true });
-  writeFileSync(join(dir, 'src', 'auth', 'session.ts'),
-    'import { readStore } from "./store.js";\nexport function refreshSession() { return readStore(); }\n');
+  // A real file's worth of code: a two-line stub is below the size at which
+  // opening a file in full says anything its description does not.
+  writeFileSync(join(dir, 'src', 'auth', 'session.ts'), [
+    'import { readStore } from "./store.js";',
+    ...Array.from({ length: 6 }, (_, i) => `export function sessionHelper${i}(token: string) { return token.length > ${i} ? readStore() : null; }`),
+    'export function refreshSession() { return readStore(); }',
+  ].join('\n') + '\n');
   writeFileSync(join(dir, 'src', 'auth', 'store.ts'), 'export function readStore() { return null; }\n');
   writeFileSync(join(dir, 'src', 'auth', 'session.test.ts'),
     'import { refreshSession } from "./session.js";\n');

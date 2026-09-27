@@ -1,0 +1,4 @@
+2026-09-25T14:17:13.571Z matrix start: 2 instances x 3 reps x 2 arms, $3 per run
+2026-09-25T14:18:53.338Z psf__requests-1142 cherryontop rep 41: COMPLETE $0.3631 18 turns s1=2/0fb [5h 0.16 7d 0.72]
+2026-09-25T14:20:20.195Z matrix start: 2 instances x 3 reps x 2 arms, $3 per run
+2026-09-25T14:22:27.841Z psf__requests-1142 cherryontop rep 41: FAILED $0.3252 28 turns s1=2/0fb [5h 0.23 7d 0.72]

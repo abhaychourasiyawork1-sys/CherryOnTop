@@ -9,12 +9,14 @@ export function planCacheKey(goal: string, head: string): string {
   return createHash('sha256').update(`${goal}\0${head}`).digest('hex');
 }
 
-interface PlanValue { subgoals: string[]; repoHead: string }
+interface PlanValue { subgoals: string[]; after?: number[][]; repoHead: string }
+
+export interface CachedPlan { subgoals: string[]; after: number[][] }
 
 /** A previously computed subgoal list for this exact goal + committed HEAD,
  *  if one was stored within `ttlHours`. Any miss / malformed row / disabled
  *  cache returns null — the caller then plans normally. */
-export function getCachedPlan(db: Db, key: string, ttlHours: number, now: Date = new Date()): string[] | null {
+export function getCachedPlan(db: Db, key: string, ttlHours: number, now: Date = new Date()): CachedPlan | null {
   if (ttlHours <= 0) return null;
   const row = db.select().from(memory)
     .where(and(eq(memory.kind, KIND), eq(memory.key, key)))
@@ -30,15 +32,17 @@ export function getCachedPlan(db: Db, key: string, ttlHours: number, now: Date =
   if (!Array.isArray(subgoals) || subgoals.some((s) => typeof s !== 'string')) {
     return null;
   }
-  return subgoals;
+  // Rows written before ordering existed carry none: every piece ran at once.
+  const after = Array.isArray(value?.after) ? value!.after : [];
+  return { subgoals, after };
 }
 
-export function putCachedPlan(db: Db, key: string, subgoals: string[], head: string, createdAt: string): void {
+export function putCachedPlan(db: Db, key: string, subgoals: string[], head: string, createdAt: string, after: number[][] = []): void {
   db.insert(memory).values({
     id: randomUUID(),
     kind: KIND,
     key,
-    value: { subgoals, repoHead: head } satisfies PlanValue,
+    value: { subgoals, after, repoHead: head } satisfies PlanValue,
     confidence: null,
     nodeId: null,
     createdAt,

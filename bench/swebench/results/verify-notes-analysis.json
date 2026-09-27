@@ -1,0 +1,230 @@
+{
+ "cells": [
+  {
+   "instance": "scikit-learn__scikit-learn-14710",
+   "arm": "cherryontop-nolaya",
+   "rep": 51,
+   "state": "COMPLETE",
+   "selfReported": true,
+   "resolved": true,
+   "graded": true,
+   "costUsd": 0.4371,
+   "turns": 20,
+   "tokens": 990117,
+   "cacheWrite": 45448,
+   "output": 6762,
+   "wallSeconds": 351,
+   "dispatches": 1,
+   "models": "execute:claude-sonnet-5",
+   "patchBytes": 2302,
+   "system1Judgments": 0,
+   "system1Fallbacks": 0,
+   "system1Surfaces": "",
+   "system1Available": false
+  },
+  {
+   "instance": "scikit-learn__scikit-learn-14710",
+   "arm": "cherryontop",
+   "rep": 51,
+   "state": "COMPLETE",
+   "selfReported": true,
+   "resolved": true,
+   "graded": true,
+   "costUsd": 0.6489,
+   "turns": 24,
+   "tokens": 1573983,
+   "cacheWrite": 62831,
+   "output": 9721,
+   "wallSeconds": 464,
+   "dispatches": 1,
+   "models": "execute:claude-sonnet-5",
+   "patchBytes": 2131,
+   "system1Judgments": 0,
+   "system1Fallbacks": 0,
+   "system1Surfaces": "",
+   "system1Available": true
+  },
+  {
+   "instance": "scikit-learn__scikit-learn-14710",
+   "arm": "cherryontop-nolaya",
+   "rep": 52,
+   "state": "COMPLETE",
+   "selfReported": true,
+   "resolved": true,
+   "graded": true,
+   "costUsd": 0.4128,
+   "turns": 24,
+   "tokens": 1216388,
+   "cacheWrite": 25116,
+   "output": 7548,
+   "wallSeconds": 434,
+   "dispatches": 1,
+   "models": "execute:claude-sonnet-5",
+   "patchBytes": 2229,
+   "system1Judgments": 0,
+   "system1Fallbacks": 0,
+   "system1Surfaces": "",
+   "system1Available": false
+  },
+  {
+   "instance": "scikit-learn__scikit-learn-14710",
+   "arm": "cherryontop",
+   "rep": 52,
+   "state": "COMPLETE",
+   "selfReported": true,
+   "resolved": true,
+   "graded": true,
+   "costUsd": 0.3624,
+   "turns": 24,
+   "tokens": 1112882,
+   "cacheWrite": 21177,
+   "output": 6047,
+   "wallSeconds": 565,
+   "dispatches": 1,
+   "models": "execute:claude-sonnet-5",
+   "patchBytes": 1880,
+   "system1Judgments": 0,
+   "system1Fallbacks": 0,
+   "system1Surfaces": "",
+   "system1Available": true
+  },
+  {
+   "instance": "scikit-learn__scikit-learn-14710",
+   "arm": "cherryontop-nolaya",
+   "rep": 53,
+   "state": "COMPLETE",
+   "selfReported": true,
+   "resolved": true,
+   "graded": true,
+   "costUsd": 0.4755,
+   "turns": 25,
+   "tokens": 1247606,
+   "cacheWrite": 41409,
+   "output": 6990,
+   "wallSeconds": 369,
+   "dispatches": 1,
+   "models": "execute:claude-sonnet-5",
+   "patchBytes": 2239,
+   "system1Judgments": 0,
+   "system1Fallbacks": 0,
+   "system1Surfaces": "",
+   "system1Available": false
+  },
+  {
+   "instance": "scikit-learn__scikit-learn-14710",
+   "arm": "cherryontop",
+   "rep": 53,
+   "state": "COMPLETE",
+   "selfReported": true,
+   "resolved": true,
+   "graded": true,
+   "costUsd": 0.591,
+   "turns": 31,
+   "tokens": 1406438,
+   "cacheWrite": 61378,
+   "output": 7790,
+   "wallSeconds": 332,
+   "dispatches": 2,
+   "models": "execute:claude-sonnet-5",
+   "patchBytes": 2041,
+   "system1Judgments": 1,
+   "system1Fallbacks": 0,
+   "system1Surfaces": "action.helpful",
+   "system1Available": true
+  }
+ ],
+ "arms": {
+  "cherryontop": {
+   "label": "CherryOnTop + Laya",
+   "runs": 3,
+   "graded": 3,
+   "resolved": 3,
+   "resolveRate": 1.0,
+   "selfReported": 3,
+   "meanCost": 0.5341,
+   "medianCost": 0.591,
+   "totalCost": 1.602,
+   "costPerResolved": 0.5341,
+   "meanTurns": 26.3333,
+   "meanTokens": 1364434,
+   "meanWallSeconds": 453.6667,
+   "system1Judgments": 1,
+   "system1Fallbacks": 0,
+   "plannerRuns": 0
+  },
+  "cherryontop-nolaya": {
+   "label": "CherryOnTop, Laya off",
+   "runs": 3,
+   "graded": 3,
+   "resolved": 3,
+   "resolveRate": 1.0,
+   "selfReported": 3,
+   "meanCost": 0.4418,
+   "medianCost": 0.4371,
+   "totalCost": 1.325,
+   "costPerResolved": 0.4418,
+   "meanTurns": 23,
+   "meanTokens": 1151370,
+   "meanWallSeconds": 384.6667,
+   "system1Judgments": 0,
+   "system1Fallbacks": 0,
+   "plannerRuns": 0
+  }
+ },
+ "pairs": {
+  "cherryontop_vs_cherryontop-nolaya": {
+   "n": 3,
+   "costUsd": {
+    "meanDiff": 0.0923,
+    "ci95": [
+     -0.0504,
+     0.2118
+    ],
+    "relative": 0.209
+   },
+   "turns": {
+    "meanDiff": 3.3333,
+    "ci95": [
+     0,
+     6
+    ],
+    "relative": 0.145
+   },
+   "tokens": {
+    "meanDiff": 213064,
+    "ci95": [
+     -103506,
+     583866
+    ],
+    "relative": 0.185
+   },
+   "resolved": {
+    "meanDiff": 0,
+    "ci95": [
+     0,
+     0
+    ]
+   }
+  }
+ },
+ "perInstance": {
+  "scikit-learn__scikit-learn-14710": {
+   "cherryontop": {
+    "runs": 3,
+    "resolved": 3,
+    "meanCost": 0.5341,
+    "meanTurns": 26.3333,
+    "meanTokens": 1364434
+   },
+   "cherryontop-nolaya": {
+    "runs": 3,
+    "resolved": 3,
+    "meanCost": 0.4418,
+    "meanTurns": 23,
+    "meanTokens": 1151370
+   }
+  }
+ },
+ "expectedCells": 54,
+ "recordedCells": 6
+}

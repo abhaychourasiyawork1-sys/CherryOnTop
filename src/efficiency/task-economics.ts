@@ -41,11 +41,6 @@ export function extractAnchors(goal: string): string[] {
     ![...found].some((other) => other !== anchor && other.endsWith(`/${anchor}`)));
 }
 
-/** Goals that say outright they will not write. Cheap, and only ever used to
- *  turn modification scope *down* — reading it wrong costs tokens, never an
- *  unwanted edit. */
-const READ_ONLY = /\b(?:do not (?:modify|change|edit)|don't (?:modify|change|edit)|no edits|without (?:modifying|changing)|read[- ]only|investigate|review|audit|analyse|analyze|diagnose|explain)\b/i;
-
 /** Words that widen a goal past whatever it named. Same vocabulary
  *  `decompose.ts` scores breadth with, kept here rather than imported because
  *  the two want different things from it — that one asks "does this split?",
@@ -154,10 +149,11 @@ export function taskEconomicsFor(goal: string, precomputed?: TaskVerdict): TaskE
     goal,
     taskClass: verdict.taskClass,
     namedAnchors: extractAnchors(goal),
-    // The runtime's own read: an investigative dispatch is already narrowed to
-    // a read-only grant (`investigativeExecuteGrant`), so agreeing with it here
-    // keeps the economics and the authority telling the same story.
-    readOnly: verdict.decomposition.investigative || READ_ONLY.test(goal),
+    // The runtime's own read of "asks for no change". Not `investigative` and
+    // not a bare "review"/"explain" anywhere in the text: validation reads this
+    // flag to accept a report as the deliverable, so a bug report that merely
+    // contains "why" must not let a change request pass on prose alone.
+    readOnly: verdict.decomposition.explanationOnly,
   });
   // The band comes from the difficulty assessment unless the class already
   // settled it — `trivial_edit` is tiny however elaborately it was described.

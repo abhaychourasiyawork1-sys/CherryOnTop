@@ -22,10 +22,33 @@ export const nodes = sqliteTable('nodes', {
    *  separate run — it dispatches its own sandboxes and spends its own money —
    *  so it gets its own row, and this is the only thing tying the two together. */
   replayOf: text('replay_of'),
+  /** Set on a FAILED child once a fresh sibling was dispatched to pick its work
+   *  back up (see `delegateToChildren` in `delegate-child.ts`). Points at the
+   *  replacement's own id — the reverse of `replayOf`, which the replacement
+   *  itself also carries, so either direction of the link is one column away.
+   *  Never cleared and never deletes the row: the failed attempt's transcript
+   *  stays real evidence, it just stops being read as *the* outcome for this
+   *  piece of work — a tree view filters on this being null. */
+  supersededBy: text('superseded_by'),
+  /** The chat session this root run was asked in. Each later run in the same
+   *  session is told what the earlier ones asked and answered (see
+   *  queries/sessions.ts). Null for children, which inherit through their
+   *  parent, and for runs started outside any session (the CLI). */
+  sessionId: text('session_id'),
   /** The XState actor, persisted on every transition, so a daemon restart can
    *  put the node back where it was instead of stranding it. Null once terminal
    *  — a finished node has nothing to resume. */
   snapshot: text('snapshot', { mode: 'json' }),
+  createdAt: text('created_at').notNull(),
+  updatedAt: text('updated_at').notNull(),
+});
+
+/** One chat session: a thread of runs inside one repository, and the unit
+ *  of conversational memory. The runs stay the record; this only groups them. */
+export const sessions = sqliteTable('sessions', {
+  id: text('id').primaryKey(),
+  repoPath: text('repo_path'),
+  title: text('title').notNull(),
   createdAt: text('created_at').notNull(),
   updatedAt: text('updated_at').notNull(),
 });

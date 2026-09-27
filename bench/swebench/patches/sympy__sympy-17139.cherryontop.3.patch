@@ -1,0 +1,43 @@
+diff --git a/sympy/simplify/fu.py b/sympy/simplify/fu.py
+index ad1130ef96..1e21801cec 100644
+--- a/sympy/simplify/fu.py
++++ b/sympy/simplify/fu.py
+@@ -501,6 +501,9 @@ def _f(rv):
+         if not (rv.is_Pow and rv.base.func == f):
+             return rv
+ 
++        if not rv.exp.is_real:
++            return rv
++
+         if (rv.exp < 0) == True:
+             return rv
+         if (rv.exp > max) == True:
+diff --git a/sympy/simplify/tests/test_fu.py b/sympy/simplify/tests/test_fu.py
+index 54be6e1dca..943dd11081 100644
+--- a/sympy/simplify/tests/test_fu.py
++++ b/sympy/simplify/tests/test_fu.py
+@@ -75,6 +75,9 @@ def test__TR56():
+     assert T(sin(x)**6, sin, cos, h, 6, False) == (-cos(x)**2 + 1)**3
+     assert T(sin(x)**6, sin, cos, h, 6, True) == sin(x)**6
+     assert T(sin(x)**8, sin, cos, h, 10, True) == (-cos(x)**2 + 1)**4
++    # issue: non-real exponents should not raise on comparison
++    assert T(sin(x)**I, sin, cos, h, 4, False) == sin(x)**I
++    assert T(sin(x)**(2*I), sin, cos, h, 4, False) == sin(x)**(2*I)
+ 
+ 
+ def test_TR5():
+diff --git a/sympy/simplify/tests/test_simplify.py b/sympy/simplify/tests/test_simplify.py
+index 27fc5270e0..b4bd3de037 100644
+--- a/sympy/simplify/tests/test_simplify.py
++++ b/sympy/simplify/tests/test_simplify.py
+@@ -815,3 +815,10 @@ def test_issue_7971():
+     z = Integral(x, (x, 1, 1))
+     assert z != 0
+     assert simplify(z) is S.Zero
++
++
++def test_simplify_complex_power_no_error():
++    # simplify(cos(x)**I) used to raise TypeError: Invalid comparison of
++    # complex I when the fu.py trigsimp helpers compared a non-real
++    # exponent to 0.
++    assert simplify(cos(x)**I) == cos(x)**I

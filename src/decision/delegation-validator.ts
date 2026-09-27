@@ -66,7 +66,19 @@ const MIN_COVERAGE = 0.999;
  *  stops work for no reason. Same vocabulary `decompose.ts` counts items with. */
 const ITEM_SEPARATOR = /(?:\band then\b|\balso\b|\bas well as\b|\bplus\b|;|\n\s*[-*•]\s|\n\s*\d+[.)]\s)/i;
 
+/** Longer than this, or with a paragraph break, the goal is a *document*: a
+ *  spec whose bullets and clauses are requirements, not a list of
+ *  deliverables. Splitting one on separators produced dozens of "parts"
+ *  ("keep dependency manifests in requirements.txt", …) that no subgoal can
+ *  match, so coverage came out 0 and every split of a real task spec was
+ *  rejected after the planner had been paid for. Found on Terminal-Bench's
+ *  vba-userform-port, where a backend/frontend split was refused this way. */
+const MAX_ENUMERATED_GOAL_CHARS = 600;
+
 export function parentDeliverables(goal: string): string[] {
+  // No explicit enumeration to check against: coverage is unknown, which is
+  // not the same as incomplete (the rule stated above).
+  if (goal.length > MAX_ENUMERATED_GOAL_CHARS || /\n\s*\n/.test(goal.trim())) return [];
   const parts = goal.split(ITEM_SEPARATOR).map((part) => part.trim()).filter(Boolean);
   return parts.length > 1 ? parts : [];
 }

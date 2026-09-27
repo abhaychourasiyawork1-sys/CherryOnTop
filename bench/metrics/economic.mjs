@@ -51,6 +51,18 @@ const share = (part, whole) => (whole > 0 ? part / whole : 0);
  *  first, then the two things it is not allowed to have been bought with, then
  *  where the tokens went, then what the control plane cost and whether it was
  *  any good. */
+export const SYSTEM1_FIELDS = [
+  'system1Calls', 'system1Questions', 'system1CachedAnswers', 'system1LatencyMs', 'system1InputTokens',
+  'system1Failures', 'system1Fallbacks', 'system1Epochs', 'system1Candidates', 'modelDecisionRequests',
+];
+
+/** System-1 counters summed over a set of efficiency records. Absent fields
+ *  (records written before System-1 existed) count as zero. */
+export function system1Totals(records) {
+  return Object.fromEntries(SYSTEM1_FIELDS.map((field) =>
+    [field, (records ?? []).reduce((acc, r) => acc + (Number.isFinite(r?.[field]) ? r[field] : 0), 0)]));
+}
+
 export function summarizeEconomicRun(records) {
   const all = records ?? [];
   const successful = all.filter((record) => record.outcome === 'success');
@@ -85,6 +97,12 @@ export function summarizeEconomicRun(records) {
     beneficialInterventionRate: mean(all.map((r) => r.beneficialInterventionRate)),
     memoryNetValue: mean(all.map((r) => r.memoryNetValue)),
     duplicationRatio: share(sum(all.map((r) => r.duplicatedInformationTokens)), totalTokens),
+
+    // ---- System-1 diagnostics ----------------------------------------------
+    // Explain the whole-harness numbers above; they are never the objective.
+    // Summed, not averaged: overhead is paid per run, and a mean over tasks
+    // that never reached a decision epoch would hide what the others paid.
+    system1: system1Totals(all),
 
     // ---- how a cheap-looking arm might have got that way -------------------
     tasksStopped: all.filter((r) => r.stopReason !== null && r.stopReason !== undefined).length,

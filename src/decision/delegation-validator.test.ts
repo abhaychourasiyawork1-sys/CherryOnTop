@@ -157,6 +157,17 @@ describe('validateDelegationPlan', () => {
 });
 
 describe('parentDeliverables', () => {
+  it('does not enumerate a document-shaped spec (regression: Terminal-Bench vba-userform-port)', () => {
+    const spec = 'Move the legacy Excel/VBA app into a React + FastAPI app.\n\nRequirements:\n- Keep dependency manifests in requirements.txt\n- Seed from the CSV exports; also keep the tax rate\n\nWrite run.sh to start both.';
+    expect(parentDeliverables(spec)).toEqual([]);
+    const plan: DelegationPlan = { subgoals: [
+      { id: '0', goal: 'Backend: FastAPI server with SQLite schema and CSV seeding', writePaths: ['generated_app/backend'], dependencies: [] },
+      { id: '1', goal: 'Frontend: React forms with validation and API integration', writePaths: ['generated_app/frontend'], dependencies: [] },
+    ] };
+    const r = validateDelegationPlan({ goal: spec, authority: { tools: [], spawn_children: true, max_child_count: 3, budget_usd: 5 } }, plan);
+    expect(r.reasons).not.toContain('incomplete_coverage');
+  });
+
   it('finds explicitly enumerated parts', () => {
     expect(parentDeliverables('Fix auth; also optimize the DB; also update the UI')).toHaveLength(3);
   });

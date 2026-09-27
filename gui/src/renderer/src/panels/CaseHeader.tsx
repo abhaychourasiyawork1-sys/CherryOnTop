@@ -11,6 +11,7 @@ export interface CaseFile {
   node: {
     id: string; goal: string; state: string; runtime?: string | null;
     repoPath?: string | null; createdAt: string; updatedAt: string;
+    supersededBy?: string | null;
     contract: { definition_of_done: string[] };
   };
   mandate: Mandate | null;
@@ -38,7 +39,7 @@ export interface CaseFile {
  *  and one step because a modal for it would be heavier than the act deserves.
  *  The confirmation says how many agents will stop, since that is the number a
  *  person is actually weighing. */
-function StopTask({ caseId, running, onStopped }: { caseId: string; running: number; onStopped: () => void }) {
+export function StopTask({ caseId, running, onStopped }: { caseId: string; running: number; onStopped: () => void }) {
   const [asking, setAsking] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -90,14 +91,14 @@ export function CaseHeader({ file, running = 0, onReplay, onStopped }: {
   onStopped?: () => void;
 }) {
   const [showEnvelope, setShowEnvelope] = useState(false);
-  const tone = toneOf(file.node.state);
+  const tone = toneOf(file.node.state, file.node.supersededBy);
   const pending = file.approvals.filter((a) => a.status === 'pending').length;
   const decisions = file.approvals.filter((a) => a.status === 'approved' || a.status === 'rejected').length;
 
   return (
     <header className="case-header" style={{ ['--state' as string]: `var(--${tone})` }}>
       <div className="case-header-top">
-        <h1 className="case-header-goal">{file.node.goal}</h1>
+        <h1 className="case-header-goal" title={file.node.goal}>{file.node.goal}</h1>
         <div className="case-header-actions">
           {running > 0 && onStopped && (
             <StopTask caseId={file.node.id} running={running} onStopped={onStopped} />
@@ -113,7 +114,7 @@ export function CaseHeader({ file, running = 0, onReplay, onStopped }: {
       <dl className="case-facts">
         <div>
           <dt>State</dt>
-          <dd><span className="pill">{labelOf(file.node.state)}</span></dd>
+          <dd><span className="pill">{labelOf(file.node.state, file.node.supersededBy)}</span></dd>
         </div>
         <div>
           <dt>Organization</dt>

@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import { dispatchOptionsFor, planCacheTtlHours, repoMapTokenBudget, rolePromptsEnabled } from './efficiency.js';
+import { executeTimeoutMs, dispatchOptionsFor, planCacheTtlHours, planVetoOverridden, repoMapTokenBudget, rolePromptsEnabled } from './efficiency.js';
 
 const KEYS = [
   'ORG_MODEL_PLAN', 'ORG_MODEL_EXECUTE', 'ORG_MODEL_SYNTHESIZE',
@@ -10,7 +10,7 @@ afterEach(() => { for (const k of KEYS) delete process.env[k]; });
 
 describe('dispatchOptionsFor', () => {
   it('defaults plan and synthesize to haiku with turn caps, execute to no model', () => {
-    expect(dispatchOptionsFor('plan')).toEqual({ model: 'haiku', maxTurns: 2 });
+    expect(dispatchOptionsFor('plan')).toEqual({ model: 'haiku', maxTurns: 6 });
     expect(dispatchOptionsFor('synthesize')).toEqual({ model: 'haiku', maxTurns: 1 });
     expect(dispatchOptionsFor('execute')).toEqual({ maxTurns: 60 });
   });
@@ -69,5 +69,35 @@ describe('scalar knobs', () => {
       process.env.ORG_ROLE_PROMPTS = v;
       expect(rolePromptsEnabled()).toBe(false);
     }
+  });
+});
+
+describe('executeTimeoutMs', () => {
+  it('puts no wall clock on an execute dispatch unless one is configured', () => {
+    const saved = process.env.ORG_EXECUTE_TIMEOUT_MS;
+    delete process.env.ORG_EXECUTE_TIMEOUT_MS;
+    expect(executeTimeoutMs()).toBe(Number.POSITIVE_INFINITY);
+    process.env.ORG_EXECUTE_TIMEOUT_MS = '900000';
+    expect(executeTimeoutMs()).toBe(900_000);
+    if (saved === undefined) delete process.env.ORG_EXECUTE_TIMEOUT_MS; else process.env.ORG_EXECUTE_TIMEOUT_MS = saved;
+  });
+});
+
+describe('planVetoOverridden', () => {
+  afterEach(() => { delete process.env.ORG_PLAN_OVERRIDE_P; delete process.env.ORG_PLAN_OVERRIDE_SPLIT; });
+
+  it('needs System-1 and the split score to agree', () => {
+    // Measured live: the webpage redesign the planner wrongly vetoed …
+    expect(planVetoOverridden(0.7793, 5)).toBe(true);
+    // … and the seaborn bug report Laya rated higher, which must not be forced.
+    expect(planVetoOverridden(0.91, 3.5)).toBe(false);
+    expect(planVetoOverridden(0.5, 6)).toBe(false);
+    // System-1 off: the planner keeps its veto.
+    expect(planVetoOverridden(undefined, 6)).toBe(false);
+  });
+
+  it('is tunable per deployment', () => {
+    process.env.ORG_PLAN_OVERRIDE_SPLIT = '3';
+    expect(planVetoOverridden(0.91, 3.5)).toBe(true);
   });
 });

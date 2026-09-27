@@ -21,6 +21,13 @@ export interface Decomposition {
    *  bug" names nothing broad, so it scores low, and low is what routes a goal
    *  to the fast tier. Diagnosis is the last thing that should be tiered down. */
   investigative: boolean;
+  /** The goal asks for an answer and no change: an explanation, a review, a
+   *  report. Distinct from `investigative`, which is about how hard the
+   *  thinking is — "X crashes, why?" is investigative *and* a change request,
+   *  and reading it as read-only is what left a SWE-bench agent holding the
+   *  right fix with no tool to apply it. This is the rule; the execute grant
+   *  asks System-1 the same question when the rule is unsure. */
+  explanationOnly: boolean;
   /** The named signals, which ride along into the decision record. */
   signals: Record<string, number>;
 }
@@ -44,6 +51,21 @@ const WORK_TYPES = [
  *  expensive to get wrong: a missed bug or a wrong root cause is not visible in
  *  the output the way a failed edit is. */
 const INVESTIGATIVE = /\b(review|audit|analy[sz]e|investigat\w*|diagnos\w*|debug|inspect|understand|why|root cause|assess|evaluate|trace)\b/i;
+
+/** Said in so many words: nothing is to change. Only whole-task phrasings —
+ *  "fix X without changing the public API" is a constraint on a change, and
+ *  reading it as "no change" took a fix's edit tools away. */
+const NO_CHANGE = /\b(?:(?:do not|don't|no need to) (?:modify|change|edit|touch)(?: (?:anything|any (?:files?|code)|the (?:code|codebase|repo(?:sitory)?|files?)))?\s*(?:[.;,!]|$)|without (?:modifying|changing|editing|touching) (?:anything|any (?:files?|code)|the (?:code|codebase|repo(?:sitory)?))|no edits|read[- ]only)/i;
+
+/** An investigative verb *leading* the goal is an instruction; the same word
+ *  deep in a bug report ("I am confused why…") is narration. "debug" and
+ *  "trace" are left out: both usually end in a fix. */
+const LEADING_INVESTIGATION = /^\s*(?:please\s+)?(?:review|audit|analy[sz]e|investigate|diagnose|inspect|explain|assess|evaluate|summari[sz]e|find out why|tell me why|understand)\b/i;
+
+/** Any sign the goal wants something changed. Nouns-as-often-as-verbs
+ *  ("build", "make", "write") are left out: "why is the nightly build slow"
+ *  asks for an answer. */
+const CHANGE_REQUEST = /\b(fix|fixes|repair|patch|implement|add|change|update|modify|refactor|rewrite|remove|delete|rename|should|expected|instead)\b/i;
 
 /** The user asking for a fan-out in so many words. Scope inference must never
  *  override this: if someone says "split this across agents", that is not a
@@ -97,6 +119,10 @@ export function assessDecomposition(goal: string): Decomposition {
     split_score: Number(splitScore.toFixed(2)),
     coherent_single_task: coherent ? 1 : 0,
     explicit_split_request: explicit ? 1 : 0,
+    explicit_no_change: NO_CHANGE.test(goal) ? 1 : 0,
+    // Counted after the no-change phrase is taken out: "do not modify
+    // anything" names a verb, not a request.
+    change_request_terms: CHANGE_REQUEST.test(goal.replace(new RegExp(NO_CHANGE.source, 'gi'), ' ')) ? 1 : 0,
   };
 
   const complexity = score >= 3 ? 'high' : score >= 1.5 ? 'medium' : 'low';
@@ -104,6 +130,7 @@ export function assessDecomposition(goal: string): Decomposition {
     complexity,
     worthSplitting: explicit || splitScore >= 1.5,
     investigative: INVESTIGATIVE.test(goal),
+    explanationOnly: signals.explicit_no_change === 1 || (LEADING_INVESTIGATION.test(goal) && signals.change_request_terms === 0),
     signals,
   };
 }

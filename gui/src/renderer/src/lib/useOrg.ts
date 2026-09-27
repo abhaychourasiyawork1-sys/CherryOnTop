@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { daemon } from './client.js';
 import { mergeEvents, type OrgEvent } from './eventLog.js';
 import { changesOrg } from './liveness.js';
+import { loadSnapshot, saveSnapshot } from './sync.js';
 
 export interface OrgNode {
   id: string;
@@ -16,6 +17,11 @@ export interface OrgNode {
     deadline?: { expected_at?: string; hard_at?: string };
   };
   repoPath?: string | null;
+  /** Set once a fresh sibling picked this (failed) node's work back up. See
+   *  markNodeSuperseded, src/db/queries/nodes.ts. */
+  supersededBy?: string | null;
+  /** The chat session this root run was asked in. */
+  sessionId?: string | null;
   createdAt: string;
   updatedAt: string;
   /** From node.overview: spend rolled up through this node's subtree, and how
@@ -25,6 +31,8 @@ export interface OrgNode {
   childCount: number;
   needsApproval: boolean;
 }
+
+const EVENT_FLUSH_MS = 200;
 
 export interface Approval {
   id: string;
@@ -48,6 +56,12 @@ export interface Org {
   revision: number;
   /** What the daemon says it serves, for the compatibility check. */
   routers: string[] | undefined;
+  /** False while what is on screen is the cached copy from the last session
+   *  and the daemon has not yet confirmed it. Nothing cached may be shown as
+   *  live. */
+  authoritative: boolean;
+  /** When the cached copy was taken, for an honest "as of". */
+  cachedAt: string | null;
 }
 
 /** The single source of live truth for the window: the node tree, the approvals
@@ -55,8 +69,12 @@ export interface Org {
  *  an event says the shape changed, rather than polling — the daemon already
  *  pushes, and a poll would make a still organization look busy. */
 export function useOrg(): Org {
-  const [nodes, setNodes] = useState<OrgNode[]>([]);
-  const [approvals, setApprovals] = useState<Approval[]>([]);
+  // Cached state first, so the window draws instantly; the daemon's answer
+  // replaces it wholesale the moment it arrives.
+  const [cache] = useState(loadSnapshot);
+  const [nodes, setNodes] = useState<OrgNode[]>(() => cache?.nodes ?? []);
+  const [approvals, setApprovals] = useState<Approval[]>(() => cache?.approvals ?? []);
+  const [authoritative, setAuthoritative] = useState(false);
   const [routers, setRouters] = useState<string[] | undefined>(undefined);
   const [events, setEvents] = useState<OrgEvent[]>([]);
   const [connected, setConnected] = useState(false);
@@ -94,6 +112,7 @@ export function useOrg(): Org {
         setApprovals(pendingApprovals as Approval[]);
         setRouters((ping as { routers?: string[] } | null)?.routers);
         setConnected(true);
+        setAuthoritative(true);
         setError(null);
       })
       .catch((err: unknown) => {
@@ -121,11 +140,28 @@ export function useOrg(): Org {
       retry = setTimeout(() => { retry = null; setStreamAttempt((n) => n + 1); }, 1500);
     };
 
+    // The exec firehose can deliver dozens of events a second. Rendering the
+    // window once per event is what made a busy run feel heavy, so events are
+    // buffered and applied together at most every EVENT_FLUSH_MS. Nothing is
+    // dropped; a panel is at most that far behind the stream.
+    let buffer: OrgEvent[] = [];
+    let flush: ReturnType<typeof setTimeout> | null = null;
+    const push = (event: OrgEvent) => {
+      buffer.push(event);
+      if (flush) return;
+      flush = setTimeout(() => {
+        const batch = buffer;
+        buffer = [];
+        flush = null;
+        setEvents((current) => mergeEvents(current, batch));
+      }, EVENT_FLUSH_MS);
+    };
+
     const subscription = daemon().events.subscribe.subscribe(
       {},
       {
         onData: (event: OrgEvent) => {
-          setEvents((current) => mergeEvents(current, [event]));
+          push(event);
           // A transition changes the tree's shape, a result changes what it has
           // spent, a denial changes what needs a person. The exec.* firehose
           // changes none of those and must never trigger a read — see
@@ -140,6 +176,7 @@ export function useOrg(): Org {
     );
     return () => {
       subscription.unsubscribe();
+      if (flush) clearTimeout(flush);
       if (retry) clearTimeout(retry);
       if (pending.current) clearTimeout(pending.current);
     };
@@ -151,7 +188,17 @@ export function useOrg(): Org {
     if (streamAttempt > 0) refresh();
   }, [streamAttempt]);
 
+  // Keep the cache current, but only with what the daemon actually said.
+  useEffect(() => {
+    if (!authoritative) return;
+    const timer = setTimeout(() => saveSnapshot(nodes, approvals), 800);
+    return () => clearTimeout(timer);
+  }, [nodes, approvals, authoritative]);
+
   // `tick` counts reads of the tree, which is exactly "the organization may
   // have changed" — the signal every other panel needs and none of them had.
-  return { nodes, approvals, events, connected, error, refresh, revision: tick, routers };
+  return {
+    nodes, approvals, events, connected, error, refresh, revision: tick, routers,
+    authoritative: authoritative && connected, cachedAt: cache?.savedAt ?? null,
+  };
 }

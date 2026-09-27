@@ -64,6 +64,20 @@
       "when": 1789378689206,
       "tag": "0008_dynamic_economic_knowledge",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "6",
+      "when": 1790483043020,
+      "tag": "0009_ambitious_silverclaw",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "6",
+      "when": 1790520337780,
+      "tag": "0010_short_shriek",
+      "breakpoints": true
     }
   ]
 }

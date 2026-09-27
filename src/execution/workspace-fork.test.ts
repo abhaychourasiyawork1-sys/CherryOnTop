@@ -1,9 +1,9 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import { mkdtempSync, writeFileSync, readFileSync, existsSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { tmpdir, homedir } from 'node:os';
 import { join, relative } from 'node:path';
-import { forkWorkspace, isFork } from './workspace-fork.js';
+import { forkWorkspace, isFork, sweepOrphanedForks } from './workspace-fork.js';
 
 const made: string[] = [];
 afterEach(() => { for (const dir of made.splice(0)) rmSync(dir, { recursive: true, force: true }); });
@@ -116,5 +116,43 @@ describe('forking a workspace', () => {
     const status = execFileSync('git', ['status', '--porcelain'], { cwd: base, encoding: 'utf8' });
     expect(status.trim()).toBe('');
     fork.release();
+  });
+});
+
+describe('sweepOrphanedForks', () => {
+  // A private root, never the real ~/.org-forks: this suite runs with file
+  // parallelism on, and sweeping is a directory-listing delete — pointed at
+  // the shared real root it would just as happily remove a fork some other
+  // test file has live at that exact moment.
+  function forkLikeDir(root: string, name: string): string {
+    const path = join(root, `org-fork-${name}`);
+    mkdirSync(path, { recursive: true });
+    made.push(path);
+    return path;
+  }
+
+  it('removes a fork nothing points to any more, and leaves a live one alone', () => {
+    const root = mkdtempSync(join(tmpdir(), 'sweep-root-'));
+    made.push(root);
+    const orphan = forkLikeDir(root, 'orphan');
+    const live = forkLikeDir(root, 'live');
+
+    const removed = sweepOrphanedForks(new Set([live]), root);
+
+    expect(removed).toEqual([orphan]);
+    expect(existsSync(orphan)).toBe(false);
+    expect(existsSync(live)).toBe(true);
+  });
+
+  it('does nothing when every fork is still live', () => {
+    const root = mkdtempSync(join(tmpdir(), 'sweep-root-'));
+    made.push(root);
+    const live = forkLikeDir(root, 'live');
+    expect(sweepOrphanedForks(new Set([live]), root)).toEqual([]);
+    expect(existsSync(live)).toBe(true);
+  });
+
+  it('does nothing when the forks root does not exist yet', () => {
+    expect(sweepOrphanedForks(new Set(), join(tmpdir(), `no-such-forks-root-${Date.now()}`))).toEqual([]);
   });
 });

@@ -5,6 +5,7 @@ import {
   MIN_ZOOM, MAX_ZOOM, type View,
 } from './viewport.js';
 import { NodeCard } from './NodeCard.js';
+import { isTerminal } from '../lib/state.js';
 import type { OrgNode, Approval } from '../lib/useOrg.js';
 
 interface Props {
@@ -167,6 +168,13 @@ export function OrgGraph(props: Props) {
   );
   const canvas = useCanvas(content);
   const { viewport, view } = canvas;
+  // The organization assembles itself once when the chart opens — lead first,
+  // then each level of delegation — so its shape reads as it forms.
+  const [entering, setEntering] = useState(true);
+  useEffect(() => {
+    const timer = setTimeout(() => setEntering(false), 1400);
+    return () => clearTimeout(timer);
+  }, []);
 
   if (nodes.length === 0) {
     return (
@@ -206,6 +214,7 @@ export function OrgGraph(props: Props) {
 
       <div
         className="graph-canvas"
+        data-entering={entering}
         style={{
           width: layout.width,
           height: layout.height,
@@ -224,15 +233,20 @@ export function OrgGraph(props: Props) {
             // tree shows where the organization committed its resources.
             const weight = Math.min(1 + budget, 3.5);
             const length = Math.abs(child.y - parent.y) + Math.abs(child.x - parent.x) + CARD_WIDTH;
+            const busy = !isTerminal(node.state) && node.state !== 'INTERRUPTED';
+            const d = edgePath(parent, child);
             return (
-              <path
-                key={node.id}
-                className="edge"
-                d={edgePath(parent, child)}
-                strokeWidth={weight}
-                data-fresh={props.freshNodeIds.has(node.id)}
-                style={{ ['--len' as string]: length }}
-              />
+              <g key={node.id} className="edge-group" data-busy={busy} style={{ ['--len' as string]: length, ['--depth' as string]: child.depth }}>
+                <path
+                  className="edge"
+                  d={d}
+                  strokeWidth={weight}
+                  data-fresh={props.freshNodeIds.has(node.id)}
+                  data-state={node.state}
+                />
+                {/* Work flowing down the line while that agent is busy. */}
+                {busy && <path className="edge-flow" d={d} strokeWidth={Math.max(weight, 2)} />}
+              </g>
             );
           })}
         </svg>
@@ -252,6 +266,7 @@ export function OrgGraph(props: Props) {
               delegatedAuthority={narrowedAuthority(parent, node)}
               selected={props.selectedId === node.id}
               fresh={props.freshNodeIds.has(node.id)}
+              isLead={!node.parentId}
               onSelect={() => props.onSelect(node.id)}
               onOpen={() => props.onOpen(node.id)}
               onReveal={() => canvas.revealRect({

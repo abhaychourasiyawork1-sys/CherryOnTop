@@ -1,0 +1,158 @@
+2026-09-25T05:03:16.292Z matrix start: 6 instances x 3 reps x 3 arms, $3 per run
+2026-09-25T05:04:36.690Z pallets__flask-5014 direct rep 31: COMPLETE $0.3759420000000001 14 turns [5h 0.5 7d 0.56]
+2026-09-25T05:05:58.766Z pallets__flask-5014 cherryontop rep 31: COMPLETE $0.2286 14 turns s1=0/0fb [5h 0.51 7d 0.56]
+2026-09-25T05:06:55.108Z pallets__flask-5014 cherryontop-nolaya rep 31: COMPLETE $0.1879 14 turns s1=0/0fb [5h 0.52 7d 0.56]
+2026-09-25T05:09:24.334Z psf__requests-1142 cherryontop-nolaya rep 31: COMPLETE $0.4656 33 turns s1=3/3fb [5h 0.57 7d 0.57]
+2026-09-25T05:10:25.036Z psf__requests-1142 direct rep 31: COMPLETE $0.241961 11 turns [5h 0.58 7d 0.57]
+2026-09-25T05:12:08.737Z psf__requests-1142 cherryontop rep 31: COMPLETE $0.2213 14 turns s1=1/0fb [5h 0.59 7d 0.57]
+2026-09-25T05:14:44.433Z mwaskom__seaborn-3187 cherryontop rep 31: COMPLETE $0.509 36 turns s1=1/0fb [5h 0.62 7d 0.57]
+2026-09-25T05:16:28.918Z mwaskom__seaborn-3187 direct rep 31: COMPLETE $0.38176400000000005 16 turns [5h 0.63 7d 0.57]
+2026-09-25T05:33:45.270Z mwaskom__seaborn-3187 cherryontop-nolaya rep 31: COMPLETE $1.2647 68 turns s1=1/1fb [5h 0.69 7d 0.58]
+2026-09-25T05:37:22.259Z scikit-learn__scikit-learn-14710 cherryontop rep 31: COMPLETE $0.644 30 turns s1=0/0fb [5h 0.73 7d 0.58]
+2026-09-25T05:39:52.036Z scikit-learn__scikit-learn-14710 direct rep 31: COMPLETE $0.5848090000000001 25 turns [5h 0.75 7d 0.58]
+2026-09-25T05:47:08.580Z scikit-learn__scikit-learn-14710 cherryontop-nolaya rep 31: COMPLETE $0.6985 34 turns s1=0/0fb [5h 0.78 7d 0.59]
+2026-09-25T05:48:22.627Z sympy__sympy-17139 cherryontop-nolaya rep 31: COMPLETE $0.1363 8 turns s1=0/0fb [5h 0.8 7d 0.59]
+2026-09-25T05:49:56.063Z sympy__sympy-17139 cherryontop rep 31: COMPLETE $0.1333 7 turns s1=0/0fb [5h 0.8 7d 0.59]
+2026-09-25T05:51:07.979Z sympy__sympy-17139 direct rep 31: COMPLETE $0.17628899999999997 6 turns [5h 0.81 7d 0.59]
+2026-09-25T05:55:14.253Z pydata__xarray-6744 direct rep 31: COMPLETE $0.5931231999999999 22 turns [5h 0.82 7d 0.59]
+2026-09-25T05:59:03.504Z pydata__xarray-6744 cherryontop rep 31: COMPLETE $0.526 28 turns s1=0/0fb [5h 0.85 7d 0.59]
+2026-09-25T06:04:09.255Z pydata__xarray-6744 cherryontop-nolaya rep 31: COMPLETE $0.4998 28 turns s1=0/0fb [5h 0.88 7d 0.59]
+2026-09-25T06:05:46.562Z pallets__flask-5014 cherryontop-nolaya rep 32: COMPLETE $0.1888 17 turns s1=0/0fb [5h 0.89 7d 0.6]
+2026-09-25T06:12:04.287Z pallets__flask-5014 cherryontop rep 32: COMPLETE $0.2444 15 turns s1=0/0fb [5h 0.91 7d 0.6]
+2026-09-25T06:13:27.742Z pallets__flask-5014 direct rep 32: COMPLETE $0.3051678 17 turns [5h 0.92 7d 0.6]
+2026-09-25T06:14:45.438Z psf__requests-1142 direct rep 32: COMPLETE $0.24239340000000004 12 turns [5h 0.93 7d 0.6]
+2026-09-25T06:18:39.370Z psf__requests-1142 cherryontop rep 32: COMPLETE $0.4866 37 turns s1=3/0fb [5h 0.96 7d 0.6]
+2026-09-25T06:20:09.413Z psf__requests-1142 cherryontop-nolaya rep 32: COMPLETE $0.1758 13 turns s1=1/1fb [5h 0.97 7d 0.6]
+2026-09-25T06:37:11.209Z mwaskom__seaborn-3187 cherryontop-nolaya rep 32: refused by the usage limit after $0.5452; discarding and waiting
+2026-09-25T06:37:23.321Z usage window open again (allowed_warning; five-hour 0.99, seven-day 0.61)
+2026-09-25T06:38:02.596Z mwaskom__seaborn-3187 cherryontop-nolaya rep 32: refused by the usage limit after $0; discarding and waiting
+2026-09-25T06:38:16.898Z usage limit reached (five_hour); sleeping 124 min until 2026-09-25T08:42:00.000Z
+2026-09-25T08:42:05.271Z usage window open again (allowed_warning; five-hour 0.08, seven-day 0.62)
+2026-09-25T08:44:58.497Z mwaskom__seaborn-3187 cherryontop-nolaya rep 32: COMPLETE $0.5132 30 turns s1=1/1fb [5h 0.11 7d 0.62]
+2026-09-25T08:48:45.614Z mwaskom__seaborn-3187 cherryontop rep 32: COMPLETE $0.8528 40 turns s1=1/0fb [5h 0.15 7d 0.62]
+2026-09-25T08:52:02.928Z mwaskom__seaborn-3187 direct rep 32: COMPLETE $0.7318084 27 turns [5h 0.17 7d 0.63]
+2026-09-25T08:53:34.904Z scikit-learn__scikit-learn-14710 direct rep 32: COMPLETE $0.4676624000000001 20 turns [5h 0.19 7d 0.63]
+2026-09-25T09:05:06.861Z scikit-learn__scikit-learn-14710 cherryontop rep 32: COMPLETE $0.9167 49 turns s1=0/0fb [5h 0.23 7d 0.63]
+2026-09-25T09:12:13.110Z scikit-learn__scikit-learn-14710 cherryontop-nolaya rep 32: COMPLETE $0.5494 27 turns s1=0/0fb [5h 0.26 7d 0.63]
+2026-09-25T09:13:50.288Z sympy__sympy-17139 direct rep 32: COMPLETE $0.26937200000000006 13 turns [5h 0.28 7d 0.64]
+2026-09-25T09:15:39.792Z sympy__sympy-17139 cherryontop-nolaya rep 32: COMPLETE $0.2831 16 turns s1=0/0fb [5h 0.3 7d 0.64]
+2026-09-25T09:17:12.749Z sympy__sympy-17139 cherryontop rep 32: COMPLETE $0.1872 10 turns s1=0/0fb [5h 0.32 7d 0.64]
+2026-09-25T09:21:51.056Z pydata__xarray-6744 cherryontop-nolaya rep 32: COMPLETE $0.5426 26 turns s1=0/0fb [5h 0.35 7d 0.64]
+2026-09-25T09:26:11.946Z pydata__xarray-6744 direct rep 32: COMPLETE $0.49696739999999995 20 turns [5h 0.36 7d 0.64]
+2026-09-25T09:30:39.299Z pydata__xarray-6744 cherryontop rep 32: COMPLETE $0.4583 23 turns s1=0/0fb [5h 0.39 7d 0.65]
+2026-09-25T09:31:34.736Z pallets__flask-5014 direct rep 33: COMPLETE $0.25135280000000004 13 turns [5h 0.39 7d 0.65]
+2026-09-25T09:32:41.942Z pallets__flask-5014 cherryontop-nolaya rep 33: COMPLETE $0.1849 14 turns s1=0/0fb [5h 0.4 7d 0.65]
+2026-09-25T09:35:42.580Z pallets__flask-5014 cherryontop rep 33: COMPLETE $0.237 14 turns s1=0/0fb [5h 0.42 7d 0.65]
+2026-09-25T09:37:47.018Z psf__requests-1142 direct rep 33: COMPLETE $0.2869 14 turns [5h 0.42 7d 0.65]
+2026-09-25T09:44:22.202Z psf__requests-1142 cherryontop rep 33: FAILED $0.6531 50 turns s1=4/0fb [5h 0.46 7d 0.65]
+2026-09-25T09:49:01.364Z psf__requests-1142 cherryontop-nolaya rep 33: COMPLETE $0.4526 33 turns s1=3/3fb [5h 0.49 7d 0.66]
+2026-09-25T10:08:43.039Z mwaskom__seaborn-3187 cherryontop-nolaya rep 33: COMPLETE $0.8455 49 turns s1=1/1fb [5h 0.53 7d 0.66]
+2026-09-25T10:24:57.091Z mwaskom__seaborn-3187 cherryontop rep 33: COMPLETE $0.6644 36 turns s1=1/0fb [5h 0.57 7d 0.66]
+2026-09-25T10:35:04.966Z mwaskom__seaborn-3187 direct rep 33: COMPLETE $1.2797228 15 turns [5h 0.6 7d 0.67]
+2026-09-25T10:51:19.676Z scikit-learn__scikit-learn-14710 cherryontop rep 33: COMPLETE $1.6173 77 turns s1=0/0fb [5h 0.68 7d 0.67]
+2026-09-25T11:03:12.896Z scikit-learn__scikit-learn-14710 cherryontop-nolaya rep 33: COMPLETE $0.7266 38 turns s1=0/0fb [5h 0.71 7d 0.68]
+2026-09-25T11:03:12.897Z refreshing the Claude login token
+2026-09-25T11:07:08.819Z scikit-learn__scikit-learn-14710 direct rep 33: COMPLETE $0.6228153999999999 30 turns [5h 0.73 7d 0.68]
+2026-09-25T11:07:08.820Z refreshing the Claude login token
+2026-09-25T11:08:07.800Z sympy__sympy-17139 cherryontop-nolaya rep 33: COMPLETE $0.1329 7 turns s1=0/0fb [5h 0.74 7d 0.68]
+2026-09-25T11:08:07.801Z refreshing the Claude login token
+2026-09-25T11:09:26.663Z sympy__sympy-17139 direct rep 33: COMPLETE $0.23722560000000004 11 turns [5h 0.75 7d 0.68]
+2026-09-25T11:09:26.664Z refreshing the Claude login token
+2026-09-25T11:11:08.586Z sympy__sympy-17139 cherryontop rep 33: COMPLETE $0.2009 11 turns s1=0/0fb [5h 0.76 7d 0.68]
+2026-09-25T11:11:08.586Z refreshing the Claude login token
+2026-09-25T11:19:35.196Z pydata__xarray-6744 cherryontop-nolaya rep 33: COMPLETE $0.8503 38 turns s1=0/0fb [5h 0.81 7d 0.69]
+2026-09-25T11:19:35.196Z refreshing the Claude login token
+2026-09-25T11:24:06.685Z pydata__xarray-6744 cherryontop rep 33: COMPLETE $0.5447 19 turns s1=0/0fb [5h 0.85 7d 0.69]
+2026-09-25T11:24:06.686Z refreshing the Claude login token
+2026-09-25T11:30:10.322Z pydata__xarray-6744 direct rep 33: COMPLETE $0.7820448 27 turns [5h 0.87 7d 0.69]
+2026-09-25T11:30:10.323Z matrix runs finished: 54/54 cells recorded
+2026-09-25T11:30:10.323Z grading with SWE-bench
+2026-09-25T11:46:39.417Z matrix start: 6 instances x 3 reps x 3 arms, $3 per run
+2026-09-25T11:46:39.435Z matrix runs finished: 54/54 cells recorded
+2026-09-25T11:46:39.435Z grading with SWE-bench
+top-33.json
+=== grading scikit-learn__scikit-learn-14710 for cherryontop-nolaya-31
+Instances with errors: 0
+Unstopped containers: 0
+Unremoved images: 1
+Report written to /home/abhay06102003/Desktop/CherryOnTop/bench/swebench/grading/matrix-reports/cherryontop-nolaya-31.matrix-cherryontop-nolaya-31.json
+=== grading scikit-learn__scikit-learn-14710 for cherryontop-nolaya-32
+Instances with errors: 0
+Unstopped containers: 0
+Unremoved images: 1
+Report written to /home/abhay06102003/Desktop/CherryOnTop/bench/swebench/grading/matrix-reports/cherryontop-nolaya-32.matrix-cherryontop-nolaya-32.json
+=== grading scikit-learn__scikit-learn-14710 for cherryontop-nolaya-33
+Instances with errors: 0
+Unstopped containers: 0
+Unremoved images: 1
+Report written to /home/abhay06102003/Desktop/CherryOnTop/bench/swebench/grading/matrix-reports/cherryontop-nolaya-33.matrix-cherryontop-nolaya-33.json
+=== grading scikit-learn__scikit-learn-14710 for direct-31
+Instances with errors: 0
+Unstopped containers: 0
+Unremoved images: 1
+Report written to /home/abhay06102003/Desktop/CherryOnTop/bench/swebench/grading/matrix-reports/direct-31.matrix-direct-31.json
+=== grading scikit-learn__scikit-learn-14710 for direct-32
+Instances with errors: 0
+Unstopped containers: 0
+Unremoved images: 1
+Report written to /home/abhay06102003/Desktop/CherryOnTop/bench/swebench/grading/matrix-reports/direct-32.matrix-direct-32.json
+=== grading scikit-learn__scikit-learn-14710 for direct-33
+Instances with errors: 0
+Unstopped containers: 0
+Unremoved images: 1
+Report written to /home/abhay06102003/Desktop/CherryOnTop/bench/swebench/grading/matrix-reports/direct-33.matrix-direct-33.json
+=== grading sympy__sympy-17139 for cherryontop-31
+Instances with errors: 0
+Unstopped containers: 0
+Unremoved images: 1
+Report written to /home/abhay06102003/Desktop/CherryOnTop/bench/swebench/grading/matrix-reports/cherryontop-31.matrix-cherryontop-31.json
+=== grading sympy__sympy-17139 for cherryontop-32
+Instances with errors: 0
+Unstopped containers: 0
+Unremoved images: 1
+Report written to /home/abhay06102003/Desktop/CherryOnTop/bench/swebench/grading/matrix-reports/cherryontop-32.matrix-cherryontop-32.json
+=== grading sympy__sympy-17139 for cherryontop-33
+Instances with errors: 0
+Unstopped containers: 0
+Unremoved images: 1
+Report written to /home/abhay06102003/Desktop/CherryOnTop/bench/swebench/grading/matrix-reports/cherryontop-33.matrix-cherryontop-33.json
+=== grading sympy__sympy-17139 for cherryontop-nolaya-31
+Instances with errors: 0
+Unstopped containers: 0
+Unremoved images: 1
+Report written to /home/abhay06102003/Desktop/CherryOnTop/bench/swebench/grading/matrix-reports/cherryontop-nolaya-31.matrix-cherryontop-nolaya-31.json
+=== grading sympy__sympy-17139 for cherryontop-nolaya-32
+Instances with errors: 0
+Unstopped containers: 0
+Unremoved images: 1
+Report written to /home/abhay06102003/Desktop/CherryOnTop/bench/swebench/grading/matrix-reports/cherryontop-nolaya-32.matrix-cherryontop-nolaya-32.json
+=== grading sympy__sympy-17139 for cherryontop-nolaya-33
+Instances with errors: 0
+Unstopped containers: 0
+Unremoved images: 1
+Report written to /home/abhay06102003/Desktop/CherryOnTop/bench/swebench/grading/matrix-reports/cherryontop-nolaya-33.matrix-cherryontop-nolaya-33.json
+=== grading sympy__sympy-17139 for direct-31
+Instances with errors: 0
+Unstopped containers: 0
+Unremoved images: 1
+Report written to /home/abhay06102003/Desktop/CherryOnTop/bench/swebench/grading/matrix-reports/direct-31.matrix-direct-31.json
+=== grading sympy__sympy-17139 for direct-32
+Instances with errors: 0
+Unstopped containers: 0
+Unremoved images: 1
+Report written to /home/abhay06102003/Desktop/CherryOnTop/bench/swebench/grading/matrix-reports/direct-32.matrix-direct-32.json
+=== grading sympy__sympy-17139 for direct-33
+Instances with errors: 0
+Unstopped containers: 0
+Unremoved images: 1
+Report written to /home/abhay06102003/Desktop/CherryOnTop/bench/swebench/grading/matrix-reports/direct-33.matrix-direct-33.json
+grading done
+2026-09-25T12:54:40.475Z grading exited 0
+Claude Code              runs 18 resolved 16/18 (graded 18)  mean $0.4626  turns 17.3889  $/resolved 0.5205  laya calls 0
+CherryOnTop + Laya       runs 18 resolved 17/18 (graded 17)  mean $0.5181  turns 28.3333  $/resolved 0.5486  laya calls 11
+CherryOnTop, Laya off    runs 18 resolved 18/18 (graded 18)  mean $0.4833  turns 27.3889  $/resolved 0.4832  laya calls 10
+cherryontop_vs_direct n 18 cost {'meanDiff': 0.0555, 'ci95': [-0.0874, 0.2127], 'relative': 0.12} resolved {'meanDiff': 0.056, 'ci95': [-0.1111, 0.2222]}
+cherryontop-nolaya_vs_direct n 18 cost {'meanDiff': 0.0206, 'ci95': [-0.0858, 0.1514], 'relative': 0.045} resolved {'meanDiff': 0.111, 'ci95': [0, 0.2778]}
+cherryontop_vs_cherryontop-nolaya n 18 cost {'meanDiff': 0.0348, 'ci95': [-0.11, 0.1867], 'relative': 0.072} resolved {'meanDiff': -0.056, 'ci95': [-0.1667, 0]}
+wrote /home/abhay06102003/Desktop/CherryOnTop/bench/swebench/results/matrix-analysis.json
+2026-09-25T12:54:40.963Z analysis exited 0; MATRIX COMPLETE

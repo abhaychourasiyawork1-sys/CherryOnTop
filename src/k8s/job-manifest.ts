@@ -1,4 +1,5 @@
 import type { V1Job } from '@kubernetes/client-node';
+import type { ExtraMount } from './sandbox-env.js';
 
 export interface ExecutionJobParams {
   nodeId: string;
@@ -11,6 +12,15 @@ export interface ExecutionJobParams {
    *  key (see execution/credentials.ts) — mounts it to the exact path the
    *  claude binary reads it from, rather than exposing it as an env var. */
   includeOauthCredentials?: boolean;
+  /** Keep stdin open for a stdin-fed session. `stdinOnce` makes the harness
+   *  detaching the end of input, so a daemon that dies mid-session cannot leave
+   *  the runtime waiting forever. Never a TTY: the stream is JSON, not a
+   *  terminal. */
+  interactive?: boolean;
+  /** Plain (non-secret) environment for the runtime. */
+  env?: ReadonlyArray<{ name: string; value: string }>;
+  /** Host directories beyond the worktree: git metadata, a lent toolchain. */
+  extraMounts?: ExtraMount[];
 }
 
 const OAUTH_CREDENTIALS_VOLUME = 'claude-oauth-credentials';
@@ -31,14 +41,24 @@ export function buildExecutionJob(params: ExecutionJobParams): V1Job {
         metadata: { labels: { 'org.nodeId': params.nodeId } },
         spec: {
           restartPolicy: 'Never',
+          // The pod inherits the host's search domains (a home router adds
+          // `lan`) and Kubernetes' ndots:5, so `github.com` was first tried as
+          // five cluster/lan names, each waiting out a timeout — measured: web,
+          // git and gh lookups failed intermittently with "Could not resolve
+          // host". ndots:1 asks for a public name directly; in-cluster short
+          // names (no dot) still use the search list. 40/40 lookups after.
+          dnsConfig: { options: [{ name: 'ndots', value: '1' }] },
           containers: [
             {
               name: 'runner',
               image: params.image,
               command: params.command,
+              ...(params.interactive ? { stdin: true, stdinOnce: true, tty: false } : {}),
               envFrom: [{ secretRef: { name: params.secretName } }],
+              ...(params.env?.length ? { env: params.env.map((e) => ({ ...e })) } : {}),
               volumeMounts: [
                 { name: 'workspace', mountPath: '/workspace' },
+                ...(params.extraMounts ?? []).map((m, i) => ({ name: `extra-${i}`, mountPath: m.mountPath, readOnly: m.readOnly })),
                 ...(params.includeOauthCredentials ? [{
                   name: OAUTH_CREDENTIALS_VOLUME,
                   mountPath: '/home/node/.claude/.credentials.json',
@@ -64,6 +84,7 @@ export function buildExecutionJob(params: ExecutionJobParams): V1Job {
           // an extraMounts entry for it (Phase 5's cluster-config task).
           volumes: [
             { name: 'workspace', hostPath: { path: params.worktreePath, type: 'Directory' } },
+            ...(params.extraMounts ?? []).map((m, i) => ({ name: `extra-${i}`, hostPath: { path: m.hostPath, type: 'Directory' } })),
             ...(params.includeOauthCredentials ? [{
               name: OAUTH_CREDENTIALS_VOLUME,
               secret: { secretName: params.secretName, items: [{ key: 'CLAUDE_CREDENTIALS_JSON', path: '.credentials.json' }] },

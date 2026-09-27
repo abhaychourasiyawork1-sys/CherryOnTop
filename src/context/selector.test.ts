@@ -254,6 +254,14 @@ describe('selectContext — full-artifact requests', () => {
     expect(run([huge]).fullArtifactRequests).toEqual([]);
   });
 
+  it('does not request a near-empty file, which cheapness alone ranked first', () => {
+    // SWE-bench requests-1142: `requests/packages/__init__.py` (16 tokens) was
+    // "sent rather than letting the agent go and find it" on every retry, and
+    // the agent never looked at it. Cheap is not the same as informative.
+    const stub = { ...openable, path: 'requests/packages/__init__.py', fullArtifactTokens: 16 };
+    expect(run([stub]).fullArtifactRequests).toEqual([]);
+  });
+
   it('never requests a candidate that did not make the selection', () => {
     const refused = candidate({
       path: 'src/noise.ts', lexicalScore: 4, structuralScore: 0, confidenceScore: 0,
