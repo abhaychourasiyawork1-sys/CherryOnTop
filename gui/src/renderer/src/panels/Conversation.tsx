@@ -29,6 +29,43 @@ export interface AskExchange {
   key: string;
   question: string;
   result: AskResult;
+  /** The run the question was about, so the answer sits under it. */
+  caseId?: string | null;
+  /** The session it was asked in. */
+  sessionId?: string | null;
+}
+
+/** A question and its answer from the record — rows the runtime already
+ *  wrote, rendered as the record, not as prose about it. */
+export function AskAnswer({ exchange }: { exchange: AskExchange }) {
+  return (
+    <div className="ask-exchange">
+      <p className="ask-exchange-q">{exchange.question}</p>
+      <div className="ask-exchange-a">
+        <p className="from-record">From the record</p>
+        <Markdown source={exchange.result.answer} />
+        {exchange.result.decisions?.slice().reverse().map((decision) => (
+          <WhyPanel key={decision.id} decision={decision} />
+        ))}
+        {exchange.result.artifacts && exchange.result.artifacts.length > 0 && (
+          <ul className="artifacts">
+            {exchange.result.artifacts.map((artifact) => (
+              <li key={artifact.id} data-kind={artifact.kind}>
+                <span className="figure">{artifact.path ?? artifact.summary}</span>
+              </li>
+            ))}
+          </ul>
+        )}
+        {exchange.result.supported && (
+          <ul className="answer-supported">
+            {exchange.result.supported.map((example) => (
+              <li key={example} className="figure">{example}</li>
+            ))}
+          </ul>
+        )}
+      </div>
+    </div>
+  );
 }
 
 interface Props {
@@ -200,40 +237,7 @@ export function Conversation(props: Props) {
           />
         ))}
 
-        {props.exchanges.map((exchange) => (
-          <div key={exchange.key}>
-            <article className="turn turn-you" data-top="true">
-              <div className="turn-body">
-                <p className="asked-goal">{exchange.question}</p>
-              </div>
-            </article>
-            <article className="turn turn-answer" data-top="true">
-              <div className="turn-body">
-                <p className="from-record">From the record</p>
-                <Markdown source={exchange.result.answer} />
-                {exchange.result.decisions?.slice().reverse().map((decision) => (
-                  <WhyPanel key={decision.id} decision={decision} />
-                ))}
-                {exchange.result.artifacts && exchange.result.artifacts.length > 0 && (
-                  <ul className="artifacts">
-                    {exchange.result.artifacts.map((artifact) => (
-                      <li key={artifact.id} data-kind={artifact.kind}>
-                        <span className="figure">{artifact.path ?? artifact.summary}</span>
-                      </li>
-                    ))}
-                  </ul>
-                )}
-                {exchange.result.supported && (
-                  <ul className="answer-supported">
-                    {exchange.result.supported.map((example) => (
-                      <li key={example} className="figure">{example}</li>
-                    ))}
-                  </ul>
-                )}
-              </div>
-            </article>
-          </div>
-        ))}
+        {props.exchanges.map((exchange) => <AskAnswer key={exchange.key} exchange={exchange} />)}
       </div>
 
       {history.loading && turns.length === 0 && <p className="thread-loading">Reading this case…</p>}

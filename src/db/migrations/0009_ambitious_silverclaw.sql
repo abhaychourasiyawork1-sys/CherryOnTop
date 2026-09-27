@@ -1,0 +1,1 @@
+ALTER TABLE `nodes` ADD `superseded_by` text;

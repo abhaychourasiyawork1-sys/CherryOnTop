@@ -9,6 +9,7 @@ import { approvalRouter } from './routers/approval.js';
 import { memoryRouter } from './routers/memory.js';
 import { askRouter } from './routers/ask.js';
 import { mandateRouter } from './routers/mandate.js';
+import { sessionRouter } from './routers/session.js';
 import { caseRouter } from './routers/case.js';
 
 export const appRouter = router({
@@ -21,6 +22,7 @@ export const appRouter = router({
   approval: approvalRouter,
   memory: memoryRouter,
   mandate: mandateRouter,
+  session: sessionRouter,
   case: caseRouter,
   org: askRouter,
 });

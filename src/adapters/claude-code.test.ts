@@ -70,6 +70,11 @@ describe('claudeCodeAdapter', () => {
 });
 
 describe('the tool grant reaches the runtime', () => {
+  it('keeps the GitHub capability out of the runtime tool list', () => {
+    const command = claudeCodeAdapter.buildCommand('ship it', { allowedTools: ['Bash', 'GitHub'], readOnly: false });
+    expect(command[command.indexOf('--allowedTools') + 1]).toBe('Bash');
+  });
+
   it('passes the allowlist to Claude Code, so a forbidden call is refused before it happens', () => {
     const command = claudeCodeAdapter.buildCommand('do it', { allowedTools: ['Read', 'Grep'], readOnly: true });
     expect(command).toContain('--allowedTools');

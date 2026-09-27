@@ -4,8 +4,11 @@ import { fastifyTRPCPlugin } from '@trpc/server/adapters/fastify';
 import { appRouter } from './root-router.js';
 import { createDb } from '../db/client.js';
 import { startNodeActor } from '../lifecycle/node-actor-manager.js';
-import { recoverNodes } from '../lifecycle/rehydrate.js';
+import { recoverNodes, TERMINAL } from '../lifecycle/rehydrate.js';
 import { seedBuiltinMandates } from '../db/queries/mandates.js';
+import { listNodes } from '../db/queries/nodes.js';
+import { fromContainerPath } from '../k8s/kind.js';
+import { sweepOrphanedForks } from '../execution/workspace-fork.js';
 import type { TrpcContext } from './trpc.js';
 
 export function buildServer(dbPath: string, startNode: TrpcContext['startNode'] = startNodeActor) {
@@ -26,6 +29,22 @@ export function buildServer(dbPath: string, startNode: TrpcContext['startNode'] 
   }
   if (recovered.stranded.length > 0) {
     console.error(`Closed ${recovered.stranded.length} node(s) with no saved state to resume from.`);
+  }
+
+  // A fork's whole lifetime is meant to be one delegation call; a daemon that
+  // died mid-call left its directory behind with nothing pointing to it
+  // anymore. Recovery above has just decided what's still in flight, so this
+  // is the one moment that knows which fork paths, if any, a resumed node
+  // might still reuse.
+  const liveRepoPaths = new Set(
+    listNodes(db)
+      .filter((node) => !TERMINAL.has(node.state) && node.repoPath)
+      .map((node) => fromContainerPath(node.repoPath!))
+      .filter((path): path is string => path !== null),
+  );
+  const sweptForks = sweepOrphanedForks(liveRepoPaths);
+  if (sweptForks.length > 0) {
+    console.error(`Removed ${sweptForks.length} orphaned workspace fork(s) left behind by a previous run.`);
   }
 
   // tRPC's fastify adapter routes every call through one `/trpc/:path` param,

@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process';
 import { createActor, fromPromise, waitFor, type Actor } from 'xstate';
 import { nodeMachine, type NodeMachineEvent, type ValidationVerdict } from './node-machine.js';
 import type { Db } from '../db/client.js';
-import { updateNodeState, getNode, insertNode, listNodes, setNodeRuntime } from '../db/queries/nodes.js';
+import { updateNodeState, getNode, insertNode, listNodes, setNodeRuntime, markNodeSuperseded } from '../db/queries/nodes.js';
 import { appendEvent, listEventsForNode } from '../db/queries/events.js';
 import { publish } from '../events/bus.js';
 import { executeStep } from '../execution/execute-step.js';
@@ -26,9 +26,10 @@ import { buildPlanPrompt, parseSubgoals } from '../intelligence/plan.js';
 import { buildSynthesisPrompt, type ChildReport } from '../intelligence/synthesize.js';
 import { decideIntegration } from '../intelligence/integrate-results.js';
 import { answerOf } from '../db/queries/answers.js';
+import { sessionMemoryFor } from '../db/queries/sessions.js';
 import { recordRunOutcome, getRuntimeStats, recordStrategyOutcome, listMemory } from '../db/queries/memory.js';
 import { getCostForNodes } from '../db/queries/stats.js';
-import { resolveCredentials, checkCredentials } from '../execution/credentials.js';
+import { resolveCredentials, checkCredentials, gitIdentity, githubCredentials, grantsGitHub } from '../execution/credentials.js';
 import { sandboxLimiter, maxConcurrentFromEnv, CRITICAL_PATH } from '../execution/dispatch-limit.js';
 import { efficiencyLedger, type LedgerRole } from '../efficiency/ledger.js';
 import type { EfficiencyOutcome } from '../efficiency/metrics.js';
@@ -49,6 +50,7 @@ import { executeTimeoutMs, dispatchOptionsFor, planCacheTtlHours, repoMapTokenBu
 import { routeModel } from '../intelligence/model-router.js';
 import { assessDecomposition } from '../intelligence/decompose.js';
 import { repoHead, repoDirty, repoIdentity } from '../execution/git-state.js';
+import { autoCommitAndPush, autoCommitEnabled, isDisposableFork } from './auto-commit.js';
 import { putKnowledge } from '../evidence/store.js';
 import { extractAnchors } from '../efficiency/task-economics.js';
 import { planCacheKey, getCachedPlan, putCachedPlan } from '../db/queries/plan-cache.js';
@@ -66,7 +68,7 @@ import { observationFrom } from '../learning/hierarchical.js';
 import { buildCounterfactualObservation } from '../learning/counterfactual.js';
 import type { ExecutionStrategy } from '../decision/strategy-gate.js';
 import { policyVersion } from '../efficiency/policy-version.js';
-import { evaluateSpendGuard, type SpendGuardState } from '../efficiency/spend-guard.js';
+import { evaluateSpendGuard, SpendGuardStop, type SpendGuardState } from '../efficiency/spend-guard.js';
 import { summarizeExecutionTrajectory, executionSnapshot, UNKNOWN_PROGRESS } from '../efficiency/progress-signals.js';
 import { executionPolicyForGoal, calibrate, effectiveTurnCap, currentPolicyVersions, EXECUTION_POLICY_VERSION } from '../efficiency/policy.js';
 import { activePolicyChanges } from '../learning/policy-experiments.js';
@@ -78,14 +80,14 @@ import { dispatchContextFor, warmRepoInventory } from '../context/dispatch-conte
 import { recordDispatchUsage, turnsForNode } from '../db/queries/tokens.js';
 import { shouldRetryWithoutModel, recoveredUsage } from '../execution/tokens.js';
 import { estimateCostUsd } from '../execution/pricing.js';
-import { readOnlyPlanningGrant, investigativeExecuteGrant, needsProofOnly, PROOF_PASS_INSTRUCTION, PROOF_PASS_TURNS } from './dispatch-helpers.js';
+import { readOnlyPlanningGrant, investigativeExecuteGrant, needsProofOnly, unprovableWithoutChanges, PROOF_PASS_INSTRUCTION, PROOF_PASS_TURNS } from './dispatch-helpers.js';
 import {
   evaluateBoundary, economicStateFor, forgetNode, isIntervention, registerEvidenceSources, observedStateVersion,
   markRecovered, consumeRecoveryFlag, recordRecoveryAttempt,
 } from './economic-runtime.js';
 import { tombstoneFor } from '../recovery/engine.js';
 import { evaluateFallback, mustBlockAction, detectFaults } from '../decision/fallback.js';
-import { validate, type ValidationEvidence, type ValidationResult } from '../validation/engine.js';
+import { validate, failureSignatureFor, type ValidationEvidence, type ValidationResult } from '../validation/engine.js';
 import { contractFor } from '../validation/contract.js';
 import { validationProfileFor, contractForProfile, meetsMinimumLevel } from '../validation/profile.js';
 import { taskEconomicsFor } from '../efficiency/task-economics.js';
@@ -95,7 +97,7 @@ import type { EconomicState } from '../decision/state.js';
 import { memory } from '../db/schema.js';
 import { assessDecomposability } from '../system1/decomposability.js';
 import { assessChangeRequest, EXPLAIN_THRESHOLD } from '../system1/change-request.js';
-import { verifiedChangeAtTurnCap, isVerifyingCommand } from '../execution/observation.js';
+import { verifiedChangeAtTurnCap, isVerifyingCommand, externalActionChecks } from '../execution/observation.js';
 import { refineWithSystem1 } from '../decision/system1-decision.js';
 import { createModelGateway } from '../system1/model-gateway.js';
 import { stateFacts } from '../system1/compiler.js';
@@ -309,6 +311,16 @@ export function realDelegateDeps(db: Db, parentId?: string): DelegateChildDeps {
       if (!fork) return result;
       forks.delete(childId);
       return settleFork(fork, result);
+    },
+    getFindings: (childId) => answerOf(db, childId),
+    markSuperseded: (failedId, replacementId) => {
+      try {
+        markNodeSuperseded(db, failedId, replacementId, new Date().toISOString());
+        publishProgress(db, failedId, `Superseded by a fresh attempt (${replacementId}) picking this work back up.`);
+      } catch (err) {
+        // Recording the link must never cost the replacement its dispatch.
+        console.error(`Failed to mark node ${failedId} as superseded by ${replacementId}:`, err);
+      }
     },
   };
 }
@@ -1442,7 +1454,7 @@ async function dispatch<T>(db: Db, nodeId: string, task: () => Promise<T>, prior
         // transcript needs to see that the run stopped on money rather than on
         // an error.
         publishProgress(db, nodeId, message);
-        throw new Error(message);
+        throw new SpendGuardStop(message, guard.hard);
       }
       if (guard.state === 'STOP') {
         publishProgress(db, nodeId, `${guard.reason} Continuing on the pivot just decided rather than stopping.`);
@@ -1466,6 +1478,16 @@ function drainTiming(nodeId: string): { queuedMs: number; dispatchMs: number } {
   const timing = pendingTiming.get(nodeId) ?? { queuedMs: 0, dispatchMs: 0 };
   pendingTiming.delete(nodeId);
   return timing;
+}
+
+/** What a root run in a chat session is told about the session's earlier
+ *  turns, recorded as an event so the receipt shows what the run was given.
+ *  Empty for children (they get their parent's handoff instead) and for runs
+ *  outside a session. */
+function sessionPreface(db: Db, nodeId: string): string {
+  const node = getNode(db, nodeId);
+  if (!node?.sessionId || node.parentId) return '';
+  return sessionMemoryFor(db, node.sessionId, nodeId);
 }
 
 async function planSubgoals(db: Db, nodeId: string, goal: string, maxChildren: number): Promise<string[]> {
@@ -1533,9 +1555,9 @@ async function planSubgoals(db: Db, nodeId: string, goal: string, maxChildren: n
     const roleSystemPrompt = rolePromptsEnabled() && honoursSystemPrompt(adapter)
       ? buildRolePrompt('plan')
       : undefined;
-    const planPrompt = roleSystemPrompt
-      ? buildPlanPrompt(goal, maxChildren)
-      : `${buildPlanPrompt(goal, maxChildren)}\n\n${buildRolePrompt('plan')}`;
+    const preface = sessionPreface(db, nodeId);
+    const basePlan = preface ? `${preface}\n\n${buildPlanPrompt(goal, maxChildren)}` : buildPlanPrompt(goal, maxChildren);
+    const planPrompt = roleSystemPrompt ? basePlan : `${basePlan}\n\n${buildRolePrompt('plan')}`;
     // The planner used to start from nothing and spend its turns discovering
     // the repository — the single most expensive coordination dispatch there
     // is, and it re-derives what the scan already knows. It splits the goal, so
@@ -1824,8 +1846,8 @@ function productionMachine(db: Db, nodeId: string) {
         publish({ id: decisionEventId, nodeId, type: 'decision.made', payload: decisionPayload, createdAt: decidedAt });
         return result;
       }),
-      validate: fromPromise(async ({ input }: { input: { nodeId: string; goal: string; succeeded: boolean } }) =>
-        runValidation(db, input.nodeId, input.succeeded)),
+      validate: fromPromise(async ({ input }: { input: { nodeId: string; goal: string; succeeded: boolean; guardStopped: boolean } }) =>
+        runValidation(db, input.nodeId, input.succeeded, input.guardStopped)),
       escalate: fromPromise(async ({ input }: { input: { nodeId: string; reason: string } }) =>
         escalate(input.nodeId, input.reason, { insertApproval: (record) => insertApproval(db, record) }),
       ),
@@ -1946,7 +1968,11 @@ function productionMachine(db: Db, nodeId: string) {
           }]);
         }
         let usedModel = modelFor(adapter, modelChoiceFor(db, nodeId, 'execute', input.goal));
-        const reuseKey = resultReuseKey(input.goal, grant, usedModel);
+        // A follow-up in a chat means something only against the turns before
+        // it — "what did you change?" — so the conversation is part of the key.
+        const conversation = sessionPreface(db, nodeId);
+        const cacheGoal = conversation ? `${conversation}\n\n${input.goal}` : input.goal;
+        const reuseKey = resultReuseKey(cacheGoal, grant, usedModel);
         // Validity is asked of each candidate answer in turn, newest first:
         // does the code it actually read still say what it said?
         // Never on a retry after this node failed validation: the answer that
@@ -2093,8 +2119,12 @@ function productionMachine(db: Db, nodeId: string) {
         // name.
         const envelope = getAgentEnvelope(db, nodeId);
         const envelopeText = envelope ? renderEnvelope(envelope) : '';
-        const goalWithHandoff = envelopeText
-          ? `${envelopeText}\n\n${goalWithConstraints}`
+        // A root run in a chat session is told the session so far, the same way a
+        // child is told its parent's handoff; a child never is (it has one).
+        const preface = envelopeText || (proofOnly ? '' : conversation);
+        if (preface && !envelopeText) publishProgress(db, nodeId, 'Continuing the conversation with what earlier turns in this session asked and found');
+        const goalWithHandoff = preface
+          ? `${preface}\n\n${goalWithConstraints}`
           : goalWithConstraints;
         // The economic boundary. Asked once, here, at the point the dispatch is
         // assembled — and answering "nothing to do" leaves `goalForDispatch`
@@ -2131,7 +2161,13 @@ function productionMachine(db: Db, nodeId: string) {
           // Subscription (via `claude login`) is preferred over an API key —
           // see credentials.ts. Read fresh on every dispatch, so unlike the
           // ANTHROPIC_API_KEY env var this path has no daemon-restart staleness.
-          credentials: resolveCredentials(os.homedir(), process.env.ANTHROPIC_API_KEY),
+          // Your git identity always travels, so the agent can commit; your
+          // GitHub login only when the mandate grants GitHub.
+          credentials: {
+            ...resolveCredentials(os.homedir(), process.env.ANTHROPIC_API_KEY),
+            ...gitIdentity(),
+            ...(grantsGitHub(grant.allowedTools) ? githubCredentials() : {}),
+          },
           adapter,
           image: runnerImageOverride(),
           grant,
@@ -2214,7 +2250,7 @@ function productionMachine(db: Db, nodeId: string) {
         // an answer that was produced and paid for must not be thrown away
         // because writing it down failed. The retry above can change which model
         // ran, so the key is recomputed against the one that did.
-        const storeKey = usedModel === undefined ? resultReuseKey(input.goal, grant, undefined) : reuseKey;
+        const storeKey = usedModel === undefined ? resultReuseKey(cacheGoal, grant, undefined) : reuseKey;
         if (storeKey && result.succeeded) {
           const text = finalResultText(result.events);
           if (text) {
@@ -2434,9 +2470,10 @@ function validationEvidenceFor(db: Db, nodeId: string, succeeded: boolean): Vali
     ? (grantReceipt.payload as { finalRuntimeAction?: string }).finalRuntimeAction === READ_ONLY_GRANT
     : taskEconomicsFor(getNode(db, nodeId)?.contract.goal ?? '').readOnly;
   const durableOutcomeIds = readOnly ? all.filter((a) => a.kind === 'result').map((a) => a.id) : [];
+  const execEvents = subtreeExecEvents(db, nodeId)
+    .map((row) => ({ type: row.type.slice('exec.'.length), payload: row.payload } as StructuredEvent));
   const snapshot = executionSnapshot({
-    events: subtreeExecEvents(db, nodeId)
-      .map((row) => ({ type: row.type.slice('exec.'.length), payload: row.payload } as StructuredEvent)),
+    events: execEvents,
     sequence: 0,
     tokensConsumed: 0,
   });
@@ -2450,6 +2487,14 @@ function validationEvidenceFor(db: Db, nodeId: string, succeeded: boolean): Vali
       command: target,
       passed: ![...failures].some((signature) => signature.includes(target)),
     }));
+  // Work whose deliverable is an action outside the tree — close a PR, open
+  // one, push — changes no file and has no test to run, so it could never
+  // clear an implementation floor and was failed however well it went. The
+  // remote accepting the action is the observed check. Only when nothing in
+  // the tree changed: a code change still has to prove itself with a test,
+  // and pushing it proves nothing about whether it is right.
+  const changedTree = artifacts.some((a) => a.kind === 'file_edit' || a.kind === 'file_write');
+  if (!changedTree) observedChecks.push(...externalActionChecks(execEvents));
 
   return {
     claimedSuccess: succeeded,
@@ -2497,7 +2542,7 @@ function recordEfficiency(db: Db, nodeId: string, outcome: EfficiencyOutcome): v
  *  stops at V2 — a green check in the run's own trace. Recorded as
  *  `V3:no_verifier` rather than silently, so the ceiling is visible in the
  *  telemetry rather than inferred from its absence. */
-function runValidation(db: Db, nodeId: string, succeeded: boolean): ValidationVerdict {
+function runValidation(db: Db, nodeId: string, succeeded: boolean, guardStopped = false): ValidationVerdict {
   const node = getNode(db, nodeId);
   const goal = node?.contract.goal ?? '';
   // Closed *here*, not at the terminal transition, and the ordering is
@@ -2563,14 +2608,17 @@ function runValidation(db: Db, nodeId: string, succeeded: boolean): ValidationVe
   // from a repeat. Without it the attempt cap bounds how many identical retries
   // happen and nothing stops the first one being pointless.
   const signals = trajectorySignals(db, nodeId);
+  const changedFiles = listArtifactsForNode(db, nodeId).some((a) => a.kind === 'file_edit' || a.kind === 'file_write');
   return {
     ...gated,
+    retriable: !unprovableWithoutChanges(gated, changedFiles),
     strategy: delegated ? 'SERIAL_DELEGATED' : 'MANAGED',
     // What failed, in the stable form the trajectory fingerprint uses, so two
     // attempts that died the same way are recognisable as such.
-    failureSignature: gated.passed
-      ? 'none'
-      : `validation:${gated.level}:${gated.reasonCodes.filter((code) => !code.startsWith('V')).join('|') || 'insufficient_evidence'}`,
+    failureSignature: failureSignatureFor({
+      passed: gated.passed, underlyingPassed: result.passed, level: gated.level,
+      reasonCodes: gated.reasonCodes, guardStopped,
+    }),
     progress: signals.progressSignal,
   };
 }
@@ -2651,6 +2699,29 @@ function createAndRun(db: Db, nodeId: string, goal: string, persisted: unknown):
       closeDefinitionOfDone(db, nodeId, String(snapshot.value), now);
       recordEfficiency(db, nodeId, snapshot.value === 'COMPLETE' ? 'success'
         : snapshot.value === 'CANCELLED' ? 'partial' : 'failure');
+      // Opt-in (`ORG_AUTO_COMMIT=1`): a sandbox can never commit its own work
+      // (`.git` is read-only in there by design), so nothing ever turned a
+      // verified COMPLETE into a commit without a human doing it by hand. Only
+      // a node's own repoPath, never a child's disposable fork — see
+      // `auto-commit.ts`'s doc comment for why. Best-effort: a failure here is
+      // narrated, not thrown, so it can never take the node's own outcome with it.
+      if (snapshot.value === 'COMPLETE' && autoCommitEnabled()) {
+        const repoPath = getNode(db, nodeId)?.repoPath;
+        if (repoPath && !isDisposableFork(repoPath)) {
+          try {
+            const result = autoCommitAndPush(repoPath, goal, nodeId);
+            if (result.committed) {
+              publishProgress(db, nodeId, result.pushed
+                ? `Auto-committed and pushed verified changes (${result.sha?.slice(0, 7)})`
+                : `Auto-committed verified changes (${result.sha?.slice(0, 7)}) — ${result.reason}`);
+            } else if (result.attempted) {
+              publishProgress(db, nodeId, `Auto-commit did not run: ${result.reason}`);
+            }
+          } catch (err) {
+            console.error(`Auto-commit failed for node ${nodeId}:`, err);
+          }
+        }
+      }
       const evidence = listArtifactsForNode(db, nodeId).map((a) => a.id);
       for (const commitment of listCommitmentsForNode(db, nodeId)) {
         updateCommitmentStatus(db, commitment.id, outcome, now);

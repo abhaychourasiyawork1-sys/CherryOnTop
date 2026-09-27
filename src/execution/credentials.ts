@@ -1,4 +1,5 @@
 import { existsSync, readFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 
 /** Where Claude Code's own CLI keeps a logged-in subscription's OAuth tokens.
@@ -63,4 +64,46 @@ export function resolveCredentials(homeDir: string, apiKeyEnv: string | undefine
   }
   if (apiKeyEnv) return { ANTHROPIC_API_KEY: apiKeyEnv };
   return {};
+}
+
+/** The mandate capability that lets a run act on GitHub as you. It is not a
+ *  runtime tool — the agent uses `gh` and `git` through Bash — so it only
+ *  decides whether your GitHub login is handed to the sandbox at all. */
+export const GITHUB_CAPABILITY = 'GitHub';
+
+export function grantsGitHub(allowedTools: string[] | null | undefined): boolean {
+  // Deliberately explicit: an unrestricted grant (null) does NOT carry it.
+  // Acting outside the machine is something a mandate has to say.
+  return Array.isArray(allowedTools) && allowedTools.includes(GITHUB_CAPABILITY);
+}
+
+type Run = (command: string, args: string[]) => string;
+const hostRun: Run = (command, args) =>
+  execFileSync(command, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 5000 }).trim();
+
+/** Your GitHub token for one run, read fresh at dispatch: the daemon's
+ *  GH_TOKEN / GITHUB_TOKEN if set, otherwise `gh auth token` on the host.
+ *  Empty when there is none — the run then works without GitHub rather than
+ *  failing to start. */
+export function githubCredentials(env: NodeJS.ProcessEnv = process.env, run: Run = hostRun): Record<string, string> {
+  const fromEnv = env.GH_TOKEN || env.GITHUB_TOKEN;
+  if (fromEnv) return { GH_TOKEN: fromEnv };
+  try {
+    const token = run('gh', ['auth', 'token']);
+    return token ? { GH_TOKEN: token } : {};
+  } catch {
+    return {};
+  }
+}
+
+/** Your git name and email, so a commit made in the sandbox is attributed to
+ *  you rather than failing with "Please tell me who you are". */
+export function gitIdentity(run: Run = hostRun): Record<string, string> {
+  const read = (key: string) => {
+    try { return run('git', ['config', '--global', key]); } catch { return ''; }
+  };
+  const name = read('user.name');
+  const email = read('user.email');
+  if (!name || !email) return {};
+  return { GIT_AUTHOR_NAME: name, GIT_AUTHOR_EMAIL: email, GIT_COMMITTER_NAME: name, GIT_COMMITTER_EMAIL: email };
 }

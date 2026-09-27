@@ -43,7 +43,7 @@ export function LiveStatus({ nodes, events }: Props) {
 
 /** The most recent thing this node said it was doing, which is more useful than
  *  the state name once a sandbox is involved. */
-function lastProgress(events: OrgEvent[], nodeId: string): string {
+export function lastProgress(events: OrgEvent[], nodeId: string): string {
   for (let index = events.length - 1; index >= 0; index--) {
     const event = events[index];
     if (event.nodeId !== nodeId) continue;

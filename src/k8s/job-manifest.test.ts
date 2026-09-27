@@ -92,3 +92,13 @@ it('opens stdin once, without a TTY, only on the runner container of a session j
   expect(plain.stdin).toBeUndefined();
   expect(plain.tty).toBeUndefined();
 });
+
+describe('sandbox DNS', () => {
+  it('resolves public names directly instead of through the search list', async () => {
+    const { buildExecutionJob } = await import('./job-manifest.js');
+    const job = buildExecutionJob({
+      nodeId: 'n', namespace: 'ns', image: 'img', command: ['true'], worktreePath: '/host/app', secretName: 's',
+    } as Parameters<typeof buildExecutionJob>[0]);
+    expect(job.spec?.template.spec?.dnsConfig?.options).toContainEqual({ name: 'ndots', value: '1' });
+  });
+});

@@ -57,12 +57,47 @@ function Diagram({ source }: { source: string }) {
   return <div className="diagram" ref={host} />;
 }
 
+/** Copies text and says so briefly. Clipboard access can be refused; then the
+ *  button says that instead of pretending. */
+export async function copyText(text: string): Promise<boolean> {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export function Markdown({ source }: { source: string }) {
   const parts = useMemo(() => renderMarkdown(source), [source]);
+  const host = useRef<HTMLDivElement>(null);
+
+  // Every code block gets a copy button, as in any chat app. Added to the
+  // sanitised DOM rather than to the HTML string, so sanitising stays simple.
+  useEffect(() => {
+    const blocks = host.current?.querySelectorAll('pre') ?? [];
+    for (const pre of Array.from(blocks)) {
+      if (pre.querySelector('.code-copy') || pre.classList.contains('diagram-source')) continue;
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'code-copy';
+      button.textContent = 'Copy';
+      button.setAttribute('aria-label', 'Copy code');
+      button.addEventListener('click', () => {
+        const code = pre.querySelector('code')?.textContent ?? pre.textContent ?? '';
+        void copyText(code).then((ok) => {
+          button.textContent = ok ? 'Copied' : 'Copy failed';
+          setTimeout(() => { button.textContent = 'Copy'; }, 1500);
+        });
+      });
+      pre.appendChild(button);
+    }
+  }, [parts]);
+
   if (parts.length === 0) return null;
 
   return (
-    <div className="md">
+    <div className="md" ref={host}>
       {parts.map((part, index) =>
         part.kind === 'mermaid'
           ? <Diagram key={index} source={part.content} />

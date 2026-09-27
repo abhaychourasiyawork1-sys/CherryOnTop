@@ -140,7 +140,18 @@ export const SANDBOX_ENV: ReadonlyArray<{ name: string; value: string }> = [
   { name: 'BASH_DEFAULT_TIMEOUT_MS', value: '600000' },
   { name: 'BASH_MAX_TIMEOUT_MS', value: '1800000' },
   // The mounted tree belongs to the host user; the pod's uid may not match.
-  { name: 'GIT_CONFIG_COUNT', value: '1' },
+  { name: 'GIT_CONFIG_COUNT', value: '4' },
   { name: 'GIT_CONFIG_KEY_0', value: 'safe.directory' },
   { name: 'GIT_CONFIG_VALUE_0', value: '*' },
+  // Port 22 is closed by the egress policy, so SSH remotes are reached over
+  // HTTPS instead — the same repository, the only port that is open.
+  { name: 'GIT_CONFIG_KEY_1', value: 'url.https://github.com/.insteadOf' },
+  { name: 'GIT_CONFIG_VALUE_1', value: 'git@github.com:' },
+  { name: 'GIT_CONFIG_KEY_2', value: 'url.https://github.com/.insteadOf' },
+  { name: 'GIT_CONFIG_VALUE_2', value: 'ssh://git@github.com/' },
+  // Git authenticates to GitHub with GH_TOKEN, which is only present when the
+  // run's mandate grants GitHub (credentials.ts). Without it this helper says
+  // nothing and git behaves exactly as before.
+  { name: 'GIT_CONFIG_KEY_3', value: 'credential.https://github.com.helper' },
+  { name: 'GIT_CONFIG_VALUE_3', value: '!f() { test -n "$GH_TOKEN" && echo username=x-access-token && echo "password=$GH_TOKEN"; }; f' },
 ];

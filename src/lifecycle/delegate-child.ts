@@ -170,7 +170,27 @@ export interface DelegateChildDeps {
   recordSchedule?: (schedule: DelegationSchedule) => void;
   /** Why a plan was funded or refused. Optional, for the same reason. */
   recordPlanValidation?: (validation: DelegationValidationResult) => void;
+  /** The failed child's own final report, read back so a replacement can be
+   *  told what was already tried rather than starting cold. Optional: a
+   *  deployment with no answer store still replaces the child, just without
+   *  handing the replacement anything about the attempt it is picking up
+   *  from. */
+  getFindings?: (childId: string) => string;
+  /** Links a failed child to the sibling dispatched to pick its work back up.
+   *  Optional, for the same reason as the rest of the recording hooks — a
+   *  deployment with nothing to record still replaces the child. */
+  markSuperseded?: (failedId: string, replacementId: string) => void;
 }
+
+/** How many *agents* one piece of delegated work gets, including the first —
+ *  not how many times one agent's own dispatch may retry (that is
+ *  `MAX_EXECUTION_ATTEMPTS` in `validation/engine.ts`, a different axis: a
+ *  fresh attempt here is a whole new child, with its own sandbox and its own
+ *  turn budget, not another turn inside the same one). Kept small and flat
+ *  for the same reason that constant is: unbounded replacement on a genuinely
+ *  unfinishable piece of work would spend the whole delegation's budget on
+ *  one subgoal instead of ever reporting that it could not be done. */
+const MAX_CHILD_ATTEMPTS = 3;
 
 /** The subgoals, as a graph the scheduler can reason about.
  *
@@ -227,6 +247,66 @@ export interface DelegationSchedule {
  *  every planned child, which starts two children writing the same file at the
  *  same moment and keeps paying for children whose prerequisite has already
  *  failed. Groups run in order; within a group, concurrently. */
+/** One piece of delegated work, dispatched to a fresh child each time the
+ *  previous one fails, up to `MAX_CHILD_ATTEMPTS`.
+ *
+ *  The failed child's own row is never touched beyond `markSuperseded`: its
+ *  state stays FAILED, its transcript stays real evidence, and the parent
+ *  reads it once, for a reason — the replacement is told what the failed
+ *  attempt found, and what to do about it, rather than starting cold on a
+ *  problem an entire sandbox already made progress on. What comes back to
+ *  the caller is the *last* attempt, so a group's success/failure and a
+ *  dependent's "doomed" reason are always about whether the *work* landed,
+ *  never about how many tries it took to get there. */
+function continuationGoal(originalGoal: string, findings: string | undefined): string {
+  // Told what was already tried, not just that it failed: a replacement that
+  // re-reads the whole goal from nothing re-derives what the failed attempt
+  // already found, at full price, for the same chance.
+  return findings?.trim()
+    ? `${originalGoal}\n\nA previous attempt at this exact piece of work did not finish. What it found before stopping:\n\n${findings.trim()}\n\nContinue from there — do not repeat what it already verified as done or established as true.`
+    : `${originalGoal}\n\nA previous attempt at this exact piece of work did not finish and left no usable report. Start fresh.`;
+}
+
+/** Picks a failed child's work back up with a fresh sibling, up to
+ *  `MAX_CHILD_ATTEMPTS` in total (the one already spent, plus this).
+ *
+ *  Deliberately a *second* phase, run only for the children that already
+ *  failed their first attempt — never interleaved with the initial fan-out.
+ *  That fan-out has its own concurrency guarantee (every sibling started
+ *  before any of them is waited on, so a wide split takes as long as its
+ *  slowest piece, not the sum of every piece); folding replacement into that
+ *  same loop would make a slow, healthy sibling's start wait behind a failed
+ *  one's whole retry chain. The failed child's own row is never touched
+ *  beyond `markSuperseded`: its state stays FAILED and its transcript stays
+ *  real evidence — the replacement is told what it found, once, and that is
+ *  the only thing "reading" it here means. */
+async function replaceFailedChild(
+  input: DelegateInput,
+  deps: DelegateChildDeps,
+  failed: { id: string; childId: string; goal: string },
+  siblingCount: number,
+): Promise<{ id: string; childId: string; goal: string; succeeded: boolean }> {
+  let previousId = failed.childId;
+  let childId = failed.childId;
+  let succeeded = false;
+
+  for (let attempt = 2; attempt <= MAX_CHILD_ATTEMPTS; attempt++) {
+    const attemptGoal = continuationGoal(failed.goal, deps.getFindings?.(previousId));
+    childId = deps.createChildNode(input.parentId, attemptGoal, siblingCount, input.approvedBudgetUsd);
+    deps.recordCommitment(childId, attemptGoal);
+    // Before the child starts, not after: the envelope is what its first
+    // dispatch reads, and a child that started first would read nothing.
+    deps.recordEnvelope?.(childId, attemptGoal, input.approvedBudgetUsd ?? 0);
+    deps.markSuperseded?.(previousId, childId);
+    deps.startChild(childId, attemptGoal);
+    succeeded = (await deps.waitForChild(childId)).succeeded;
+    if (succeeded) break;
+    previousId = childId;
+  }
+
+  return { id: failed.id, childId, goal: failed.goal, succeeded };
+}
+
 export async function delegateToChildren(
   input: DelegateInput,
   deps: DelegateChildDeps,
@@ -325,8 +405,16 @@ export async function delegateToChildren(
       return { id, childId, goal };
     });
 
+    const firstAttempt = await Promise.all(
+      started.map(async (child) => ({ ...child, succeeded: (await deps.waitForChild(child.childId)).succeeded })),
+    );
+
+    // A failed first attempt gets picked up by a fresh sibling; a healthy one
+    // is untouched. This second phase only ever contains children that need
+    // it, so a group where everyone succeeded the first time costs nothing
+    // beyond the one `Promise.all` it already needed.
     const settled = await Promise.all(
-      started.map(async (child) => ({ ...child, ...(await deps.waitForChild(child.childId)) })),
+      firstAttempt.map((child) => (child.succeeded ? child : replaceFailedChild(input, deps, child, subgoals.length))),
     );
 
     for (const child of settled) {

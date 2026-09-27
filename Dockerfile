@@ -10,8 +10,10 @@ FROM node:22-slim
 # python3-dev (Python.h, whose absence stopped a sklearn venv build): many
 # Python projects (scikit-learn, astropy) compile extensions before a test runs,
 # which the same agent on the host could always do.
+# gh: a run whose mandate grants GitHub gets your token as GH_TOKEN and uses
+# gh for pull requests and issues; without the grant gh has no credentials.
 RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates \
-  python3 python3-pip python3-venv python3-dev procps build-essential \
+  python3 python3-pip python3-venv python3-dev procps build-essential gh \
   && rm -rf /var/lib/apt/lists/*
 ENV PIP_BREAK_SYSTEM_PACKAGES=1
 

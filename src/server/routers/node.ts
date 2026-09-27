@@ -18,6 +18,7 @@ import { insertDodItems, listDodForNode, setDodState, dodProgress } from '../../
 import { resumeNode } from '../../lifecycle/rehydrate.js';
 import { simulateAuthority, summarizeAuthority } from '../../engines/simulate-authority.js';
 import { setNodeMandate } from '../../db/queries/nodes.js';
+import { getSession, updateSession } from '../../db/queries/sessions.js';
 
 export const nodeRouter = router({
   create: publicProcedure
@@ -27,12 +28,16 @@ export const nodeRouter = router({
        *  replace whatever the caller sent, so a run can never claim to be under
        *  a mandate while quietly holding different authority. */
       mandateId: z.string().nullable().default(null),
+      /** The chat session this is the newest message in. Earlier turns of the
+       *  session are handed to the run at dispatch (queries/sessions.ts). */
+      sessionId: z.string().nullable().default(null),
     }))
     .mutation(({ input, ctx }) => {
       // repoPath is operational plumbing, not part of the conceptual goal
       // contract — persisting it inside the contract JSON too would just be the
       // same fact in two places to keep in sync.
-      const { repoPath, mandateId, ...requested } = input;
+      const { repoPath, mandateId, sessionId, ...requested } = input;
+      if (sessionId && !getSession(ctx.db, sessionId)) throw new Error(`Session ${sessionId} not found`);
       const mandate = mandateId ? getMandate(ctx.db, mandateId) : undefined;
       if (mandateId && !mandate) throw new Error(`Mandate ${mandateId} not found`);
       // The contract is snapshotted here and never read from the mandate again.
@@ -45,9 +50,10 @@ export const nodeRouter = router({
       const now = new Date().toISOString();
       insertNode(ctx.db, {
         id, parentId: null, goal: contract.goal, contract,
-        state: 'CREATED', repoPath, mandateId: mandate?.id ?? null,
+        state: 'CREATED', repoPath, mandateId: mandate?.id ?? null, sessionId,
         snapshot: null, createdAt: now, updatedAt: now,
       });
+      if (sessionId) updateSession(ctx.db, sessionId, { updatedAt: now });
       // Each promised check becomes a row that can be closed against evidence,
       // rather than a string in a list nothing ever verifies.
       insertDodItems(ctx.db, id, contract.definition_of_done, now, () => randomUUID());
@@ -161,6 +167,8 @@ export const nodeRouter = router({
         id, parentId: null, goal: original.goal, contract,
         state: 'CREATED', repoPath: original.repoPath ?? null,
         mandateId: mandate?.id ?? null, replayOf: original.id, snapshot: null,
+        // "Run again" in a chat is the next message of the same chat.
+        sessionId: original.sessionId ?? null,
         createdAt: now, updatedAt: now,
       });
       insertCommitment(ctx.db, {

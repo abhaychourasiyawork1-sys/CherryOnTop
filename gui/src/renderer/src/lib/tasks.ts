@@ -85,7 +85,7 @@ export function toTasks(nodes: OrgNode[]): Task[] {
         id: root.id,
         goal: root.goal,
         state: root.state,
-        tone: subtree.some((n) => n.needsApproval) ? ('at-risk' as const) : toneOf(root.state),
+        tone: subtree.some((n) => n.needsApproval) ? ('at-risk' as const) : toneOf(root.state, root.supersededBy),
         createdAt: root.createdAt,
         nodeCount: subtree.length,
         costUsd: root.costUsd,

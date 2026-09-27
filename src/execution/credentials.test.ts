@@ -35,3 +35,28 @@ describe('resolveCredentials', () => {
     }
   });
 });
+
+describe('GitHub and git identity for a run', () => {
+  it('hands GitHub over only when a mandate names it — never for an unrestricted grant', async () => {
+    const { grantsGitHub } = await import('./credentials.js');
+    expect(grantsGitHub(['Bash', 'GitHub'])).toBe(true);
+    expect(grantsGitHub(['Bash'])).toBe(false);
+    expect(grantsGitHub(null)).toBe(false);
+  });
+
+  it('prefers the daemon env, then the gh login, and degrades to nothing', async () => {
+    const { githubCredentials } = await import('./credentials.js');
+    expect(githubCredentials({ GITHUB_TOKEN: 'env' }, () => 'gh')).toEqual({ GH_TOKEN: 'env' });
+    expect(githubCredentials({}, () => 'gho_x')).toEqual({ GH_TOKEN: 'gho_x' });
+    expect(githubCredentials({}, () => { throw new Error('not logged in'); })).toEqual({});
+  });
+
+  it('attributes commits to you, or passes nothing when git has no identity', async () => {
+    const { gitIdentity } = await import('./credentials.js');
+    const config: Record<string, string> = { 'user.name': 'Ada', 'user.email': 'ada@example.com' };
+    expect(gitIdentity((_c, args) => config[args[2]] ?? '')).toEqual({
+      GIT_AUTHOR_NAME: 'Ada', GIT_AUTHOR_EMAIL: 'ada@example.com', GIT_COMMITTER_NAME: 'Ada', GIT_COMMITTER_EMAIL: 'ada@example.com',
+    });
+    expect(gitIdentity(() => { throw new Error('unset'); })).toEqual({});
+  });
+});

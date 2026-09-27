@@ -1,39 +1,11 @@
-/* Mission Control — the visual system.
+@import "./styles/tokens.css";
+
+/* Legacy panel styles (transcript, graph, receipt, mandates), kept under the
+   Desktop 2.0 tokens. The shell and surfaces live in styles/desktop.css.
    Ground is "harbour": a deep blue-slate with real chroma, not a tinted black.
    State hues are ordered by what needs a human, not by good/bad: finished work
    goes quiet grey and recedes, so the only bright things on screen are the
    things still owed. */
-:root {
-  --ground: #131a22;
-  --panel: #182230;
-  --panel-raised: #1e2a3a;
-  --hairline: #243244;
-  --ink: #e4eaf0;
-  --ink-quiet: #8fa0b4;
-  --ink-faint: #5d6c7e;
-
-  --executing: #5fd3c4;
-  --planning: #8c9af0;
-  --at-risk: #f2c14e;
-  --failed: #e4674f;
-  --settled: #6e7c8c;
-
-  --sans: 'Instrument Sans', ui-sans-serif, system-ui, sans-serif;
-  --mono: 'IBM Plex Mono', ui-monospace, SFMono-Regular, monospace;
-
-  --rail: 232px;
-  /* Wide enough for a findings table to be readable. A child's full answer
-     lives here, and long-form content at 360px is a column of two words. */
-  --inspector: 440px;
-  /* Only macOS hides its title bar (see main/index.ts); everywhere else the
-     frame is already there and the rail must not pad around a gap. */
-  --chrome-inset: 14px;
-}
-
-@supports (-webkit-backdrop-filter: blur(0)) {
-  :root { --chrome-inset: 42px; }
-}
-
 * { box-sizing: border-box; }
 
 /* The platform scrollbar is a bright grey slab in the middle of a dark palette.
@@ -76,33 +48,6 @@ button {
   outline-offset: 2px;
   border-radius: 3px;
 }
-
-/* ---- shell ---------------------------------------------------------- */
-
-.shell {
-  display: grid;
-  grid-template-columns: var(--rail) minmax(0, 1fr) var(--inspector);
-  height: 100%;
-}
-
-.shell[data-inspector='closed'] { grid-template-columns: var(--rail) minmax(0, 1fr) 0; }
-
-.rail {
-  background: var(--panel);
-  border-right: 1px solid var(--hairline);
-  padding: var(--chrome-inset) 0 12px;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  overflow-y: auto;
-}
-
-
-
-
-
-
-
 
 .stage {
   position: relative;
@@ -241,14 +186,7 @@ button {
 
 .authority-mark { color: var(--at-risk); }
 
-
-
 /* ---- composer ------------------------------------------------------- */
-
-
-
-
-
 
 .banner {
   padding: 8px 20px;
@@ -406,59 +344,6 @@ button {
   color: var(--state);
 }
 
-/* ---- sheets: the record views ---------------------------------------- */
-
-
-
-
-
-/* ---- inbox ----------------------------------------------------------- */
-
-.inbox { list-style: none; margin: 18px 0 0; padding: 0; max-width: 72ch; }
-
-.inbox > li { border-bottom: 1px solid var(--hairline); }
-
-.inbox-row {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  width: 100%;
-  padding: 14px 4px;
-  text-align: left;
-}
-
-.inbox-dot {
-  flex: none;
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--at-risk);
-}
-
-.inbox-when { margin-left: auto; color: var(--ink-faint); font-size: 12px; }
-
-.inbox-detail { padding: 4px 4px 22px 23px; max-width: 52ch; }
-
-.inbox-goal {
-  display: block;
-  text-align: left;
-  color: var(--ink);
-  font-weight: 500;
-  margin-bottom: 14px;
-  border-bottom: 1px solid transparent;
-}
-
-.inbox-goal:hover { border-bottom-color: var(--hairline); }
-
-.inbox-why {
-  font-size: 12px;
-  font-weight: 500;
-  color: var(--ink-faint);
-  margin: 18px 0 8px;
-}
-
-.inbox-error { color: var(--failed); font-size: 13px; }
-
 /* ---- memory ---------------------------------------------------------- */
 
 .memory-grid {
@@ -503,10 +388,6 @@ button {
 
 /* ---- record views ---------------------------------------------------- */
 
-
-
-
-
 .record-risk {
   display: flex;
   gap: 8px;
@@ -521,22 +402,12 @@ button {
   color: var(--ink-faint);
 }
 
-
-
-
 /* ---- answer ---------------------------------------------------------- */
-
-
-
 
 .answer-supported { list-style: none; margin: 8px 0 0; padding: 0; font-size: 12px; color: var(--ink-faint); }
 .answer-supported li { padding: 2px 0; }
 
 /* ---- activity: the runtime's own output ------------------------------ */
-
-
-
-
 
 .stream { list-style: none; margin: 0; padding: 0; max-width: 88ch; }
 
@@ -585,116 +456,6 @@ button {
 .diff span[data-sign='add'] { color: var(--executing); }
 .diff span[data-sign='remove'] { color: var(--failed); }
 .diff span[data-sign='context'] { color: var(--ink-faint); }
-
-/* ====================================================================== */
-/*  The shell: five destinations, one stage, one input.                   */
-/* ====================================================================== */
-
-.nav-project {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  padding: 0 16px 12px;
-  color: var(--ink-faint);
-  font-size: 12px;
-}
-
-.nav-project-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-
-.nav-project-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--failed);
-  flex: none;
-}
-.nav-project-dot[data-connected='true'] { background: var(--executing); }
-
-.nav-new {
-  margin: 0 12px 14px;
-  padding: 7px 10px;
-  border: 1px solid var(--hairline);
-  border-radius: 6px;
-  color: var(--ink);
-  font-weight: 500;
-  text-align: left;
-  transition: border-color 140ms ease, background 140ms ease;
-}
-.nav-new:hover { border-color: var(--ink-faint); background: var(--panel-raised); }
-
-.nav-list {
-  list-style: none;
-  margin: 0;
-  padding: 0 8px;
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-  flex: 1;
-}
-
-.nav-item {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  width: 100%;
-  text-align: left;
-  padding: 7px 10px;
-  border-radius: 6px;
-  color: var(--ink-quiet);
-  /* The current section is marked on a left hairline, matching how a running
-     node is marked on a card — one vocabulary for "this is the live one". */
-  box-shadow: inset 2px 0 0 transparent;
-  transition: background 140ms ease, color 140ms ease;
-}
-
-.nav-item:hover { background: var(--panel-raised); color: var(--ink); }
-.nav-item[aria-current='true'] {
-  background: var(--panel-raised);
-  color: var(--ink);
-  box-shadow: inset 2px 0 0 var(--planning);
-}
-
-.nav-icon { color: var(--ink-faint); width: 14px; text-align: center; }
-.nav-item[aria-current='true'] .nav-icon { color: var(--planning); }
-.nav-label { flex: 1; }
-
-.nav-count {
-  font-family: var(--mono);
-  font-size: 11px;
-  color: var(--ink-quiet);
-  background: var(--hairline);
-  border-radius: 9px;
-  padding: 0 6px;
-  line-height: 17px;
-}
-.nav-count[data-urgent='true'] { color: var(--ground); background: var(--at-risk); }
-
-.nav-foot {
-  margin: 0;
-  padding: 10px 16px 0;
-  border-top: 1px solid var(--hairline);
-  font-size: 11px;
-  color: var(--ink-faint);
-}
-
-/* ---- stage header and tabs ------------------------------------------ */
-
-.stage-head {
-  padding: calc(var(--chrome-inset) + 8px) 40px 0;
-  border-bottom: 1px solid var(--hairline);
-}
-
-.stage-head h1 {
-  font-size: 17px;
-  font-weight: 500;
-  letter-spacing: -0.02em;
-  margin: 0 0 12px;
-  max-width: 70ch;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-}
 
 /* Underlines, not pills. These sit on a surface that is otherwise all content,
    and a pill group would read as chrome bolted on top of it. */
@@ -990,50 +751,7 @@ button {
 .turn-approval .said { font-size: 14px; margin-bottom: 10px; }
 
 .answer-supported { list-style: none; margin: 8px 0 0; padding: 0; font-size: 12px; color: var(--ink-faint); }
-
-/* ---- the one input --------------------------------------------------- */
-
-.composer {
-  display: flex;
-  gap: 10px;
-  align-items: flex-end;
-  border: 1px solid var(--hairline);
-  border-radius: 8px;
-  background: var(--panel);
-  padding: 10px 10px 10px 14px;
-}
-
-.composer:focus-within { border-color: var(--ink-faint); }
-
-
-.composer textarea {
-  flex: 1;
-  resize: none;
-  background: none;
-  border: none;
-  color: var(--ink);
-  font: inherit;
-  line-height: 1.55;
-  min-height: 24px;
-}
-
-.composer textarea:focus { outline: none; }
-.composer textarea::placeholder { color: var(--ink-faint); }
-
-.composer-send {
-  flex: none;
-  color: var(--ground);
-  background: var(--ink);
-  border-radius: 5px;
-  padding: 4px 14px;
-  font-weight: 500;
-}
-
-.composer-send:disabled { background: var(--hairline); color: var(--ink-faint); cursor: default; }
-
-/* The empty state is the input and nothing else, because giving the
-   organization a task is the only thing there is to do yet. */
-.hero {
+/* The empty state is the input and nothing else {
   flex: 1;
   display: grid;
   align-content: center;
@@ -1043,22 +761,6 @@ button {
   margin: 0 auto;
   padding: 0 40px 6vh;
 }
-
-.hero h1 {
-  font-size: 30px;
-  font-weight: 500;
-  letter-spacing: -0.03em;
-  margin: 0 0 8px;
-}
-
-.hero p {
-  color: var(--ink-quiet);
-  max-width: 52ch;
-  margin: 0 0 22px;
-}
-
-.hero .composer { padding: 14px 14px 14px 18px; }
-.hero .composer textarea { font-size: 16px; }
 
 /* ---- empty states ---------------------------------------------------- */
 
@@ -1084,15 +786,6 @@ button {
   overflow-y: auto;
   padding: calc(var(--chrome-inset) + 12px) 40px 40px;
 }
-
-.sheet-title {
-  font-size: 20px;
-  font-weight: 500;
-  letter-spacing: -0.02em;
-  margin: 0 0 6px;
-}
-
-.sheet-lead { color: var(--ink-quiet); max-width: 62ch; margin: 0 0 28px; }
 .sheet .graph-empty { margin: 0 auto; }
 
 .record-risk {
@@ -1164,17 +857,6 @@ button {
 /* A step that failed is not more narration — it is the reason nothing happened. */
 .turn-note[data-tone='problem'] { color: var(--failed); }
 .turn-note[data-tone='problem']::before { content: '✕'; }
-
-/* ---- composer blocked state ------------------------------------------ */
-
-.composer-shell[data-variant='docked'] { margin: 0 40px 20px; }
-.composer-shell[data-variant='docked'] .composer { margin: 0; }
-
-.composer-blocked {
-  margin: 8px 2px 0;
-  font-size: 12px;
-  color: var(--at-risk);
-}
 
 /* ---- markdown: agent prose, rendered as written --------------------- */
 
@@ -1335,86 +1017,7 @@ button {
 .answer-block .md > ul,
 .answer-block .md > ol,
 .answer-block .md > blockquote { max-width: 72ch; }
-
-/* ====================================================================== */
-/*  Desk — the attention queue                                            */
-/* ====================================================================== */
-
-.desk {
-  flex: 1;
-  min-height: 0;
-  overflow-y: auto;
-  padding: calc(var(--chrome-inset) + 14px) 40px 48px;
-}
-
-.desk-empty { display: grid; place-content: center; padding: 0 40px; }
-
-.desk-head { max-width: 64ch; margin-bottom: 22px; }
-
-.desk-head h1 {
-  font-size: 22px;
-  font-weight: 500;
-  letter-spacing: -0.02em;
-  margin: 0 0 6px;
-}
-
-.attention { list-style: none; margin: 0 0 40px; padding: 0; max-width: 88ch; }
-
-.attention-item {
-  border: 1px solid var(--hairline);
-  border-left: 2px solid var(--state);
-  border-radius: 6px;
-  margin-bottom: 8px;
-  background: var(--panel);
-  transition: border-color 140ms ease;
-}
-.attention-item:hover { border-color: color-mix(in srgb, var(--state) 50%, var(--hairline)); }
-
-.attention-row { display: flex; align-items: center; gap: 12px; padding: 12px 14px; }
-
-.attention-dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--state);
-  flex: none;
-  /* Only the thing that is actually blocking a person breathes. Everything
-     that breathes on a screen dilutes everything else that does. */
-  animation: breathe 2400ms ease-in-out infinite;
-}
-
-.attention-text { flex: 1; min-width: 0; }
-.attention-detail { margin: 0; line-height: 1.4; }
-
-.attention-meta {
-  margin: 3px 0 0;
-  font-size: 12px;
-  color: var(--ink-faint);
-}
-
-.attention-node { color: var(--ink-faint); }
 .attention-when { color: var(--ink-faint); }
-
-.attention-act {
-  flex: none;
-  border: 1px solid var(--hairline);
-  border-radius: 5px;
-  padding: 4px 14px;
-  color: var(--ink);
-  font-weight: 500;
-  transition: background 140ms ease, border-color 140ms ease;
-}
-.attention-act:hover { background: var(--panel-raised); border-color: var(--state); }
-.attention-act:disabled { opacity: 0.5; cursor: default; }
-
-.attention-detail { min-width: 0; }
-
-.attention-item > .attention-detail,
-.attention-item > .inbox-error { padding: 0 14px 12px; }
-
-.attention-item .attention-detail:not(.attention-row .attention-detail) { padding: 0 14px 16px 33px; }
-
-.desk-live { max-width: 88ch; }
 
 .section-title {
   font-size: 12px;
@@ -1424,21 +1027,6 @@ button {
   letter-spacing: 0.07em;
   margin: 0 0 10px;
 }
-
-.desk-live-list { list-style: none; margin: 10px 0 0; padding: 0; }
-
-.desk-live-row {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  width: 100%;
-  text-align: left;
-  padding: 9px 12px;
-  border-radius: 6px;
-  color: var(--ink-quiet);
-}
-.desk-live-row:hover { background: var(--panel-raised); color: var(--ink); }
-.desk-live-goal { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* ---- shared small parts --------------------------------------------- */
 
@@ -1619,6 +1207,10 @@ button {
   margin: 0;
   max-width: 72ch;
   line-height: 1.3;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
 
 .case-facts {
@@ -1655,8 +1247,6 @@ button {
   transition: border-color 140ms ease;
 }
 .case-mandate-toggle:hover { border-color: var(--ink-faint); }
-
-.mandate-mark { color: var(--at-risk); }
 .case-mandate-name { color: var(--ink); font-weight: 500; }
 .case-mandate-summary { flex: 1; font-size: 12px; color: var(--ink-faint); }
 .disclosure { color: var(--ink-faint); }
@@ -1667,8 +1257,6 @@ button {
   margin: 8px 0 0;
   max-width: 68ch;
 }
-
-.tabs-case { padding: 0 40px; border-bottom: 1px solid var(--hairline); }
 
 /* ---- the authority envelope ----------------------------------------- */
 
@@ -1895,95 +1483,6 @@ button {
   padding: calc(var(--chrome-inset) + 14px) 40px 48px;
 }
 
-.sheet-head {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 24px;
-  margin-bottom: 22px;
-}
-.sheet-head h1 { font-size: 22px; font-weight: 500; letter-spacing: -0.02em; margin: 0 0 6px; }
-
-.mandate-layout {
-  display: grid;
-  grid-template-columns: minmax(240px, 320px) minmax(0, 1fr);
-  gap: 32px;
-  align-items: start;
-}
-
-.mandate-list { list-style: none; margin: 0; padding: 0; }
-.mandate-list > li { margin-bottom: 8px; }
-
-.mandate-card {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  width: 100%;
-  text-align: left;
-  padding: 11px 13px;
-  border: 1px solid var(--hairline);
-  border-radius: 6px;
-  transition: border-color 140ms ease, background 140ms ease;
-}
-.mandate-card:hover { border-color: var(--ink-faint); background: var(--panel); }
-.mandate-card[aria-current='true'] { border-color: var(--planning); background: var(--panel); }
-
-.mandate-card-head { display: flex; align-items: center; gap: 7px; }
-.mandate-name { color: var(--ink); font-weight: 500; }
-.mandate-desc { color: var(--ink-quiet); font-size: 12px; line-height: 1.4; }
-.mandate-summary { color: var(--ink-faint); font-size: 11px; }
-
-.mandate-card-actions { display: flex; gap: 12px; padding: 4px 13px 0; font-size: 12px; }
-
-.editor { max-width: 62ch; }
-
-.field { display: block; margin-bottom: 18px; }
-.field > span, .field > legend {
-  display: block;
-  font-size: 12px;
-  color: var(--ink-faint);
-  margin-bottom: 6px;
-}
-.field input[type='text'], .field input:not([type]), .field textarea {
-  width: 100%;
-  background: var(--panel);
-  border: 1px solid var(--hairline);
-  border-radius: 5px;
-  padding: 7px 10px;
-  color: var(--ink);
-  font: inherit;
-  resize: vertical;
-}
-.field input:focus, .field textarea:focus { outline: none; border-color: var(--ink-faint); }
-.field input[type='range'] { width: 100%; accent-color: var(--planning); }
-.field-inline { display: flex; align-items: center; gap: 10px; }
-.field-inline > span { margin: 0; }
-
-fieldset.field { border: none; margin: 0 0 18px; padding: 0; }
-
-.tool-grid { display: flex; flex-wrap: wrap; gap: 6px; }
-
-.field-warn {
-  font-size: 12px;
-  color: var(--at-risk);
-  margin: 8px 0 0;
-  line-height: 1.45;
-}
-
-.editor-actions { display: flex; gap: 8px; margin-bottom: 28px; }
-.editor-actions .approve { background: var(--ink); color: var(--ground); border-radius: 5px; padding: 5px 16px; font-weight: 500; }
-
-.simulator {
-  border: 1px solid var(--hairline);
-  border-radius: 8px;
-  padding: 16px 18px;
-  background: var(--panel);
-}
-.simulator + .simulator { margin-top: 14px; }
-.simulator h3 { font-size: 13px; font-weight: 500; margin: 0; color: var(--ink); }
-.simulator-note { font-size: 12px; color: var(--ink-faint); margin: 14px 0 0; }
-.simulator-compare { opacity: 0.75; }
-
 /* ====================================================================== */
 /*  Organization — the graph, plus its own history                        */
 /* ====================================================================== */
@@ -2012,31 +1511,6 @@ fieldset.field { border: none; margin: 0 0 18px; padding: 0; }
 .scrubber input[type='range'] { flex: 1; accent-color: var(--planning); }
 
 .scrub-readout { font-size: 12px; color: var(--ink-faint); flex: none; min-width: 26ch; text-align: right; }
-
-/* ---- authority preview on the composer ------------------------------ */
-
-.authority-preview {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 0 4px 8px;
-  font-size: 12px;
-  color: var(--ink-faint);
-}
-
-.authority-pick { display: flex; align-items: center; gap: 6px; flex: none; }
-
-.authority-pick select {
-  background: transparent;
-  border: 1px solid var(--hairline);
-  border-radius: 5px;
-  color: var(--ink);
-  font: inherit;
-  padding: 2px 6px;
-}
-.authority-pick select:focus { outline: none; border-color: var(--ink-faint); }
-
-.authority-summary { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* ---- inspector additions -------------------------------------------- */
 
@@ -2141,8 +1615,6 @@ fieldset.field { border: none; margin: 0 0 18px; padding: 0; }
   border-left: 1px solid var(--hairline);
   border-right: 1px solid var(--hairline);
 }
-
-
 
 .thread-loading { color: var(--ink-faint); font-size: 13px; padding: 8px 0; }
 
