@@ -4,6 +4,7 @@ import { sandboxLimiter, maxConcurrentFromEnv } from '../../execution/dispatch-l
 import { orgEnvDigest } from '../../daemon/manager.js';
 import { system1Config } from '../../config/system1.js';
 import { system1 } from '../../system1/guard.js';
+import { discoverDecisionCapabilities } from '../../system1/capabilities.js';
 
 /** When this daemon process started, so a caller can tell it predates a build. */
 const STARTED_AT = Date.now();
@@ -35,6 +36,11 @@ export const daemonRouter = router({
     envDigest: orgEnvDigest(process.env),
     startedAt: STARTED_AT,
   })),
+
+  /** Structured decision capabilities this daemon can have evaluated, by
+   *  contract — the provider behind them is deliberately not named. */
+  capabilities: publicProcedure.query(() =>
+    discoverDecisionCapabilities({ mode: system1Config().mode, ready: system1().ready() })),
 
   stats: publicProcedure.query(({ ctx }) => getOrgStats(ctx.db)),
 
