@@ -82,7 +82,9 @@ export function App() {
   }, [org.nodes, recentKeys]);
   const byKey = useMemo(() => new Map(workspaces.map((ws) => [ws.key, ws])), [workspaces]);
 
-  const [view, setView] = useState<View>(() => (WINDOW_KEY ? openWorkspace(WINDOW_KEY) : { name: 'home' }));
+  // Home is the entry point: it is where you see what to continue and choose
+  // where new work goes. The launch folder is preselected there.
+  const [view, setView] = useState<View>({ name: 'home' });
   const history = useRef<View[]>([]);
   const navigate = useCallback((next: View) => {
     setView((current) => {
@@ -157,7 +159,11 @@ export function App() {
   // Where new work goes: the Workspace you are in, or — on Home — the one
   // chosen in the composer. The daemon decides whether it can run there.
   const [homeKey, setHomeKey] = useLocalState<string | null>(localKey('draft', 'home-workspace'), (raw) => raw || null, (v) => v ?? '');
-  const homeTarget = homeKey ?? WINDOW_KEY ?? workspaces[0]?.key ?? null;
+  // This session's pick wins; otherwise the folder `org gui` was run from;
+  // otherwise the last pick (a window opened outside any repository).
+  const [homeChoice, setHomeChoice] = useState<string | null>(null);
+  const homeTarget = homeChoice ?? WINDOW_KEY ?? homeKey ?? workspaces[0]?.key ?? null;
+  const chooseHome = (key: string) => { setHomeChoice(key); setHomeKey(key); };
   const targetKey = view.name === 'workspace' ? view.key : homeTarget;
   const target = useDaemonQuery<ResolvedRepo | null>(
     () => (targetKey ? resolveRepo(targetKey) : Promise.resolve(null)),
@@ -211,7 +217,7 @@ export function App() {
     if (!resolved.ok) return resolved.error;
     const key = workspaceKeyOf(resolved.containerPath);
     setRecentKeys((keys) => [key, ...keys.filter((k) => k !== key)].slice(0, 12));
-    setHomeKey(key);
+    chooseHome(key);
     return null;
   };
 
@@ -345,7 +351,7 @@ export function App() {
           workspaces={workspaces}
           selected={homeTarget ? byKey.get(homeTarget) ?? emptyWorkspace(homeTarget) : null}
           status={target.loading && !target.data ? 'checking' : target.data?.ok ? 'ready' : 'unusable'}
-          onSelect={setHomeKey}
+          onSelect={chooseHome}
           onOpenFolder={openFolder}
         />
       ) : undefined}
