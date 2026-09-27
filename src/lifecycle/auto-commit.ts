@@ -74,6 +74,11 @@ export function autoCommitAndPush(repoPath: string, goal: string, nodeId: string
     return { attempted: false, committed: false, pushed: false, reason: 'nothing to commit' };
   }
 
+  // ponytail: `-A` stages everything, gitignored paths aside — a scratch/log
+  // directory a node's own tooling created but the repo never gitignored
+  // rides along too. Narrowing this needs knowing which paths the node's task
+  // actually touched, which nothing here tracks today; upgrade path is to
+  // record that at dispatch time and pass it through as a pathspec.
   const add = run(['add', '-A'], repoPath);
   if (!add.ok) return { attempted: true, committed: false, pushed: false, reason: `git add failed: ${add.out}` };
 
@@ -90,7 +95,22 @@ export function autoCommitAndPush(repoPath: string, goal: string, nodeId: string
   const push = hasUpstream.ok
     ? run(['push'], repoPath)
     : run(['push', '-u', 'origin', 'HEAD'], repoPath);
-  if (!push.ok) return { ...result, reason: `committed but push failed: ${push.out}` };
+  if (push.ok) return { ...result, pushed: true };
 
-  return { ...result, pushed: true };
+  // The remote moved since this checkout last fetched — another node (or a
+  // human) pushed to the same branch first. That commit is still ours and
+  // still real; rebase onto what's there now and try once more before giving
+  // up, instead of leaving a verified commit stranded locally forever.
+  if (hasUpstream.ok && /rejected|non-fast-forward|fetch first/i.test(push.out)) {
+    const rebase = run(['pull', '--rebase'], repoPath);
+    if (rebase.ok) {
+      const retry = run(['push'], repoPath);
+      if (retry.ok) return { ...result, pushed: true };
+      return { ...result, reason: `committed but push failed after rebase: ${retry.out}` };
+    }
+    run(['rebase', '--abort'], repoPath);
+    return { ...result, reason: `committed but push failed and rebase could not resolve it: ${rebase.out}` };
+  }
+
+  return { ...result, reason: `committed but push failed: ${push.out}` };
 }

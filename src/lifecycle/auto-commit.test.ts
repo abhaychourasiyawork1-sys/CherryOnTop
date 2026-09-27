@@ -92,6 +92,33 @@ describe('autoCommitAndPush', () => {
     expect(result.reason).toContain('push failed');
   });
 
+  it('rebases and retries once when the remote moved first, instead of leaving the commit stranded', () => {
+    const { repo, remote } = tmpRepoWithRemote();
+
+    // Someone else pushes to the same branch before we do.
+    const otherParent = mkdtempSync(join(tmpdir(), 'autocommit-other-'));
+    const other = join(otherParent, 'clone');
+    git(['clone', '-q', '-b', 'main', remote, other], otherParent);
+    git(['config', 'user.email', 't@t'], other);
+    git(['config', 'user.name', 't'], other);
+    writeFileSync(join(other, 'from-elsewhere.txt'), 'first');
+    git(['add', '.'], other);
+    git(['commit', '-q', '-m', 'someone else pushed first'], other);
+    git(['push', '-q'], other);
+
+    writeFileSync(join(repo, 'b.txt'), 'new file');
+    const result = autoCommitAndPush(repo, 'Build the widget', 'node-42');
+
+    expect(result.committed).toBe(true);
+    expect(result.pushed).toBe(true);
+    expect(result.reason).toBeUndefined();
+
+    const remoteHead = git(['rev-parse', 'main'], remote);
+    const remoteFiles = git(['ls-tree', '-r', '--name-only', remoteHead], remote);
+    expect(remoteFiles).toContain('from-elsewhere.txt');
+    expect(remoteFiles).toContain('b.txt');
+  });
+
   it('refuses to run inside a disposable child fork', () => {
     const forkDir = join(homedir(), '.org-forks', `test-fork-${Date.now()}`);
     mkdirSync(forkDir, { recursive: true });

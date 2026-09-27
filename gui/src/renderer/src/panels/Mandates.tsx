@@ -67,6 +67,18 @@ export function Mandates({ onChanged }: { onChanged: () => void }) {
     }
   };
 
+  const reset = async (id: string) => {
+    setError(null);
+    try {
+      await daemon().mandate.reset.mutate({ id });
+      if (editingId === id) { setEditingId(null); setDraft(null); }
+      mandates.reload();
+      onChanged();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  };
+
   return (
     <div className="mandates">
       <header className="sheet-head">
@@ -130,7 +142,16 @@ export function Mandates({ onChanged }: { onChanged: () => void }) {
                 >
                   duplicate
                 </button>
-                {!mandate.builtin && (
+                {mandate.builtin ? (
+                  <button
+                    type="button"
+                    className="linkish"
+                    title="Restore this built-in's name, authority, and constraints to what it shipped with."
+                    onClick={() => void reset(mandate.id)}
+                  >
+                    reset to default
+                  </button>
+                ) : (
                   <button type="button" className="linkish linkish-danger" onClick={() => void remove(mandate.id)}>
                     delete
                   </button>
@@ -281,8 +302,9 @@ function Editor(props: {
           </div>
           <p className="field-hint">
             No ceiling here — the slider tops out at 50 for a comfortable drag, but you can type
-            any number. A single delegation round may still fan out narrower than this depending
-            on deployment settings; nested delegation composes across rounds to reach the total.
+            any number. A single delegation round still fans out no wider than the daemon's own
+            <code>ORG_MAX_CHILD_JOBS</code> setting (2, unless the operator raised it); nested
+            delegation composes across rounds to reach the total you set here.
           </p>
         </label>
       )}

@@ -1,7 +1,9 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { existsSync, unlinkSync } from 'node:fs';
 import { createDb } from '../client.js';
-import { seedBuiltinMandates, listMandates, updateMandate, deleteMandate, insertMandate, getMandate } from './mandates.js';
+import {
+  seedBuiltinMandates, listMandates, updateMandate, deleteMandate, insertMandate, getMandate, resetMandateToDefault,
+} from './mandates.js';
 
 const TEST_DB = './test-mandates.db';
 afterEach(() => {
@@ -44,6 +46,29 @@ describe('mandates', () => {
     });
     deleteMandate(db, 'mine');
     expect(getMandate(db, 'mine')).toBeUndefined();
+  });
+
+  it('resets an edited built-in back to what it shipped with', () => {
+    const db = createDb(TEST_DB);
+    seedBuiltinMandates(db, 't0');
+    updateMandate(db, 'builtin-investigate', {
+      name: 'Wide open', authority: { tools: [], spawn_children: true, max_child_count: 99, budget_usd: 999 },
+    }, 't1');
+    resetMandateToDefault(db, 'builtin-investigate', 't2');
+    const restored = getMandate(db, 'builtin-investigate');
+    expect(restored?.name).toBe('Investigate');
+    expect(restored?.authority).toEqual({ tools: ['Read', 'Grep', 'Glob'], spawn_children: false, max_child_count: 0, budget_usd: 1 });
+    expect(restored?.updatedAt).toBe('t2');
+  });
+
+  it('refuses to reset a mandate that was never a built-in', () => {
+    const db = createDb(TEST_DB);
+    insertMandate(db, {
+      id: 'mine', name: 'Mine', description: '',
+      authority: { tools: ['Read'], spawn_children: false, max_child_count: 0, budget_usd: 2 },
+      constraints: [], builtin: false, createdAt: 't0', updatedAt: 't0',
+    });
+    expect(() => resetMandateToDefault(db, 'mine')).toThrow(/not a built-in/);
   });
 
   it('ships built-ins that name their tools, so the common path is the enforced one', () => {

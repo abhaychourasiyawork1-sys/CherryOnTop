@@ -71,6 +71,24 @@ export function updateMandate(
   db.update(mandates).set({ ...patch, updatedAt }).where(eq(mandates.id, id)).run();
 }
 
+/** Puts a builtin back to what it shipped with.
+ *
+ *  `updateMandate` has no guard against overwriting a builtin's authority —
+ *  matching `deleteMandate`'s own "Edit it instead" — so an edit that goes
+ *  further than intended (or a script reaching for the nearest built-in
+ *  because there was no other way to run under a mandate at all) has no way
+ *  back beyond re-typing the numbers from memory. This is that way back:
+ *  not a version history, just the one fact that actually matters — what it
+ *  shipped with — restorable on demand. */
+export function resetMandateToDefault(db: Db, id: string, now = new Date().toISOString()): void {
+  const shipped = BUILTIN_MANDATES.find((mandate) => mandate.id === id);
+  if (!shipped) throw new Error(`${id} is not a built-in mandate, so it has no shipped default to reset to.`);
+  updateMandate(db, id, {
+    name: shipped.name, description: shipped.description,
+    authority: shipped.authority, constraints: shipped.constraints,
+  }, now);
+}
+
 export function deleteMandate(db: Db, id: string): void {
   // A builtin is the floor the picker is guaranteed to have something in.
   // Deleting one would leave a user who removed their own with an empty list.

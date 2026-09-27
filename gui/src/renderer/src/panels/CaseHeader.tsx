@@ -97,7 +97,7 @@ export function CaseHeader({ file, running = 0, onReplay, onStopped }: {
   return (
     <header className="case-header" style={{ ['--state' as string]: `var(--${tone})` }}>
       <div className="case-header-top">
-        <h1 className="case-header-goal">{file.node.goal}</h1>
+        <h1 className="case-header-goal" title={file.node.goal}>{file.node.goal}</h1>
         <div className="case-header-actions">
           {running > 0 && onStopped && (
             <StopTask caseId={file.node.id} running={running} onStopped={onStopped} />
