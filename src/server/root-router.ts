@@ -10,6 +10,10 @@ import { memoryRouter } from './routers/memory.js';
 import { askRouter } from './routers/ask.js';
 import { mandateRouter } from './routers/mandate.js';
 import { caseRouter } from './routers/case.js';
+import { workspaceRouter } from './routers/workspace.js';
+import { projectRouter } from './routers/project.js';
+import { conversationRouter } from './routers/conversation.js';
+import { runRouter } from './routers/run.js';
 
 export const appRouter = router({
   node: nodeRouter,
@@ -23,6 +27,10 @@ export const appRouter = router({
   mandate: mandateRouter,
   case: caseRouter,
   org: askRouter,
+  workspace: workspaceRouter,
+  project: projectRouter,
+  conversation: conversationRouter,
+  run: runRouter,
 });
 
 export type AppRouter = typeof appRouter;
