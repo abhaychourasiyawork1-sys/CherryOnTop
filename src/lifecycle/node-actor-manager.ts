@@ -20,6 +20,7 @@ import { delegateToChildren, childAuthority, type DelegateChildDeps } from './de
 import { insertCommitment, updateCommitmentStatus, setCommitmentEvidence, listCommitmentsForNode } from '../db/queries/commitments.js';
 import { insertArtifact, listArtifactsForNode } from '../db/queries/artifacts.js';
 import { artifactsFromEvent } from '../execution/artifacts.js';
+import { treeState, treeChanges } from '../execution/tree-changes.js';
 import { codexAdapter } from '../adapters/codex.js';
 import { routeProvider, type ProviderCapability } from '../intelligence/provider-router.js';
 import { buildPlanPrompt, parseSubgoals } from '../intelligence/plan.js';
@@ -2201,6 +2202,7 @@ function productionMachine(db: Db, nodeId: string) {
         // One shot at the tiered model — and only a model this runtime can
         // actually serve. If the runtime then says it cannot have it, the run
         // continues on the default rather than failing over a knob.
+        const treeBefore = treeState(worktreePath);
         let result = await runOnce(usedModel);
         if (usedModel && shouldRetryWithoutModel(result.events)) {
           publishProgress(db, nodeId, `Model "${usedModel}" is unavailable on this plan — retrying on the default model`);
@@ -2226,6 +2228,21 @@ function productionMachine(db: Db, nodeId: string) {
           startupMs: result.startupMs,
         });
         publishStepOutcome(db, nodeId, result);
+        // What the run changed on disk that its Write/Edit calls did not say —
+        // edits made through Bash, or by a runtime whose stream has no such
+        // calls — recorded with both sides so Files can show the diff.
+        // ponytail: a second run writing the same tree at the same time would
+        // have its changes attributed here too.
+        const treeAfter = treeBefore && treeState(worktreePath);
+        if (treeBefore && treeAfter) {
+          const told = listArtifactsForNode(db, nodeId).map((a) => a.path ?? '');
+          for (const change of treeChanges(worktreePath, treeBefore, treeAfter)) {
+            if (told.some((p) => p === change.path || p.endsWith(`/${change.path}`))) continue;
+            const now = new Date().toISOString();
+            const id = appendEvent(db, { nodeId, type: 'exec.file_change', payload: change, createdAt: now });
+            insertArtifact(db, { id: randomUUID(), nodeId, eventId: id, createdAt: now, kind: 'file_edit', path: change.path, summary: 'Changed on disk' });
+          }
+        }
 
         // The run's own account of what it touched, indexed into the context
         // graph. Built from what actually ran rather than from a scan of what

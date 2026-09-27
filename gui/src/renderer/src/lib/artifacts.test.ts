@@ -35,6 +35,8 @@ describe('artifacts', () => {
     expect(changeFromEvent(event, '/workspace/a.ts')).toEqual({ kind: 'edit', before: 'x', after: 'y' });
     expect(changeFromEvent(event, '/workspace/other.ts')).toBeNull();
     expect(changeFromEvent(undefined, 'x')).toBeNull();
+    const onDisk = { id: 2, nodeId: 'n', type: 'exec.file_change', createdAt: '', payload: { path: 'b.ts', before: 'p', after: 'q' } };
+    expect(changeFromEvent(onDisk, 'b.ts')).toEqual({ kind: 'edit', before: 'p', after: 'q' });
   });
 
   it('diffs by line', () => {
