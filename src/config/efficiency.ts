@@ -98,6 +98,24 @@ export function maxChildJobs(): number {
   return Math.max(1, envInt('ORG_MAX_CHILD_JOBS', 2));
 }
 
+/** When the planner loses its veto over a DELEGATE decision.
+ *
+ *  Two independent judges have to agree the goal splits: System-1's calibrated
+ *  P(decomposable) *and* the deterministic split score. Neither alone is
+ *  enough — live Laya scored a single seaborn bug report 0.91, above the
+ *  webpage redesign it should have split (0.78); the split score is what
+ *  separates them (3.5 vs 5). When both clear their bar the planner is asked
+ *  how to split, not whether, and runs on the standard model rather than the
+ *  fast tier that declined the redesign in one turn without opening the repo.
+ *  Returns false for a missing value, so a run with System-1 off keeps the
+ *  planner's veto exactly as before. */
+export function planVetoOverridden(pDecomposable: number | undefined, splitScore: number | undefined): boolean {
+  const minP = Number(process.env.ORG_PLAN_OVERRIDE_P ?? 0.75);
+  const minSplit = Number(process.env.ORG_PLAN_OVERRIDE_SPLIT ?? 4);
+  return typeof pDecomposable === 'number' && typeof splitScore === 'number'
+    && pDecomposable >= minP && splitScore >= minSplit;
+}
+
 /** 0 disables the plan cache entirely. */
 export function planCacheTtlHours(): number {
   return envInt('ORG_PLAN_CACHE_TTL_HOURS', 24);

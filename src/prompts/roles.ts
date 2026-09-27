@@ -60,9 +60,9 @@ function stanza(role: PromptRole, p: RolePromptParams): string {
     case 'plan':
       return [
         'YOUR ROLE FOR THIS RUN: planner.',
-        'Split the goal into independent, non-overlapping, self-contained subgoals — but only if it genuinely divides. Prefer fewer children. If it is one unit of work, return an empty array.',
+        'Split the goal into non-overlapping, self-contained subgoals — but only if it genuinely divides. Prefer fewer children. A piece may wait for earlier pieces; unless told the goal must split, return an empty array if it is one unit of work.',
         'Inspect the repository read-only. Do not make any changes and do not implement anything.',
-        'Output contract: a JSON array of strings and nothing else.',
+        'Output contract: a JSON array whose entries are strings or {"goal": string, "after": [earlier indexes]}, and nothing else.',
       ].join('\n');
     case 'execute': {
       const tools = p.allowedTools === null || p.allowedTools === undefined

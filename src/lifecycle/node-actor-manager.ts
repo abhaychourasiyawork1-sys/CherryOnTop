@@ -12,7 +12,7 @@ import { claudeCodeAdapter } from '../adapters/claude-code.js';
 import { stopgapAdapter } from '../adapters/stopgap.js';
 import { assessUncertainty } from '../intelligence/coordinator.js';
 import { decideExecution } from '../engines/decide-execution.js';
-import { insertDecision } from '../db/queries/decisions.js';
+import { insertDecision, listDecisionsForNode } from '../db/queries/decisions.js';
 import { escalate } from '../approvals/escalation.js';
 import { insertApproval, getPendingApproval, resolveApproval } from '../db/queries/approvals.js';
 import type { NodeMachineContext } from './node-machine.js';
@@ -23,7 +23,7 @@ import { artifactsFromEvent } from '../execution/artifacts.js';
 import { treeState, treeChanges } from '../execution/tree-changes.js';
 import { codexAdapter } from '../adapters/codex.js';
 import { routeProvider, type ProviderCapability } from '../intelligence/provider-router.js';
-import { buildPlanPrompt, parseSubgoals } from '../intelligence/plan.js';
+import { buildPlanPrompt, parsePlan, type ParsedPlan } from '../intelligence/plan.js';
 import { buildSynthesisPrompt, type ChildReport } from '../intelligence/synthesize.js';
 import { decideIntegration } from '../intelligence/integrate-results.js';
 import { answerOf } from '../db/queries/answers.js';
@@ -47,7 +47,7 @@ import { sandboxNotes } from '../k8s/sandbox-env.js';
 import type { ToolGrant, RuntimeAdapter, StructuredEvent } from '../adapters/adapter.js';
 import { setNodeSnapshot, clearNodeSnapshot } from '../db/queries/nodes.js';
 import { insertDodItems, listDodForNode, setDodState } from '../db/queries/dod.js';
-import { executeTimeoutMs, dispatchOptionsFor, planCacheTtlHours, repoMapTokenBudget, rolePromptsEnabled, runtimeMode, resultCacheTtlHours, type DispatchRole } from '../config/efficiency.js';
+import { executeTimeoutMs, dispatchOptionsFor, planCacheTtlHours, planVetoOverridden, repoMapTokenBudget, rolePromptsEnabled, runtimeMode, resultCacheTtlHours, type DispatchRole } from '../config/efficiency.js';
 import { routeModel } from '../intelligence/model-router.js';
 import { assessDecomposition } from '../intelligence/decompose.js';
 import { repoHead, repoDirty, repoIdentity } from '../execution/git-state.js';
@@ -504,9 +504,16 @@ function indexedKnowledge(db: Db, nodeId: string): Set<string> {
  *  from it. Instrumentation, not instruction — the agent is never handed a step
  *  list, because that would cost tokens on every dispatch to say something the
  *  runtime is already deciding. */
-function publishExecutionPlan(db: Db, nodeId: string, taskClass: TaskClass, known: Set<string>): void {
+function publishExecutionPlan(db: Db, nodeId: string, taskClass: TaskClass, known: Set<string>, declined?: string): void {
   try {
     const pruned = pruneTemplate(templateFor(taskClass), known);
+    // A multi_workstream template names delegation steps; after a declined
+    // delegation they did not run, and listing them would say they did.
+    if (declined) {
+      const delegating = pruned.steps.filter((step) => step.intent === 'SPAWN_AGENT' || step.intent === 'SYNTHESIZE');
+      pruned.steps = pruned.steps.filter((step) => !delegating.includes(step));
+      pruned.removed.push(...delegating.map((step) => ({ step, reason: `delegation declined: ${declined}` })));
+    }
     const payload = {
       taskClass,
       steps: pruned.steps.map((step) => ({ name: step.name, intent: step.intent, optional: step.optional })),
@@ -1010,6 +1017,30 @@ function publishProgress(db: Db, nodeId: string, message: string): void {
  *  node writes from its children's reports. A node that did the work itself has
  *  already said its answer in the transcript, so it does not get one of these;
  *  readers of `node.detail` fall back to its final report. */
+/** A DELEGATE that ended in doing the work directly, and why. The one fact
+ *  the receipt, the execution plan and strategy learning all need, and none of
+ *  them could see: each read the original DELEGATE decision and reported a
+ *  delegation that never happened. */
+function recordDelegationDeclined(db: Db, nodeId: string, reason: string): void {
+  try {
+    const now = new Date().toISOString();
+    const payload = { reason };
+    const id = appendEvent(db, { nodeId, type: 'delegation.declined', payload, createdAt: now });
+    publish({ id, nodeId, type: 'delegation.declined', payload, createdAt: now });
+  } catch (err) {
+    console.error(`Failed to record the declined delegation for node ${nodeId}:`, err);
+  }
+}
+
+function delegationDeclinedReason(db: Db, nodeId: string): string | undefined {
+  try {
+    const row = listEventsForNode(db, nodeId).filter((event) => event.type === 'delegation.declined').at(-1);
+    return (row?.payload as { reason?: string } | undefined)?.reason;
+  } catch {
+    return undefined;
+  }
+}
+
 function publishAnswer(db: Db, nodeId: string, text: string): void {
   if (!text.trim()) return;
   const now = new Date().toISOString();
@@ -1491,13 +1522,38 @@ function sessionPreface(db: Db, nodeId: string): string {
   return sessionMemoryFor(db, node.sessionId, nodeId);
 }
 
-async function planSubgoals(db: Db, nodeId: string, goal: string, maxChildren: number): Promise<string[]> {
+/** Whether this node's DELEGATE was backed strongly enough that the planner
+ *  may not overturn it. Read off the decision row, so it is the same numbers
+ *  the receipt already shows. */
+function delegationIsSettled(db: Db, nodeId: string): { settled: boolean; p?: number; split?: number } {
+  try {
+    const decision = listDecisionsForNode(db, nodeId)
+      .filter((row) => row.type === 'execution_decision').at(-1);
+    if (decision?.outcome !== 'DELEGATE') return { settled: false };
+    const breakdown = decision.breakdown as Record<string, number | undefined>;
+    const p = breakdown.system1_p_decomposable;
+    const split = breakdown.split_score;
+    return { settled: planVetoOverridden(p, split), p, split };
+  } catch {
+    return { settled: false };
+  }
+}
+
+const NO_PLAN: ParsedPlan = { subgoals: [], after: [] };
+
+async function planSubgoals(db: Db, nodeId: string, goal: string, maxChildren: number): Promise<ParsedPlan> {
   const node = getNode(db, nodeId);
   const worktreePath = node?.repoPath ?? process.env.ORG_WORKTREE_PATH;
-  // Fewer than two children is not a fan-out, and parseSubgoals rejects a
+  // Fewer than two children is not a fan-out, and parsePlan rejects a
   // single subgoal as "no split" anyway — so planning here would spend a whole
   // sandbox run to be told what we already know.
-  if (!worktreePath || maxChildren < 2) return [];
+  if (!worktreePath || maxChildren < 2) return NO_PLAN;
+
+  // The planner used to hold an absolute veto: one fast-tier turn answering []
+  // discarded a DELEGATE that System-1 (P=0.78) and the split score (5) had
+  // both reached — measured on a "research, then redesign the site" goal. When
+  // both judges agree, "whether" is settled; the planner only decides "how".
+  const settled = delegationIsSettled(db, nodeId);
 
   // The same goal against the same committed tree splits the same way. Only a
   // clean tree with a readable HEAD is keyable — repoDirty says true when it
@@ -1512,8 +1568,10 @@ async function planSubgoals(db: Db, nodeId: string, goal: string, maxChildren: n
   if (cacheKey) {
     try {
       const cached = getCachedPlan(db, cacheKey, ttl);
-      if (cached) {
-        publishProgress(db, nodeId, cached.length === 0
+      // A cached "does not split" is a veto too, and a settled delegation does
+      // not take one.
+      if (cached && (cached.subgoals.length > 0 || !settled.settled)) {
+        publishProgress(db, nodeId, cached.subgoals.length === 0
           ? 'This goal was already found not to split on this repo state — doing it directly'
           : 'Reusing a plan computed earlier for this goal and repo state');
         recordUsage(db, {
@@ -1523,7 +1581,11 @@ async function planSubgoals(db: Db, nodeId: string, goal: string, maxChildren: n
         // wider max_child_count would otherwise spawn more children than this
         // node's authority allows. On the cold path parseSubgoals is what
         // clamps; nothing downstream re-checks. This is that clamp.
-        return cached.slice(0, maxChildren);
+        const subgoals = cached.subgoals.slice(0, maxChildren);
+        return {
+          subgoals,
+          after: subgoals.map((_, i) => (cached.after[i] ?? []).filter((ref) => ref < i)),
+        };
       }
     } catch {
       // A cache that misbehaves costs a sandbox, not a run.
@@ -1534,15 +1596,17 @@ async function planSubgoals(db: Db, nodeId: string, goal: string, maxChildren: n
   // product is a split, so on a goal with no seam it buys a dispatch to be told
   // what the classification already knows.
   const verdict = judgeTask(goal);
-  if (!verdict.worthPlanning) {
+  if (!verdict.worthPlanning && !settled.settled) {
     publishProgress(db, nodeId, `${verdict.reason} — doing it directly`);
-    return [];
+    return NO_PLAN;
   }
 
   const credentials = checkCredentials(os.homedir(), process.env.ANTHROPIC_API_KEY);
-  if (!credentials.ok) return [];
+  if (!credentials.ok) return NO_PLAN;
 
-  publishProgress(db, nodeId, 'Working out how to split this across agents');
+  publishProgress(db, nodeId, settled.settled
+    ? `System-1 (P=${settled.p?.toFixed(2)}) and the split score (${settled.split}) agree this splits — working out how`
+    : 'Working out how to split this across agents');
   try {
     // Inside the try, like everything else here: chooseAdapter writes a decision
     // row and publishes an event, and any failure in planning has to mean "do
@@ -1557,7 +1621,8 @@ async function planSubgoals(db: Db, nodeId: string, goal: string, maxChildren: n
       ? buildRolePrompt('plan')
       : undefined;
     const preface = sessionPreface(db, nodeId);
-    const basePlan = preface ? `${preface}\n\n${buildPlanPrompt(goal, maxChildren)}` : buildPlanPrompt(goal, maxChildren);
+    const planPrompt0 = buildPlanPrompt(goal, maxChildren, { mustSplit: settled.settled });
+    const basePlan = preface ? `${preface}\n\n${planPrompt0}` : planPrompt0;
     const planPrompt = roleSystemPrompt ? basePlan : `${basePlan}\n\n${buildRolePrompt('plan')}`;
     // The planner used to start from nothing and spend its turns discovering
     // the repository — the single most expensive coordination dispatch there
@@ -1596,7 +1661,10 @@ async function planSubgoals(db: Db, nodeId: string, goal: string, maxChildren: n
     // One shot at the tiered model, exactly as the execute dispatch does it.
     // `plan` is the role that actually defaults to a tiered model, so without
     // this a plan that cannot call Haiku loses delegation entirely.
-    let usedModel = modelFor(adapter, modelChoiceFor(db, nodeId, 'plan', goal));
+    // A settled split is a harder planning question than "does this split?",
+    // and the fast tier is what answered the redesign in one turn without
+    // reading the repository. The runtime's default model plans it instead.
+    let usedModel = settled.settled ? undefined : modelFor(adapter, modelChoiceFor(db, nodeId, 'plan', goal));
     let result = await runOnce(usedModel);
     if (usedModel && shouldRetryWithoutModel(result.events)) {
       publishProgress(db, nodeId, `Model "${usedModel}" is unavailable on this plan — retrying on the default model`);
@@ -1611,7 +1679,8 @@ async function planSubgoals(db: Db, nodeId: string, goal: string, maxChildren: n
       .filter((event) => event.type === 'result')
       .map((event) => String((event.payload as { result?: unknown } | null)?.result ?? ''))
       .join('\n');
-    const subgoals = parseSubgoals(text, maxChildren);
+    const plan = parsePlan(text, maxChildren);
+    const { subgoals } = plan;
     // Exactly one row per logical dispatch, naming the model that actually ran.
     recordUsage(db, {
       nodeId, role: 'plan', model: usedModel ?? null,
@@ -1629,7 +1698,13 @@ async function planSubgoals(db: Db, nodeId: string, goal: string, maxChildren: n
       const why = result.events.filter((event) => event.type === 'result')
         .map((event) => String((event.payload as { subtype?: unknown } | null)?.subtype ?? 'error')).pop();
       publishProgress(db, nodeId, `Could not plan a split (the planner stopped: ${why}) — doing it directly`);
-      return [];
+      return NO_PLAN;
+    }
+    // Told the goal must split and it still returned nothing usable: that is
+    // a planner that broke its contract, not a verdict — never cached as one.
+    if (settled.settled && subgoals.length === 0) {
+      publishProgress(db, nodeId, 'The planner was told this goal splits but returned no usable plan — doing it directly');
+      return NO_PLAN;
     }
     // Both answers are worth pinning, including "does not split". That one used
     // to be dropped as "cheap to recompute", which it is not: recomputing it
@@ -1641,7 +1716,7 @@ async function planSubgoals(db: Db, nodeId: string, goal: string, maxChildren: n
     // already computed and paid for, and the node would self-execute instead.
     if (cacheKey) {
       try {
-        putCachedPlan(db, cacheKey, subgoals, head!, new Date().toISOString());
+        putCachedPlan(db, cacheKey, subgoals, head!, new Date().toISOString(), plan.after);
       } catch (err) {
         console.error(`Failed to cache the plan for node ${nodeId}:`, err);
       }
@@ -1649,10 +1724,10 @@ async function planSubgoals(db: Db, nodeId: string, goal: string, maxChildren: n
     if (subgoals.length === 0) {
       publishProgress(db, nodeId, 'This goal does not split into independent pieces — doing it directly');
     }
-    return subgoals;
+    return plan;
   } catch (err) {
     publishProgress(db, nodeId, `Could not plan a split (${err instanceof Error ? err.message : String(err)}) — doing it directly`);
-    return [];
+    return NO_PLAN;
   }
 }
 
@@ -1858,8 +1933,12 @@ function productionMachine(db: Db, nodeId: string) {
           const existingChildren = listNodes(db).filter((child) => child.parentId === nodeId).length;
           // Planning costs a sandbox. Do not pay for one only to refuse the
           // result because this node has already delegated.
-          const subgoals = existingChildren > 0
-            ? []
+          // Nor to be told again what this node was already told: a validation
+          // retry comes back through DELEGATE, and on a dirty tree (no plan
+          // cache) every retry used to buy the same refusal again.
+          const alreadyDeclined = delegationDeclinedReason(db, nodeId) !== undefined;
+          const { subgoals, after } = existingChildren > 0 || alreadyDeclined
+            ? NO_PLAN
             : await planSubgoals(db, nodeId, input.goal, node?.contract.authority.max_child_count ?? 0);
           if (subgoals.length > 0) {
             // How many ways, not what each piece is. Every subgoal is a whole
@@ -1875,7 +1954,7 @@ function productionMachine(db: Db, nodeId: string) {
             if (mapPath) warmRepoInventory(db, mapPath);
           }
           const result = await delegateToChildren({
-            parentId: nodeId, goal: input.goal, subgoals,
+            parentId: nodeId, goal: input.goal, subgoals, after,
             existingChildren,
             approvedBudgetUsd: input.approvedBudgetUsd,
             // So the plan is checked against what this node may actually
@@ -1883,6 +1962,7 @@ function productionMachine(db: Db, nodeId: string) {
             ...(node ? { authority: node.contract.authority } : {}),
           }, realDelegateDeps(db, nodeId));
 
+          if (result.notDelegatable) recordDelegationDeclined(db, nodeId, result.message);
           // The root owes an answer, not a tally of its children.
           if (!result.notDelegatable) {
             const combined = await synthesizeChildren(db, nodeId, input.goal);
@@ -1988,12 +2068,16 @@ function productionMachine(db: Db, nodeId: string) {
         // Routed through the one decision contract rather than decided inline,
         // so reusing and running fresh are explained the same way and by the
         // same rules — the budget gate included.
-        const pathDecision = decideExecutionPath({
+        // This dispatch is the node doing the work itself. After a declined
+        // DELEGATE the goal still "comes apart", and the receipt used to say
+        // SPAWN_AGENT for a run that spawned nothing.
+        const declined = delegationDeclinedReason(db, nodeId);
+        const decidedPath = decideExecutionPath({
           goal: input.goal,
           authority: node!.contract.authority,
           spentUsd: getCostForNodes(db, [nodeId]),
           complexity: verdict.decomposition.complexity,
-          worthSplitting: verdict.decomposition.worthSplitting,
+          worthSplitting: declined ? false : verdict.decomposition.worthSplitting,
           signals: verdict.decomposition.signals,
           reusable: cached ? { tokens: cached.tokens, costUsd: cached.costUsd } : undefined,
           // Priced from what this exact run cost the last time it was paid for.
@@ -2002,12 +2086,15 @@ function productionMachine(db: Db, nodeId: string) {
           // has a measurement.
           dispatch: { tokens: cached?.tokens ?? 0, latencyMs: 0, costUsd: cached?.costUsd ?? 0 },
         });
+        const pathDecision = declined && decidedPath.chosen === 'RUN_MODEL'
+          ? { ...decidedPath, reason: `delegation was chosen but not carried out — ${declined}` }
+          : decidedPath;
         publishDecisionReceipt(db, nodeId, pathDecision);
         // The shape this kind of task usually takes, and the steps the runtime
         // already holds the product of. Published rather than prompted: a step
         // list in the argv would cost tokens on every dispatch to tell the agent
         // something the runtime is deciding for it.
-        publishExecutionPlan(db, nodeId, verdict.taskClass, indexedKnowledge(db, nodeId));
+        publishExecutionPlan(db, nodeId, verdict.taskClass, indexedKnowledge(db, nodeId), declined);
 
         if (cached && pathDecision.chosen === 'REUSE_COMPUTATION') {
           publishProgress(db, nodeId, 'This exact question was already answered against this commit — reusing that answer instead of running again');
@@ -2373,7 +2460,11 @@ function recordStrategyLearning(db: Db, nodeId: string, completed: boolean, now:
     // accuracy.
     const decided = listMemory(db, 'strategy_decision').filter((row) => row.nodeId === nodeId).at(-1);
     const decision = decided?.value as { strategy?: string; predicted?: Record<string, number> } | undefined;
-    if (decision?.strategy) {
+    // A delegating strategy that was declined before any child existed never
+    // ran. Scoring it against the direct run that replaced it would credit
+    // SERIAL_DELEGATED with an outcome it had no part in.
+    const neverRan = !delegated && decision?.strategy !== 'MANAGED' && delegationDeclinedReason(db, nodeId) !== undefined;
+    if (decision?.strategy && !neverRan) {
       const observation = buildCounterfactualObservation({
         chosen: decision.strategy as ExecutionStrategy,
         alternative: decision.strategy === 'MANAGED' ? 'SERIAL_DELEGATED' : 'MANAGED',

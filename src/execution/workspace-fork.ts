@@ -11,8 +11,8 @@
  *  its base is a correctness one.
  */
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, readdirSync, rmSync } from 'node:fs';
-import { homedir } from 'node:os';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
+import { homedir, tmpdir } from 'node:os';
 import { join, sep } from 'node:path';
 import { createHash } from 'node:crypto';
 
@@ -84,8 +84,47 @@ export function forkWorkspace(basePath: string, revision: string, label: string)
   // `--detach`, so the fork never takes a branch the base might also want.
   const created = git(['worktree', 'add', '--detach', path, resolved], basePath);
   if (created === null || !existsSync(path)) return null;
+  carryWorkingTree(basePath, path);
 
   return { path, basePath, revision: resolved, release: () => releaseFork(basePath, path) };
+}
+
+/** Brings the base's uncommitted changes (untracked files included) into a
+ *  fresh fork, and commits them there.
+ *
+ *  A worktree at HEAD is the last *commit*, but the tree the rest of the run
+ *  sees is the working tree: a finished child is integrated onto it
+ *  uncommitted (`integrateFork`), and so is anything the user had not
+ *  committed. Without this, a piece ordered after another — "build the site
+ *  from the research notes" — forks from a HEAD that has no notes in it.
+ *
+ *  Committed inside the fork (detached, so no branch moves) because
+ *  `integrateFork` diffs the fork against its own HEAD: left uncommitted, the
+ *  carried changes would be applied back onto a base that already has them.
+ *  A temporary index keeps the base's own index untouched. Best-effort: a
+ *  fork without the carry is the fork this function used to return. */
+function carryWorkingTree(basePath: string, forkPath: string): void {
+  const scratch = mkdtempSync(join(tmpdir(), 'org-carry-'));
+  try {
+    const env = { ...process.env, GIT_INDEX_FILE: join(scratch, 'index') };
+    const run = (args: string[], cwd: string, extra: { env?: NodeJS.ProcessEnv; input?: string } = {}) =>
+      execFileSync('git', args, { cwd, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024, stdio: ['pipe', 'pipe', 'ignore'], ...extra });
+    run(['read-tree', 'HEAD'], basePath, { env });
+    run(['add', '-A'], basePath, { env });
+    const diff = run(['diff', '--cached', '--binary', 'HEAD'], basePath, { env });
+    if (!diff.trim()) return;
+    run(['apply', '--binary', '--index'], forkPath, { input: diff });
+    run(['-c', 'user.name=cherryontop', '-c', 'user.email=org@localhost', '-c', 'commit.gpgsign=false',
+      'commit', '-q', '--no-verify', '-m', 'org: working tree carried from the base'], forkPath);
+  } catch (err) {
+    console.error(`Could not carry ${basePath}'s working tree into the fork at ${forkPath}:`, err);
+    // Half-carried is worse than not carried: staged-but-uncommitted changes
+    // would be integrated back onto a base that already has them.
+    git(['reset', '--hard', '-q'], forkPath);
+    git(['clean', '-fdq'], forkPath);
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
 }
 
 /** Total: a cleanup that throws would leak the directories it exists to

@@ -167,3 +167,26 @@ describe('a child that did not pass', () => {
     expect(existsSync(fork.path)).toBe(false);
   });
 });
+
+describe('a fork sees the tree the run sees, not just HEAD', () => {
+  it('carries the base\'s uncommitted work, and integrates only the child\'s own', () => {
+    // A piece ordered after another forks once the earlier one is integrated —
+    // uncommitted. Forked from HEAD alone it never saw the research it was
+    // waiting for.
+    const base = repo();
+    writeFileSync(join(base, 'a.ts'), 'export const a = 2;\n');
+    writeFileSync(join(base, 'notes.md'), 'research from an earlier piece\n');
+
+    const fork = forkWorkspace(base, 'HEAD', 'dependent-child')!;
+    expect(readFileSync(join(fork.path, 'notes.md'), 'utf8')).toBe('research from an earlier piece\n');
+    expect(readFileSync(join(fork.path, 'a.ts'), 'utf8')).toBe('export const a = 2;\n');
+
+    writeFileSync(join(fork.path, 'page.html'), '<h1>built from the notes</h1>\n');
+    expect(integrateFork(fork)).toBe(true);
+    expect(readFileSync(join(base, 'page.html'), 'utf8')).toBe('<h1>built from the notes</h1>\n');
+    expect(readFileSync(join(base, 'a.ts'), 'utf8')).toBe('export const a = 2;\n');
+    // The base's own index is untouched: notes.md is still untracked there.
+    expect(execFileSync('git', ['status', '--porcelain'], { cwd: base, encoding: 'utf8' })).toContain('?? notes.md');
+    fork.release();
+  });
+});

@@ -98,6 +98,7 @@ afterEach(() => {
   delete process.env.ORG_REPO_MAP_TOKENS;
   delete process.env.ORG_EFFICIENCY_MODE;
   delete process.env.ORG_MAX_TURNS_PLAN;
+  delete process.env.ORG_PLAN_OVERRIDE_P;
   vi.clearAllMocks();
 });
 
@@ -118,6 +119,9 @@ describe('the planning dispatch', () => {
   });
 
   it('does not buy a second sandbox to be told again that a goal does not split', async () => {
+    // The planner's own verdict, so the regime where it still holds a veto:
+    // below the bar where System-1 and the split score settle the question.
+    process.env.ORG_PLAN_OVERRIDE_P = '1.01';
     const db = createDb(TEST_DB);
     const repoPath = tmpRepo();
 
@@ -180,6 +184,7 @@ describe('the planning dispatch', () => {
   });
 
   it('routes each role on its own merits, not on one shared setting', async () => {
+    process.env.ORG_PLAN_OVERRIDE_P = '1.01';
     const calls = await runDelegating(createDb(TEST_DB), tmpRepo(), '[]');
 
     // Planning is a narrow job — emit a JSON array — and runs on the fast tier.
@@ -314,5 +319,75 @@ describe('the planning dispatch', () => {
     const receipts = listEventsForNode(db, root.id).filter((event) => event.type === 'context.receipt');
     expect(receipts.length).toBeGreaterThan(0);
     expect((receipts[0].payload as { applied: boolean }).applied).toBe(false);
+  });
+
+  describe('when System-1 and the split score have settled that the goal splits', () => {
+    // Measured live: a "research, then redesign the site" goal reached DELEGATE
+    // (Laya 0.78, split score 5), and one fast-tier planner turn answering []
+    // threw it away. The planner now decides how, not whether.
+    const isPlanning = (input: ExecuteStepInput) => input.goal.includes('Split this goal');
+
+    it('asks how to split, on the standard model, with [] off the table', async () => {
+      const db = createDb(TEST_DB);
+      const calls = await runDelegating(db, tmpRepo(), '[]');
+      const plan = calls.find(isPlanning)!;
+      expect(plan.goal).toContain('how, not whether');
+      expect(plan.goal).not.toContain('Reply with exactly []');
+      expect(plan.model).toBeUndefined();
+
+      // And the record says what actually happened: no receipt or execution
+      // plan claiming a delegation the node never carried out.
+      const root = listNodes(db).find((node) => node.parentId === null)!;
+      const events = listEventsForNode(db, root.id);
+      expect(events.some((e) => e.type === 'delegation.declined')).toBe(true);
+      const receipts = events.filter((e) => e.type === 'decision.receipt').map((e) => e.payload as { chosen: string; reason: string });
+      expect(receipts.length).toBeGreaterThan(0);
+      expect(receipts.every((r) => r.chosen !== 'SPAWN_AGENT')).toBe(true);
+      expect(receipts[0].reason).toContain('delegation was chosen but not carried out');
+      const steps = events.filter((e) => e.type === 'execution.plan')
+        .flatMap((e) => (e.payload as { steps: { intent: string }[] }).steps.map((step) => step.intent));
+      expect(steps).not.toContain('SPAWN_AGENT');
+    });
+
+    it('never caches a planner that answered [] anyway as "does not split"', async () => {
+      const db = createDb(TEST_DB);
+      const repoPath = tmpRepo();
+      const first = await runDelegating(db, repoPath, '[]');
+      // Once per node: its validation retries do not re-plan either.
+      expect(first.filter(isPlanning)).toHaveLength(1);
+      const second = await runDelegating(db, repoPath, '[]');
+      expect(second.filter(isPlanning)).toHaveLength(1);
+    });
+
+    it('runs an ordered plan in order, handing the later piece what the earlier one reported', async () => {
+      const db = createDb(TEST_DB);
+      const answer = JSON.stringify([
+        'Fix checkout error handling in src/cart/checkout.ts',
+        { goal: 'Add tests for checkout in src/cart/checkout.test.ts', after: [0] },
+      ]);
+      stub.mockImplementation(async (input: ExecuteStepInput) => {
+        const r = isPlanning(input)
+          ? result(answer)
+          : { succeeded: true, message: 'done', usage: { ...ZERO_USAGE }, events: successfulRunEvents({ editedPath: 'src/cart/checkout.ts', verifyCommand: 'npx vitest run src/cart' }) };
+        r.events.forEach((event) => input.onEvent?.(event));
+        return r;
+      });
+      const id = randomUUID();
+      insertNode(db, {
+        id, parentId: null, goal: GOAL, repoPath: tmpRepo(), state: 'CREATED', createdAt: 't0', updatedAt: 't0',
+        contract: { goal: GOAL, definition_of_done: [GOAL], authority: { tools: [], spawn_children: true, max_child_count: 3, budget_usd: 10 }, constraints: [] },
+      });
+      startNodeActor(db, id, GOAL);
+      await vi.waitFor(() => expect(['COMPLETE', 'FAILED', 'CANCELLED']).toContain(getNode(db, id)?.state), { timeout: 10_000 });
+
+      const children = listNodes(db).filter((node) => node.parentId === id);
+      expect(children).toHaveLength(2);
+      const dependent = children.find((node) => node.goal.startsWith('Add tests'))!;
+      // Only readable once the first child finished: proof it waited.
+      expect(dependent.goal).toContain('This piece builds on work already finished');
+      expect(dependent.goal).toContain('Fix checkout error handling');
+      const scheduled = listEventsForNode(db, id).find((e) => e.type === 'delegation.scheduled');
+      expect((scheduled?.payload as { groups: string[][] }).groups).toEqual([['0'], ['1']]);
+    });
   });
 });

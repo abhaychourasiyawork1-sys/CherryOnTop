@@ -12,7 +12,14 @@ import { maxChildJobs } from '../config/efficiency.js';
  *  environment, and a module-load-time constant is not overridable by it. */
 export const MAX_SUBGOALS = (): number => maxChildJobs();
 
-export function buildPlanPrompt(goal: string, maxChildren: number): string {
+export interface PlanPromptOptions {
+  /** The decision to split has already been made by two independent judges
+   *  (System-1 and the deterministic split score). The planner is asked *how*
+   *  to split, not *whether* — see `planVetoOverridden` in config/efficiency. */
+  mustSplit?: boolean;
+}
+
+export function buildPlanPrompt(goal: string, maxChildren: number, options: PlanPromptOptions = {}): string {
   const limit = Math.max(1, Math.min(maxChildren, MAX_SUBGOALS()));
   // Task-specific content only. The role itself — plan, do not implement,
   // output a JSON array — is in the `plan` system stanza (src/prompts/roles.ts),
@@ -22,46 +29,105 @@ export function buildPlanPrompt(goal: string, maxChildren: number): string {
     '',
     `GOAL: ${goal}`,
     '',
-    `Reply with ONLY a JSON array of up to ${limit} strings — one self-contained subgoal each,`,
-    'written for an agent who cannot see this conversation. No subgoal may depend on or overlap another.',
-    'Reply with exactly [] if the goal is already a single unit of work.',
+    `Reply with ONLY a JSON array of up to ${limit} entries — one self-contained subgoal each,`,
+    'written for an agent who cannot see this conversation. No two subgoals may overlap.',
+    'An entry is a string, or {"goal": "...", "after": [indexes]} when it needs the output of earlier entries.',
+    'Only list an index in "after" that comes before the entry; pieces with no "after" run in parallel.',
+    'A piece that others build on must write what it found to a file and name that file, so the later piece can read it.',
+    options.mustSplit
+      ? 'This goal has already been judged to split — your job is how, not whether. Reply with at least 2 entries; [] is not an acceptable answer here.'
+      : 'Reply with exactly [] if the goal is already a single unit of work.',
     // Measured: a seaborn bug report was split into "investigate the bug" and
     // "implement the fix", two phases where the second needs the first, and
     // the split cost more than doing it directly. System-1 cannot tell a long
-    // bug report from a multi-part task (live Laya: 0.60 vs 0.64), so the rule
-    // is stated here, where the split is actually decided.
-    'One bug report, one feature or one question is a single unit of work however long it is. Never split one problem into phases (investigate, implement, test, document): each phase needs the one before it.',
+    // bug report from a multi-part task (live Laya: 0.91 on that bug report),
+    // so the rule is stated here — but scoped to bugs and questions. Stated for
+    // every goal it also vetoed "research, then redesign the site", a feature
+    // whose research genuinely runs in parallel ahead of the build.
+    'One bug report or one question is a single unit of work however long it is: never split it into investigate / fix / test phases.',
+    'A larger feature may split into research that can run in parallel, followed by the build that uses it (give the build "after").',
     'Example: ["Audit src/auth for unhandled promise rejections", "Add tests for the cart discount edge cases"]',
+    'Example: ["Research X and write findings to docs/x-notes.md", "Research Y and write findings to docs/y-notes.md", {"goal": "Build Z using docs/x-notes.md and docs/y-notes.md", "after": [0, 1]}]',
   ].join('\n');
 }
 
-/** Pulls the subgoal list out of a planning run's final text. Tolerant of the
+export interface ParsedPlan {
+  subgoals: string[];
+  /** Aligned with `subgoals`: the indexes each one must wait for. Always
+   *  earlier indexes, so the graph is acyclic by construction. */
+  after: number[][];
+}
+
+const NO_PLAN: ParsedPlan = { subgoals: [], after: [] };
+
+/** Every top-level JSON array in the text, the last one first: a model that
+ *  reasons first and answers last would otherwise have its scratch work parsed
+ *  as the answer. Found by bracket pairs rather than a regex, because an
+ *  entry's own `"after": [0]` closes a lazy match early — and never an array
+ *  nested inside one already found, or `[1, "0"]` would read as a plan. */
+function arraysIn(text: string): unknown[][] {
+  const opens = [...text.matchAll(/\[/g)].map((m) => m.index!);
+  const closes = [...text.matchAll(/\]/g)].map((m) => m.index!);
+  const found: unknown[][] = [];
+  let coveredUntil = -1;
+  for (const open of opens) {
+    if (open <= coveredUntil) continue;
+    for (const close of closes) {
+      if (close < open) continue;
+      try {
+        const parsed: unknown = JSON.parse(text.slice(open, close + 1));
+        if (Array.isArray(parsed)) {
+          found.push(parsed);
+          coveredUntil = close;
+        }
+        break;
+      } catch {
+        // not this closing bracket; try the next one
+      }
+    }
+  }
+  return found.reverse();
+}
+
+/** Pulls the plan out of a planning run's final text. Tolerant of the
  *  wrappers models add — a code fence, a sentence before the array — because
  *  rejecting a good plan over a stray backtick means falling back to no
  *  delegation at all. */
-export function parseSubgoals(text: string, maxChildren: number): string[] {
-  if (!text) return [];
+export function parsePlan(text: string, maxChildren: number): ParsedPlan {
+  if (!text) return NO_PLAN;
   const limit = Math.max(0, Math.min(maxChildren, MAX_SUBGOALS()));
 
-  // The last array in the text: a model that reasons first and answers last
-  // would otherwise have its example or its scratch work parsed as the answer.
-  const matches = [...text.matchAll(/\[[\s\S]*?\]/g)];
-  for (const match of matches.reverse()) {
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(match[0]);
-    } catch {
+  for (const parsed of arraysIn(text)) {
+    const entries = parsed
+      .map((entry, index) => {
+        if (typeof entry === 'string') return { goal: entry.trim(), after: [] as unknown[], index };
+        const { goal, after } = (entry ?? {}) as { goal?: unknown; after?: unknown };
+        return typeof goal === 'string'
+          ? { goal: goal.trim(), after: Array.isArray(after) ? after : [], index }
+          : null;
+      })
+      .filter((entry): entry is { goal: string; after: unknown[]; index: number } => entry !== null && entry.goal.length > 0);
+    if (entries.length === 0) {
+      if (parsed.length === 0) return NO_PLAN;
       continue;
     }
-    if (!Array.isArray(parsed)) continue;
-    const subgoals = parsed
-      .filter((entry): entry is string => typeof entry === 'string')
-      .map((entry) => entry.trim())
-      .filter((entry) => entry.length > 0);
     // A single subgoal is not a split — it is the original goal reworded, and
     // delegating it produces exactly the clone this module exists to prevent.
-    if (subgoals.length < 2) return [];
-    return subgoals.slice(0, limit);
+    if (entries.length < 2) return NO_PLAN;
+    const kept = entries.slice(0, limit);
+    // Indexes are the planner's, which counted any blank entry it emitted;
+    // remap them onto what survived, and drop forward or dangling references.
+    const position = new Map(kept.map((entry, i) => [entry.index, i]));
+    return {
+      subgoals: kept.map((entry) => entry.goal),
+      after: kept.map((entry, i) => [...new Set(entry.after
+        .map((ref) => (typeof ref === 'number' ? position.get(ref) : undefined))
+        .filter((ref): ref is number => ref !== undefined && ref < i))]),
+    };
   }
-  return [];
+  return NO_PLAN;
+}
+
+export function parseSubgoals(text: string, maxChildren: number): string[] {
+  return parsePlan(text, maxChildren).subgoals;
 }

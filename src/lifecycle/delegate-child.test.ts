@@ -344,3 +344,53 @@ describe('delegateToChildren scheduling', () => {
     expect(first.plan.sharedEvidenceIds).toContain('src/a.ts');
   });
 });
+
+describe('delegateToChildren: ordered pieces', () => {
+  it('starts a dependent piece only after its prerequisites, and hands it their reports', async () => {
+    const order: string[] = [];
+    const goals = new Map<string, string>();
+    let next = 0;
+    const result = await delegateToChildren(
+      {
+        parentId: 'p', goal: 'Redesign the landing page',
+        subgoals: ['Research the product; write docs/brief.md', 'Research design references; write docs/design.md', 'Build the page from docs/brief.md and docs/design.md'],
+        after: [[], [], [0, 1]],
+      },
+      {
+        createChildNode: (_p, goal) => { const id = `c${++next}`; goals.set(id, goal); return id; },
+        recordCommitment: () => {},
+        startChild: (id) => { order.push(`start:${id}`); },
+        waitForChild: async (id) => {
+          await new Promise((r) => setTimeout(r, 1));
+          order.push(`done:${id}`);
+          return { succeeded: true };
+        },
+        getFindings: (id) => `report from ${id}`,
+      },
+    );
+    expect(result.succeeded).toBe(true);
+    // Both research pieces run together; the build waits for both.
+    expect(order.slice(0, 2)).toEqual(['start:c1', 'start:c2']);
+    expect(order.indexOf('start:c3')).toBeGreaterThan(order.indexOf('done:c1'));
+    expect(order.indexOf('start:c3')).toBeGreaterThan(order.indexOf('done:c2'));
+    expect(goals.get('c3')).toContain('report from c1');
+    expect(goals.get('c3')).toContain('report from c2');
+    expect(goals.get('c1')).not.toContain('builds on work');
+  });
+
+  it('does not start a piece whose prerequisite failed for good', async () => {
+    const started: string[] = [];
+    let next = 0;
+    const result = await delegateToChildren(
+      { parentId: 'p', goal: 'g', subgoals: ['research the product', 'build the page'], after: [[], [0]] },
+      {
+        createChildNode: (_p, goal) => `c${++next}:${goal}`,
+        recordCommitment: () => {},
+        startChild: (id) => { started.push(id); },
+        waitForChild: async (id) => ({ succeeded: !id.includes('research') }),
+      },
+    );
+    expect(result.succeeded).toBe(false);
+    expect(started.some((id) => id.includes('build the page'))).toBe(false);
+  });
+});
