@@ -11,7 +11,7 @@
  *  its base is a correctness one.
  */
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, rmSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, sep } from 'node:path';
 import { createHash } from 'node:crypto';
@@ -102,6 +102,39 @@ export function releaseFork(basePath: string, path: string): void {
     console.error(`Failed to remove the workspace fork at ${path}:`, err);
   }
   git(['worktree', 'prune'], basePath);
+}
+
+/** Removes every fork directory under `forksRoot()` except the ones a caller
+ *  says are still live — normally the repoPath of every node not yet in a
+ *  terminal state, since a fork's whole lifetime is meant to be one
+ *  `delegateToChildren` call (see the module doc). A daemon that crashes
+ *  mid-delegation skips the `release()` at the end of that call, and nothing
+ *  else ever revisits the directory: `forkPath` is content-addressed, so a
+ *  future run for the same child reuses it instead of re-orphaning a new one,
+ *  but a child that's never retried leaks its fork forever without this.
+ *
+ *  Best-effort and silent about the base repo's own `git worktree` bookkeeping
+ *  — deleting straight from the filesystem, the same fallback `releaseFork`
+ *  already uses when it can't reach `basePath`, since a swept fork's base
+ *  isn't recoverable from its hashed directory name. A `git worktree prune`
+ *  in that repo the next time anything touches it clears the stale entry;
+ *  ponytail: worth a per-repo prune sweep too, add if `git worktree list`
+ *  noise in a long-lived repo ever gets someone's attention. */
+export function sweepOrphanedForks(liveHostPaths: ReadonlySet<string>, root: string = forksRoot()): string[] {
+  if (!existsSync(root)) return [];
+  const removed: string[] = [];
+  for (const entry of readdirSync(root)) {
+    if (!entry.startsWith('org-fork-')) continue;
+    const path = join(root, entry);
+    if (liveHostPaths.has(path)) continue;
+    try {
+      rmSync(path, { recursive: true, force: true });
+      removed.push(path);
+    } catch (err) {
+      console.error(`Failed to remove orphaned fork ${path}:`, err);
+    }
+  }
+  return removed;
 }
 
 /** Whether a path is an isolated fork rather than the base itself. The check a

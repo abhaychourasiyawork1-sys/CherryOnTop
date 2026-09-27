@@ -3,7 +3,7 @@ import type { ExecuteStepResult } from '../execution/execute-step.js';
 import { ZERO_USAGE } from '../execution/tokens.js';
 import type { IntelligenceBundle } from '../intelligence/coordinator.js';
 import type { DecideExecutionResult } from '../engines/decide-execution.js';
-import { nextAfterValidation, type ValidationResult } from '../validation/engine.js';
+import { nextAfterValidation, MAX_EXECUTION_ATTEMPTS, type ValidationResult } from '../validation/engine.js';
 import { strategyRetryAllowed } from '../recovery/engine.js';
 import { SpendGuardStop } from '../efficiency/spend-guard.js';
 
@@ -57,7 +57,12 @@ export interface ValidationVerdict extends ValidationResult {
 }
 
 const MAX_GATE_ATTEMPTS = 3;
-const MAX_EXECUTION_ATTEMPTS = 3;
+// MAX_EXECUTION_ATTEMPTS itself comes from validation/engine.ts (imported
+// above) — this is the same cap `nextAfterValidation` uses, kept as one
+// number so a crashed dispatch and a validated-but-insufficient one give up
+// after the same number of tries instead of two constants silently drifting
+// apart. It bounds retry *count*, not cost — budget is a separate axis,
+// enforced by the spend guard, not by scaling this with budget size.
 
 export const nodeMachine = setup({
   types: {
