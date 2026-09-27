@@ -19,6 +19,8 @@ interface Props {
   mandates: Mandate[];
   mandateId: string | null;
   onSelectMandate: (id: string) => void;
+  /** Shown first in the footer — on Home, where the work will happen. */
+  leading?: React.ReactNode;
   /** Opens the plain-words authority summary for this Workspace. */
   onAuthority?: () => void;
   /** Why work cannot be started here. Questions still work. */
@@ -148,6 +150,7 @@ export function Composer(props: Props) {
           }}
         />
         <div className="composer2-foot">
+          {props.leading}
           {props.mandates.length > 0 && (
             <span className="authority-chip" title="What new work is allowed to do">
               {props.onAuthority ? (

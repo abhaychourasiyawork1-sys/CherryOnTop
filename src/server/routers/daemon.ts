@@ -1,4 +1,6 @@
+import { z } from 'zod';
 import { router, publicProcedure } from '../trpc.js';
+import { resolveWorkspaceRepo } from '../../workspace/resolve.js';
 import { getOrgStats } from '../../db/queries/stats.js';
 import { sandboxLimiter, maxConcurrentFromEnv } from '../../execution/dispatch-limit.js';
 import { orgEnvDigest } from '../../daemon/manager.js';
@@ -41,6 +43,12 @@ export const daemonRouter = router({
    *  contract — the provider behind them is deliberately not named. */
   capabilities: publicProcedure.query(() =>
     discoverDecisionCapabilities({ mode: system1Config().mode, ready: system1().ready() })),
+
+  /** Whether new work can run in a folder or known Workspace, and the path its
+   *  sandbox would see. The window asks before it offers to start work there. */
+  resolveRepo: publicProcedure
+    .input(z.object({ path: z.string().max(4096) }))
+    .query(({ input }) => resolveWorkspaceRepo(input.path)),
 
   stats: publicProcedure.query(({ ctx }) => getOrgStats(ctx.db)),
 

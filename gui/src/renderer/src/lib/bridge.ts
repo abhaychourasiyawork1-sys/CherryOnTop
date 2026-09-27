@@ -14,6 +14,7 @@ declare global {
       exportReceipt?: (caseId: string, html: string) => Promise<string | null>;
       openDetached?: (target: string) => Promise<boolean>;
       pathForFile?: (file: File) => string;
+      pickFolder?: () => Promise<string | null>;
     };
   }
 }

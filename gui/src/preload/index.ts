@@ -20,6 +20,8 @@ contextBridge.exposeInMainWorld('mission', {
     ipcRenderer.invoke('export-receipt', caseId, html),
   /** Opens a Deep Dive in its own window. Only on request; never automatic. */
   openDetached: (target: string): Promise<boolean> => ipcRenderer.invoke('open-detached', target),
+  /** Asks the person for a project folder. Null when they cancel. */
+  pickFolder: (): Promise<string | null> => ipcRenderer.invoke('pick-folder'),
   /** The real path of a file dropped on the window, for composer context. */
   pathForFile: (file: File): string => webUtils.getPathForFile(file),
 });

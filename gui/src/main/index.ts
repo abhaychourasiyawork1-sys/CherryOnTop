@@ -84,6 +84,17 @@ app.whenReady().then(() => {
     return result.filePath;
   });
 
+  // Choosing a folder to work in. Main only owns the dialog; whether the folder
+  // is usable is decided by the daemon (daemon.resolveRepo), in one place.
+  ipcMain.handle('pick-folder', async (event) => {
+    const owner = BrowserWindow.fromWebContents(event.sender) ?? window;
+    const result = await dialog.showOpenDialog(owner, {
+      title: 'Choose a project folder',
+      properties: ['openDirectory'],
+    });
+    return result.canceled ? null : result.filePaths[0] ?? null;
+  });
+
   ipcMain.handle('open-detached', (_event, target: unknown) => {
     if (typeof target !== 'string' || !DETACHED_TARGET.test(target)) return false;
     const existing = detached.get(target);

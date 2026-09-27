@@ -9,7 +9,6 @@ export function Home(props: {
   model: HomeModel;
   attention: number;
   composer: React.ReactNode;
-  repoName: string | null;
   onOpenWorkspace: (key: string, caseId?: string) => void;
   onAttention: () => void;
 }) {
@@ -18,7 +17,6 @@ export function Home(props: {
     <div className="home">
       <div className="home-column">
         <h1 className="home-title">{model.empty ? 'What should CherryOnTop work on?' : 'What next?'}</h1>
-        {props.repoName && <p className="home-where">New work starts in {props.repoName}</p>}
         {props.composer}
 
         {props.attention > 0 && (

@@ -21,6 +21,7 @@ import type { SearchItem } from './lib/search.js';
 import type { Mandate } from './lib/mandates.js';
 import { Sidebar, type CoreItem } from './navigation/Sidebar.js';
 import { Home } from './navigation/Home.js';
+import { WorkspacePicker } from './navigation/WorkspacePicker.js';
 import { CommandPalette } from './navigation/CommandPalette.js';
 import { ConversationSwitcher } from './navigation/ConversationSwitcher.js';
 import { WorkspaceHeader } from './shell/WorkspaceHeader.js';
@@ -35,6 +36,32 @@ import type { AskExchange, AskResult } from './panels/Conversation.js';
 
 const WINDOW_KEY = REPO.container ? workspaceKeyOf(REPO.container) : null;
 
+type ResolvedRepo = { ok: true; hostPath: string; containerPath: string } | { ok: false; error: string };
+
+/** Asks the daemon whether work can run in a Workspace or folder. A daemon
+ *  from before this call existed can still vouch for the launch folder. */
+async function resolveRepo(path: string): Promise<ResolvedRepo> {
+  try {
+    return await daemon().daemon.resolveRepo.query({ path }) as ResolvedRepo;
+  } catch {
+    if (REPO.container && workspaceKeyOf(path) === WINDOW_KEY) return { ok: true, hostPath: REPO.path ?? '', containerPath: REPO.container };
+    return { ok: false, error: 'The daemon is older than this window and can only start work in the launch folder. Restart it with `org daemon stop` then `org daemon start`.' };
+  }
+}
+
+function emptyWorkspace(key: string): Workspace {
+  return { key, name: workspaceNameOf(key), cases: [], lastActivity: '', running: 0, needsYou: 0, organized: false };
+}
+
+function decodeKeys(raw: string | null): string[] {
+  try {
+    const value = JSON.parse(raw ?? '[]');
+    return Array.isArray(value) ? value.filter((k): k is string => typeof k === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+
 /** The composition root: live runtime state in, Workspace projection out.
  *  Everything durable comes from the daemon through `useOrg`; everything in
  *  this component that is not from there is presentation state. */
@@ -43,7 +70,16 @@ export function App() {
   // Offline only once a read has actually failed; before the first answer the
   // window is syncing, not offline.
   const offline = !org.connected && org.error !== null;
-  const workspaces = useMemo(() => toWorkspaces(org.nodes), [org.nodes]);
+  // Folders opened from the Workspace picker that have no runs yet still count
+  // as Workspaces — so do the launch folder's — or they could not be chosen.
+  const [recentKeys, setRecentKeys] = useLocalState<string[]>(localKey('draft', 'recent-workspaces'), decodeKeys);
+  const workspaces = useMemo(() => {
+    const known = toWorkspaces(org.nodes);
+    const extra = [...new Set([WINDOW_KEY, ...recentKeys].filter((k): k is string => Boolean(k)))]
+      .filter((key) => !known.some((ws) => ws.key === key))
+      .map((key) => emptyWorkspace(key));
+    return [...known, ...extra];
+  }, [org.nodes, recentKeys]);
   const byKey = useMemo(() => new Map(workspaces.map((ws) => [ws.key, ws])), [workspaces]);
 
   const [view, setView] = useState<View>(() => (WINDOW_KEY ? openWorkspace(WINDOW_KEY) : { name: 'home' }));
@@ -93,7 +129,7 @@ export function App() {
   // ---- the Workspace in view --------------------------------------------
   const wsKey = view.name === 'workspace' ? view.key : WINDOW_KEY ?? workspaces[0]?.key ?? null;
   const workspace: Workspace | null = wsKey
-    ? byKey.get(wsKey) ?? { key: wsKey, name: workspaceNameOf(wsKey), cases: [], lastActivity: '', running: 0, needsYou: 0, organized: false }
+    ? byKey.get(wsKey) ?? emptyWorkspace(wsKey)
     : null;
   const surfaces = useLayout(workspace?.key ?? null);
 
@@ -118,11 +154,20 @@ export function App() {
   const scopedAttention = useMemo(() => scopeAttention(allAttention, new Set(allCaseIds)), [allAttention, allCaseIds]);
   const wsAttention = attentionCount(groupAttention(scopedAttention));
 
-  const blockedReason = !REPO.container
-    ? (REPO.error ?? 'Open CherryOnTop from a git repository to start work.')
-    : workspace && workspace.key !== WINDOW_KEY
-      ? `This window works in ${workspaceNameOf(WINDOW_KEY!)}. Open CherryOnTop from ${workspace.name} to start work there.`
-      : null;
+  // Where new work goes: the Workspace you are in, or — on Home — the one
+  // chosen in the composer. The daemon decides whether it can run there.
+  const [homeKey, setHomeKey] = useLocalState<string | null>(localKey('draft', 'home-workspace'), (raw) => raw || null, (v) => v ?? '');
+  const homeTarget = homeKey ?? WINDOW_KEY ?? workspaces[0]?.key ?? null;
+  const targetKey = view.name === 'workspace' ? view.key : homeTarget;
+  const target = useDaemonQuery<ResolvedRepo | null>(
+    () => (targetKey ? resolveRepo(targetKey) : Promise.resolve(null)),
+    [targetKey],
+  );
+  const blockedReason = !targetKey
+    ? 'Choose a Workspace for this work.'
+    : target.loading && !target.data ? 'Checking this Workspace…'
+      : target.data && !target.data.ok ? target.data.error
+        : null;
 
   const focusCase = useCallback((caseId: string) => {
     const root = org.nodes.find((n) => n.id === caseId);
@@ -137,6 +182,9 @@ export function App() {
   }, [org.nodes]);
 
   const startWork = useCallback(async (goal: string) => {
+    const resolved = target.data;
+    if (!resolved || !resolved.ok) throw new Error(blockedReason ?? 'This Workspace cannot take new work.');
+    const key = workspaceKeyOf(resolved.containerPath);
     const created = await daemon().node.create.mutate({
       goal,
       definition_of_done: [goal],
@@ -145,14 +193,27 @@ export function App() {
       authority: { tools: [], spawn_children: true, max_child_count: 3, budget_usd: 5 },
       constraints: [],
       mandateId,
-      repoPath: REPO.container,
+      repoPath: resolved.containerPath,
     });
     const id = (created as { id: string }).id;
-    setConversations((state) => assign(state, currentBranch, id));
+    // Filed under the conversation it was asked in — only meaningful when it
+    // was asked inside this Workspace rather than from Home.
+    if (view.name === 'workspace' && key === view.key) setConversations((state) => assign(state, currentBranch, id));
     org.refresh();
-    if (WINDOW_KEY) setView({ name: 'workspace', key: WINDOW_KEY, section: 'chat', caseId: id, nodeId: null });
+    setView({ name: 'workspace', key, section: 'chat', caseId: id, nodeId: null });
     return id;
-  }, [mandateId, currentBranch, org, setConversations]);
+  }, [mandateId, currentBranch, org, setConversations, target.data, blockedReason, view]);
+
+  /** A folder picked on Home: the daemon checks it; if usable it becomes a
+   *  Workspace (remembered even before it has runs) and the target. */
+  const openFolder = async (hostPath: string): Promise<string | null> => {
+    const resolved = await resolveRepo(hostPath);
+    if (!resolved.ok) return resolved.error;
+    const key = workspaceKeyOf(resolved.containerPath);
+    setRecentKeys((keys) => [key, ...keys.filter((k) => k !== key)].slice(0, 12));
+    setHomeKey(key);
+    return null;
+  };
 
   const contextRefs = useMemo<ContextRef[]>(() => {
     const refs: ContextRef[] = surfaces.layout.side
@@ -278,7 +339,16 @@ export function App() {
       mandateId={mandateId}
       onSelectMandate={setMandateId}
       onAuthority={variant === 'docked' ? () => openSection('authority') : undefined}
-      blockedReason={variant === 'hero' && !REPO.container ? (REPO.error ?? 'Open CherryOnTop from a git repository to start work.') : variant === 'hero' ? null : blockedReason}
+      blockedReason={blockedReason}
+      leading={variant === 'hero' ? (
+        <WorkspacePicker
+          workspaces={workspaces}
+          selected={homeTarget ? byKey.get(homeTarget) ?? emptyWorkspace(homeTarget) : null}
+          status={target.loading && !target.data ? 'checking' : target.data?.ok ? 'ready' : 'unusable'}
+          onSelect={setHomeKey}
+          onOpenFolder={openFolder}
+        />
+      ) : undefined}
       offline={offline}
       draftScope={variant === 'hero' ? 'home' : `${workspace?.key ?? ''}:${currentBranch}`}
       autoFocus={variant === 'hero' || threadCaseIds.length === 0}
@@ -340,7 +410,6 @@ export function App() {
           model={homeModel(workspaces, seenAt, globalAttention)}
           attention={globalAttention}
           composer={composer('hero')}
-          repoName={WINDOW_KEY ? workspaceNameOf(WINDOW_KEY) : null}
           onOpenWorkspace={(key, caseId) => navigate(openWorkspace(key, caseId ?? null))}
           onAttention={() => { if (WINDOW_KEY || workspaces[0]) navigate(openWorkspace(WINDOW_KEY ?? workspaces[0].key)); setTimeout(() => surfaces.open('attention'), 0); }}
         />
