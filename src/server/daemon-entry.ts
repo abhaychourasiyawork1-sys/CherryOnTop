@@ -2,6 +2,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { mkdirSync } from 'node:fs';
 import { buildServer } from './app.js';
+import { ensureClusterDns } from '../k8s/kind.js';
 import { installSystem1 } from '../system1/runtime.js';
 
 const DAEMON_PORT = Number(process.env.ORG_DAEMON_PORT ?? 4177);
@@ -44,6 +45,10 @@ s1.laya?.ready().then(async (ok) => {
 for (const signal of ['SIGINT', 'SIGTERM'] as const) {
   process.once(signal, () => { void s1.stop().finally(() => process.exit(0)); });
 }
+
+// The sandbox cluster's DNS, fixed once per daemon start (see kind.ts). In
+// the background: it must never delay the API or fail the daemon.
+if (process.env.NODE_ENV !== 'test') void ensureClusterDns();
 
 app.listen({ port: DAEMON_PORT, host: '127.0.0.1' }).catch((err) => {
   app.log.error(err);

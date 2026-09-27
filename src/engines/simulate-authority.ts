@@ -19,7 +19,7 @@ function money(value: number): string {
 
 function toolPhrase(authority: Authority): string {
   if (!isRestricted(authority)) return 'Use any tool its runtime offers (no tool restriction set)';
-  const names = authority.tools.join(', ');
+  const names = authority.tools.filter((tool) => tool !== 'GitHub').join(', ');
   return isReadOnly(authority)
     ? `Read only — ${names}. It cannot change a file or run a command`
     : `Use ${names}, and nothing else`;
@@ -44,6 +44,9 @@ export function simulateAuthority(contract: Pick<NodeContract, 'authority' | 'co
   permits.push(`Spend up to ${money(authority.budget_usd)} in total`);
   permits.push(toolPhrase(authority));
   permits.push('Reach the network only over HTTPS, and never a private or cloud-metadata address');
+  if (authority.tools.includes('GitHub')) {
+    permits.push('Act on GitHub as you — push branches, open pull requests, comment on issues');
+  }
 
   const stops: string[] = [];
   stops.push(`Needing more than ${money(authority.budget_usd)}`);

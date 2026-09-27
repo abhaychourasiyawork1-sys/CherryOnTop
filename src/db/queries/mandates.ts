@@ -21,17 +21,17 @@ export const BUILTIN_MANDATES: Omit<MandateRecord, 'createdAt' | 'updatedAt'>[] 
   {
     id: 'builtin-investigate',
     name: 'Investigate',
-    description: 'Reads and reports. Cannot change anything, cannot delegate.',
-    authority: { tools: ['Read', 'Grep', 'Glob'], spawn_children: false, max_child_count: 0, budget_usd: 1 },
+    description: 'Reads and reports, including from the web. Cannot change anything, cannot delegate.',
+    authority: { tools: ['Read', 'Grep', 'Glob', 'WebSearch', 'WebFetch'], spawn_children: false, max_child_count: 0, budget_usd: 1 },
     constraints: ['Do not modify any file.'],
     builtin: true,
   },
   {
     id: 'builtin-focused-change',
     name: 'Focused change',
-    description: 'One agent, full editing tools, a small budget. The everyday default.',
+    description: 'One agent, full editing tools and the web, a small budget. The everyday default.',
     authority: {
-      tools: ['Read', 'Grep', 'Glob', 'Write', 'Edit', 'Bash'],
+      tools: ['Read', 'Grep', 'Glob', 'Write', 'Edit', 'Bash', 'WebSearch', 'WebFetch'],
       spawn_children: false, max_child_count: 0, budget_usd: 5,
     },
     constraints: [],
@@ -42,13 +42,39 @@ export const BUILTIN_MANDATES: Omit<MandateRecord, 'createdAt' | 'updatedAt'>[] 
     name: 'Project',
     description: 'May build an organization of up to 5 agents, with a real budget.',
     authority: {
-      tools: ['Read', 'Grep', 'Glob', 'Write', 'Edit', 'Bash', 'WebFetch'],
+      tools: ['Read', 'Grep', 'Glob', 'Write', 'Edit', 'Bash', 'WebSearch', 'WebFetch'],
       spawn_children: true, max_child_count: 5, budget_usd: 25,
     },
     constraints: [],
     builtin: true,
   },
+  {
+    // The only built-in that can act outside the machine: it receives your
+    // GitHub login for the run, so it can push branches and open pull requests
+    // and issues. Everything else about it is the everyday default.
+    id: 'builtin-ship',
+    name: 'Ship',
+    description: 'Focused change that can also push, open pull requests and work with GitHub issues as you.',
+    authority: {
+      tools: ['Read', 'Grep', 'Glob', 'Write', 'Edit', 'Bash', 'WebSearch', 'WebFetch', 'GitHub'],
+      spawn_children: false, max_child_count: 0, budget_usd: 5,
+    },
+    constraints: [
+      'Push only to a new branch, never directly to the default branch.',
+      'Open a pull request for review rather than merging.',
+    ],
+    builtin: true,
+  },
 ];
+
+/** What the built-ins shipped with before a release changed them. A built-in
+ *  still holding exactly one of these was never edited, so it is safe to move
+ *  forward; one a person edited is theirs and is left alone. */
+const PREVIOUS_BUILTIN_TOOLS: Record<string, string[][]> = {
+  'builtin-investigate': [['Read', 'Grep', 'Glob']],
+  'builtin-focused-change': [['Read', 'Grep', 'Glob', 'Write', 'Edit', 'Bash']],
+  'builtin-project': [['Read', 'Grep', 'Glob', 'Write', 'Edit', 'Bash', 'WebFetch']],
+};
 
 export function listMandates(db: Db): MandateRecord[] {
   return db.select().from(mandates).all() as MandateRecord[];
@@ -101,7 +127,17 @@ export function deleteMandate(db: Db, id: string): void {
  *  user's edits to a builtin survive a restart. */
 export function seedBuiltinMandates(db: Db, now = new Date().toISOString()): void {
   for (const mandate of BUILTIN_MANDATES) {
-    if (getMandate(db, mandate.id)) continue;
-    insertMandate(db, { ...mandate, createdAt: now, updatedAt: now });
+    const existing = getMandate(db, mandate.id);
+    if (!existing) {
+      insertMandate(db, { ...mandate, createdAt: now, updatedAt: now });
+      continue;
+    }
+    const same = (a: string[], b: string[]) => a.length === b.length && a.every((tool, i) => tool === b[i]);
+    const untouched = (PREVIOUS_BUILTIN_TOOLS[mandate.id] ?? []).some((tools) => same(existing.authority.tools, tools));
+    if (untouched) {
+      // Only the tools move forward; a renamed or re-described built-in keeps
+      // the words its owner gave it.
+      updateMandate(db, mandate.id, { authority: { ...existing.authority, tools: mandate.authority.tools } }, now);
+    }
   }
 }

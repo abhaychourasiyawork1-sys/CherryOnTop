@@ -30,8 +30,11 @@ export const claudeCodeAdapter: RuntimeAdapter = {
     //   checking from a side the runtime does not control.
     // No skills list either: skills are a person's shortcuts, and their
     // descriptions were part of every turn's prompt.
-    const permission = grant?.allowedTools
-      ? ['--allowedTools', grant.allowedTools.join(','), '--disable-slash-commands']
+    // `GitHub` is a mandate capability (it decides whether your GitHub login
+    // reaches the sandbox), not a runtime tool, so the runtime never sees it.
+    const runtimeTools = grant?.allowedTools?.filter((tool) => tool !== 'GitHub');
+    const permission = runtimeTools
+      ? ['--allowedTools', runtimeTools.join(','), '--disable-slash-commands']
       : ['--tools', CODING_TOOLS.join(','), '--disable-slash-commands'];
     const model = opts.model ? ['--model', opts.model] : [];
     const maxTurns = opts.maxTurns ? ['--max-turns', String(opts.maxTurns)] : [];

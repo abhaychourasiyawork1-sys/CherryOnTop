@@ -28,7 +28,7 @@ import { decideIntegration } from '../intelligence/integrate-results.js';
 import { answerOf } from '../db/queries/answers.js';
 import { recordRunOutcome, getRuntimeStats, recordStrategyOutcome, listMemory } from '../db/queries/memory.js';
 import { getCostForNodes } from '../db/queries/stats.js';
-import { resolveCredentials, checkCredentials } from '../execution/credentials.js';
+import { resolveCredentials, checkCredentials, gitIdentity, githubCredentials, grantsGitHub } from '../execution/credentials.js';
 import { sandboxLimiter, maxConcurrentFromEnv, CRITICAL_PATH } from '../execution/dispatch-limit.js';
 import { efficiencyLedger, type LedgerRole } from '../efficiency/ledger.js';
 import type { EfficiencyOutcome } from '../efficiency/metrics.js';
@@ -2142,7 +2142,13 @@ function productionMachine(db: Db, nodeId: string) {
           // Subscription (via `claude login`) is preferred over an API key —
           // see credentials.ts. Read fresh on every dispatch, so unlike the
           // ANTHROPIC_API_KEY env var this path has no daemon-restart staleness.
-          credentials: resolveCredentials(os.homedir(), process.env.ANTHROPIC_API_KEY),
+          // Your git identity always travels, so the agent can commit; your
+          // GitHub login only when the mandate grants GitHub.
+          credentials: {
+            ...resolveCredentials(os.homedir(), process.env.ANTHROPIC_API_KEY),
+            ...gitIdentity(),
+            ...(grantsGitHub(grant.allowedTools) ? githubCredentials() : {}),
+          },
           adapter,
           image: runnerImageOverride(),
           grant,

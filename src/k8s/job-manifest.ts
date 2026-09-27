@@ -41,6 +41,13 @@ export function buildExecutionJob(params: ExecutionJobParams): V1Job {
         metadata: { labels: { 'org.nodeId': params.nodeId } },
         spec: {
           restartPolicy: 'Never',
+          // The pod inherits the host's search domains (a home router adds
+          // `lan`) and Kubernetes' ndots:5, so `github.com` was first tried as
+          // five cluster/lan names, each waiting out a timeout — measured: web,
+          // git and gh lookups failed intermittently with "Could not resolve
+          // host". ndots:1 asks for a public name directly; in-cluster short
+          // names (no dot) still use the search list. 40/40 lookups after.
+          dnsConfig: { options: [{ name: 'ndots', value: '1' }] },
           containers: [
             {
               name: 'runner',

@@ -28,4 +28,6 @@ export interface Envelope {
  *  the choices worth making without reading documentation. */
 export const COMMON_TOOLS = [
   'Read', 'Grep', 'Glob', 'Write', 'Edit', 'NotebookEdit', 'Bash', 'WebFetch', 'WebSearch',
+  // Not a runtime tool: hands the run your GitHub login (push, pull requests).
+  'GitHub',
 ];
