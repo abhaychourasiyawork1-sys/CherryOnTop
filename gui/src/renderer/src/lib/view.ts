@@ -16,17 +16,17 @@ export type View =
 
 /** The deeper organization views, revealed contextually. */
 export const ORGANIZATION: { id: Section; label: string }[] = [
+  { id: 'agents', label: 'Chart' },
   { id: 'decisions', label: 'Decisions' },
-  { id: 'runs', label: 'Runs' },
-  { id: 'agents', label: 'Agents' },
   { id: 'evidence', label: 'Evidence' },
+  { id: 'runs', label: 'Runs' },
 ];
 
 export const SECTION_LABEL: Record<Section, string> = {
   chat: 'Chat',
   decisions: 'Decisions',
   runs: 'Runs',
-  agents: 'Agents',
+  agents: 'Organization',
   evidence: 'Evidence',
   authority: 'Authority',
 };

@@ -23,8 +23,6 @@ export function SessionHeader(props: {
   onSection: (section: Section) => void;
   open: Partial<Record<SessionTool, boolean>>;
   onTool: (tool: SessionTool) => void;
-  /** Organization appears once there is something in it. */
-  organized: boolean;
   state: WorkspaceState;
   onState?: () => void;
 }) {
@@ -88,18 +86,16 @@ export function SessionHeader(props: {
             <span>{tool.label}</span>
           </button>
         ))}
-        {props.organized && (
-          <button
+        <button
             type="button"
             className="tool-button"
             aria-pressed={inOrg}
-            title="Decisions, runs, agents and evidence behind this session"
-            onClick={() => props.onSection(inOrg ? 'chat' : 'decisions')}
+            title="The agents behind this session, how the work was delegated, and why"
+            onClick={() => props.onSection(inOrg ? 'chat' : 'agents')}
           >
             <Icon name="agents" size={14} />
             <span>Organization</span>
           </button>
-        )}
         <span className="tool-sep" aria-hidden="true" />
         <button
           type="button"

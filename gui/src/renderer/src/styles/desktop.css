@@ -1442,3 +1442,146 @@ div.setting-row { cursor: default; }
   position: sticky; top: var(--s-6); padding: var(--s-4) var(--s-5);
   border-radius: var(--radius-lg); background: var(--surface);
 }
+
+/* ---- reply: response, why, what it did, steps -------------------------- */
+
+.response { margin-top: var(--s-3); }
+.response-label {
+  margin: 0 0 6px; font-size: var(--text-xs); font-weight: 600; color: var(--ink-3);
+  letter-spacing: 0.01em;
+}
+.response .result-answer {
+  padding: var(--s-3) var(--s-4); border-radius: var(--radius); background: var(--surface);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+.explain { margin-top: var(--s-3); }
+.explain-list { margin: 0; padding: 0 0 0 18px; display: flex; flex-direction: column; gap: 4px; color: var(--ink); font-size: var(--text-md); line-height: var(--leading); }
+.explain-list li::marker { color: var(--ink-3); }
+.explain-list[data-kind='did'] { color: var(--ink-2); }
+.explain-list[data-kind='did'] p { margin: 0; }
+.failure[data-verdict='unverified'] .result-mark { color: var(--attention); }
+.failure-next { margin: var(--s-3) 0 0; font-size: var(--text-sm); color: var(--ink-2); }
+
+.run-steps { margin-top: var(--s-3); }
+.run-steps-toggle {
+  display: inline-flex; align-items: center; gap: 6px; padding: 2px 0;
+  font-size: var(--text-sm); color: var(--ink-3);
+}
+.run-steps-toggle:hover { color: var(--ink); }
+.run-steps-chevron { display: inline-block; transition: transform var(--t-fast) var(--ease); }
+.run-steps[data-open='true'] .run-steps-chevron { transform: rotate(90deg); }
+.steps { list-style: none; margin: var(--s-2) 0 0; padding: 0 0 0 4px; position: relative; }
+.steps::before { content: ''; position: absolute; left: 7px; top: 8px; bottom: 8px; width: 1px; background: var(--line); }
+.step { position: relative; display: grid; grid-template-columns: 16px minmax(0, 1fr) auto; gap: 10px; padding: 5px 0; animation: fade-in var(--t) var(--ease) both; }
+.step-dot { width: 7px; height: 7px; margin: 6px 0 0 1px; border-radius: 50%; background: var(--settled); box-shadow: 0 0 0 3px var(--ground); position: relative; }
+.step[data-tone='good'] .step-dot { background: var(--good); }
+.step[data-tone='problem'] .step-dot { background: var(--failed); }
+.step[data-tone='you'] .step-dot { background: var(--attention); }
+.step-body { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.step-text { font-size: var(--text-sm); color: var(--ink); }
+.step-agent { margin-right: 6px; padding: 0 6px; border-radius: 4px; background: var(--well); color: var(--ink-2); font-size: var(--text-xs); }
+.step-detail { font-size: var(--text-sm); color: var(--ink-3); line-height: 1.45; }
+.step[data-tone='problem'] .step-detail { color: var(--ink-2); }
+.step-time { font-size: var(--text-xs); color: var(--ink-3); padding-top: 2px; }
+
+/* ---- delegation in the conversation ------------------------------------ */
+
+.deleg {
+  margin: var(--s-3) 0 0; padding: var(--s-3) var(--s-4) var(--s-4);
+  border-radius: var(--radius-lg); background: var(--surface);
+  border: 1px solid var(--line);
+}
+.deleg[data-live='true'] { border-color: color-mix(in srgb, var(--executing) 35%, var(--line)); }
+.deleg-head { display: flex; align-items: center; gap: 8px; color: var(--ink-2); font-size: var(--text-sm); }
+.deleg-head .icon { color: var(--accent); }
+.deleg-title { flex: 1; color: var(--ink); font-weight: 600; }
+.deleg-sub { color: var(--ink-3); font-weight: 400; }
+
+.deleg-tree { display: flex; flex-direction: column; align-items: flex-start; margin-top: var(--s-3); }
+.deleg-lead, .deleg-agent {
+  display: flex; align-items: center; gap: 10px; width: 100%; min-width: 0;
+  padding: 7px 12px; border-radius: 9px; background: var(--raised);
+  border: 1px solid var(--line); font-size: var(--text-sm); color: var(--ink); text-align: left;
+  transition: border-color var(--t-fast) var(--ease), background var(--t-fast) var(--ease);
+}
+.deleg-lead { width: auto; font-weight: 600; position: relative; z-index: 1; border-color: color-mix(in srgb, var(--accent) 40%, var(--line)); }
+.deleg-lead:hover, .deleg-agent:hover { border-color: var(--state); background: var(--overlay); }
+.deleg-state, .deleg-meta { margin-left: auto; color: var(--ink-3); font-size: var(--text-xs); font-weight: 400; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.deleg-lead .deleg-state { margin-left: 4px; }
+.deleg-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.deleg-lead .deleg-name { flex: none; }
+.deleg-dot {
+  display: inline-grid; place-items: center; flex: none; width: 12px; height: 12px; border-radius: 50%;
+  background: var(--state); color: var(--ink-inverse);
+}
+
+/* The trunk runs down from the lead; each agent hangs off it on its own
+   elbow, and work visibly travels along the elbow while that agent is busy. */
+.deleg-row {
+  list-style: none; margin: 0 0 0 17px; padding: 6px 0 0 0; width: calc(100% - 17px);
+  display: flex; flex-direction: column; gap: 6px; position: relative;
+}
+.deleg-row::before {
+  content: ''; position: absolute; left: 0; top: 0; bottom: 18px; width: 1px; background: var(--line-strong);
+  transform-origin: top; animation: trunk-in 480ms var(--ease) both;
+}
+.deleg-branch {
+  position: relative; display: flex; align-items: center; min-width: 0; padding-left: 22px;
+  animation: branch-in 460ms var(--ease) both; animation-delay: calc(160ms + var(--i) * 90ms);
+}
+.deleg-wire {
+  position: absolute; left: 0; top: 50%; width: 22px; height: 1px; background: var(--line-strong); overflow: hidden;
+}
+.deleg-branch[data-busy='true'] .deleg-wire { background: color-mix(in srgb, var(--executing) 45%, transparent); }
+.deleg-branch[data-busy='true'] .deleg-pulse {
+  position: absolute; top: -1px; width: 7px; height: 3px; border-radius: 2px; background: var(--executing);
+  animation: flow-along 1000ms linear infinite;
+}
+.deleg-branch[data-busy='true'] .deleg-dot { animation: dot-pulse 1600ms ease-in-out infinite; }
+.deleg-branch[data-busy='true'] .deleg-agent { border-color: color-mix(in srgb, var(--executing) 45%, var(--line)); }
+.deleg-branch[data-tone='settled'] .deleg-agent { color: var(--ink-2); }
+
+@keyframes trunk-in { from { transform: scaleY(0); } }
+@keyframes flow-along { from { left: -7px; } to { left: 22px; } }
+@keyframes branch-in { from { opacity: 0; transform: translateX(-8px); } }
+@keyframes dot-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--executing) 55%, transparent); }
+  50% { box-shadow: 0 0 0 5px color-mix(in srgb, var(--executing) 0%, transparent); }
+}
+
+/* ---- the full chart ----------------------------------------------------- */
+
+.edge-group .edge { stroke: var(--line-strong); transition: stroke var(--t) var(--ease); }
+.edge-group .edge[data-state='COMPLETE'] { stroke: color-mix(in srgb, var(--good) 45%, var(--line-strong)); }
+.edge-group .edge[data-state='FAILED'] { stroke: color-mix(in srgb, var(--failed) 45%, var(--line-strong)); }
+.edge-flow {
+  fill: none; stroke: var(--executing); stroke-linecap: round;
+  stroke-dasharray: 4 14; animation: edge-flow 900ms linear infinite; opacity: 0.9;
+  filter: drop-shadow(0 0 3px color-mix(in srgb, var(--executing) 60%, transparent));
+}
+@keyframes edge-flow { to { stroke-dashoffset: -18; } }
+
+/* The one orchestrated moment: when the chart opens, the organization
+   assembles — the lead, then each level of delegation, lines drawing down. */
+.graph-canvas[data-entering='true'] .node-card { animation: card-in 560ms var(--ease) both; animation-delay: calc(var(--depth) * 180ms); }
+.graph-canvas[data-entering='true'] .edge { stroke-dasharray: var(--len); animation: draw-edge 620ms ease-out both; animation-delay: calc(var(--depth) * 180ms - 120ms); }
+@keyframes card-in { from { opacity: 0; transform: translateY(-10px) scale(0.97); } }
+
+.node-card { border-radius: 10px !important; background: var(--raised) !important; border-color: var(--line) !important; border-left-width: 3px !important; border-left-color: var(--state) !important; }
+.node-card[data-lead='true'] { box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 40%, transparent), var(--shadow-float); }
+.node-card[data-state='COMPLETE'] { transition: box-shadow 600ms var(--ease); }
+.node-name { display: flex; align-items: center; justify-content: space-between; gap: 6px; font-size: var(--text-sm); font-weight: 600; color: var(--ink); }
+.node-card .node-goal { font-size: var(--text-xs); color: var(--ink-3); font-weight: 400; }
+.node-done { color: var(--good); font-size: 12px; animation: pop-in 400ms var(--ease); }
+
+.scrub-play {
+  height: 26px; padding: 0 10px; border-radius: 6px; flex: none;
+  background: var(--accent-soft); color: var(--accent); font-size: var(--text-xs); font-weight: 600;
+}
+.scrub-play:hover { background: var(--accent); color: var(--ink-inverse); }
+
+@media (prefers-reduced-motion: reduce) {
+  .deleg-branch, .deleg-row::before, .graph-canvas[data-entering='true'] .node-card,
+  .graph-canvas[data-entering='true'] .edge, .step { animation: none; }
+  .deleg-branch[data-busy='true'] .deleg-pulse, .edge-flow, .deleg-branch[data-busy='true'] .deleg-dot { animation: none; }
+}

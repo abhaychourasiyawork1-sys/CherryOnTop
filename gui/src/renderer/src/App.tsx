@@ -515,7 +515,6 @@ export function App() {
         onSection={(next) => (next === 'chat' ? navigate(parentOf(view)) : openSection(next))}
         open={{ files: openKinds.has('files'), plan: openKinds.has('plan'), memory: openKinds.has('memory') }}
         onTool={onTool}
-        organized={scoped.organized}
         state={state}
         onState={state === 'attention' || wsAttention > 0 ? () => surfaces.open('attention') : undefined}
       />

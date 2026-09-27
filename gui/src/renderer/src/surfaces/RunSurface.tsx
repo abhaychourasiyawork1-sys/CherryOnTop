@@ -6,6 +6,9 @@ import { isTerminal } from '../lib/state.js';
 import { StopTask } from '../panels/CaseHeader.js';
 import type { OrgNode } from '../lib/useOrg.js';
 import type { OrgEvent } from '../lib/eventLog.js';
+import { DelegationStrip } from './DelegationStrip.js';
+import { RunSteps } from './ResultSurface.js';
+import { caseStamp } from '../lib/useCase.js';
 
 const HEADLINE: Partial<Record<Phase, string>> = {
   investigating: 'CherryOnTop is looking into it',
@@ -63,12 +66,14 @@ export function RunLine(props: {
         </ol>
       )}
       {now && <p className="runline-now">{now}</p>}
+      <DelegationStrip root={props.root} />
       <div className="reply-actions">
         <button type="button" className="quiet-link" onClick={props.onWatch}>Watch the work</button>
         <button type="button" className="quiet-link" onClick={props.onPlan}>Plan</button>
         {live.length > 1 && <span className="reply-aside">{live.length} agents on it</span>}
         <span className="reply-end"><StopTask caseId={props.root.id} running={Math.max(1, live.length)} onStopped={props.onStopped} /></span>
       </div>
+      <RunSteps root={props.root} stamp={caseStamp(props.subtree)} />
     </div>
   );
 }

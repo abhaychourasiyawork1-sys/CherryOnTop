@@ -10,6 +10,7 @@ import { ErrorBoundary } from './ErrorBoundary.js';
 import { daemon } from '../lib/client.js';
 import { useDaemonQuery } from '../lib/useDaemonQuery.js';
 import { titleOf } from '../lib/run.js';
+import { useCaseEvents } from '../lib/useCase.js';
 import type { Section } from '../lib/view.js';
 import type { Envelope as EnvelopeData } from '../lib/mandates.js';
 
@@ -62,6 +63,10 @@ function Agents({ caseId, nodeId }: { caseId: string; nodeId: string | null }) {
   const ws = useWorkspace();
   const nodes = ws.activeSubtree;
   const selected = nodes.find((node) => node.id === nodeId) ?? null;
+  // The run's whole history, not just the live window: Replay needs every
+  // moment the organization changed, including those of a finished run.
+  const scope = useMemo(() => new Set(nodes.map((n) => n.id)), [nodes]);
+  const { events } = useCaseEvents(caseId, ws.activeStamp, ws.org.events, scope);
   const approvals = useMemo(() => {
     const ids = new Set(nodes.map((n) => n.id));
     return ws.org.approvals.filter((a) => ids.has(a.nodeId));
@@ -88,7 +93,7 @@ function Agents({ caseId, nodeId }: { caseId: string; nodeId: string | null }) {
           key={caseId}
           nodes={nodes}
           approvals={approvals}
-          events={ws.org.events}
+          events={events}
           freshNodeIds={fresh}
           selectedId={nodeId}
           onSelect={(id) => ws.openSection('agents', id)}

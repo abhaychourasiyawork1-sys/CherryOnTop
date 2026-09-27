@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { OrgGraph } from '../graph/OrgGraph.js';
 import { projectTo, momentsOf } from '../lib/timetravel.js';
 import { money, when } from '../lib/format.js';
@@ -34,6 +34,28 @@ export function Organization(props: Props) {
 
   const live = index === null || moments.length === 0;
   const moment = live ? null : projectTo(props.nodes, scoped, moments[Math.min(index, moments.length - 1)]);
+  const previous = !live && index! > 0 ? projectTo(props.nodes, scoped, moments[Math.min(index! - 1, moments.length - 1)]) : null;
+
+  // Replay: step through every moment the organization changed, so you watch
+  // it delegate, staff and settle the way it actually happened.
+  const [playing, setPlaying] = useState(false);
+  useEffect(() => {
+    if (!playing) return;
+    const timer = setTimeout(() => {
+      setIndex((current) => {
+        const next = (current ?? 0) + 1;
+        if (next >= moments.length) { setPlaying(false); return null; }
+        return next;
+      });
+    }, 700);
+    return () => clearTimeout(timer);
+  }, [playing, index, moments.length]);
+  // While replaying, whoever appears at this moment is the one to animate in.
+  const replayFresh = useMemo(() => {
+    if (!moment) return EMPTY;
+    const before = new Set((previous?.nodes ?? []).map((n) => n.id));
+    return new Set(moment.nodes.filter((n) => !before.has(n.id)).map((n) => n.id));
+  }, [moment, previous]);
 
   const shown = moment?.nodes ?? props.nodes;
   const shownApprovals = moment
@@ -50,7 +72,7 @@ export function Organization(props: Props) {
         // Never animate a spawn while scrubbing: a node "appearing" as you drag
         // backwards would read as it being created, which is the opposite of
         // what happened.
-        freshNodeIds={live ? props.freshNodeIds : EMPTY}
+        freshNodeIds={live ? props.freshNodeIds : playing ? replayFresh : EMPTY}
         selectedId={props.selectedId}
         onSelect={props.onSelect}
         onOpen={props.onSelect}
@@ -58,6 +80,15 @@ export function Organization(props: Props) {
 
       {moments.length > 1 && (
         <div className="scrubber">
+          <button
+            type="button"
+            className="scrub-play"
+            aria-pressed={playing}
+            onClick={() => { if (playing) setPlaying(false); else { setIndex(0); setPlaying(true); } }}
+            title={playing ? 'Pause the replay' : 'Replay how this organization formed'}
+          >
+            {playing ? '❙❙ Pause' : '▶ Replay'}
+          </button>
           <button
             type="button"
             className="scrub-now"
@@ -75,7 +106,7 @@ export function Organization(props: Props) {
             step={1}
             value={index ?? moments.length - 1}
             aria-label="Replay this organization"
-            onChange={(event) => setIndex(Number(event.target.value))}
+            onChange={(event) => { setPlaying(false); setIndex(Number(event.target.value)); }}
           />
 
           <span className="scrub-readout figure">
