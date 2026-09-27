@@ -64,5 +64,8 @@ export function needsProofOnly(lastValidation: unknown): boolean {
  *  Such a run ends with its own report instead of being run again. */
 export function unprovableWithoutChanges(validation: { passed?: boolean; reasonCodes?: string[] }, changedFiles: boolean): boolean {
   if (changedFiles || validation.passed !== false || !Array.isArray(validation.reasonCodes)) return false;
-  return validation.reasonCodes.includes('V2:no_observed_verification');
+  // Only a run that finished and reported: a crashed attempt produced nothing,
+  // and retrying it is exactly what the retry is for.
+  return validation.reasonCodes.includes('V1:durable_outcome_produced')
+    && validation.reasonCodes.includes('V2:no_observed_verification');
 }

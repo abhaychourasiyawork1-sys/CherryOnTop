@@ -51,5 +51,7 @@ describe('unprovableWithoutChanges', () => {
     expect(unprovableWithoutChanges(unproven, true)).toBe(false);
     expect(unprovableWithoutChanges({ passed: false, reasonCodes: ['V1:no_durable_outcome'] }, false)).toBe(false);
     expect(unprovableWithoutChanges({ passed: true, reasonCodes: [] }, false)).toBe(false);
+    // A crash leaves no report; it must still be retried.
+    expect(unprovableWithoutChanges({ passed: false, reasonCodes: ['V1:no_durable_outcome', 'V2:no_observed_verification'] }, false)).toBe(false);
   });
 });
