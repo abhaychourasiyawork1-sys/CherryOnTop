@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { createDb } from '../db/client.js';
+import { createDb } from './db/client.js';
 import {
   createWorkspace,
   getWorkspace,
