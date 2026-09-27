@@ -24,6 +24,7 @@ export function SettingsDialog(props: {
   mandates: Mandate[];
   mandateId: string | null;
   onMandate: (id: string) => void;
+  onManageMandates: () => void;
   notifyOnFinish: boolean;
   onNotifyOnFinish: (on: boolean) => void;
 }) {
@@ -89,7 +90,8 @@ export function SettingsDialog(props: {
             </label>
           )}
           <p className="settings-note">
-            {props.mandates.find((m) => m.id === props.mandateId)?.description ?? ''}
+            {props.mandates.find((m) => m.id === props.mandateId)?.description ?? ''}{' '}
+            <button type="button" className="quiet-link" onClick={props.onManageMandates}>Create or edit mandates</button>
           </p>
           <label className="settings-row">
             <span>Tell me when work finishes while the window is in the background</span>

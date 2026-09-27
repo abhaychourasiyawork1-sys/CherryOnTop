@@ -23,7 +23,7 @@ interface Props {
   onStop?: () => Promise<void>;
   /** Shown first in the footer — on Home, where the work will happen. */
   leading?: React.ReactNode;
-  /** Opens the plain-words authority summary for this Workspace. */
+  /** Opens the Mandates page, where mandates are created and edited. */
   onAuthority?: () => void;
   /** Why work cannot be started here. Questions still work. */
   blockedReason: string | null;
@@ -36,6 +36,9 @@ interface Props {
 }
 
 /** Window event that puts text in the composer (Edit request, New work). */
+/** The picker entry that opens the Mandates page instead of choosing one. */
+const MANAGE = '__manage__';
+
 export const COMPOSE_EVENT = 'cot:compose';
 
 export function compose(text: string | null = null): void {
@@ -207,16 +210,20 @@ export function Composer(props: Props) {
           {props.mandates.length > 0 && (
             <span className="authority-chip" title="What new work is allowed to do">
               {props.onAuthority ? (
-                <button type="button" className="authority-open" aria-label="Review what new work may do" title="Review what new work may do" onClick={props.onAuthority}>
+                <button type="button" className="authority-open" aria-label="Create or edit mandates" title="Create or edit mandates" onClick={props.onAuthority}>
                   <Icon name="shield" size={13} />
                 </button>
               ) : <Icon name="shield" size={13} />}
               <select
                 value={props.mandateId ?? ''}
                 aria-label="Mandate new work runs under"
-                onChange={(event) => props.onSelectMandate(event.target.value)}
+                onChange={(event) => {
+                  if (event.target.value === MANAGE) props.onAuthority?.();
+                  else props.onSelectMandate(event.target.value);
+                }}
               >
                 {props.mandates.map((mandate) => <option key={mandate.id} value={mandate.id}>{mandate.name}</option>)}
+                {props.onAuthority && <option value={MANAGE}>Create or edit mandates…</option>}
               </select>
             </span>
           )}
@@ -265,7 +272,7 @@ export function Composer(props: Props) {
             <button type="button" className="quiet-link" onClick={() => props.onSelectMandate(githubMandate.id)}>
               Use {githubMandate.name} for this
             </button>
-          ) : 'Add GitHub to a mandate under Authority to allow it.'}
+          ) : 'Turn on “Act on GitHub as you” in a mandate to allow it.'}
         </p>
       )}
       {workBlocked && text.trim() && (

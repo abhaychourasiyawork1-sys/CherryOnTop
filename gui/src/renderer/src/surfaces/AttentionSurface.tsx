@@ -5,7 +5,6 @@ import { WhyPanel } from '../panels/WhyPanel.js';
 import { groupAttention, type AttentionGroup, type AttentionItem } from '../lib/attention.js';
 import { titleOf } from '../lib/run.js';
 import { ago, money } from '../lib/format.js';
-import type { BranchConflict } from '../lib/conversations.js';
 
 export function useAttention(revision: number) {
   return useDaemonQuery<AttentionItem[]>(() => daemon().case.attention.query() as Promise<AttentionItem[]>, [revision]);
@@ -13,11 +12,9 @@ export function useAttention(revision: number) {
 
 interface Props {
   items: AttentionItem[];
-  conflicts?: BranchConflict[];
   /** Takes the person to the run (and agent) this is about. */
   onOpen: (caseId: string, nodeId?: string) => void;
   onChanged: () => void;
-  branchName?: (branchId: string) => string;
 }
 
 /** What needs a person, grouped, and what is merely worth knowing, kept
@@ -28,28 +25,15 @@ export function AttentionSurface(props: Props) {
   const needs = groups.filter((group) => group.level === 'attention');
   const inform = groups.filter((group) => group.level === 'inform');
   const [showInform, setShowInform] = useState(needs.length === 0);
-  const conflicts = props.conflicts ?? [];
 
-  if (groups.length === 0 && conflicts.length === 0) {
+  if (groups.length === 0) {
     return <p className="surface-empty">Nothing needs you. Work that can continue on its own is continuing.</p>;
   }
 
   return (
     <div className="attention2">
-      {(needs.length > 0 || conflicts.length > 0) && (
+      {needs.length > 0 && (
         <ul className="attention-groups">
-          {conflicts.map((conflict) => (
-            <li key={`conflict:${conflict.file}`} className="attention-group" data-level="attention">
-              <p className="attention-title">Two conversations changed {conflict.file.replace(/^\/workspace\//, '')}</p>
-              <p className="attention-detail2">
-                {props.branchName?.(conflict.a.branchId) ?? 'One'} and {props.branchName?.(conflict.b.branchId) ?? 'another'} went different ways. A person should decide which to keep; reverting the other is recorded as a new run.
-              </p>
-              <div className="reply-actions">
-                <button type="button" className="button" onClick={() => props.onOpen(conflict.a.caseId)}>Open the first</button>
-                <button type="button" className="button" onClick={() => props.onOpen(conflict.b.caseId)}>Open the second</button>
-              </div>
-            </li>
-          ))}
           {needs.map((group) => <Group key={group.key} group={group} onOpen={props.onOpen} onChanged={props.onChanged} />)}
         </ul>
       )}

@@ -9,8 +9,9 @@ import { useWorkspace } from '../shell/WorkspaceContext.js';
 /** How many recent runs Workspace memory is built from. */
 const RECENT = 12;
 
-/** What the organization understands about this Workspace. Scoped to it by
- *  construction — every item comes from one of its runs. The organization-wide
+/** What this session remembers. Two layers: the conversation itself — the
+ *  exact recap the next message will be handed — and what its runs learned.
+ *  Scoped by construction: every item comes from one of the session's runs. The organization-wide
  *  record (how runtimes perform across every Workspace) is a separate scope,
  *  opened deliberately, never mixed in. */
 export function MemorySurface() {
@@ -18,6 +19,12 @@ export function MemorySurface() {
   const recent = ws.workspace.cases.slice(0, RECENT);
   const stamp = recent.map((root) => root.updatedAt).join('|');
   const [scope, setScope] = useState<'workspace' | 'global'>('workspace');
+  const [showRecap, setShowRecap] = useState(false);
+  const sessionId = ws.session?.id ?? null;
+  const recap = useDaemonQuery<string>(
+    () => (sessionId ? daemon().session.memory.query({ id: sessionId }).then((r) => (r as { text: string }).text) : Promise.resolve('')),
+    [sessionId, stamp],
+  );
 
   const records = useDaemonQuery<CaseRecord[]>(
     () => Promise.all(recent.map((root) =>
@@ -30,9 +37,28 @@ export function MemorySurface() {
   return (
     <div className="memory2">
       <div className="segmented" role="tablist" aria-label="Memory scope">
-        <button type="button" role="tab" aria-selected={scope === 'workspace'} onClick={() => setScope('workspace')}>This Workspace</button>
+        <button type="button" role="tab" aria-selected={scope === 'workspace'} onClick={() => setScope('workspace')}>This session</button>
         <button type="button" role="tab" aria-selected={scope === 'global'} onClick={() => setScope('global')}>All Workspaces</button>
       </div>
+
+      {scope === 'workspace' && (
+        <section className="memory-section session-recap" aria-labelledby="mem-conversation">
+          <h3 id="mem-conversation" className="section-label">Conversation</h3>
+          <p className="surface-note">
+            {ws.workspace.cases.length === 0
+              ? 'Nothing yet. Once this session has a message, every later one is handed what was asked and answered before it.'
+              : `Your next message is handed a recap of ${ws.workspace.cases.length === 1 ? 'the earlier turn' : `the ${ws.workspace.cases.length} earlier turns`}: the first and latest in full, the ones between condensed.`}
+          </p>
+          {recap.data && (
+            <>
+              <button type="button" className="quiet-link" aria-expanded={showRecap} onClick={() => setShowRecap((v) => !v)}>
+                {showRecap ? 'Hide the recap' : 'See exactly what it is told'}
+              </button>
+              {showRecap && <pre className="recap-text">{recap.data}</pre>}
+            </>
+          )}
+        </section>
+      )}
 
       {scope === 'global' ? (
         <div className="memory-global">

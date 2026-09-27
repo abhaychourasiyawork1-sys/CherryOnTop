@@ -786,15 +786,6 @@ button {
   overflow-y: auto;
   padding: calc(var(--chrome-inset) + 12px) 40px 40px;
 }
-
-.sheet-title {
-  font-size: 20px;
-  font-weight: 500;
-  letter-spacing: -0.02em;
-  margin: 0 0 6px;
-}
-
-.sheet-lead { color: var(--ink-quiet); max-width: 62ch; margin: 0 0 28px; }
 .sheet .graph-empty { margin: 0 auto; }
 
 .record-risk {
@@ -1256,8 +1247,6 @@ button {
   transition: border-color 140ms ease;
 }
 .case-mandate-toggle:hover { border-color: var(--ink-faint); }
-
-.mandate-mark { color: var(--at-risk); }
 .case-mandate-name { color: var(--ink); font-weight: 500; }
 .case-mandate-summary { flex: 1; font-size: 12px; color: var(--ink-faint); }
 .disclosure { color: var(--ink-faint); }
@@ -1493,128 +1482,6 @@ button {
   overflow-y: auto;
   padding: calc(var(--chrome-inset) + 14px) 40px 48px;
 }
-
-.sheet-head {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 24px;
-  margin-bottom: 22px;
-}
-.sheet-head h1 { font-size: 22px; font-weight: 500; letter-spacing: -0.02em; margin: 0 0 6px; }
-
-.mandate-layout {
-  display: grid;
-  grid-template-columns: minmax(240px, 320px) minmax(0, 1fr);
-  gap: 32px;
-  align-items: start;
-}
-
-.mandate-list { list-style: none; margin: 0; padding: 0; }
-.mandate-list > li { margin-bottom: 8px; }
-
-.mandate-card {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  width: 100%;
-  text-align: left;
-  padding: 11px 13px;
-  border: 1px solid var(--hairline);
-  border-radius: 6px;
-  transition: border-color 140ms ease, background 140ms ease;
-}
-.mandate-card:hover { border-color: var(--ink-faint); background: var(--panel); }
-.mandate-card[aria-current='true'] { border-color: var(--planning); background: var(--panel); }
-
-.mandate-card-head { display: flex; align-items: center; gap: 7px; }
-.mandate-name { color: var(--ink); font-weight: 500; }
-.mandate-desc { color: var(--ink-quiet); font-size: 12px; line-height: 1.4; }
-.mandate-summary { color: var(--ink-faint); font-size: 11px; }
-
-.mandate-card-actions { display: flex; gap: 12px; padding: 4px 13px 0; font-size: 12px; }
-
-.editor { max-width: 62ch; }
-
-.field { display: block; margin-bottom: 18px; }
-.field > span, .field > legend {
-  display: block;
-  font-size: 12px;
-  color: var(--ink-faint);
-  margin-bottom: 6px;
-}
-.field input[type='text'], .field input:not([type]), .field textarea {
-  width: 100%;
-  background: var(--panel);
-  border: 1px solid var(--hairline);
-  border-radius: 5px;
-  padding: 7px 10px;
-  color: var(--ink);
-  font: inherit;
-  resize: vertical;
-}
-.field input:focus, .field textarea:focus { outline: none; border-color: var(--ink-faint); }
-.field input[type='range'] { width: 100%; accent-color: var(--planning); }
-.field-inline { display: flex; align-items: center; gap: 10px; }
-.field-inline > span { margin: 0; }
-
-fieldset.field { border: none; margin: 0 0 18px; padding: 0; }
-
-.tool-grid { display: flex; flex-wrap: wrap; gap: 6px; }
-
-.field-warn {
-  font-size: 12px;
-  color: var(--at-risk);
-  margin: 8px 0 0;
-  line-height: 1.45;
-}
-
-.field-hint {
-  font-size: 12px;
-  color: var(--ink-faint);
-  margin: 8px 0 0;
-  line-height: 1.45;
-}
-
-.field-slider-number { display: flex; align-items: center; gap: 10px; }
-.field-slider-number input[type='range'] { flex: 1; }
-.field-slider-number input[type='number'] {
-  width: 84px;
-  flex: none;
-  background: var(--panel);
-  border: 1px solid var(--hairline);
-  border-radius: 5px;
-  padding: 5px 8px;
-  color: var(--ink);
-  font: inherit;
-}
-.field-slider-number input[type='number']:focus { outline: none; border-color: var(--ink-faint); }
-
-.field-inline-add { display: flex; gap: 8px; margin-top: 8px; }
-.field-inline-add input {
-  flex: 1;
-  background: var(--panel);
-  border: 1px solid var(--hairline);
-  border-radius: 5px;
-  padding: 7px 10px;
-  color: var(--ink);
-  font: inherit;
-}
-.field-inline-add input:focus { outline: none; border-color: var(--ink-faint); }
-
-.editor-actions { display: flex; gap: 8px; margin-bottom: 28px; }
-.editor-actions .approve { background: var(--ink); color: var(--ground); border-radius: 5px; padding: 5px 16px; font-weight: 500; }
-
-.simulator {
-  border: 1px solid var(--hairline);
-  border-radius: 8px;
-  padding: 16px 18px;
-  background: var(--panel);
-}
-.simulator + .simulator { margin-top: 14px; }
-.simulator h3 { font-size: 13px; font-weight: 500; margin: 0; color: var(--ink); }
-.simulator-note { font-size: 12px; color: var(--ink-faint); margin: 14px 0 0; }
-.simulator-compare { opacity: 0.75; }
 
 /* ====================================================================== */
 /*  Organization — the graph, plus its own history                        */

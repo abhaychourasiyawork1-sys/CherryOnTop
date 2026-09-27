@@ -204,11 +204,6 @@ function MessageActions({ root, answer }: { root: OrgNode; answer: string | null
           <Icon name="refresh" size={14} />
         </button>
       )}
-      {ws.branchFrom && (
-        <button type="button" className="icon-button" aria-label="Start a focused conversation from this run" title="Branch from here" onClick={() => ws.branchFrom!(root.id)}>
-          <Icon name="branch" size={14} />
-        </button>
-      )}
       {error && <span className="inline-error">{error}</span>}
     </div>
   );

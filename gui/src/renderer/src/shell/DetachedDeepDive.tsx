@@ -31,7 +31,7 @@ export function DetachedDeepDive({ target }: { target: string }) {
   }
 
   const api: WorkspaceApi = {
-    org, workspace, activeCase: root, activeSubtree: subtree, activeStamp: caseStamp(subtree),
+    org, workspace, session: null, activeCase: root, activeSubtree: subtree, activeStamp: caseStamp(subtree),
     focusCase: () => {}, openSection: () => {}, surfaces,
     blockedReason: 'Start work from the main window.',
     mandates: [], mandateId: null, setMandateId: () => {},
@@ -42,6 +42,7 @@ export function DetachedDeepDive({ target }: { target: string }) {
     },
     resume: async (nodeId) => { await daemon().node.resume.mutate({ nodeId }); org.refresh(); },
     contextRefs: [],
+    openMandates: () => {},
   };
 
   return (

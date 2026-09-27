@@ -26,6 +26,7 @@ import { buildPlanPrompt, parseSubgoals } from '../intelligence/plan.js';
 import { buildSynthesisPrompt, type ChildReport } from '../intelligence/synthesize.js';
 import { decideIntegration } from '../intelligence/integrate-results.js';
 import { answerOf } from '../db/queries/answers.js';
+import { sessionMemoryFor } from '../db/queries/sessions.js';
 import { recordRunOutcome, getRuntimeStats, recordStrategyOutcome, listMemory } from '../db/queries/memory.js';
 import { getCostForNodes } from '../db/queries/stats.js';
 import { resolveCredentials, checkCredentials, gitIdentity, githubCredentials, grantsGitHub } from '../execution/credentials.js';
@@ -1479,6 +1480,16 @@ function drainTiming(nodeId: string): { queuedMs: number; dispatchMs: number } {
   return timing;
 }
 
+/** What a root run in a chat session is told about the session's earlier
+ *  turns, recorded as an event so the receipt shows what the run was given.
+ *  Empty for children (they get their parent's handoff instead) and for runs
+ *  outside a session. */
+function sessionPreface(db: Db, nodeId: string): string {
+  const node = getNode(db, nodeId);
+  if (!node?.sessionId || node.parentId) return '';
+  return sessionMemoryFor(db, node.sessionId, nodeId);
+}
+
 async function planSubgoals(db: Db, nodeId: string, goal: string, maxChildren: number): Promise<string[]> {
   const node = getNode(db, nodeId);
   const worktreePath = node?.repoPath ?? process.env.ORG_WORKTREE_PATH;
@@ -1544,9 +1555,9 @@ async function planSubgoals(db: Db, nodeId: string, goal: string, maxChildren: n
     const roleSystemPrompt = rolePromptsEnabled() && honoursSystemPrompt(adapter)
       ? buildRolePrompt('plan')
       : undefined;
-    const planPrompt = roleSystemPrompt
-      ? buildPlanPrompt(goal, maxChildren)
-      : `${buildPlanPrompt(goal, maxChildren)}\n\n${buildRolePrompt('plan')}`;
+    const preface = sessionPreface(db, nodeId);
+    const basePlan = preface ? `${preface}\n\n${buildPlanPrompt(goal, maxChildren)}` : buildPlanPrompt(goal, maxChildren);
+    const planPrompt = roleSystemPrompt ? basePlan : `${basePlan}\n\n${buildRolePrompt('plan')}`;
     // The planner used to start from nothing and spend its turns discovering
     // the repository — the single most expensive coordination dispatch there
     // is, and it re-derives what the scan already knows. It splits the goal, so
@@ -1957,7 +1968,11 @@ function productionMachine(db: Db, nodeId: string) {
           }]);
         }
         let usedModel = modelFor(adapter, modelChoiceFor(db, nodeId, 'execute', input.goal));
-        const reuseKey = resultReuseKey(input.goal, grant, usedModel);
+        // A follow-up in a chat means something only against the turns before
+        // it — "what did you change?" — so the conversation is part of the key.
+        const conversation = sessionPreface(db, nodeId);
+        const cacheGoal = conversation ? `${conversation}\n\n${input.goal}` : input.goal;
+        const reuseKey = resultReuseKey(cacheGoal, grant, usedModel);
         // Validity is asked of each candidate answer in turn, newest first:
         // does the code it actually read still say what it said?
         // Never on a retry after this node failed validation: the answer that
@@ -2104,8 +2119,12 @@ function productionMachine(db: Db, nodeId: string) {
         // name.
         const envelope = getAgentEnvelope(db, nodeId);
         const envelopeText = envelope ? renderEnvelope(envelope) : '';
-        const goalWithHandoff = envelopeText
-          ? `${envelopeText}\n\n${goalWithConstraints}`
+        // A root run in a chat session is told the session so far, the same way a
+        // child is told its parent's handoff; a child never is (it has one).
+        const preface = envelopeText || (proofOnly ? '' : conversation);
+        if (preface && !envelopeText) publishProgress(db, nodeId, 'Continuing the conversation with what earlier turns in this session asked and found');
+        const goalWithHandoff = preface
+          ? `${preface}\n\n${goalWithConstraints}`
           : goalWithConstraints;
         // The economic boundary. Asked once, here, at the point the dispatch is
         // assembled — and answering "nothing to do" leaves `goalForDispatch`
@@ -2231,7 +2250,7 @@ function productionMachine(db: Db, nodeId: string) {
         // an answer that was produced and paid for must not be thrown away
         // because writing it down failed. The retry above can change which model
         // ran, so the key is recomputed against the one that did.
-        const storeKey = usedModel === undefined ? resultReuseKey(input.goal, grant, undefined) : reuseKey;
+        const storeKey = usedModel === undefined ? resultReuseKey(cacheGoal, grant, undefined) : reuseKey;
         if (storeKey && result.succeeded) {
           const text = finalResultText(result.events);
           if (text) {

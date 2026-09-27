@@ -71,6 +71,13 @@
       "when": 1790483043020,
       "tag": "0009_ambitious_silverclaw",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "6",
+      "when": 1790520337780,
+      "tag": "0010_short_shriek",
+      "breakpoints": true
     }
   ]
 }

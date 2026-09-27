@@ -37,6 +37,9 @@ const PATHS: Record<string, string> = {
   keyboard: 'M2 4.5h12v7H2zM4.5 7h.01M7 7h.01M9.5 7h.01M12 7h.01M5 9.5h6',
   arrowDown: 'M8 3v10M3.5 8.5 8 13l4.5-4.5',
   more: 'M3.5 8h.01M8 8h.01M12.5 8h.01',
+  trash: 'M3 4.5h10M6.5 4.5V3h3v1.5M4.5 4.5l.6 8.5a.5.5 0 0 0 .5.5h4.8a.5.5 0 0 0 .5-.5l.6-8.5',
+  folder: 'M2 4.5a1 1 0 0 1 1-1h3.2l1.3 1.5H13a1 1 0 0 1 1 1V12a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1z',
+  compose: 'M13 8.5V13a.5.5 0 0 1-.5.5h-9A.5.5 0 0 1 3 13V4a.5.5 0 0 1 .5-.5H8M11.5 2.5l2 2L8 10H6V8z',
 };
 
 export type IconName = keyof typeof PATHS;

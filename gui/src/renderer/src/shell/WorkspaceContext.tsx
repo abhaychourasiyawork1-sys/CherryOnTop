@@ -1,6 +1,7 @@
 import { createContext, useContext } from 'react';
 import type { Org, OrgNode } from '../lib/useOrg.js';
 import type { Workspace } from '../lib/workspaces.js';
+import type { Session } from '../lib/sessions.js';
 import type { LayoutApi } from '../lib/useLayout.js';
 import type { Section } from '../lib/view.js';
 import type { Mandate } from '../lib/mandates.js';
@@ -11,7 +12,11 @@ import type { ContextRef } from '../composer/ContextResolver.js';
  *  projection; the rest is UI state and the actions a surface may request. */
 export interface WorkspaceApi {
   org: Org;
+  /** The open session, seen as a Workspace of its own: `cases` holds only
+   *  this session's runs, so every surface is scoped to it. */
   workspace: Workspace;
+  /** Null until the first message creates the session. */
+  session: Session | null;
   /** The run the Workspace is focused on: what Plan, Decisions, Evidence and
    *  Agents describe. */
   activeCase: OrgNode | null;
@@ -31,10 +36,10 @@ export interface WorkspaceApi {
   resume: (nodeId: string) => Promise<void>;
   /** Detaches a Deep Dive into its own window, when running in Electron. */
   detach?: (target: string) => void;
-  /** Starts a focused conversation seeded with this run. */
-  branchFrom?: (caseId: string) => void;
   /** Context the composer should offer, from what is open. */
   contextRefs: ContextRef[];
+  /** Opens the Mandates page, on one mandate when given. */
+  openMandates: (id?: string | null) => void;
 }
 
 export const WorkspaceContext = createContext<WorkspaceApi | null>(null);

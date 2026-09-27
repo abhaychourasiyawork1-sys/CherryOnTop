@@ -7,9 +7,12 @@
  *  fourteen kilobytes. */
 export type Section = 'chat' | 'decisions' | 'runs' | 'agents' | 'evidence' | 'authority';
 
+/** Inside a Workspace you are always in one chat session — or, with
+ *  `sessionId` null, about to start one: the first message creates it. */
 export type View =
   | { name: 'home' }
-  | { name: 'workspace'; key: string; section: Section; caseId: string | null; nodeId: string | null };
+  | { name: 'mandates'; id: string | null }
+  | { name: 'workspace'; key: string; sessionId: string | null; section: Section; caseId: string | null; nodeId: string | null };
 
 /** The deeper organization views, revealed contextually. */
 export const ORGANIZATION: { id: Section; label: string }[] = [
@@ -32,14 +35,14 @@ export function inWorkspace(view: View): view is Extract<View, { name: 'workspac
   return view.name === 'workspace';
 }
 
-export function openWorkspace(key: string, caseId: string | null = null): View {
-  return { name: 'workspace', key, section: 'chat', caseId, nodeId: null };
+export function openSession(key: string, sessionId: string | null, caseId: string | null = null): View {
+  return { name: 'workspace', key, sessionId, section: 'chat', caseId, nodeId: null };
 }
 
 /** One level up: a deeper view returns to its Workspace's conversation, and
  *  the conversation returns Home. */
 export function parentOf(view: View): View {
-  if (view.name === 'home') return view;
+  if (view.name !== 'workspace') return { name: 'home' };
   if (view.section !== 'chat') return { ...view, section: 'chat', nodeId: null };
   return { name: 'home' };
 }

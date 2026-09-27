@@ -5,7 +5,6 @@ import { DeepDive } from '../surfaces/DeepDiveSurface.js';
 import { Organization } from '../panels/Organization.js';
 import { Inspector } from '../panels/Inspector.js';
 import { Cases } from '../panels/Cases.js';
-import { Mandates } from '../panels/Mandates.js';
 import { Envelope } from '../panels/Envelope.js';
 import { ErrorBoundary } from './ErrorBoundary.js';
 import { daemon } from '../lib/client.js';
@@ -115,7 +114,6 @@ function Agents({ caseId, nodeId }: { caseId: string; nodeId: string | null }) {
  *  runtime holds the mandate; this only shows it and edits what may be edited. */
 function AuthorityView() {
   const ws = useWorkspace();
-  const [advanced, setAdvanced] = useState(false);
   const mandate = ws.mandates.find((m) => m.id === ws.mandateId) ?? ws.mandates[0] ?? null;
   const envelope = useDaemonQuery<EnvelopeData | null>(
     () => (mandate
@@ -141,11 +139,10 @@ function AuthorityView() {
           </label>
         )}
         {envelope.data ? <Envelope envelope={envelope.data} /> : <p className="surface-empty">Reading what this mandate allows…</p>}
-        <button type="button" className="quiet-link" aria-expanded={advanced} onClick={() => setAdvanced((v) => !v)}>
-          {advanced ? 'Hide mandate details' : 'Edit mandates — tools, boundaries, spend, delegation'}
+        <button type="button" className="quiet-link" onClick={() => ws.openMandates(mandate?.id ?? null)}>
+          Edit {mandate?.name ?? 'mandates'} — tools, team, spend, instructions
         </button>
       </div>
-      {advanced && <div className="org-view-wide"><Mandates onChanged={ws.org.refresh} /></div>}
     </div>
   );
 }

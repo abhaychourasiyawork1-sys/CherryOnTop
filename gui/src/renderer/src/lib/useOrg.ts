@@ -20,6 +20,8 @@ export interface OrgNode {
   /** Set once a fresh sibling picked this (failed) node's work back up. See
    *  markNodeSuperseded, src/db/queries/nodes.ts. */
   supersededBy?: string | null;
+  /** The chat session this root run was asked in. */
+  sessionId?: string | null;
   createdAt: string;
   updatedAt: string;
   /** From node.overview: spend rolled up through this node's subtree, and how

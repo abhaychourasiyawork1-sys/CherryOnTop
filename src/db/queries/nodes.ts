@@ -24,6 +24,8 @@ export interface NodeRecord {
   /** Set once a fresh sibling was dispatched to pick this (failed) node's work
    *  back up. See `markNodeSuperseded`. */
   supersededBy?: string | null;
+  /** The chat session this root run was asked in. */
+  sessionId?: string | null;
   createdAt: string;
   updatedAt: string;
 }

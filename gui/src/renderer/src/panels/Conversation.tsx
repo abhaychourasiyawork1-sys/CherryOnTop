@@ -31,6 +31,8 @@ export interface AskExchange {
   result: AskResult;
   /** The run the question was about, so the answer sits under it. */
   caseId?: string | null;
+  /** The session it was asked in. */
+  sessionId?: string | null;
 }
 
 /** A question and its answer from the record — rows the runtime already
