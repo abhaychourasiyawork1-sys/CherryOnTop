@@ -64,6 +64,13 @@
       "when": 1789378689206,
       "tag": "0008_dynamic_economic_knowledge",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1790494200000,
+      "tag": "0009_desktop_workspace_foundation",
+      "breakpoints": true
     }
   ]
 }

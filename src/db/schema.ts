@@ -3,6 +3,49 @@ import type { NodeContract, Authority } from '../schemas/node-contract.js';
 import type { Commitment } from '../schemas/commitment.js';
 import type { Decision } from '../schemas/decision.js';
 
+export const workspaces = sqliteTable('workspaces', {
+  id: text('id').primaryKey(),
+  name: text('name').notNull(),
+  description: text('description').notNull().default(''),
+  settings: text('settings', { mode: 'json' }).$type<Record<string, unknown>>().notNull(),
+  status: text('status').notNull(),
+  createdAt: text('created_at').notNull(),
+  updatedAt: text('updated_at').notNull(),
+});
+
+export const projects = sqliteTable('projects', {
+  id: text('id').primaryKey(),
+  workspaceId: text('workspace_id').notNull(),
+  name: text('name').notNull(),
+  description: text('description').notNull().default(''),
+  settings: text('settings', { mode: 'json' }).$type<Record<string, unknown>>().notNull(),
+  status: text('status').notNull(),
+  createdAt: text('created_at').notNull(),
+  updatedAt: text('updated_at').notNull(),
+});
+
+export const conversations = sqliteTable('conversations', {
+  id: text('id').primaryKey(),
+  workspaceId: text('workspace_id').notNull(),
+  projectId: text('project_id'),
+  title: text('title').notNull(),
+  status: text('status').notNull(),
+  createdAt: text('created_at').notNull(),
+  updatedAt: text('updated_at').notNull(),
+});
+
+export const runs = sqliteTable('runs', {
+  id: text('id').primaryKey(),
+  conversationId: text('conversation_id').notNull(),
+  caseId: text('case_id').notNull(),
+  goal: text('goal').notNull(),
+  status: text('status').notNull(),
+  mandateSnapshot: text('mandate_snapshot', { mode: 'json' })
+    .$type<Record<string, unknown>>().notNull(),
+  createdAt: text('created_at').notNull(),
+  updatedAt: text('updated_at').notNull(),
+});
+
 export const nodes = sqliteTable('nodes', {
   id: text('id').primaryKey(),
   parentId: text('parent_id'),
