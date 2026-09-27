@@ -2709,7 +2709,10 @@ function createAndRun(db: Db, nodeId: string, goal: string, persisted: unknown):
         const repoPath = getNode(db, nodeId)?.repoPath;
         if (repoPath && !isDisposableFork(repoPath)) {
           try {
-            const result = autoCommitAndPush(repoPath, goal, nodeId);
+            const written = subtreeArtifacts(db, nodeId)
+              .filter((a) => (a.kind === 'file_write' || a.kind === 'file_edit') && a.path)
+              .map((a) => a.path as string);
+            const result = autoCommitAndPush(repoPath, goal, nodeId, written);
             if (result.committed) {
               publishProgress(db, nodeId, result.pushed
                 ? `Auto-committed and pushed verified changes (${result.sha?.slice(0, 7)})`
