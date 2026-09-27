@@ -25,6 +25,9 @@ export function SiteFooter(): JSX.Element {
       <div className="container site-footer__brand-row">
         <span className="site-footer__brand">CherryOnTop</span>
       </div>
+      <p className="site-footer__wordmark" aria-hidden="true">
+        CherryOnTop
+      </p>
     </footer>
   );
 }

@@ -6,16 +6,16 @@
  */
 :root {
   /* Background / surface levels */
-  --color-bg: #0b0b0c;
-  --color-panel: #131315;
-  --color-panel-raised: #19191c;
-  --color-border: rgba(255, 255, 255, 0.1);
+  --color-bg: #09090b;
+  --color-panel: #111113;
+  --color-panel-raised: #1b1b1e;
+  --color-border: rgba(255, 255, 255, 0.08);
   --color-border-strong: rgba(255, 255, 255, 0.18);
 
   /* Text levels */
-  --color-text-primary: #f5f3f1;
-  --color-text-secondary: #b7b3ae;
-  --color-text-muted: #8a8782;
+  --color-text-primary: #fafafa;
+  --color-text-secondary: #b4b4b8;
+  --color-text-muted: #8d8d93;
 
   /* Accents */
   --color-cherry: #c8203f;
@@ -50,13 +50,13 @@
 
   /* Typography */
   --font-sans:
-    'Inter', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+    'Geist Variable', 'Inter', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
   --font-mono: 'IBM Plex Mono', 'SFMono-Regular', Menlo, monospace;
-  --font-size-hero: 88px;
-  --font-size-hero-mobile: 44px;
-  --font-size-heading: 56px;
+  --font-size-hero: clamp(52px, 8.4vw, 132px);
+  --font-size-hero-mobile: clamp(44px, 12vw, 64px);
+  --font-size-heading: clamp(40px, 5.4vw, 80px);
   --font-size-subheading: 28px;
-  --font-size-body: 19px;
+  --font-size-body: 18px;
   --font-size-ui: 14px;
   --font-size-technical: 12px;
 
@@ -75,4 +75,18 @@
   --duration-base: 240ms;
   --duration-slow: 480ms;
   --easing-standard: cubic-bezier(0.4, 0, 0.2, 1);
+  --easing-expo: cubic-bezier(0.16, 1, 0.3, 1);
+  --duration-reveal: 900ms;
+
+  /* Redesign surfaces: glass, hairline gradients, cherry glow (signal only). */
+  --color-glass: rgba(255, 255, 255, 0.035);
+  --color-glass-strong: rgba(255, 255, 255, 0.06);
+  --color-hairline: linear-gradient(180deg, rgba(255, 255, 255, 0.16), rgba(255, 255, 255, 0.03));
+  --color-cherry-glow: rgba(224, 47, 76, 0.35);
+  --color-cherry-haze: rgba(200, 32, 63, 0.18);
+  --color-rose: #ff7a8e;
+  --shadow-float: 0 40px 120px -40px rgba(0, 0, 0, 0.9), 0 0 0 1px rgba(255, 255, 255, 0.04);
+  --tracking-display: -0.045em;
+  --tracking-heading: -0.035em;
+  --tracking-label: 0.14em;
 }

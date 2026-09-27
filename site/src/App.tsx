@@ -19,6 +19,11 @@ import { SiteFooter } from './components/SiteFooter';
 import { DemoControllerProvider } from './demo/controller';
 import { PageDepthIndicator } from './components/DepthIndicator';
 import { SITE_CONTENT } from './content';
+import { PlasmaField } from './components/PlasmaField';
+import { Marquee } from './components/Marquee';
+import { useSpotlight } from './hooks/useSpotlight';
+
+const PRIMITIVES = ['Goal', 'Organization', 'Mandate', 'Budget', 'Execution', 'Verification', 'Receipt', 'Memory'];
 
 const PROMO_VIDEO_SRC = import.meta.env.VITE_PROMO_VIDEO_URL || '/media/cherryontop-promo.mp4';
 const PROMO_VIDEO_POSTER = '/media/cherryontop-promo-poster.jpg';
@@ -30,6 +35,8 @@ const PROMO_VIDEO_TRANSCRIPT =
   're-validates. The run ends VERIFIED with a Decision Receipt recording what happened.';
 
 export default function App(): JSX.Element {
+  useSpotlight();
+
   useEffect(() => {
     function onVisibilityChange() {
       if (document.visibilityState === 'hidden') flushOnPageHide();
@@ -44,6 +51,7 @@ export default function App(): JSX.Element {
 
   return (
     <div className="site-shell">
+      <div className="site-grain" aria-hidden="true" />
       <SiteHeader />
 
       <main>
@@ -56,19 +64,32 @@ export default function App(): JSX.Element {
             data-depth="story"
             data-rhythm="sparse"
           >
+            <div className="hero-ambient" aria-hidden="true">
+              <PlasmaField />
+              <span className="hero-ambient__orb hero-ambient__orb--one" />
+              <span className="hero-ambient__orb hero-ambient__orb--two" />
+              <span className="hero-ambient__orb hero-ambient__orb--three" />
+              <span className="hero-ambient__grid" />
+            </div>
             <div className="container">
               <HeroSection />
             </div>
+            <Marquee items={PRIMITIVES} />
           </section>
 
           <Section id="how-it-works" title="See how it works" depth="story" rhythm="sparse">
             <Reveal>
-              <PromoVideo
-                src={PROMO_VIDEO_SRC}
-                poster={PROMO_VIDEO_POSTER}
-                transcript={PROMO_VIDEO_TRANSCRIPT}
-                title="CherryOnTop product demonstration"
-              />
+              <div className="video-stage">
+                <div className="video-stage__glow" aria-hidden="true" />
+                <div className="video-stage__frame">
+                  <PromoVideo
+                    src={PROMO_VIDEO_SRC}
+                    poster={PROMO_VIDEO_POSTER}
+                    transcript={PROMO_VIDEO_TRANSCRIPT}
+                    title="CherryOnTop product demonstration"
+                  />
+                </div>
+              </div>
               <a className="promo-video__transcript-link" href={PROMO_VIDEO_TRANSCRIPT_URL}>
                 Open full transcript
               </a>

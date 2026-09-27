@@ -22,7 +22,7 @@ export function Section(props: {
       data-rhythm={rhythm}
     >
       <div className="container">
-        <div className="site-section__intro">
+        <div className="site-section__intro" data-label={id.replace(/-/g, ' ')}>
           {eyebrow ? <p className="site-section__eyebrow">{eyebrow}</p> : null}
           <h2 id={`${id}-title`} className="site-section__title">
             {title}
