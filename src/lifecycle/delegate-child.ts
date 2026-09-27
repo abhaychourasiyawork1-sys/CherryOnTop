@@ -168,7 +168,14 @@ export interface DelegateChildDeps {
   createChildNode: (parentId: string, goal: string, siblingCount: number, approvedBudgetUsd?: number) => string;
   recordCommitment: (childId: string, goal: string) => void;
   startChild: (childId: string, goal: string) => void;
-  waitForChild: (childId: string) => Promise<{ succeeded: boolean }>;
+  /** `cancelled` means someone stopped that child on purpose: it is never
+   *  replaced, and nothing that depends on it starts. */
+  waitForChild: (childId: string) => Promise<{ succeeded: boolean; cancelled?: boolean }>;
+  /** True once the delegating node itself has been stopped. Checked before
+   *  every child is created: the delegation loop is plain async code that
+   *  outlives its node's cancellation, and without this it kept creating
+   *  children under a cancelled parent. Optional; absent means never. */
+  parentStopped?: () => boolean;
   /** What the work graph said and what it cost. Optional: a deployment with no
    *  telemetry sink schedules exactly the same, it just says nothing about it. */
   recordSchedule?: (schedule: DelegationSchedule) => void;
@@ -304,12 +311,14 @@ async function replaceFailedChild(
   deps: DelegateChildDeps,
   failed: { id: string; childId: string; goal: string },
   siblingCount: number,
-): Promise<{ id: string; childId: string; goal: string; succeeded: boolean }> {
+): Promise<{ id: string; childId: string; goal: string; succeeded: boolean; cancelled?: boolean }> {
   let previousId = failed.childId;
   let childId = failed.childId;
   let succeeded = false;
+  let cancelled = false;
 
   for (let attempt = 2; attempt <= MAX_CHILD_ATTEMPTS; attempt++) {
+    if (deps.parentStopped?.()) break;
     const attemptGoal = continuationGoal(failed.goal, deps.getFindings?.(previousId));
     childId = deps.createChildNode(input.parentId, attemptGoal, siblingCount, input.approvedBudgetUsd);
     deps.recordCommitment(childId, attemptGoal);
@@ -318,12 +327,14 @@ async function replaceFailedChild(
     deps.recordEnvelope?.(childId, attemptGoal, input.approvedBudgetUsd ?? 0);
     deps.markSuperseded?.(previousId, childId);
     deps.startChild(childId, attemptGoal);
-    succeeded = (await deps.waitForChild(childId)).succeeded;
-    if (succeeded) break;
+    const outcome = await deps.waitForChild(childId);
+    succeeded = outcome.succeeded;
+    cancelled = outcome.cancelled === true;
+    if (succeeded || cancelled) break;
     previousId = childId;
   }
 
-  return { id: failed.id, childId, goal: failed.goal, succeeded };
+  return { id: failed.id, childId, goal: failed.goal, succeeded, ...(cancelled ? { cancelled } : {}) };
 }
 
 export async function delegateToChildren(
@@ -403,6 +414,10 @@ export async function delegateToChildren(
   const doneBy = new Map<string, string>();
 
   for (const group of plan.parallelGroups) {
+    if (deps.parentStopped?.()) {
+      for (const id of group) cancelled.push({ goal: subgoals[Number(id)], reason: 'the task was stopped' });
+      continue;
+    }
     const runnable = group.filter((id) => {
       const reason = doomed.get(id);
       if (!reason) return true;
@@ -434,7 +449,7 @@ export async function delegateToChildren(
     });
 
     const firstAttempt = await Promise.all(
-      started.map(async (child) => ({ ...child, succeeded: (await deps.waitForChild(child.childId)).succeeded })),
+      started.map(async (child) => ({ ...child, ...(await deps.waitForChild(child.childId)) })),
     );
 
     // A failed first attempt gets picked up by a fresh sibling; a healthy one
@@ -442,7 +457,9 @@ export async function delegateToChildren(
     // it, so a group where everyone succeeded the first time costs nothing
     // beyond the one `Promise.all` it already needed.
     const settled = await Promise.all(
-      firstAttempt.map((child) => (child.succeeded ? child : replaceFailedChild(input, deps, child, subgoals.length))),
+      firstAttempt.map((child) => (child.succeeded || child.cancelled || deps.parentStopped?.()
+        ? child
+        : replaceFailedChild(input, deps, child, subgoals.length))),
     );
 
     for (const child of settled) {
@@ -451,7 +468,9 @@ export async function delegateToChildren(
       if (child.succeeded) continue;
       failedIds.push(child.id);
       for (const dependent of dependentsOf(nodes, child.id)) {
-        if (!doomed.has(dependent)) doomed.set(dependent, `depends on the failed piece: ${subgoals[Number(child.id)]}`);
+        if (!doomed.has(dependent)) {
+          doomed.set(dependent, `depends on the ${child.cancelled ? 'stopped' : 'failed'} piece: ${subgoals[Number(child.id)]}`);
+        }
       }
     }
   }

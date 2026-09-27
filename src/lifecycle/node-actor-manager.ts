@@ -51,7 +51,7 @@ import { executeTimeoutMs, dispatchOptionsFor, planCacheTtlHours, planVetoOverri
 import { routeModel } from '../intelligence/model-router.js';
 import { assessDecomposition } from '../intelligence/decompose.js';
 import { repoHead, repoDirty, repoIdentity } from '../execution/git-state.js';
-import { autoCommitAndPush, autoCommitEnabled, isDisposableFork } from './auto-commit.js';
+import { autoCommitAndPush, autoCommitEnabled, hostRepoPath, isDisposableFork } from './auto-commit.js';
 import { putKnowledge } from '../evidence/store.js';
 import { extractAnchors } from '../efficiency/task-economics.js';
 import { planCacheKey, getCachedPlan, putCachedPlan } from '../db/queries/plan-cache.js';
@@ -306,6 +306,10 @@ export function realDelegateDeps(db: Db, parentId?: string): DelegateChildDeps {
       }
     },
     startChild: (childId, goal) => startNodeActor(db, childId, goal),
+    parentStopped: () => {
+      const state = parentId ? getNode(db, parentId)?.state : undefined;
+      return state === 'CANCELLED' || state === 'FAILED' || state === 'INTERRUPTED';
+    },
     waitForChild: async (childId) => {
       const result = await waitForNodeCompletion(db, childId);
       const fork = forks.get(childId);
@@ -2814,7 +2818,9 @@ function createAndRun(db: Db, nodeId: string, goal: string, persisted: unknown):
       // `auto-commit.ts`'s doc comment for why. Best-effort: a failure here is
       // narrated, not thrown, so it can never take the node's own outcome with it.
       if (snapshot.value === 'COMPLETE' && autoCommitEnabled()) {
-        const repoPath = getNode(db, nodeId)?.repoPath;
+        const stored = getNode(db, nodeId)?.repoPath;
+        // git runs here, on the host, not in the sandbox the stored path is for.
+        const repoPath = stored ? hostRepoPath(stored) : undefined;
         if (repoPath && !isDisposableFork(repoPath)) {
           try {
             const written = subtreeArtifacts(db, nodeId)
@@ -2953,7 +2959,7 @@ export async function waitForNodeCompletion(
   db: Db,
   nodeId: string,
   timeoutMs = CHILD_WAIT_TIMEOUT_MS,
-): Promise<{ succeeded: boolean }> {
+): Promise<{ succeeded: boolean; cancelled?: boolean }> {
   const actor = actors.get(nodeId);
   if (!actor) throw new Error(`No active actor for node ${nodeId}`);
   const snapshot = await waitFor(actor, (s) => s.status === 'done', { timeout: timeoutMs })
@@ -2974,6 +2980,9 @@ export async function waitForNodeCompletion(
   // ponytail: reads the last validation.result event rather than threading the
   // validate() result through the state machine itself; revisit if a second
   // caller needs more than pass/fail.
+  // Stopped on purpose is not a failure: a parent that "replaced" it would
+  // undo the stop (found live — cancelling a task spawned two replacements).
+  if (snapshot.value === 'CANCELLED') return { succeeded: false, cancelled: true };
   if (snapshot.value !== 'COMPLETE') return { succeeded: false };
   const lastValidation = listEventsForNode(db, nodeId)
     .filter((e) => e.type === 'validation.result')

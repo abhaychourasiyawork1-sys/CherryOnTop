@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdtempSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir, homedir } from 'node:os';
 import { join } from 'node:path';
-import { autoCommitAndPush, autoCommitEnabled, isDisposableFork, buildAutoCommitMessage } from './auto-commit.js';
+import { autoCommitAndPush, autoCommitEnabled, hostRepoPath, isDisposableFork, buildAutoCommitMessage } from './auto-commit.js';
 
 function git(args: string[], cwd: string): string {
   return execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
@@ -39,6 +39,20 @@ describe('isDisposableFork', () => {
     const home = homedir();
     expect(isDisposableFork(join(home, '.org-forks', 'org-fork-abc123'))).toBe(true);
     expect(isDisposableFork(join(home, 'Desktop', 'CherryOnTop'))).toBe(false);
+  });
+
+  it('recognizes a fork by the sandbox path a child node actually stores', () => {
+    // createChildNode stores toContainerPath(fork.path), not the host path.
+    expect(isDisposableFork('/host/.org-forks/org-fork-abc123')).toBe(true);
+    expect(isDisposableFork('/host/Desktop/CherryOnTop')).toBe(false);
+  });
+});
+
+describe('hostRepoPath', () => {
+  it('maps a stored sandbox path back to the host, and leaves host paths alone', () => {
+    const home = homedir();
+    expect(hostRepoPath('/host/Desktop/CherryOnTop')).toBe(join(home, 'Desktop', 'CherryOnTop'));
+    expect(hostRepoPath(join(home, 'Desktop', 'CherryOnTop'))).toBe(join(home, 'Desktop', 'CherryOnTop'));
   });
 });
 

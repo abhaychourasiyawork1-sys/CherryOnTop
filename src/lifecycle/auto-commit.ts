@@ -13,6 +13,7 @@ import { execFileSync } from 'node:child_process';
 import { homedir } from 'node:os';
 import { join, sep } from 'node:path';
 import { repoDirty } from '../execution/git-state.js';
+import { fromContainerPath } from '../k8s/kind.js';
 
 export interface AutoCommitResult {
   attempted: boolean;
@@ -32,7 +33,17 @@ export function autoCommitEnabled(env: NodeJS.ProcessEnv = process.env): boolean
  *  should ever be auto-committed. */
 export function isDisposableFork(repoPath: string): boolean {
   const forksRoot = join(homedir(), '.org-forks') + sep;
-  return repoPath.startsWith(forksRoot);
+  return hostRepoPath(repoPath).startsWith(forksRoot);
+}
+
+/** The host path behind a node's `repoPath`. A node stores the path its
+ *  sandbox mounts (`/host/...`, see `toContainerPath`), but everything here
+ *  runs on the host. Comparing the stored form against `~/.org-forks` never
+ *  matched, so a child's fork was treated as a real checkout and committed —
+ *  after which `integrateFork`, which moves only *uncommitted* changes, would
+ *  have carried none of the child's work back. */
+export function hostRepoPath(repoPath: string): string {
+  return fromContainerPath(repoPath) ?? repoPath;
 }
 
 function run(args: string[], cwd: string): { ok: boolean; out: string } {

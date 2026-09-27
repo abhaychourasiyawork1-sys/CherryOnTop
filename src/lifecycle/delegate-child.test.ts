@@ -394,3 +394,40 @@ describe('delegateToChildren: ordered pieces', () => {
     expect(started.some((id) => id.includes('build the page'))).toBe(false);
   });
 });
+
+describe('delegateToChildren: stopping', () => {
+  // Found live: cancelling a task made its delegation loop "replace" the
+  // cancelled child, and cancelling the replacement made another.
+  it('never replaces a child that was stopped on purpose, nor starts what depends on it', async () => {
+    const created: string[] = [];
+    const result = await delegateToChildren(
+      { parentId: 'p', goal: 'g', subgoals: ['research the product', 'build the page'], after: [[], [0]] },
+      {
+        createChildNode: (_p, goal) => { created.push(goal); return `c${created.length}`; },
+        recordCommitment: () => {},
+        startChild: () => {},
+        waitForChild: async () => ({ succeeded: false, cancelled: true }),
+      },
+    );
+    expect(created).toEqual(['research the product']);
+    expect(result.succeeded).toBe(false);
+  });
+
+  it('creates no child at all once the parent itself is stopped', async () => {
+    let stopped = false;
+    const created: string[] = [];
+    await delegateToChildren(
+      { parentId: 'p', goal: 'g', subgoals: ['research the product', 'build the page'], after: [[], [0]] },
+      {
+        createChildNode: (_p, goal) => { created.push(goal); return `c${created.length}`; },
+        recordCommitment: () => {},
+        startChild: () => {},
+        // The whole task is cancelled while the first piece runs; the piece
+        // itself reports a plain failure (killed mid-run).
+        waitForChild: async () => { stopped = true; return { succeeded: false }; },
+        parentStopped: () => stopped,
+      },
+    );
+    expect(created).toEqual(['research the product']);
+  });
+});
