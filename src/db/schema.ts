@@ -22,6 +22,14 @@ export const nodes = sqliteTable('nodes', {
    *  separate run — it dispatches its own sandboxes and spends its own money —
    *  so it gets its own row, and this is the only thing tying the two together. */
   replayOf: text('replay_of'),
+  /** Set on a FAILED child once a fresh sibling was dispatched to pick its work
+   *  back up (see `delegateToChildren` in `delegate-child.ts`). Points at the
+   *  replacement's own id — the reverse of `replayOf`, which the replacement
+   *  itself also carries, so either direction of the link is one column away.
+   *  Never cleared and never deletes the row: the failed attempt's transcript
+   *  stays real evidence, it just stops being read as *the* outcome for this
+   *  piece of work — a tree view filters on this being null. */
+  supersededBy: text('superseded_by'),
   /** The XState actor, persisted on every transition, so a daemon restart can
    *  put the node back where it was instead of stranding it. Null once terminal
    *  — a finished node has nothing to resume. */

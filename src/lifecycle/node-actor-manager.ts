@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process';
 import { createActor, fromPromise, waitFor, type Actor } from 'xstate';
 import { nodeMachine, type NodeMachineEvent, type ValidationVerdict } from './node-machine.js';
 import type { Db } from '../db/client.js';
-import { updateNodeState, getNode, insertNode, listNodes, setNodeRuntime } from '../db/queries/nodes.js';
+import { updateNodeState, getNode, insertNode, listNodes, setNodeRuntime, markNodeSuperseded } from '../db/queries/nodes.js';
 import { appendEvent, listEventsForNode } from '../db/queries/events.js';
 import { publish } from '../events/bus.js';
 import { executeStep } from '../execution/execute-step.js';
@@ -310,6 +310,16 @@ export function realDelegateDeps(db: Db, parentId?: string): DelegateChildDeps {
       if (!fork) return result;
       forks.delete(childId);
       return settleFork(fork, result);
+    },
+    getFindings: (childId) => answerOf(db, childId),
+    markSuperseded: (failedId, replacementId) => {
+      try {
+        markNodeSuperseded(db, failedId, replacementId, new Date().toISOString());
+        publishProgress(db, failedId, `Superseded by a fresh attempt (${replacementId}) picking this work back up.`);
+      } catch (err) {
+        // Recording the link must never cost the replacement its dispatch.
+        console.error(`Failed to mark node ${failedId} as superseded by ${replacementId}:`, err);
+      }
     },
   };
 }

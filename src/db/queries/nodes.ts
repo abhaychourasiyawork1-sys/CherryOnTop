@@ -21,6 +21,9 @@ export interface NodeRecord {
   snapshot?: unknown;
   /** The run this one was forked from, if any. */
   replayOf?: string | null;
+  /** Set once a fresh sibling was dispatched to pick this (failed) node's work
+   *  back up. See `markNodeSuperseded`. */
+  supersededBy?: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -63,6 +66,17 @@ export function subtreeNodeIds(db: Db, rootId: string): string[] {
     stack.push(...(childrenOf.get(id) ?? []));
   }
   return ids;
+}
+
+/** Marks a FAILED child as replaced, without touching its state or deleting
+ *  its row: `state` stays the honest record of what actually happened to it,
+ *  and every event/artifact/decision under it stays real evidence. This only
+ *  changes what a *listing* of current work should show — a tree view or a
+ *  case's "what's happening now" summary filters on `supersededBy IS NULL`,
+ *  so a superseded failure stops reading as an unresolved red leaf without
+ *  the underlying transcript ever becoming unreachable. */
+export function markNodeSuperseded(db: Db, id: string, supersededBy: string, updatedAt: string): void {
+  db.update(nodes).set({ supersededBy, updatedAt }).where(eq(nodes.id, id)).run();
 }
 
 export function setNodeRuntime(db: Db, id: string, runtime: string, updatedAt: string): void {

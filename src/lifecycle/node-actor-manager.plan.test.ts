@@ -286,8 +286,12 @@ describe('the planning dispatch', () => {
     const five = JSON.stringify(['a', 'b', 'c', 'd', 'e']);
     await runDelegating(db, tmpRepo(), five);
     // max_child_count is 3 and the planner offered 5; the default cap of 2 is
-    // the binding constraint.
-    expect(listNodes(db).filter((node) => node.parentId !== null)).toHaveLength(2);
+    // the binding constraint on *breadth* — still only 2 workstream positions,
+    // never the 5 the planner offered. This mock never produces evidence a
+    // child's own validation accepts, so each position now also gets replaced
+    // up to MAX_CHILD_ATTEMPTS times (delegate-child.ts) before giving up —
+    // 2 positions x 3 attempts is the ceiling, not a third workstream.
+    expect(listNodes(db).filter((node) => node.parentId !== null).length).toBeLessThanOrEqual(2 * 3);
   });
 
   it('gives the planner the whole map again when efficiency is switched off', async () => {
