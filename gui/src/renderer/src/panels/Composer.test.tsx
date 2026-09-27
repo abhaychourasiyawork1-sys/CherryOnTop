@@ -118,4 +118,20 @@ describe('composer', () => {
     expect(box.value).toBe('Refactor the auth flow');
     unmount();
   });
+
+  it('says before sending when a request needs GitHub the mandate lacks, and offers one that has it', () => {
+    const onSelectMandate = vi.fn();
+    const auth = (tools: string[]) => ({ tools, spawn_children: false, max_child_count: 0, budget_usd: 5 });
+    const mandates = [
+      { id: 'focused', name: 'Focused change', description: '', authority: auth(['Bash']), constraints: [], builtin: true },
+      { id: 'ship', name: 'Ship', description: '', authority: auth(['Bash', 'GitHub']), constraints: [], builtin: true },
+    ];
+    const { container, box, unmount } = setup({ mandates, mandateId: 'focused', onSelectMandate });
+    typeInto(box, 'close PR #4 and raise a PR to the feature branch');
+    expect(container.textContent).toContain('needs GitHub access');
+    const use = [...container.querySelectorAll('button')].find((b) => b.textContent === 'Use Ship for this') as HTMLButtonElement;
+    act(() => use.click());
+    expect(onSelectMandate).toHaveBeenCalledWith('ship');
+    unmount();
+  });
 });

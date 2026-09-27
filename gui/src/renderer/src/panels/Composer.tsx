@@ -3,7 +3,7 @@ import { Icon } from '../shell/Icon.js';
 import { useLocalState } from '../lib/useLocalState.js';
 import { localKey } from '../lib/sync.js';
 import {
-  resolveIntent, addRef, parseDroppedRef, REF_MIME,
+  resolveIntent, addRef, parseDroppedRef, needsGitHub, REF_MIME,
   type ContextRef, type Intent,
 } from '../composer/ContextResolver.js';
 import type { Mandate } from '../lib/mandates.js';
@@ -100,6 +100,12 @@ export function Composer(props: Props) {
   const inferred = resolveIntent(text, { hasCase: props.hasCase, runLive: props.liveRun !== null });
   const intent: Intent = override && (override !== 'redirect' || props.liveRun) ? override : inferred;
   const workBlocked = intent !== 'question' && (props.blockedReason !== null || props.offline);
+  // Said before sending, so the person picks the authority rather than the
+  // run discovering it has no GitHub login.
+  const selectedMandate = props.mandates.find((m) => m.id === props.mandateId);
+  const githubMandate = props.mandates.find((m) => m.authority.tools.includes('GitHub'));
+  const githubGap = intent !== 'question' && needsGitHub(text) && Boolean(selectedMandate)
+    && !selectedMandate!.authority.tools.includes('GitHub');
 
   function grow() {
     const el = box.current;
@@ -252,6 +258,16 @@ export function Composer(props: Props) {
           )}
         </div>
       </form>
+      {githubGap && (
+        <p className="composer-note" data-tone="attention" role="status">
+          This needs GitHub access, which {selectedMandate?.name ?? 'this mandate'} does not have.{' '}
+          {githubMandate ? (
+            <button type="button" className="quiet-link" onClick={() => props.onSelectMandate(githubMandate.id)}>
+              Use {githubMandate.name} for this
+            </button>
+          ) : 'Add GitHub to a mandate under Authority to allow it.'}
+        </p>
+      )}
       {workBlocked && text.trim() && (
         <p className="composer-note" role="status">{props.offline ? 'Offline — new work can start once the daemon is reachable.' : props.blockedReason}</p>
       )}

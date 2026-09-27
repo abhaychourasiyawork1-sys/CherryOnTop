@@ -56,3 +56,13 @@ export function needsProofOnly(lastValidation: unknown): boolean {
   if (!v || v.passed !== false || !Array.isArray(v.reasonCodes)) return false;
   return v.reasonCodes.includes('V1:durable_outcome_produced') && v.reasonCodes.includes('V2:no_observed_verification');
 }
+
+/** A run that changed no files and was rejected only because nothing was seen
+ *  verifying it has nothing a retry could prove: the proof pass would ask for a
+ *  test of a change that does not exist (measured: an agent correctly reporting
+ *  "GitHub isn't logged in" was re-dispatched and told to prove "the fix").
+ *  Such a run ends with its own report instead of being run again. */
+export function unprovableWithoutChanges(validation: { passed?: boolean; reasonCodes?: string[] }, changedFiles: boolean): boolean {
+  if (changedFiles || validation.passed !== false || !Array.isArray(validation.reasonCodes)) return false;
+  return validation.reasonCodes.includes('V2:no_observed_verification');
+}

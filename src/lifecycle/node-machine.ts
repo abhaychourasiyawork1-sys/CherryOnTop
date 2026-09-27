@@ -51,6 +51,8 @@ function money(value: number | undefined): string {
  *  extra fields are optional so a caller that only has a verdict still works —
  *  it just gets the old, cap-bounded retry behaviour. */
 export interface ValidationVerdict extends ValidationResult {
+  /** False when another attempt could not change the verdict. */
+  retriable?: boolean;
   strategy?: string;
   failureSignature?: string;
   progress?: number;
@@ -274,7 +276,7 @@ export const nodeMachine = setup({
               executionSucceeded: context.lastResult?.succeeded === true,
               validation: event.output,
               executionAttempts: context.executionAttempts ?? 0,
-              retriable: context.lastResult?.rateLimited !== true,
+              retriable: context.lastResult?.rateLimited !== true && event.output.retriable !== false,
             }) === 'COMPLETE',
             actions: assign({ lastValidation: ({ event }) => event.output }),
           },
@@ -284,7 +286,7 @@ export const nodeMachine = setup({
               executionSucceeded: context.lastResult?.succeeded === true,
               validation: event.output,
               executionAttempts: context.executionAttempts ?? 0,
-              retriable: context.lastResult?.rateLimited !== true,
+              retriable: context.lastResult?.rateLimited !== true && event.output.retriable !== false,
             }) === 'RECOVER'
               // ...and only if the next attempt would be a different one. The
               // attempt cap alone bounds the *number* of identical retries; it

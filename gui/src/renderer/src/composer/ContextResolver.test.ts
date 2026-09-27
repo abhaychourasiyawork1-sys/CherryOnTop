@@ -38,3 +38,22 @@ describe('context', () => {
     expect(parseDroppedRef('nope')).toBeNull();
   });
 });
+
+describe('GitHub work', () => {
+  it('recognizes requests that need GitHub access', async () => {
+    const { needsGitHub } = await import('./ContextResolver.js');
+    for (const text of [
+      'I want you to first close the PR #4 going to main then raise a PR from feat/desktop-2.0',
+      'open a pull request for this',
+      'push the branch to origin',
+      'comment on the issue about the crash',
+      'merge the PR',
+    ]) expect(needsGitHub(text)).toBe(true);
+  });
+
+  it('does not flag ordinary coding work', async () => {
+    const { needsGitHub } = await import('./ContextResolver.js');
+    for (const text of ['fix the typo in greet.js', 'add a cache to the prompt builder', 'why did it delegate?', 'improve the approval surface'])
+      expect(needsGitHub(text)).toBe(false);
+  });
+});

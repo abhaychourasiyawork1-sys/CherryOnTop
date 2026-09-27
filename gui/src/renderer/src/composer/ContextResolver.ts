@@ -26,6 +26,15 @@ export function resolveIntent(text: string, context: { hasCase: boolean; runLive
   return 'work';
 }
 
+/** Requests that can only be done by acting on GitHub as you — which a run
+ *  gets only under a mandate that grants GitHub. Checked before sending, so
+ *  the person chooses, rather than the run discovering it has no login. */
+const GITHUB_WORK = /\b(pull request|(open|raise|create|close|merge|review|update|reopen)\s+(a |the |this )?(pr|pull)|pr\s*#?\d+|#\d+\b.*\b(pr|issue)|github|git push|push (it |this |the (branch|changes) )?(to|up)\b|(open|file|close|comment on)\s+(an? |the )?issue|release notes? on github)/i;
+
+export function needsGitHub(text: string): boolean {
+  return GITHUB_WORK.test(text);
+}
+
 /** The goal a run is created with: what was typed, plus whatever the person
  *  pointed at, stated explicitly so the record shows what the run was given. */
 export function goalWithContext(text: string, refs: ContextRef[]): string {

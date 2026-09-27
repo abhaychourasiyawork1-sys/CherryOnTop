@@ -79,7 +79,7 @@ import { dispatchContextFor, warmRepoInventory } from '../context/dispatch-conte
 import { recordDispatchUsage, turnsForNode } from '../db/queries/tokens.js';
 import { shouldRetryWithoutModel, recoveredUsage } from '../execution/tokens.js';
 import { estimateCostUsd } from '../execution/pricing.js';
-import { readOnlyPlanningGrant, investigativeExecuteGrant, needsProofOnly, PROOF_PASS_INSTRUCTION, PROOF_PASS_TURNS } from './dispatch-helpers.js';
+import { readOnlyPlanningGrant, investigativeExecuteGrant, needsProofOnly, unprovableWithoutChanges, PROOF_PASS_INSTRUCTION, PROOF_PASS_TURNS } from './dispatch-helpers.js';
 import {
   evaluateBoundary, economicStateFor, forgetNode, isIntervention, registerEvidenceSources, observedStateVersion,
   markRecovered, consumeRecoveryFlag, recordRecoveryAttempt,
@@ -2580,8 +2580,10 @@ function runValidation(db: Db, nodeId: string, succeeded: boolean, guardStopped 
   // from a repeat. Without it the attempt cap bounds how many identical retries
   // happen and nothing stops the first one being pointless.
   const signals = trajectorySignals(db, nodeId);
+  const changedFiles = listArtifactsForNode(db, nodeId).some((a) => a.kind === 'file_edit' || a.kind === 'file_write');
   return {
     ...gated,
+    retriable: !unprovableWithoutChanges(gated, changedFiles),
     strategy: delegated ? 'SERIAL_DELEGATED' : 'MANAGED',
     // What failed, in the stable form the trajectory fingerprint uses, so two
     // attempts that died the same way are recognisable as such.
