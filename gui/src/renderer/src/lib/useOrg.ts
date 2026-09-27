@@ -30,6 +30,8 @@ export interface OrgNode {
   needsApproval: boolean;
 }
 
+const EVENT_FLUSH_MS = 200;
+
 export interface Approval {
   id: string;
   nodeId: string;
@@ -136,11 +138,28 @@ export function useOrg(): Org {
       retry = setTimeout(() => { retry = null; setStreamAttempt((n) => n + 1); }, 1500);
     };
 
+    // The exec firehose can deliver dozens of events a second. Rendering the
+    // window once per event is what made a busy run feel heavy, so events are
+    // buffered and applied together at most every EVENT_FLUSH_MS. Nothing is
+    // dropped; a panel is at most that far behind the stream.
+    let buffer: OrgEvent[] = [];
+    let flush: ReturnType<typeof setTimeout> | null = null;
+    const push = (event: OrgEvent) => {
+      buffer.push(event);
+      if (flush) return;
+      flush = setTimeout(() => {
+        const batch = buffer;
+        buffer = [];
+        flush = null;
+        setEvents((current) => mergeEvents(current, batch));
+      }, EVENT_FLUSH_MS);
+    };
+
     const subscription = daemon().events.subscribe.subscribe(
       {},
       {
         onData: (event: OrgEvent) => {
-          setEvents((current) => mergeEvents(current, [event]));
+          push(event);
           // A transition changes the tree's shape, a result changes what it has
           // spent, a denial changes what needs a person. The exec.* firehose
           // changes none of those and must never trigger a read — see
@@ -155,6 +174,7 @@ export function useOrg(): Org {
     );
     return () => {
       subscription.unsubscribe();
+      if (flush) clearTimeout(flush);
       if (retry) clearTimeout(retry);
       if (pending.current) clearTimeout(pending.current);
     };

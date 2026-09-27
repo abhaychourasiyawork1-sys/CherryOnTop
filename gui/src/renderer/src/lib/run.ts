@@ -64,7 +64,9 @@ export interface ResultModel {
 
 /** First sentence of what was asked, short enough to be a title. */
 export function titleOf(goal: string): string {
-  const firstLine = goal.split('\n').find((line) => line.trim())?.trim() ?? goal;
+  // Markup comments (benchmark canaries, templates) are not what was asked.
+  const text = goal.replace(/<!--[\s\S]*?-->/g, '');
+  const firstLine = text.split('\n').find((line) => line.trim())?.trim() ?? goal;
   const sentence = firstLine.match(/^(.{12,}?[.!?])(\s|$)/)?.[1] ?? firstLine;
   return clip(sentence.replace(/[.!?]$/, ''), 72);
 }

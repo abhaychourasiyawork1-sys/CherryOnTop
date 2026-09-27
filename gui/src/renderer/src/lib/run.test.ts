@@ -49,6 +49,7 @@ describe('result', () => {
   it('titles long goals by their first sentence', () => {
     expect(titleOf('Fix the typo in greet.js. Then run tests.')).toBe('Fix the typo in greet.js');
     expect(titleOf('\n\nhello')).toBe('hello');
+    expect(titleOf('<!-- canary GUID 26b5 -->\nBuild the React frontend.')).toBe('Build the React frontend');
     expect(filesChanged(artifacts)).toHaveLength(2);
   });
 });

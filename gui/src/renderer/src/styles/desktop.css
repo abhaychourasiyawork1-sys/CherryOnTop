@@ -1052,6 +1052,17 @@ body { font-size: var(--text-md); line-height: var(--leading); }
 
 .run-transcript .conversation { overflow: visible; padding: 0; }
 .run-transcript .thread { max-width: none; padding: 0; }
+/* What was asked is already the conversation's heading; here it is a reminder. */
+.run-transcript .asked-goal {
+  font-size: var(--text-md);
+  font-weight: 500;
+  color: var(--ink-2);
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.run-transcript .final-answer { font-size: var(--text-md); }
 
 /* ---- responsiveness ---------------------------------------------------- */
 
