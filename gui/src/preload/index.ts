@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer } from 'electron';
+import { contextBridge, ipcRenderer, webUtils } from 'electron';
 
 // The entire bridge. Everything else the GUI needs it gets from the daemon over
 // tRPC, exactly as the TUI does — a second IPC protocol would be a second API
@@ -18,4 +18,8 @@ contextBridge.exposeInMainWorld('mission', {
    *  Returns the path written, or null if the dialog was cancelled. */
   exportReceipt: (caseId: string, html: string): Promise<string | null> =>
     ipcRenderer.invoke('export-receipt', caseId, html),
+  /** Opens a Deep Dive in its own window. Only on request; never automatic. */
+  openDetached: (target: string): Promise<boolean> => ipcRenderer.invoke('open-detached', target),
+  /** The real path of a file dropped on the window, for composer context. */
+  pathForFile: (file: File): string => webUtils.getPathForFile(file),
 });

@@ -5,18 +5,26 @@ import path from 'node:path';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-function createWindow(): BrowserWindow {
+/** Detached Deep Dive windows, one per inspected object. Only ever opened by
+ *  an explicit request from the renderer — the default flow never spawns a
+ *  window — and closing one stops nothing: the daemon owns the work. */
+const detached = new Map<string, BrowserWindow>();
+/** `decision:<caseId>:<id>`, `evidence:<caseId>` … — a kind and ids, nothing
+ *  that could become a URL or a path. */
+const DETACHED_TARGET = /^[a-z-]+(:[A-Za-z0-9._-]+){1,4}$/;
+
+function createWindow(detachedTarget?: string): BrowserWindow {
   const window = new BrowserWindow({
-    width: 1440,
+    width: detachedTarget ? 920 : 1440,
     height: 900,
-    minWidth: 1040,
-    minHeight: 640,
+    minWidth: detachedTarget ? 560 : 900,
+    minHeight: 560,
     show: false,
     // macOS can hide the title bar and let the rail absorb the traffic lights,
     // which keeps the graph edge-to-edge. Elsewhere the frame is the only way to
     // move or close the window, so it stays.
     ...(process.platform === 'darwin' ? { titleBarStyle: 'hiddenInset' as const } : {}),
-    backgroundColor: '#131A22',
+    backgroundColor: '#11171E',
     webPreferences: {
       preload: path.join(__dirname, '../preload/index.mjs'),
       sandbox: false,
@@ -42,9 +50,10 @@ function createWindow(): BrowserWindow {
   window.webContents.on('render-process-gone', (_e, details) =>
     console.error('[renderer] gone:', details.reason));
 
+  const hash = detachedTarget ? `detached=${encodeURIComponent(detachedTarget)}` : undefined;
   const devServer = process.env.ELECTRON_RENDERER_URL;
-  if (devServer) window.loadURL(devServer);
-  else window.loadFile(path.join(__dirname, '../renderer/index.html'));
+  if (devServer) window.loadURL(hash ? `${devServer}#${hash}` : devServer);
+  else window.loadFile(path.join(__dirname, '../renderer/index.html'), hash ? { hash } : undefined);
 
   return window;
 }
@@ -73,6 +82,19 @@ app.whenReady().then(() => {
     if (result.canceled || !result.filePath) return null;
     await writeFile(result.filePath, html, 'utf8');
     return result.filePath;
+  });
+
+  ipcMain.handle('open-detached', (_event, target: unknown) => {
+    if (typeof target !== 'string' || !DETACHED_TARGET.test(target)) return false;
+    const existing = detached.get(target);
+    if (existing && !existing.isDestroyed()) {
+      existing.focus();
+      return true;
+    }
+    const child = createWindow(target);
+    detached.set(target, child);
+    child.on('closed', () => detached.delete(target));
+    return true;
   });
 
   app.on('activate', () => {

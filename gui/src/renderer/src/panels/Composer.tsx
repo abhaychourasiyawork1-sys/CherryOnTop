@@ -1,146 +1,186 @@
 import { useEffect, useRef, useState } from 'react';
+import { Icon } from '../shell/Icon.js';
+import { useLocalState } from '../lib/useLocalState.js';
+import { localKey } from '../lib/sync.js';
+import {
+  resolveIntent, addRef, parseDroppedRef, REF_MIME,
+  type ContextRef, type Intent,
+} from '../composer/ContextResolver.js';
 import type { Mandate } from '../lib/mandates.js';
 
 interface Props {
-  onSubmit: (text: string) => Promise<void>;
-  disabled: boolean;
-  /** The hero is the whole screen when there is nothing to look at yet; docked
-   *  is the same field at the foot of a conversation. One component either way —
-   *  there is never a second place to type. */
   variant: 'hero' | 'docked';
-  /** Why a task cannot be started right now. Shown rather than leaving a dead
-   *  input with no explanation — asking a question of the record still works. */
-  blockedReason?: string | null;
+  /** Something is on record, so a question can be answered from it. */
+  hasCase: boolean;
+  /** The run a redirect would replace. */
+  liveRun: { id: string; title: string } | null;
+  /** Context the open surfaces offer; the person chooses what to attach. */
+  suggestions: ContextRef[];
+  mandates: Mandate[];
+  mandateId: string | null;
+  onSelectMandate: (id: string) => void;
+  /** Why work cannot be started here. Questions still work. */
+  blockedReason: string | null;
+  offline: boolean;
+  draftScope: string;
   autoFocus?: boolean;
-  /** The mandate the next task will run under. Picking one here is the whole
-   *  difference between authoring what an organization may do and discovering it
-   *  afterwards. */
-  mandates?: Mandate[];
-  selectedMandateId?: string | null;
-  onSelectMandate?: (id: string | null) => void;
+  onQuestion: (text: string) => Promise<void>;
+  onWork: (text: string, refs: ContextRef[]) => Promise<void>;
+  onRedirect: (text: string, refs: ContextRef[]) => Promise<void>;
 }
 
-function ComposerField(props: Props) {
-  const [text, setText] = useState('');
+const HINT: Record<Intent, string> = {
+  question: 'Answered from the record',
+  work: 'Starts new work',
+  redirect: 'Redirects the current run',
+};
+
+/** The one place to type. It works out whether you are asking a question,
+ *  giving work, or changing course — you never pick a mode first — and says
+ *  which before you send, so nothing surprising starts. */
+export function Composer(props: Props) {
+  const [text, setText] = useLocalState<string>(localKey('draft', props.draftScope), (raw) => raw ?? '', (value) => value);
+  const [refs, setRefs] = useState<ContextRef[]>([]);
+  const [override, setOverride] = useState<Intent | null>(null);
   const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [dragging, setDragging] = useState(false);
   const box = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
     if (props.autoFocus) box.current?.focus();
-  }, [props.autoFocus, props.variant]);
+  }, [props.autoFocus, props.draftScope]);
 
-  const grow = (element: HTMLTextAreaElement) => {
-    element.style.height = 'auto';
-    element.style.height = `${Math.min(element.scrollHeight, props.variant === 'hero' ? 220 : 160)}px`;
-  };
+  useEffect(() => { grow(); });
+
+  const inferred = resolveIntent(text, { hasCase: props.hasCase, runLive: props.liveRun !== null });
+  const intent: Intent = override && (override !== 'redirect' || props.liveRun) ? override : inferred;
+  const workBlocked = intent !== 'question' && (props.blockedReason !== null || props.offline);
+
+  function grow() {
+    const el = box.current;
+    if (!el) return;
+    el.style.height = 'auto';
+    el.style.height = `${Math.min(el.scrollHeight, props.variant === 'hero' ? 240 : 180)}px`;
+  }
 
   const send = async () => {
     const value = text.trim();
-    if (!value || busy) return;
+    if (!value || busy || workBlocked) return;
     setBusy(true);
+    setError(null);
     try {
-      await props.onSubmit(value);
+      if (intent === 'question') await props.onQuestion(value);
+      else if (intent === 'redirect') await props.onRedirect(value, refs);
+      else await props.onWork(value, refs);
       setText('');
-      if (box.current) box.current.style.height = 'auto';
+      setRefs([]);
+      setOverride(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
     } finally {
       setBusy(false);
     }
   };
 
-  return (
-    <form
-      className="composer"
-      data-variant={props.variant}
-      onSubmit={(submitEvent) => { submitEvent.preventDefault(); void send(); }}
-    >
-      <textarea
-        ref={box}
-        value={text}
-        rows={1}
-        placeholder={
-          props.variant === 'hero'
-            ? 'Describe what you want done'
-            : 'Give another task, or ask why, what is blocking this, what it produced'
-        }
-        aria-label="Give the organization a task"
-        disabled={props.disabled}
-        onChange={(changeEvent) => { setText(changeEvent.target.value); grow(changeEvent.target); }}
-        onKeyDown={(keyEvent) => {
-          // Enter sends; shift+enter is how you write a multi-line goal.
-          if (keyEvent.key === 'Enter' && !keyEvent.shiftKey) {
-            keyEvent.preventDefault();
-            void send();
-          }
-        }}
-      />
-      <button type="submit" className="composer-send" disabled={props.disabled || busy || !text.trim()}>
-        {busy ? 'Starting' : 'Start'}
-      </button>
-    </form>
-  );
-}
+  const drop = (event: React.DragEvent) => {
+    event.preventDefault();
+    setDragging(false);
+    const payload = event.dataTransfer.getData(REF_MIME);
+    const dropped = payload ? parseDroppedRef(payload) : null;
+    if (dropped) {
+      setRefs((current) => addRef(current, dropped));
+      return;
+    }
+    for (const file of Array.from(event.dataTransfer.files)) {
+      const path = window.mission?.pathForFile?.(file) || file.name;
+      setRefs((current) => addRef(current, { kind: 'file', id: path, label: file.name }));
+    }
+  };
 
-/** What the organization will be allowed to do, said before you press Start.
- *
- *  Nobody else in this category shows the blast radius in advance. It costs
- *  nothing to show — the envelope is a pure function of the contract — and it is
- *  the difference between authorizing work and merely requesting it. */
-function AuthorityPreview(props: {
-  mandates: Mandate[];
-  selectedId: string | null;
-  onSelect: (id: string | null) => void;
-}) {
-  const selected = props.mandates.find((mandate) => mandate.id === props.selectedId)
-    ?? props.mandates[0] ?? null;
-
-  if (!selected) return null;
+  const offered = props.suggestions.filter((s) => !refs.some((r) => r.kind === s.kind && r.id === s.id)).slice(0, 3);
 
   return (
-    <div className="authority-preview">
-      <label className="authority-pick">
-        <span className="mandate-mark" aria-hidden="true">⛨</span>
-        <select
-          value={selected.id}
-          aria-label="Mandate this task runs under"
-          onChange={(event) => props.onSelect(event.target.value)}
-        >
-          {props.mandates.map((mandate) => (
-            <option key={mandate.id} value={mandate.id}>{mandate.name}</option>
-          ))}
-        </select>
-      </label>
-      <span className="authority-summary figure">{selected.summary}</span>
-    </div>
-  );
-}
-
-export function Composer(props: Props) {
-  return (
-    <div className="composer-shell" data-variant={props.variant}>
-      {props.mandates && props.mandates.length > 0 && props.onSelectMandate && (
-        <AuthorityPreview
-          mandates={props.mandates}
-          selectedId={props.selectedMandateId ?? null}
-          onSelect={props.onSelectMandate}
+    <div className="composer2" data-variant={props.variant} data-dragging={dragging}>
+      <form
+        className="composer2-box"
+        onSubmit={(event) => { event.preventDefault(); void send(); }}
+        onDragOver={(event) => { event.preventDefault(); setDragging(true); }}
+        onDragLeave={() => setDragging(false)}
+        onDrop={drop}
+      >
+        {(refs.length > 0 || offered.length > 0) && (
+          <ul className="context-chips" aria-label="Context">
+            {refs.map((ref) => (
+              <li key={`${ref.kind}:${ref.id}`}>
+                <span className="chip" data-attached="true">
+                  {ref.label}
+                  <button type="button" aria-label={`Remove ${ref.label}`} onClick={() => setRefs((current) => current.filter((r) => r !== ref))}>
+                    <Icon name="close" size={12} />
+                  </button>
+                </span>
+              </li>
+            ))}
+            {offered.map((ref) => (
+              <li key={`offer:${ref.kind}:${ref.id}`}>
+                <button type="button" className="chip" data-attached="false" onClick={() => setRefs((current) => addRef(current, ref))}>
+                  <Icon name="plus" size={12} /> {ref.label}
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+        <textarea
+          ref={box}
+          value={text}
+          rows={1}
+          placeholder={props.variant === 'hero' ? 'Tell CherryOnTop what you want to accomplish…' : 'Ask, add work, or change direction…'}
+          aria-label="Tell CherryOnTop what you want"
+          aria-describedby="composer-hint"
+          onChange={(event) => setText(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
+              event.preventDefault();
+              void send();
+            }
+          }}
         />
+        <div className="composer2-foot">
+          {props.mandates.length > 0 && (
+            <label className="authority-chip" title="What new work is allowed to do">
+              <Icon name="shield" size={13} />
+              <select
+                value={props.mandateId ?? ''}
+                aria-label="Mandate new work runs under"
+                onChange={(event) => props.onSelectMandate(event.target.value)}
+              >
+                {props.mandates.map((mandate) => <option key={mandate.id} value={mandate.id}>{mandate.name}</option>)}
+              </select>
+            </label>
+          )}
+          {props.liveRun && intent !== 'question' ? (
+            <div className="intent-toggle" role="radiogroup" aria-label="What to do with the current run">
+              <button type="button" role="radio" aria-checked={intent === 'work'} onClick={() => setOverride('work')}>Add as new work</button>
+              <button type="button" role="radio" aria-checked={intent === 'redirect'} onClick={() => setOverride('redirect')}>Redirect current run</button>
+            </div>
+          ) : (
+            <span className="intent-hint" id="composer-hint">{text.trim() ? HINT[intent] : ''}</span>
+          )}
+          <button
+            type="submit"
+            className="send"
+            aria-label={HINT[intent]}
+            title={HINT[intent]}
+            disabled={busy || !text.trim() || workBlocked}
+          >
+            <Icon name="send" size={16} />
+          </button>
+        </div>
+      </form>
+      {workBlocked && text.trim() && (
+        <p className="composer-note" role="status">{props.offline ? 'Offline — new work can start once the daemon is reachable.' : props.blockedReason}</p>
       )}
-      <ComposerField {...props} />
-      {props.blockedReason && <p className="composer-blocked">{props.blockedReason}</p>}
-    </div>
-  );
-}
-
-/** The empty state: the input is the only thing on screen, because giving the
- *  organization a task is the only thing there is to do yet. */
-export function Hero(props: Omit<Props, 'variant'>) {
-  return (
-    <div className="hero">
-      <h1>What needs doing?</h1>
-      <p>
-        A root agent takes the goal, decides whether to do the work or split it up, and
-        the organization it builds appears as it forms.
-      </p>
-      <Composer {...props} variant="hero" />
+      {error && <p className="composer-note" data-tone="problem" role="alert">{error}</p>}
     </div>
   );
 }

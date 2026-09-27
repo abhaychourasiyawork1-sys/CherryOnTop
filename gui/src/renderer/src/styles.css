@@ -1,39 +1,10 @@
+@import "./styles/tokens.css";
+
 /* Mission Control — the visual system.
    Ground is "harbour": a deep blue-slate with real chroma, not a tinted black.
    State hues are ordered by what needs a human, not by good/bad: finished work
    goes quiet grey and recedes, so the only bright things on screen are the
    things still owed. */
-:root {
-  --ground: #131a22;
-  --panel: #182230;
-  --panel-raised: #1e2a3a;
-  --hairline: #243244;
-  --ink: #e4eaf0;
-  --ink-quiet: #8fa0b4;
-  --ink-faint: #5d6c7e;
-
-  --executing: #5fd3c4;
-  --planning: #8c9af0;
-  --at-risk: #f2c14e;
-  --failed: #e4674f;
-  --settled: #6e7c8c;
-
-  --sans: 'Instrument Sans', ui-sans-serif, system-ui, sans-serif;
-  --mono: 'IBM Plex Mono', ui-monospace, SFMono-Regular, monospace;
-
-  --rail: 232px;
-  /* Wide enough for a findings table to be readable. A child's full answer
-     lives here, and long-form content at 360px is a column of two words. */
-  --inspector: 440px;
-  /* Only macOS hides its title bar (see main/index.ts); everywhere else the
-     frame is already there and the rail must not pad around a gap. */
-  --chrome-inset: 14px;
-}
-
-@supports (-webkit-backdrop-filter: blur(0)) {
-  :root { --chrome-inset: 42px; }
-}
-
 * { box-sizing: border-box; }
 
 /* The platform scrollbar is a bright grey slab in the middle of a dark palette.
@@ -76,33 +47,6 @@ button {
   outline-offset: 2px;
   border-radius: 3px;
 }
-
-/* ---- shell ---------------------------------------------------------- */
-
-.shell {
-  display: grid;
-  grid-template-columns: var(--rail) minmax(0, 1fr) var(--inspector);
-  height: 100%;
-}
-
-.shell[data-inspector='closed'] { grid-template-columns: var(--rail) minmax(0, 1fr) 0; }
-
-.rail {
-  background: var(--panel);
-  border-right: 1px solid var(--hairline);
-  padding: var(--chrome-inset) 0 12px;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  overflow-y: auto;
-}
-
-
-
-
-
-
-
 
 .stage {
   position: relative;
@@ -585,97 +529,6 @@ button {
 .diff span[data-sign='add'] { color: var(--executing); }
 .diff span[data-sign='remove'] { color: var(--failed); }
 .diff span[data-sign='context'] { color: var(--ink-faint); }
-
-/* ====================================================================== */
-/*  The shell: five destinations, one stage, one input.                   */
-/* ====================================================================== */
-
-.nav-project {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  padding: 0 16px 12px;
-  color: var(--ink-faint);
-  font-size: 12px;
-}
-
-.nav-project-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-
-.nav-project-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--failed);
-  flex: none;
-}
-.nav-project-dot[data-connected='true'] { background: var(--executing); }
-
-.nav-new {
-  margin: 0 12px 14px;
-  padding: 7px 10px;
-  border: 1px solid var(--hairline);
-  border-radius: 6px;
-  color: var(--ink);
-  font-weight: 500;
-  text-align: left;
-  transition: border-color 140ms ease, background 140ms ease;
-}
-.nav-new:hover { border-color: var(--ink-faint); background: var(--panel-raised); }
-
-.nav-list {
-  list-style: none;
-  margin: 0;
-  padding: 0 8px;
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-  flex: 1;
-}
-
-.nav-item {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  width: 100%;
-  text-align: left;
-  padding: 7px 10px;
-  border-radius: 6px;
-  color: var(--ink-quiet);
-  /* The current section is marked on a left hairline, matching how a running
-     node is marked on a card — one vocabulary for "this is the live one". */
-  box-shadow: inset 2px 0 0 transparent;
-  transition: background 140ms ease, color 140ms ease;
-}
-
-.nav-item:hover { background: var(--panel-raised); color: var(--ink); }
-.nav-item[aria-current='true'] {
-  background: var(--panel-raised);
-  color: var(--ink);
-  box-shadow: inset 2px 0 0 var(--planning);
-}
-
-.nav-icon { color: var(--ink-faint); width: 14px; text-align: center; }
-.nav-item[aria-current='true'] .nav-icon { color: var(--planning); }
-.nav-label { flex: 1; }
-
-.nav-count {
-  font-family: var(--mono);
-  font-size: 11px;
-  color: var(--ink-quiet);
-  background: var(--hairline);
-  border-radius: 9px;
-  padding: 0 6px;
-  line-height: 17px;
-}
-.nav-count[data-urgent='true'] { color: var(--ground); background: var(--at-risk); }
-
-.nav-foot {
-  margin: 0;
-  padding: 10px 16px 0;
-  border-top: 1px solid var(--hairline);
-  font-size: 11px;
-  color: var(--ink-faint);
-}
 
 /* ---- stage header and tabs ------------------------------------------ */
 

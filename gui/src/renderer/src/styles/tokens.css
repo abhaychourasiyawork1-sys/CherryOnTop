@@ -1,0 +1,133 @@
+/* Desktop 2.0 — tokens.
+   Dark-first, light-ready. The ground stays "harbour": a deep blue-slate with
+   real chroma, never a tinted black. State hues are ordered by what needs a
+   human — finished work goes quiet grey, so the only bright things on screen
+   are the things still owed. One accent (periwinkle) marks focus and
+   selection; nothing else is decorative. Components use the semantic names
+   below, never a raw colour. */
+:root {
+  color-scheme: dark;
+
+  /* ground → surface → raised: three depths, separated by value, not borders */
+  --ground: #11171e;
+  --surface: #151d26;
+  --raised: #1b2530;
+  --overlay: #202b37;
+  --line: #222d3a;
+  --line-strong: #2d3a4a;
+
+  --ink: #e6ebf0;
+  --ink-2: #a2afbe;
+  --ink-3: #6b7b8e;
+  --ink-inverse: #0f141a;
+
+  --accent: #8c9af0;
+  --accent-soft: rgba(140, 154, 240, 0.14);
+
+  /* states, by what a person owes them */
+  --executing: #5fd3c4;
+  --planning: #8c9af0;
+  --at-risk: #f2c14e;
+  --failed: #e4674f;
+  --settled: #6e7c8c;
+  --good: #7fcf9a;
+
+  --attention: var(--at-risk);
+  --attention-soft: rgba(242, 193, 78, 0.12);
+  --problem-soft: rgba(228, 103, 79, 0.1);
+
+  --scrim: rgba(6, 9, 13, 0.55);
+  --shadow-float: 0 18px 48px rgba(3, 6, 10, 0.5), 0 2px 6px rgba(3, 6, 10, 0.35);
+
+  /* type: one family carries the voice; mono is for figures and ids only */
+  --sans: 'Instrument Sans', ui-sans-serif, system-ui, sans-serif;
+  --mono: 'IBM Plex Mono', ui-monospace, SFMono-Regular, monospace;
+  --text-xs: 11.5px;
+  --text-sm: 12.5px;
+  --text-md: 14px;
+  --text-lg: 15.5px;
+  --text-xl: 19px;
+  --text-2xl: 24px;
+  --text-3xl: 31px;
+  --leading: 1.55;
+  --leading-tight: 1.25;
+
+  /* space: 4px base */
+  --s-1: 4px;
+  --s-2: 8px;
+  --s-3: 12px;
+  --s-4: 16px;
+  --s-5: 20px;
+  --s-6: 24px;
+  --s-8: 32px;
+  --s-10: 40px;
+  --s-12: 48px;
+
+  --radius-sm: 5px;
+  --radius: 8px;
+  --radius-lg: 12px;
+
+  /* layout */
+  --sidebar: 224px;
+  --sidebar-collapsed: 56px;
+  --header: 52px;
+  --reading: 720px;
+  --inspector: 440px;
+  --rail: var(--sidebar);
+  /* Only macOS hides its title bar (see main/index.ts). */
+  --chrome-inset: 10px;
+
+  /* motion: short, explanatory, never looping except where something is live */
+  --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --t-fast: 120ms;
+  --t: 200ms;
+  --t-slow: 320ms;
+
+  /* legacy names the older panels use, mapped onto the new system */
+  --panel: var(--surface);
+  --panel-raised: var(--raised);
+  --hairline: var(--line);
+  --ink-quiet: var(--ink-2);
+  --ink-faint: var(--ink-3);
+}
+
+@supports (-webkit-backdrop-filter: blur(0)) {
+  :root { --chrome-inset: 38px; }
+}
+
+/* Light theme: the architecture is ready for it; the palette is a first pass. */
+:root[data-theme='light'] {
+  color-scheme: light;
+  --ground: #f4f6f9;
+  --surface: #ffffff;
+  --raised: #eef1f6;
+  --overlay: #ffffff;
+  --line: #e0e5ec;
+  --line-strong: #cdd5df;
+  --ink: #16202b;
+  --ink-2: #4b5a6b;
+  --ink-3: #7a8898;
+  --ink-inverse: #ffffff;
+  --accent: #4f5fd1;
+  --accent-soft: rgba(79, 95, 209, 0.1);
+  --executing: #13877a;
+  --planning: #4f5fd1;
+  --at-risk: #a86f00;
+  --failed: #c2412a;
+  --settled: #7a8898;
+  --good: #2c8a4d;
+  --attention-soft: rgba(168, 111, 0, 0.1);
+  --problem-soft: rgba(194, 65, 42, 0.08);
+  --scrim: rgba(20, 28, 38, 0.3);
+  --shadow-float: 0 18px 48px rgba(20, 28, 38, 0.16), 0 2px 6px rgba(20, 28, 38, 0.08);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root { --t-fast: 0ms; --t: 0ms; --t-slow: 0ms; }
+  *, *::before, *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}

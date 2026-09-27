@@ -39,7 +39,7 @@ export interface CaseFile {
  *  and one step because a modal for it would be heavier than the act deserves.
  *  The confirmation says how many agents will stop, since that is the number a
  *  person is actually weighing. */
-function StopTask({ caseId, running, onStopped }: { caseId: string; running: number; onStopped: () => void }) {
+export function StopTask({ caseId, running, onStopped }: { caseId: string; running: number; onStopped: () => void }) {
   const [asking, setAsking] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);

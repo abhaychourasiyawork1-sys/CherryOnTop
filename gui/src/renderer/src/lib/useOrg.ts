@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { daemon } from './client.js';
 import { mergeEvents, type OrgEvent } from './eventLog.js';
 import { changesOrg } from './liveness.js';
+import { loadSnapshot, saveSnapshot } from './sync.js';
 
 export interface OrgNode {
   id: string;
@@ -51,6 +52,12 @@ export interface Org {
   revision: number;
   /** What the daemon says it serves, for the compatibility check. */
   routers: string[] | undefined;
+  /** False while what is on screen is the cached copy from the last session
+   *  and the daemon has not yet confirmed it. Nothing cached may be shown as
+   *  live. */
+  authoritative: boolean;
+  /** When the cached copy was taken, for an honest "as of". */
+  cachedAt: string | null;
 }
 
 /** The single source of live truth for the window: the node tree, the approvals
@@ -58,8 +65,12 @@ export interface Org {
  *  an event says the shape changed, rather than polling — the daemon already
  *  pushes, and a poll would make a still organization look busy. */
 export function useOrg(): Org {
-  const [nodes, setNodes] = useState<OrgNode[]>([]);
-  const [approvals, setApprovals] = useState<Approval[]>([]);
+  // Cached state first, so the window draws instantly; the daemon's answer
+  // replaces it wholesale the moment it arrives.
+  const [cache] = useState(loadSnapshot);
+  const [nodes, setNodes] = useState<OrgNode[]>(() => cache?.nodes ?? []);
+  const [approvals, setApprovals] = useState<Approval[]>(() => cache?.approvals ?? []);
+  const [authoritative, setAuthoritative] = useState(false);
   const [routers, setRouters] = useState<string[] | undefined>(undefined);
   const [events, setEvents] = useState<OrgEvent[]>([]);
   const [connected, setConnected] = useState(false);
@@ -97,6 +108,7 @@ export function useOrg(): Org {
         setApprovals(pendingApprovals as Approval[]);
         setRouters((ping as { routers?: string[] } | null)?.routers);
         setConnected(true);
+        setAuthoritative(true);
         setError(null);
       })
       .catch((err: unknown) => {
@@ -154,7 +166,17 @@ export function useOrg(): Org {
     if (streamAttempt > 0) refresh();
   }, [streamAttempt]);
 
+  // Keep the cache current, but only with what the daemon actually said.
+  useEffect(() => {
+    if (!authoritative) return;
+    const timer = setTimeout(() => saveSnapshot(nodes, approvals), 800);
+    return () => clearTimeout(timer);
+  }, [nodes, approvals, authoritative]);
+
   // `tick` counts reads of the tree, which is exactly "the organization may
   // have changed" — the signal every other panel needs and none of them had.
-  return { nodes, approvals, events, connected, error, refresh, revision: tick, routers };
+  return {
+    nodes, approvals, events, connected, error, refresh, revision: tick, routers,
+    authoritative: authoritative && connected, cachedAt: cache?.savedAt ?? null,
+  };
 }
