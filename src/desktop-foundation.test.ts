@@ -5,22 +5,22 @@ import {
   getWorkspace,
   listWorkspaces,
   archiveWorkspace,
-} from './repository.js';
+} from './workspace/repository.js';
 import {
   createProject,
   getProject,
   listProjects,
-} from '../projects/repository.js';
+} from './projects/repository.js';
 import {
   createConversation,
   getConversation,
   listConversations,
-} from '../conversations/repository.js';
+} from './conversations/repository.js';
 import {
   createRun,
   getRun,
   listRuns,
-} from '../runs/repository.js';
+} from './runs/repository.js';
 
 describe('Desktop 2.0 domain foundation', () => {
   it('persists and lists workspaces while preserving archive state', () => {
