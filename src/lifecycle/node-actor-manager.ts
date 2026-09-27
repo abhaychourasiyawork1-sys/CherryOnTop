@@ -97,7 +97,7 @@ import type { EconomicState } from '../decision/state.js';
 import { memory } from '../db/schema.js';
 import { assessDecomposability } from '../system1/decomposability.js';
 import { assessChangeRequest, EXPLAIN_THRESHOLD } from '../system1/change-request.js';
-import { verifiedChangeAtTurnCap, isVerifyingCommand } from '../execution/observation.js';
+import { verifiedChangeAtTurnCap, isVerifyingCommand, externalActionChecks } from '../execution/observation.js';
 import { refineWithSystem1 } from '../decision/system1-decision.js';
 import { createModelGateway } from '../system1/model-gateway.js';
 import { stateFacts } from '../system1/compiler.js';
@@ -2470,9 +2470,10 @@ function validationEvidenceFor(db: Db, nodeId: string, succeeded: boolean): Vali
     ? (grantReceipt.payload as { finalRuntimeAction?: string }).finalRuntimeAction === READ_ONLY_GRANT
     : taskEconomicsFor(getNode(db, nodeId)?.contract.goal ?? '').readOnly;
   const durableOutcomeIds = readOnly ? all.filter((a) => a.kind === 'result').map((a) => a.id) : [];
+  const execEvents = subtreeExecEvents(db, nodeId)
+    .map((row) => ({ type: row.type.slice('exec.'.length), payload: row.payload } as StructuredEvent));
   const snapshot = executionSnapshot({
-    events: subtreeExecEvents(db, nodeId)
-      .map((row) => ({ type: row.type.slice('exec.'.length), payload: row.payload } as StructuredEvent)),
+    events: execEvents,
     sequence: 0,
     tokensConsumed: 0,
   });
@@ -2486,6 +2487,14 @@ function validationEvidenceFor(db: Db, nodeId: string, succeeded: boolean): Vali
       command: target,
       passed: ![...failures].some((signature) => signature.includes(target)),
     }));
+  // Work whose deliverable is an action outside the tree — close a PR, open
+  // one, push — changes no file and has no test to run, so it could never
+  // clear an implementation floor and was failed however well it went. The
+  // remote accepting the action is the observed check. Only when nothing in
+  // the tree changed: a code change still has to prove itself with a test,
+  // and pushing it proves nothing about whether it is right.
+  const changedTree = artifacts.some((a) => a.kind === 'file_edit' || a.kind === 'file_write');
+  if (!changedTree) observedChecks.push(...externalActionChecks(execEvents));
 
   return {
     claimedSuccess: succeeded,

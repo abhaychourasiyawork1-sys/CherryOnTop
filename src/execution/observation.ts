@@ -177,3 +177,27 @@ export function verifiedChangeAtTurnCap(events: StructuredEvent[]): boolean {
     && !PIPED.test(String(lastTest.invocation.input.command))
     && !FAILURE_OUTPUT.test(lastTest.raw);
 }
+
+/** A command that changes something outside the working tree: a pull request,
+ *  an issue, a release, a push. Judged on the command itself, like
+ *  `isVerifyingCommand` — `gh pr view` only looks, so it proves nothing. */
+const EXTERNAL_ACTION = /^\s*(?:cd\s+\S+\s*&&\s*)?(?:\w+=\S*\s+)*(?:gh\s+(?:pr|issue|release)\s+(?:create|close|merge|edit|comment|review|reopen|ready|delete|lock|unlock)\b|gh\s+api\s+(?:-X|--method)\s+(?:POST|PATCH|PUT|DELETE)\b|git\s+push\b)/;
+
+/** Evidence that an action outside the repository happened, observed rather
+ *  than claimed: the command ran and the remote accepted it (a failed `gh` or
+ *  `git push` exits non-zero, which the tool result records), or the runtime
+ *  itself reported publishing a change. For work whose deliverable *is* that
+ *  action — close a PR, open one, push a branch — this is the check; there is
+ *  no test that could say more. */
+export function externalActionChecks(events: StructuredEvent[]): { id: string; command: string; passed: boolean }[] {
+  const checks = observationsFromEvents(events, '')
+    .filter((o) => o.tool.name === 'Bash' && EXTERNAL_ACTION.test(String(o.invocation.input.command ?? '')))
+    .map((o) => ({ id: `external:${o.semanticId}`, command: String(o.invocation.input.command), passed: o.execution.succeeded }));
+  const published = events
+    .filter((e) => e.type === 'system' && (e.payload as { subtype?: string } | null)?.subtype === 'code_change_published')
+    .map((e) => {
+      const p = e.payload as { url?: string; action?: string };
+      return { id: `published:${p.url ?? ''}`, command: `${p.action ?? 'published'} ${p.url ?? ''}`.trim(), passed: true };
+    });
+  return [...checks, ...published];
+}
