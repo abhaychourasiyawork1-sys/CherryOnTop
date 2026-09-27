@@ -80,6 +80,11 @@ export type ChangeBody =
 
 /** The change an artifact's event made to `path`, read from the tool call. */
 export function changeFromEvent(event: OrgEvent | undefined, path: string): ChangeBody | null {
+  // A change seen on disk after the run (exec.file_change): both sides recorded.
+  const onDisk = event?.payload as { path?: string; before?: unknown; after?: unknown } | null;
+  if (onDisk?.path === path && typeof onDisk.before === 'string' && typeof onDisk.after === 'string') {
+    return { kind: 'edit', before: onDisk.before, after: onDisk.after };
+  }
   const content = (event?.payload as { message?: { content?: unknown[] } } | null)?.message?.content;
   if (!Array.isArray(content)) return null;
   for (const block of content) {

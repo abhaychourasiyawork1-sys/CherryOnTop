@@ -13,6 +13,12 @@ const detached = new Map<string, BrowserWindow>();
  *  that could become a URL or a path. */
 const DETACHED_TARGET = /^[a-z-]+(:[A-Za-z0-9._-]+){1,4}$/;
 
+/** Links in agent output are untrusted: only web and mail links go to the OS,
+ *  never file:// or custom schemes that could launch local programs. */
+function openExternalSafe(url: string): void {
+  if (/^(https?|mailto):/i.test(url)) void shell.openExternal(url);
+}
+
 function createWindow(detachedTarget?: string): BrowserWindow {
   const window = new BrowserWindow({
     width: detachedTarget ? 920 : 1440,
@@ -36,7 +42,7 @@ function createWindow(detachedTarget?: string): BrowserWindow {
   window.once('ready-to-show', () => window.show());
 
   window.webContents.setWindowOpenHandler(({ url }) => {
-    shell.openExternal(url);
+    openExternalSafe(url);
     return { action: 'deny' };
   });
 
@@ -52,7 +58,7 @@ function createWindow(detachedTarget?: string): BrowserWindow {
       items.push({ type: 'separator' });
     }
     if (params.linkURL) {
-      items.push({ label: 'Open link', click: () => void shell.openExternal(params.linkURL) });
+      items.push({ label: 'Open link', click: () => openExternalSafe(params.linkURL) });
       items.push({ label: 'Copy link', click: () => clipboard.writeText(params.linkURL) });
       items.push({ type: 'separator' });
     }

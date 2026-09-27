@@ -19,10 +19,10 @@ export const sessionRouter = router({
     }),
 
   rename: publicProcedure
-    .input(z.object({ id: z.string(), title: z.string().min(1) }))
+    .input(z.object({ id: z.string(), title: z.string().trim().min(1) }))
     .mutation(({ input, ctx }) => {
       if (!getSession(ctx.db, input.id)) throw new Error(`Session ${input.id} not found`);
-      updateSession(ctx.db, input.id, { title: input.title.trim() });
+      updateSession(ctx.db, input.id, { title: input.title });
       return { ok: true as const };
     }),
 

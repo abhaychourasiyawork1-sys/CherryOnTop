@@ -62,11 +62,23 @@ export function buildAutoCommitMessage(goal: string, nodeId: string): string {
   ].join('\n');
 }
 
-/** Stages, commits, and (if a remote is set up for it) pushes everything
- *  currently in `repoPath`. Never throws: every failure mode — a clean tree,
- *  no git identity configured, no upstream to push to, a `git` that errors —
- *  comes back as `{ committed: false, reason }` instead. */
-export function autoCommitAndPush(repoPath: string, goal: string, nodeId: string): AutoCommitResult {
+/** Which of the tree's changed paths the run itself wrote. `written` is what
+ *  the agent recorded through its own Write/Edit tools (its artifacts), often
+ *  as absolute paths inside a sandbox mount, so a changed repo-relative path
+ *  matches when it is the whole written path or its tail. Anything else in the
+ *  tree — a human's in-progress edit, a stray log the tooling dropped — is not
+ *  this run's to commit. */
+export function selectRunFiles(changed: string[], written: string[]): string[] {
+  const paths = written.map((p) => p.replace(/\\/g, '/'));
+  return changed.filter((f) => paths.some((p) => p === f || p.endsWith(`/${f}`)));
+}
+
+/** Stages, commits, and (if a remote is set up for it) pushes the files in
+ *  `repoPath` that this run wrote (`written`, see `selectRunFiles`) and
+ *  nothing else. Never throws: every failure mode — a clean tree, no git
+ *  identity configured, no upstream to push to, a `git` that errors — comes
+ *  back as `{ committed: false, reason }` instead. */
+export function autoCommitAndPush(repoPath: string, goal: string, nodeId: string, written: string[]): AutoCommitResult {
   if (isDisposableFork(repoPath)) {
     return { attempted: false, committed: false, pushed: false, reason: 'refusing to commit inside a disposable child fork' };
   }
@@ -74,16 +86,18 @@ export function autoCommitAndPush(repoPath: string, goal: string, nodeId: string
     return { attempted: false, committed: false, pushed: false, reason: 'nothing to commit' };
   }
 
-  // ponytail: `-A` stages everything, gitignored paths aside — a scratch/log
-  // directory a node's own tooling created but the repo never gitignored
-  // rides along too. Narrowing this needs knowing which paths the node's task
-  // actually touched, which nothing here tracks today; upgrade path is to
-  // record that at dispatch time and pass it through as a pathspec.
-  const add = run(['add', '-A'], repoPath);
+  // ponytail: only Write/Edit tool calls are recorded, so a file the run
+  // changed or deleted purely through Bash is left for a human to commit.
+  const changed = run(['ls-files', '-z', '--modified', '--others', '--exclude-standard'], repoPath);
+  const files = changed.ok ? selectRunFiles([...new Set(changed.out.split('\0').filter(Boolean))], written) : [];
+  if (files.length === 0) {
+    return { attempted: false, committed: false, pushed: false, reason: 'no changed files were written by this run' };
+  }
+  const add = run(['add', '--', ...files], repoPath);
   if (!add.ok) return { attempted: true, committed: false, pushed: false, reason: `git add failed: ${add.out}` };
 
   const message = buildAutoCommitMessage(goal, nodeId);
-  const commit = run(['commit', '-m', message], repoPath);
+  const commit = run(['commit', '-m', message, '--', ...files], repoPath);
   if (!commit.ok) {
     return { attempted: true, committed: false, pushed: false, reason: `git commit failed: ${commit.out}` };
   }
@@ -102,7 +116,7 @@ export function autoCommitAndPush(repoPath: string, goal: string, nodeId: string
   // still real; rebase onto what's there now and try once more before giving
   // up, instead of leaving a verified commit stranded locally forever.
   if (hasUpstream.ok && /rejected|non-fast-forward|fetch first/i.test(push.out)) {
-    const rebase = run(['pull', '--rebase'], repoPath);
+    const rebase = run(['pull', '--rebase', '--autostash'], repoPath);
     if (rebase.ok) {
       const retry = run(['push'], repoPath);
       if (retry.ok) return { ...result, pushed: true };

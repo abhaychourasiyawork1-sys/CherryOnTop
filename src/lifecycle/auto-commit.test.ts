@@ -55,14 +55,14 @@ describe('buildAutoCommitMessage', () => {
 describe('autoCommitAndPush', () => {
   it('does nothing on a clean tree', () => {
     const { repo } = tmpRepoWithRemote();
-    const result = autoCommitAndPush(repo, 'goal', 'node-1');
+    const result = autoCommitAndPush(repo, 'goal', 'node-1', []);
     expect(result).toEqual({ attempted: false, committed: false, pushed: false, reason: 'nothing to commit' });
   });
 
   it('commits and pushes real changes to the configured upstream', () => {
     const { repo, remote } = tmpRepoWithRemote();
     writeFileSync(join(repo, 'b.txt'), 'new file');
-    const result = autoCommitAndPush(repo, 'Build the widget', 'node-42');
+    const result = autoCommitAndPush(repo, 'Build the widget', 'node-42', ['/workspace/b.txt']);
     expect(result.attempted).toBe(true);
     expect(result.committed).toBe(true);
     expect(result.pushed).toBe(true);
@@ -76,6 +76,26 @@ describe('autoCommitAndPush', () => {
     expect(git(['status', '--porcelain'], repo)).toBe('');
   });
 
+  it('commits only the files the run wrote, leaving strays and staged human work alone', () => {
+    const { repo } = tmpRepoWithRemote();
+    writeFileSync(join(repo, 'b.txt'), 'new file');
+    writeFileSync(join(repo, 'a.txt'), 'edited by the run');
+    writeFileSync(join(repo, 'scratch.log'), 'tooling noise');
+    writeFileSync(join(repo, 'human.txt'), 'staged by a human');
+    git(['add', 'human.txt'], repo);
+    const result = autoCommitAndPush(repo, 'goal', 'node-1', ['/workspace/b.txt', 'a.txt']);
+    expect(result.committed).toBe(true);
+    expect(git(['show', '--name-only', '--format=', 'HEAD'], repo).split('\n').sort()).toEqual(['a.txt', 'b.txt']);
+    expect(git(['status', '--porcelain'], repo)).toBe('A  human.txt\n?? scratch.log');
+  });
+
+  it('commits nothing when none of the changes were written by the run', () => {
+    const { repo } = tmpRepoWithRemote();
+    writeFileSync(join(repo, 'scratch.log'), 'tooling noise');
+    const result = autoCommitAndPush(repo, 'goal', 'node-1', ['/workspace/other.txt']);
+    expect(result).toEqual({ attempted: false, committed: false, pushed: false, reason: 'no changed files were written by this run' });
+  });
+
   it('commits without pushing when there is no remote to push to', () => {
     const repo = mkdtempSync(join(tmpdir(), 'autocommit-noremote-'));
     git(['init', '-q', '-b', 'main'], repo);
@@ -86,7 +106,7 @@ describe('autoCommitAndPush', () => {
     git(['commit', '-q', '-m', 'init'], repo);
 
     writeFileSync(join(repo, 'b.txt'), 'new file');
-    const result = autoCommitAndPush(repo, 'Build the widget', 'node-42');
+    const result = autoCommitAndPush(repo, 'Build the widget', 'node-42', ['/workspace/b.txt']);
     expect(result.committed).toBe(true);
     expect(result.pushed).toBe(false);
     expect(result.reason).toContain('push failed');
@@ -107,7 +127,7 @@ describe('autoCommitAndPush', () => {
     git(['push', '-q'], other);
 
     writeFileSync(join(repo, 'b.txt'), 'new file');
-    const result = autoCommitAndPush(repo, 'Build the widget', 'node-42');
+    const result = autoCommitAndPush(repo, 'Build the widget', 'node-42', ['/workspace/b.txt']);
 
     expect(result.committed).toBe(true);
     expect(result.pushed).toBe(true);
@@ -122,7 +142,7 @@ describe('autoCommitAndPush', () => {
   it('refuses to run inside a disposable child fork', () => {
     const forkDir = join(homedir(), '.org-forks', `test-fork-${Date.now()}`);
     mkdirSync(forkDir, { recursive: true });
-    const result = autoCommitAndPush(forkDir, 'goal', 'node-1');
+    const result = autoCommitAndPush(forkDir, 'goal', 'node-1', []);
     expect(result).toEqual({
       attempted: false, committed: false, pushed: false,
       reason: 'refusing to commit inside a disposable child fork',

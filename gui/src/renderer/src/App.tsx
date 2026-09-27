@@ -46,7 +46,10 @@ type ResolvedRepo = { ok: true; hostPath: string; containerPath: string } | { ok
 async function resolveRepo(path: string): Promise<ResolvedRepo> {
   try {
     return await daemon().daemon.resolveRepo.query({ path }) as ResolvedRepo;
-  } catch {
+  } catch (err) {
+    // Only a missing procedure means an older daemon; anything else (daemon not
+    // running, network) must say so rather than blame the version.
+    if ((err as { data?: { code?: string } })?.data?.code !== 'NOT_FOUND') return { ok: false, error: `Could not reach the daemon: ${(err as Error)?.message ?? err}. Start it with \`org daemon start\`.` };
     if (REPO.container && workspaceKeyOf(path) === WINDOW_KEY) return { ok: true, hostPath: REPO.path ?? '', containerPath: REPO.container };
     return { ok: false, error: 'The daemon is older than this window and can only start work in the launch folder. Restart it with `org daemon stop` then `org daemon start`.' };
   }
@@ -411,8 +414,9 @@ export function App() {
   const work = async (text: string, refs: ContextRef[]) => { await startWork(goalWithContext(text, refs)); };
   const redirect = async (text: string, refs: ContextRef[]) => {
     if (!liveCase) { await work(text, refs); return; }
-    await daemon().node.cancelCase.mutate({ id: liveCase.id });
+    // Start the replacement first: if that fails, the live run keeps going.
     await startWork(redirectGoal(text, { id: liveCase.id, title: titleOf(liveCase.goal) }, refs));
+    await daemon().node.cancelCase.mutate({ id: liveCase.id });
   };
 
   const composer = (variant: 'hero' | 'docked') => (
