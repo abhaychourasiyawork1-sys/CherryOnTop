@@ -1,13 +1,13 @@
 import { describe, it, expect } from 'vitest';
-import { evaluateActionUtility, DEFAULT_UTILITY_WEIGHTS, type UtilityWeights } from './utility.js';
-import { actionCandidate } from './actions.js';
+import {
+  evaluateAction, hardConstraints, stateValue, signalEstimate, deterministicEstimate, reworkCostTokens,
+  DEFAULT_USD_PER_TOKEN,
+} from './utility.js';
+import { actionCandidate, type ActionCandidate } from './actions.js';
 import { initialEconomicState, normalizeEconomicState, type EconomicState } from './state.js';
 
 function state(over: Partial<EconomicState> = {}): EconomicState {
-  const base = initialEconomicState({
-    goal: 'g', totalTokenBudget: 10_000, qualityFloor: 0.7,
-    availableCapabilities: ['context.select'],
-  });
+  const base = initialEconomicState({ goal: 'g', totalTokenBudget: 10_000, qualityFloor: 0.7 });
   return normalizeEconomicState({
     ...base,
     ...over,
@@ -15,190 +15,220 @@ function state(over: Partial<EconomicState> = {}): EconomicState {
   });
 }
 
-/** An action with no effects at all: every term zero, so any single dimension
- *  can be varied on its own and the contribution read straight off the score. */
-const inert = (over = {}) => actionCandidate({ id: 'a', kind: 'continue', capability: 'agent.continue', confidence: 1, ...over });
+const of = (over: Partial<ActionCandidate> = {}) =>
+  actionCandidate({ id: 'a', kind: 'acquire_evidence', capability: `cap.${over.kind ?? 'acquire_evidence'}`, confidence: 1, ...over });
 
-describe('the 2:2:1 objective', () => {
-  it('defaults to tokens 0.4, quality 0.4, latency 0.2', () => {
-    expect(DEFAULT_UTILITY_WEIGHTS).toEqual({ tokens: 0.4, quality: 0.4, latency: 0.2 });
+describe('V(s): the expected cost of finishing from here', () => {
+  it('is zero once the task is validated complete', () => {
+    const done = state({ validation: { required: true, confidence: 1, status: 'passed' } });
+    expect(stateValue(done)).toEqual({ tokens: 0, usd: 0 });
   });
 
-  it('gives tokens and quality equal weight, and latency half of either', () => {
+  it('grows with failure pressure, because a failing run will need recovering', () => {
+    const calm = state();
+    const failing = state({ trajectory: { ...calm.trajectory, failurePressure: 0.8 } });
+    expect(stateValue(failing).tokens).toBeGreaterThan(stateValue(calm).tokens);
+  });
+
+  it('shrinks as progress closes the remaining work', () => {
+    const early = state();
+    const late = state({ trajectory: { ...early.trajectory, progress: 0.8 } });
+    expect(stateValue(late).tokens).toBeLessThan(stateValue(early).tokens);
+  });
+
+  it('prices tokens in dollars at the state’s own rate, or a non-zero default', () => {
     const s = state();
-    // One full unit of each dimension: the entire token budget saved, the whole
-    // quality range gained, the entire latency budget saved.
-    const tokens = evaluateActionUtility(inert({ expectedTokenBenefit: 10_000 }), s).score;
-    const quality = evaluateActionUtility(inert({ expectedQualityBenefit: 1 }), s).score;
-    const latency = evaluateActionUtility(inert({ expectedLatencyBenefit: 600_000 }), s).score;
-
-    expect(tokens).toBeCloseTo(0.4, 6);
-    expect(quality).toBeCloseTo(0.4, 6);
-    expect(latency).toBeCloseTo(0.2, 6);
-    expect(tokens).toBeCloseTo(quality, 6);
-    expect(latency).toBeCloseTo(tokens / 2, 6);
-  });
-
-  it('honours a caller-supplied weighting', () => {
-    const tokensOnly: UtilityWeights = { tokens: 1, quality: 0, latency: 0 };
-    expect(evaluateActionUtility(inert({ expectedTokenBenefit: 10_000 }), state(), tokensOnly).score).toBeCloseTo(1, 6);
-    expect(evaluateActionUtility(inert({ expectedQualityBenefit: 1 }), state(), tokensOnly).score).toBeCloseTo(0, 6);
-  });
-
-  it('charges cost against benefit in the same normalized units', () => {
-    const s = state();
-    const even = evaluateActionUtility(inert({ expectedTokenBenefit: 2000, tokenCost: 2000 }), s);
-    expect(even.score).toBeCloseTo(0, 6);
-    expect(even.expectedBenefit).toBeGreaterThan(0);
-    expect(even.expectedCost).toBeGreaterThan(0);
-  });
-
-  it('counts coordination and orchestration overhead as real cost', () => {
-    const s = state();
-    const bare = evaluateActionUtility(inert({ expectedTokenBenefit: 4000 }), s).score;
-    const withOverhead = evaluateActionUtility(
-      inert({ expectedTokenBenefit: 4000, coordinationCost: 1000, orchestrationCost: 1000 }), s,
-    ).score;
-    expect(withOverhead).toBeLessThan(bare);
-    expect(withOverhead).toBeCloseTo(0.4 * (4000 - 2000) / 10_000, 6);
-  });
-
-  it('discounts by confidence and by the risk the action simply fails', () => {
-    const s = state();
-    const sure = evaluateActionUtility(inert({ expectedTokenBenefit: 8000, confidence: 1, failureRisk: 0 }), s).score;
-    const unsure = evaluateActionUtility(inert({ expectedTokenBenefit: 8000, confidence: 0.5, failureRisk: 0 }), s).score;
-    const risky = evaluateActionUtility(inert({ expectedTokenBenefit: 8000, confidence: 1, failureRisk: 0.5 }), s).score;
-    expect(unsure).toBeCloseTo(sure * 0.5, 6);
-    expect(risky).toBeCloseTo(sure * 0.5, 6);
-  });
-
-  it('does not let confidence rescue a negative action', () => {
-    const s = state();
-    const bad = inert({ tokenCost: 5000 });
-    const confident = evaluateActionUtility(bad, s).score;
-    const doubtful = evaluateActionUtility({ ...bad, confidence: 0.2 }, s).score;
-    // Discounting moves a loss towards zero, never above it.
-    expect(confident).toBeLessThan(0);
-    expect(doubtful).toBeLessThan(0);
-    expect(doubtful).toBeGreaterThan(confident);
-  });
-
-  it('is deterministic and touches nothing outside its inputs', () => {
-    const s = state();
-    const a = inert({ expectedTokenBenefit: 1234, tokenCost: 99 });
-    const snapshot = structuredClone(s);
-    expect(evaluateActionUtility(a, s)).toEqual(evaluateActionUtility(a, s));
-    expect(s).toEqual(snapshot);
+    expect(stateValue(s).usd).toBeCloseTo(stateValue(s).tokens * DEFAULT_USD_PER_TOKEN);
+    const dear = state({ resources: { ...s.resources, usdPerToken: 1e-5 } });
+    expect(stateValue(dear).usd).toBeCloseTo(stateValue(dear).tokens * 1e-5);
   });
 });
 
-describe('hard constraints outrank the score', () => {
-  it('rejects an action whose quality risk breaches the floor, however large its token benefit', () => {
+describe('Q(s,a) = C_now + E[V(s′)]', () => {
+  it('prices continue at V(s), not at zero', () => {
     const s = state();
-    const cheapAndWrong = inert({ expectedTokenBenefit: 1_000_000, qualityRisk: 0.5 });
-    const verdict = evaluateActionUtility(cheapAndWrong, s);
-    expect(verdict.allowed).toBe(false);
-    expect(verdict.qualityFloorSatisfied).toBe(false);
-    expect(verdict.reasonCodes).toContain('quality_floor');
+    const e = evaluateAction(of({ kind: 'continue' }), s);
+    expect(e.estimate.immediateCost.usd).toBe(0);
+    expect(e.expectedCostUsd).toBeCloseTo(stateValue(s).usd);
+    expect(e.expectedCostUsd).toBeGreaterThan(0);
+    expect(e.advantageUsd).toBeCloseTo(0);
   });
 
-  it('lets a quality benefit offset a quality risk up to the floor', () => {
+  it('lets an action that costs something now beat continue when it saves more later', () => {
     const s = state();
-    expect(evaluateActionUtility(inert({ qualityRisk: 0.4, expectedQualityBenefit: 0.2 }), s).allowed).toBe(true);
-    expect(evaluateActionUtility(inert({ qualityRisk: 0.4, expectedQualityBenefit: 0.05 }), s).allowed).toBe(false);
+    const e = evaluateAction(of({ tokenCost: 500, expectedTokenBenefit: 3000 }), s);
+    expect(e.estimate.immediateCost.tokens).toBe(500);
+    expect(e.advantageUsd).toBeGreaterThan(0);
+  });
+
+  it('charges coordination and orchestration overhead as real cost', () => {
+    const s = state();
+    const bare = evaluateAction(of({ tokenCost: 100 }), s);
+    const loaded = evaluateAction(of({ tokenCost: 100, coordinationCost: 200, orchestrationCost: 50 }), s);
+    expect(loaded.estimate.immediateCost.tokens).toBe(350);
+    expect(loaded.expectedCostUsd).toBeGreaterThan(bare.expectedCostUsd);
+  });
+
+  it('values a drop in the chance of rework at what the rework would cost', () => {
+    const s = state();
+    const validate = evaluateAction(of({ kind: 'validate', expectedQualityBenefit: 0.3 }), s);
+    expect(validate.advantageUsd).toBeGreaterThan(0);
+    expect(reworkCostTokens(s)).toBeGreaterThan(0);
+  });
+
+  it('prices failure as a step towards a retry, so a risky action costs more', () => {
+    const s = state();
+    const sure = evaluateAction(of({ expectedTokenBenefit: 1000 }), s);
+    const flaky = evaluateAction(of({ expectedTokenBenefit: 1000, failureRisk: 0.6 }), s);
+    expect(flaky.expectedCostUsd).toBeGreaterThan(sure.expectedCostUsd);
+    expect(flaky.estimate.outcomes.map((o) => o.probability)).toEqual([0.4, 0.6]);
+  });
+
+  it('widens the bound on a doubtful saving, and never on a certain one', () => {
+    const s = state();
+    const sure = evaluateAction(of({ expectedTokenBenefit: 2000, confidence: 1 }), s);
+    const doubtful = evaluateAction(of({ expectedTokenBenefit: 2000, confidence: 0.3 }), s);
+    expect(doubtful.expectedCostUsd).toBeCloseTo(sure.expectedCostUsd);
+    expect(doubtful.conservativeCostUsd).toBeGreaterThan(sure.conservativeCostUsd);
+  });
+
+  it('never turns a loss into a gain by being unsure of it', () => {
+    const s = state();
+    const loss = evaluateAction(of({ tokenCost: 2000, confidence: 0.1 }), s);
+    expect(loss.advantageUsd).toBeLessThan(0);
+    expect(loss.conservativeCostUsd).toBeGreaterThanOrEqual(loss.expectedCostUsd);
+  });
+
+  it('does not buy information twice: its value is the rediscovery it avoids', () => {
+    const s = state();
+    const blind = evaluateAction(of({ tokenCost: 100 }), s);
+    const informative = evaluateAction(of({ tokenCost: 100, expectedInformationGain: 0.9 }), s);
+    expect(informative.conservativeCostUsd).toBeCloseTo(blind.conservativeCostUsd);
+    expect(informative.estimate.outcomes[0].nextStateDelta.informationGain).toBe(0.9);
+  });
+
+  it('is deterministic and does not touch the state it prices', () => {
+    const s = state();
+    const snapshot = JSON.stringify(s);
+    const a = evaluateAction(of({ expectedTokenBenefit: 1234, tokenCost: 99 }), s);
+    const b = evaluateAction(of({ expectedTokenBenefit: 1234, tokenCost: 99 }), s);
+    expect(a).toEqual(b);
+    expect(JSON.stringify(s)).toBe(snapshot);
+  });
+});
+
+describe('stop is terminal, not cheap', () => {
+  it('is infeasible on a task that is neither finished nor forbidden to continue', () => {
+    const e = evaluateAction(of({ kind: 'stop' }), state());
+    expect(e.allowed).toBe(false);
+    expect(e.reasonCodes).toContain('stop_not_terminal');
+  });
+
+  it('is free and final once the task is validated', () => {
+    const done = state({ validation: { required: true, confidence: 1, status: 'passed' } });
+    const estimate = deterministicEstimate(of({ kind: 'stop' }), done)!;
+    expect(estimate.provenance).toBe('deterministic');
+    expect(estimate.outcomes).toEqual([expect.objectContaining({ completed: true, probability: 1 })]);
+    expect(evaluateAction(of({ kind: 'stop' }), done).allowed).toBe(true);
+  });
+
+  it('is the only thing allowed under a hard stop', () => {
+    const stopped = state({ constraints: { qualityFloor: 0.7, hardStop: true } });
+    expect(evaluateAction(of({ kind: 'stop' }), stopped).allowed).toBe(true);
+    expect(evaluateAction(of({ kind: 'continue' }), stopped).reasonCodes).toContain('hard_stop');
+    expect(evaluateAction(of({ expectedTokenBenefit: 9e9 }), stopped).allowed).toBe(false);
+  });
+});
+
+describe('hard constraints outrank every cost', () => {
+  it('refuses an unsafe action however much it saves', () => {
+    const e = evaluateAction(of({ expectedTokenBenefit: 1e9, metadata: { unsafe: true } }), state());
+    expect(e.advantageUsd).toBeGreaterThan(0);
+    expect(e.allowed).toBe(false);
+    expect(e.safetySatisfied).toBe(false);
+    expect(e.reasonCodes).toContain('safety_violation');
+  });
+
+  it('refuses an action that needs a person to approve it', () => {
+    expect(evaluateAction(of({ metadata: { requiresApproval: true } }), state()).reasonCodes).toContain('requires_approval');
+  });
+
+  it('refuses an unavailable capability as a fact, not a price', () => {
+    const e = evaluateAction(of({ metadata: { infeasible: 'harness_down' } }), state());
+    expect(e.allowed).toBe(false);
+    expect(e.reasonCodes).toContain('unavailable:harness_down');
+  });
+
+  it('checks the quality floor against the conservative bound, not the mean', () => {
+    // Mean quality 0.75 clears a 0.7 floor; at low confidence its lower bound
+    // does not.
+    const risky = (confidence: number) => of({ qualityRisk: 0.25, expectedTokenBenefit: 5000, confidence });
+    expect(evaluateAction(risky(1), state()).qualityFloorSatisfied).toBe(true);
+    expect(evaluateAction(risky(0.2), state()).qualityFloorSatisfied).toBe(false);
+    expect(evaluateAction(risky(0.2), state()).reasonCodes).toContain('quality_floor');
   });
 
   it('respects a floor raised above the default', () => {
     const strict = state({ constraints: { qualityFloor: 0.95, hardStop: false } });
-    expect(evaluateActionUtility(inert({ qualityRisk: 0.1 }), strict).allowed).toBe(false);
-    expect(evaluateActionUtility(inert({ qualityRisk: 0.02 }), strict).allowed).toBe(true);
+    expect(evaluateAction(of({ qualityRisk: 0.1 }), strict).allowed).toBe(false);
   });
 
-  it('rejects an action flagged unsafe even when its expected utility is positive', () => {
+  it('refuses to spend tokens the task does not have, including what others reserved', () => {
     const s = state();
-    const profitable = inert({ expectedTokenBenefit: 9000, metadata: { unsafe: true } });
-    const verdict = evaluateActionUtility(profitable, s);
-    expect(verdict.score).toBeGreaterThan(0);
-    expect(verdict.allowed).toBe(false);
-    expect(verdict.safetySatisfied).toBe(false);
-    expect(verdict.reasonCodes).toContain('safety_violation');
+    expect(evaluateAction(of({ tokenCost: 20_000 }), s).reasonCodes).toContain('insufficient_budget');
+    const reserved = state({ resources: { ...s.resources, reservedTokens: 9_900 } });
+    expect(evaluateAction(of({ tokenCost: 500 }), reserved).reasonCodes).toContain('insufficient_budget');
   });
 
-  it('rejects an action that needs a person to approve it', () => {
-    const verdict = evaluateActionUtility(inert({ metadata: { requiresApproval: true } }), state());
-    expect(verdict.allowed).toBe(false);
-    expect(verdict.reasonCodes).toContain('requires_approval');
-  });
-
-  it('allows only stopping once the state carries a hard stop', () => {
-    const stopped = state({ constraints: { qualityFloor: 0.7, hardStop: true } });
-    expect(evaluateActionUtility(inert({ expectedTokenBenefit: 9000 }), stopped).allowed).toBe(false);
-    expect(evaluateActionUtility(inert({ expectedTokenBenefit: 9000 }), stopped).reasonCodes).toContain('hard_stop');
-    expect(evaluateActionUtility(actionCandidate({ id: 's', kind: 'stop', capability: 'runtime.stop' }), stopped).allowed).toBe(true);
-  });
-
-  it('refuses to spend tokens the task does not have', () => {
-    const nearlySpent = state({ resources: { ...state().resources, consumedTokens: 9500 } });
-    expect(evaluateActionUtility(inert({ kind: 'explore', tokenCost: 2000 }), nearlySpent).reasonCodes).toContain('insufficient_budget');
-    expect(evaluateActionUtility(inert({ kind: 'explore', tokenCost: 200 }), nearlySpent).allowed).toBe(true);
+  it('refuses to spend dollars beyond the task’s authority', () => {
+    const s = state({ resources: { ...state().resources, budgetUsd: 1, spentUsd: 0.99, usdPerToken: 1e-4 } });
+    expect(evaluateAction(of({ tokenCost: 500 }), s).reasonCodes).toContain('insufficient_budget_usd');
   });
 
   it('protects the recovery reserve from ordinary spending but not from recovery', () => {
-    const reserved = state({
-      resources: { ...state().resources, consumedTokens: 8000, recoveryReserve: 1500 },
-    });
-    expect(evaluateActionUtility(inert({ kind: 'explore', tokenCost: 1200 }), reserved).allowed).toBe(false);
-    expect(evaluateActionUtility(inert({ kind: 'recover', tokenCost: 1200 }), reserved).allowed).toBe(true);
+    const s = state({ resources: { ...state().resources, recoveryReserve: 9_000 } });
+    expect(hardConstraints(of({ tokenCost: 2_000 }), s).reasonCodes).toContain('insufficient_budget');
+    expect(hardConstraints(of({ kind: 'recover', tokenCost: 2_000 }), s).allowed).toBe(true);
   });
 
-  it('never charges continuing or stopping against the budget', () => {
-    const spent = state({ resources: { ...state().resources, consumedTokens: 10_000 } });
-    expect(evaluateActionUtility(inert({ kind: 'continue' }), spent).allowed).toBe(true);
-    expect(evaluateActionUtility(actionCandidate({ id: 's', kind: 'stop', capability: 'r' }), spent).allowed).toBe(true);
+  it('never charges continuing against an exhausted budget', () => {
+    const broke = state({ resources: { ...state().resources, consumedTokens: 10_000 } });
+    expect(evaluateAction(of({ kind: 'continue' }), broke).allowed).toBe(true);
+  });
+
+  it('makes interventions infeasible under a fault, and leaves the null action alone', () => {
+    const s = state();
+    expect(hardConstraints(of({ expectedTokenBenefit: 5000 }), s, ['missing_telemetry']).reasonCodes)
+      .toContain('fault:missing_telemetry');
+    expect(hardConstraints(of({ kind: 'continue' }), s, ['missing_telemetry']).allowed).toBe(true);
+  });
+
+  it('refuses an intervention the optimizer can no longer afford to decide', () => {
+    const s = state({ resources: { ...state().resources, optimizationTokens: 100, optimizationConsumedTokens: 100 } });
+    expect(hardConstraints(of({ orchestrationCost: 10 }), s).reasonCodes).toContain('optimization_budget_exhausted');
   });
 
   it('reports every constraint that fired, not just the first', () => {
-    const stopped = state({ constraints: { qualityFloor: 0.7, hardStop: true } });
-    const verdict = evaluateActionUtility(inert({ qualityRisk: 0.9, metadata: { unsafe: true } }), stopped);
-    expect(verdict.reasonCodes).toEqual(expect.arrayContaining(['hard_stop', 'safety_violation', 'quality_floor']));
+    const e = evaluateAction(of({ qualityRisk: 0.9, tokenCost: 1e6, metadata: { unsafe: true } }), state());
+    expect(e.reasonCodes).toEqual(expect.arrayContaining(['safety_violation', 'insufficient_budget', 'quality_floor']));
   });
 });
 
 describe('edge cases', () => {
-  const s = () => state();
-
-  it('handles a zero-benefit, zero-cost action as exactly neutral', () => {
-    const verdict = evaluateActionUtility(inert(), s());
-    expect(verdict.score).toBe(0);
-    expect(verdict.allowed).toBe(true);
-  });
-
-  it('handles a benefit larger than the whole budget without losing its sign', () => {
-    const verdict = evaluateActionUtility(inert({ expectedTokenBenefit: 10_000_000 }), s());
-    expect(verdict.score).toBeGreaterThan(0);
-    expect(Number.isFinite(verdict.score)).toBe(true);
+  it('survives a candidate carrying non-finite numbers', () => {
+    const e = evaluateAction(of({ tokenCost: Number.NaN, expectedTokenBenefit: Number.POSITIVE_INFINITY }), state());
+    expect(Number.isFinite(e.expectedCostUsd)).toBe(true);
+    expect(Number.isFinite(e.conservativeCostUsd)).toBe(true);
   });
 
   it('does not divide by a zero budget', () => {
-    const broke = normalizeEconomicState({ ...s(), resources: { ...s().resources, totalTokenBudget: 0 } });
-    const verdict = evaluateActionUtility(inert({ expectedTokenBenefit: 500, tokenCost: 100 }), broke);
-    expect(Number.isFinite(verdict.score)).toBe(true);
+    const s = state({ resources: { ...state().resources, totalTokenBudget: 0 } });
+    expect(Number.isFinite(stateValue(s).tokens)).toBe(true);
+    expect(stateValue(s).tokens).toBeGreaterThan(0);
   });
 
-  it('does not divide by a missing latency budget', () => {
-    const noLatency = normalizeEconomicState({
-      ...s(), resources: { ...s().resources, latencyBudgetMs: undefined },
-    });
-    const verdict = evaluateActionUtility(inert({ expectedLatencyBenefit: 30_000 }), noLatency);
-    expect(Number.isFinite(verdict.score)).toBe(true);
-    expect(verdict.score).toBeGreaterThan(0);
-  });
-
-  it('survives a candidate carrying non-finite numbers', () => {
-    const verdict = evaluateActionUtility(
-      { ...inert(), expectedTokenBenefit: Number.NaN, tokenCost: Number.POSITIVE_INFINITY },
-      s(),
-    );
-    expect(Number.isFinite(verdict.score)).toBe(true);
+  it('never predicts a negative remaining cost, whatever the claimed saving', () => {
+    const e = signalEstimate(of({ expectedTokenBenefit: 1e9 }), state());
+    expect(e.expectedRemainingCost.tokens).toBeGreaterThanOrEqual(0);
   });
 });

@@ -206,13 +206,12 @@ the next `org daemon` restart — the same contract as `ORG_RUNNER_IMAGE`.
 | `ORG_MAX_TURNS_SYNTHESIZE` | `1` | Turn cap for synthesis dispatches |
 | `ORG_MAX_TURNS_EXECUTE` | `60` | Circuit breaker on work dispatches. Cost inside a dispatch grows superlinearly in turns — the conversation prefix is re-read on every one — and this was the only unbounded term in the system. The agent is told the number so it summarises at the limit rather than being cut off at it. `0` removes the cap |
 | `ORG_PLAN_CACHE_TTL_HOURS` | `24` | How long a cached plan stays valid; `0` disables the plan cache |
-| `ORG_RESULT_CACHE_TTL_HOURS` | `24` | How long a finished **read-only** dispatch's answer may be served again, for the same goal against the same committed HEAD under the same model and grant; `0` disables result reuse |
+| `ORG_RESULT_CACHE_TTL_HOURS` | `24` | How long a finished **read-only** dispatch's answer may be served again, for the same goal against the same committed HEAD under the same execution candidate (harness × model × effort) and grant; `0` disables result reuse |
 | `ORG_REPO_MAP_TOKENS` | `6000` | **Ceiling** — not a target — on the repository context prefixed onto a dispatch; `0` disables it |
 | `ORG_ROLE_PROMPTS` | on | Role-scoped system prompts (below); `off`/`0`/`false`/`no` disable |
-| `ORG_EFFICIENCY_MODE` | Full Architecture | `disabled` selects Baseline; anything else selects Full Architecture — see **Rollout** below |
 | `ORG_MODEL_FAST` | `haiku` | Model for the fast tier |
 | `ORG_MODEL_STANDARD` | *(none — runtime default)* | Model for the standard tier |
-| `ORG_MODEL_DEEP` | *(none — off)* | Model for the deep tier. Unset means routing never tiers **up** |
+| `ORG_MODEL_DEEP` | *(none — off)* | Model for the deep tier. Unset means the market is never offered a deep candidate |
 | `ORG_MAX_CHILD_JOBS` | `2` | Most children one node may fan out to. A node's own `max_child_count` authority can only lower this, never raise it |
 | `ORG_CONTEXT_PLANNER` | on | The structural context planner (below); `off`/`0`/`false`/`no`/`disabled` return the lexical selector this branch shipped with |
 | `ORG_TASK_SPEND_CAP_USD` | `0` | Deployment-wide ceiling on what one task may spend. `0` means no ceiling of its own — a node's contract `budget_usd` already carries one, and that always wins where it is set |
@@ -415,29 +414,15 @@ that guesses is far worse than a synthesis call that was not strictly necessary.
 ignores the envelope request, or emits something malformed, degrades to exactly the old prose
 merge.
 
-**Rollout.** `ORG_EFFICIENCY_MODE` is one switch over context selection, conditional
-synthesis, model routing and the economic control plane together. There are exactly **two
-runtime modes**:
-
-- **Baseline** (`disabled`, `off`, `0`, `false`, `baseline`) — the behaviour before this
-  work: the full repository map on every dispatch, unconditional synthesis, fixed per-role
-  models, and no decisions made from the state of a run.
-- **Full Architecture** (anything else, including unset — the default) — the decisions are
-  acted on.
-
-Every decision is *recorded* in both modes, whether or not it is acted on: `context.receipt`
-events carry `applied`, and `model_route` and `integration_decision` memory rows say what
-routing and synthesis would have chosen. Reading what a Baseline run *would* have done does
-not require running in a special mode.
-
-`shadow` used to be a third mode and is now an alias for Baseline — which is exactly what a
-shadow run dispatched as, so a deployment that set it keeps the behaviour it had. A shadow's
-whole value is being inert, and a product mode cannot be: it is one more thing an operator
-can be running and one more combination to test. The inert recording facility lives in
-`src/learning/shadow.ts`, which is not reachable from configuration at all.
-
-Because it is a single switch, it is also the A/B knob: `node bench/run.mjs efficiency`
-runs the fixed goal set in both modes. **That dispatches real, paid model calls.**
+**One architecture.** There is no rollout switch. Context selection, conditional synthesis
+and the economic control plane are always on, and every harness × model × effort choice is
+made by the Action Market ([docs/architecture/economic-action-market.md](docs/architecture/economic-action-market.md)).
+The `ORG_MODEL_*` variables shape the *candidate set*: a tier model adds a candidate, and a
+per-role model (`ORG_MODEL_EXECUTE`, `ORG_MODEL_PLAN`, `ORG_MODEL_SYNTHESIZE`) narrows the
+set to that model. The narrowing is relaxed only if the harness itself refuses the model.
+`node bench/run.mjs efficiency` compares the market against a fixed-candidate benchmark arm.
+**That dispatches real, paid model calls.** `node bench/market-arms.mjs` runs the same
+comparison offline, with no model calls.
 
 **The objective.** Not the smallest initial prompt — the **cheapest successful execution**.
 The acceptance metrics are all per *success*: `costPerSuccess`, `turnsPerSuccess`,

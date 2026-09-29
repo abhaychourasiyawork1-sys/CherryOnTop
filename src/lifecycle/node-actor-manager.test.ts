@@ -8,7 +8,8 @@ import { createDb } from '../db/client.js';
 import { getNode, insertNode } from '../db/queries/nodes.js';
 import { listEventsForNode } from '../db/queries/events.js';
 import { repoHead } from '../execution/git-state.js';
-import { startNodeActor, sendToNode, honoursSystemPrompt, modelFor } from './node-actor-manager.js';
+import { startNodeActor, sendToNode, honoursSystemPrompt } from './node-actor-manager.js';
+import { capabilitiesOf } from './execution-market.js';
 import { stopgapAdapter } from '../adapters/stopgap.js';
 import { claudeCodeAdapter } from '../adapters/claude-code.js';
 import { codexAdapter } from '../adapters/codex.js';
@@ -81,18 +82,22 @@ describe('retired prompt module', () => {
   });
 });
 
-describe('modelFor', () => {
-  it('drops a model the runtime cannot serve, and keeps one it can', () => {
+describe('capability discovery', () => {
+  it('asks each adapter what it can serve rather than hardcoding it by name', () => {
     // `plan` and `synthesize` default to haiku. Codex takes --model, so the flag
-    // survives into argv — but the model does not exist there, and the run dies
-    // before it can emit the result event the no-model fallback reads. Sending
-    // it costs delegation and synthesis entirely, so it is refused up front.
-    expect(modelFor(claudeCodeAdapter, 'haiku')).toBe('haiku');
-    expect(modelFor(codexAdapter, 'haiku')).toBeUndefined();
-    expect(modelFor(codexAdapter, 'gpt-5-codex')).toBe('gpt-5-codex');
-    // No model flag at all: the sentinel never reaches argv.
-    expect(modelFor(stopgapAdapter, 'haiku')).toBeUndefined();
-    expect(modelFor(claudeCodeAdapter, undefined)).toBeUndefined();
+    // survives into argv — but the model does not exist there. The snapshot
+    // says so, and the market's feasibility step rules that candidate out.
+    const claude = capabilitiesOf(claudeCodeAdapter);
+    const codex = capabilitiesOf(codexAdapter);
+    const stopgap = capabilitiesOf(stopgapAdapter);
+    expect(claude.acceptsModelFlag && claude.serves('haiku')).toBe(true);
+    expect(codex.acceptsModelFlag).toBe(true);
+    expect(codex.serves('haiku')).toBe(false);
+    expect(codex.serves('gpt-5-codex')).toBe(true);
+    // No model flag at all: the probe never reaches argv.
+    expect(stopgap.acceptsModelFlag).toBe(false);
+    // Different semantics, different fingerprints — evidence never pools across them.
+    expect(new Set([claude.fingerprint, codex.fingerprint, stopgap.fingerprint]).size).toBe(3);
   });
 });
 

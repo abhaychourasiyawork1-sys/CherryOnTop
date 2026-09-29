@@ -113,20 +113,15 @@ describe('deciding whether work needs splitting at all', () => {
   });
 });
 
-describe('the rollout switch', () => {
+describe('there is no rollout switch', () => {
   afterEach(() => { delete process.env.ORG_EFFICIENCY_MODE; });
 
-  it('keeps the old breadth-splits rule when efficiency is disabled', () => {
-    // The before arm of `bench/run.mjs efficiency` has to be the exact prior
-    // behaviour, or the comparison measures two different things.
-    process.env.ORG_EFFICIENCY_MODE = 'disabled';
-    expect(of('Review the codebase and find bugs. Do not modify anything.').worthSplitting).toBe(true);
-  });
-
-  it('records the new signals under Baseline, where it does not act on them', () => {
-    process.env.ORG_EFFICIENCY_MODE = 'shadow';
-    const shadow = of('Review the codebase and find bugs. Do not modify anything.');
-    expect(shadow.worthSplitting).toBe(true);
-    expect(shadow.signals.coherent_single_task).toBe(1);
+  it('keeps a coherent review single whatever the retired switch says', () => {
+    for (const value of ['disabled', 'shadow', 'enabled']) {
+      process.env.ORG_EFFICIENCY_MODE = value;
+      const review = of('Review the codebase and find bugs. Do not modify anything.');
+      expect(review.worthSplitting).toBe(false);
+      expect(review.signals.coherent_single_task).toBe(1);
+    }
   });
 });

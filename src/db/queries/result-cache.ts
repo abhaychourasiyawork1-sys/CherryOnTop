@@ -48,15 +48,18 @@ export interface CachedResult {
  *  read, not the revision it was produced at. The grant is sorted, because two
  *  identical grants listed in different orders are the same authority and
  *  should not miss each other. */
+/** `candidate` is the execution candidate's fingerprint (harness × model ×
+ *  effort × capability), so an answer is only ever reused as the answer of the
+ *  same execution semantics that produced it. */
 export function resultCacheKey(
   goal: string,
-  model: string,
+  candidate: string,
   allowedTools: string[] | null,
 ): string {
   // `*` rather than '' for an unrestricted grant: an explicit sentinel cannot
   // collide with a node granted the single empty-string tool.
   const grant = allowedTools === null ? '*' : [...allowedTools].sort().join(',');
-  return createHash('sha256').update(`${goal}\0${model}\0${grant}`).digest('hex');
+  return createHash('sha256').update(`${goal}\0${candidate}\0${grant}`).digest('hex');
 }
 
 /** The newest stored answer for this key that is within `ttlHours` **and**

@@ -19,7 +19,10 @@ const label = process.argv[2];
 const outfile = process.argv[3];
 if (label !== 'on' && label !== 'off') { console.error('usage: regime-runner.mjs <on|off> <outfile>'); process.exit(2); }
 
-const knob = label === 'on' ? { ORG_EFFICIENCY_MODE: 'enabled' } : { ORG_EFFICIENCY_MODE: 'disabled' };
+// `off` is the fixed-baseline benchmark arm (one candidate per role, pinned by
+// the operator model constraint); `on` is the Action Market with its full menu.
+// Neither is a production mode — there is only one of those.
+const knob = label === 'on' ? {} : { ORG_MODEL_EXECUTE: 'none', ORG_MODEL_PLAN: 'haiku', ORG_MODEL_SYNTHESIZE: 'haiku' };
 const isolation = isolationFor(label);
 const env = { ...knob, ...isolation.env };
 

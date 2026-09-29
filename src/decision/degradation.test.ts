@@ -1,17 +1,16 @@
 /** Fault injection through the real path.
  *
- *  Not unit tests of `evaluateFallback` — `fallback.test.ts` already covers the
- *  rules. These run a whole decision cycle with something broken and assert what
- *  reaches the other side: that the run continues, that Baseline is what it
- *  continues as, and that an unsafe action is refused rather than merely
- *  un-optimized.
+ *  These run the real market with something broken and assert what reaches the
+ *  other side: that the run continues, that it continues as the null action
+ *  (there is no second architecture to fall back to), and that an unsafe action
+ *  is refused rather than merely un-optimized.
  *
  *  The property under test is the one that decides whether an optimizer is safe
  *  to deploy at all: **failing to optimize must never fail the work.** */
 import { describe, it, expect, afterEach } from 'vitest';
 import { runDecisionCycle } from './orchestration-loop.js';
 import { registerCandidateSource, registeredCandidateSources } from './deep-path.js';
-import { evaluateFallback, detectFaults, mustBlockAction } from './fallback.js';
+import { detectFaults } from './fallback.js';
 import { chooseEconomicAction } from './engine.js';
 import { actionCandidate } from './actions.js';
 import { initialEconomicState, normalizeEconomicState, type EconomicState } from './state.js';
@@ -33,27 +32,37 @@ afterEach(() => {
   for (const name of registeredCandidateSources()) registerCandidateSource(name, () => [])();
 });
 
+/** A struggling run with an intervention on offer that would clearly pay —
+ *  so standing down is visibly the fault's doing, not the economics'. */
+const tempting = () => [actionCandidate({
+  id: 'retry', kind: 'recover', capability: 'recovery.retry',
+  expectedProgress: 0.8, expectedTokenBenefit: 60_000, tokenCost: 2_000, confidence: 0.9,
+})];
+
+function standsDown(s: EconomicState, faults: Parameters<typeof chooseEconomicAction>[0]['faults'] = detectFaults(s)) {
+  const decision = chooseEconomicAction({ state: s, candidates: tempting(), faults });
+  expect(decision.action.kind).toBe('continue');
+  return decision;
+}
+
 describe('missing telemetry', () => {
   it('is detected as a fault rather than read as a healthy run', () => {
     const blind = state({ trajectory: { ...state().trajectory, orchestrationConfidence: 0 } });
     expect(detectFaults(blind)).toContain('missing_telemetry');
   });
 
-  it('falls back to Baseline rather than acting on a run it cannot read', () => {
+  it('stands down to the null action rather than acting on a run it cannot read', () => {
     const blind = state({ trajectory: { ...state().trajectory, orchestrationConfidence: 0 } });
-    const cycle = runDecisionCycle(blind, { nowMs: frozen });
-    const fallback = evaluateFallback({
-      state: blind, decision: cycle.decision, faults: detectFaults(blind),
-    });
-    expect(fallback.mode).toBe('baseline');
-    expect(fallback.reasons).toContain('missing_telemetry');
-    expect(mustBlockAction(fallback)).toBe(false);
+    const decision = standsDown(blind);
+    expect(decision.reasonCodes).toContain('rejected:retry:fault:missing_telemetry');
+    // The same intervention, on a readable run, is taken.
+    expect(chooseEconomicAction({ state: state(), candidates: tempting() }).action.id).toBe('retry');
   });
 
-  it('falls back when no decision was produced at all', () => {
-    const fallback = evaluateFallback({ state: state() });
-    expect(fallback.mode).toBe('baseline');
-    expect(fallback.reasons).toContain('missing_telemetry');
+  it('continues through the loop too, without a second mode to be in', () => {
+    const blind = state({ trajectory: { ...state().trajectory, orchestrationConfidence: 0 } });
+    const cycle = runDecisionCycle(blind, { nowMs: frozen, additionalCandidates: tempting() });
+    expect(cycle.decision?.action.kind).toBe('continue');
   });
 });
 
@@ -69,8 +78,6 @@ describe('a repository that moved under the run', () => {
   });
 
   it('does not flag evidence that is not tied to a revision at all', () => {
-    // Absent is weaker evidence, not stale evidence, and conflating them would
-    // make every run with an untagged observation fall back.
     const untagged = state({
       evidence: [{ id: 'e1', kind: 'observation', source: 'grep', confidence: 0.6 }],
     });
@@ -82,35 +89,18 @@ describe('a repository that moved under the run', () => {
     expect(detectFaults(unknown)).not.toContain('stale_repository_graph');
   });
 
-  it('falls back rather than deciding about a tree that has moved', () => {
-    const fallback = evaluateFallback({
-      state: stale(),
-      decision: chooseEconomicAction({ state: stale(), candidates: [] }),
-      faults: detectFaults(stale()),
-    });
-    expect(fallback.mode).toBe('baseline');
-    expect(fallback.reason).toContain('stale_repository_graph');
+  it('does not intervene on a tree that has moved', () => {
+    expect(standsDown(stale()).reasonCodes).toContain('rejected:retry:fault:stale_repository_graph');
   });
 });
 
 describe('a mechanism that broke', () => {
-  it('reports a failed evidence acquisition as a fault the run survives', () => {
-    const fallback = evaluateFallback({
-      state: state(),
-      decision: chooseEconomicAction({ state: state(), candidates: [] }),
-      faults: ['evidence_mechanism_error'],
-    });
-    expect(fallback.mode).toBe('baseline');
-    expect(mustBlockAction(fallback)).toBe(false);
+  it('stands down on a failed evidence acquisition, and the run continues', () => {
+    standsDown(state(), ['evidence_mechanism_error']);
   });
 
-  it('reports invalid stored knowledge the same way', () => {
-    const fallback = evaluateFallback({
-      state: state(),
-      decision: chooseEconomicAction({ state: state(), candidates: [] }),
-      faults: ['invalid_memory'],
-    });
-    expect(fallback.mode).toBe('baseline');
+  it('stands down on invalid stored knowledge the same way', () => {
+    standsDown(state(), ['invalid_memory']);
   });
 
   it('survives a candidate source that throws, losing only its candidates', () => {
@@ -125,10 +115,6 @@ describe('a mechanism that broke', () => {
     const cycle = runDecisionCycle(broken as unknown as EconomicState, { nowMs: frozen });
     expect(cycle.cost.reason).toBe('decision_engine_error');
     expect(cycle.decision).toBeUndefined();
-
-    // And the fault reaches the fallback as itself rather than as a crash.
-    const fallback = evaluateFallback({ state: state(), faults: ['decision_engine_error'] });
-    expect(fallback.mode).toBe('baseline');
   });
 });
 
@@ -145,30 +131,18 @@ describe('a safety failure is refused, never merely un-optimized', () => {
     expect(decision.action.kind).toBe('continue');
   });
 
-  it('sees the violation even when it was attributed to a rejected candidate', () => {
-    // The case that matters most: every option was unsafe and the decision fell
-    // through to continuing. A plain equality check on the reason codes would
-    // miss it entirely.
+  it('names the refusal on the decision, attributed to the candidate', () => {
     const decision = chooseEconomicAction({ state: state(), candidates: unsafeOnly() });
-    const fallback = evaluateFallback({ state: state(), decision });
-    expect(fallback.reasons).toContain('safety_violation');
+    expect(decision.reasonCodes).toContain('rejected:unsafe:safety_violation');
+    expect(decision.rejected?.[0]).toEqual(expect.objectContaining({ id: 'unsafe' }));
   });
 
-  it('tells the caller to block rather than to run unoptimized', () => {
-    const decision = chooseEconomicAction({ state: state(), candidates: unsafeOnly() });
-    const fallback = evaluateFallback({ state: state(), decision });
-    // Falling back means running unoptimized, and the unsafe action is just as
-    // unsafe unoptimized.
-    expect(fallback.safetyPreserved).toBe(false);
-    expect(mustBlockAction(fallback)).toBe(true);
-  });
-
-  it('outranks every ordinary fault beside it', () => {
-    const decision = chooseEconomicAction({ state: state(), candidates: unsafeOnly() });
-    const fallback = evaluateFallback({
-      state: state(), decision, faults: ['missing_telemetry', 'invalid_memory'],
+  it('still refuses it when a fault would have made it infeasible anyway', () => {
+    const decision = chooseEconomicAction({
+      state: state(), candidates: unsafeOnly(), faults: ['missing_telemetry', 'invalid_memory'],
     });
-    expect(mustBlockAction(fallback)).toBe(true);
+    expect(decision.action.id).not.toBe('unsafe');
+    expect(decision.reasonCodes).toContain('rejected:unsafe:safety_violation');
   });
 });
 
@@ -187,20 +161,22 @@ describe('failing to optimize never fails the work', () => {
     })],
   ];
 
-  it('produces a usable answer for every broken state', () => {
+  it('produces a usable, non-blocking answer for every broken state', () => {
     for (const [name, build] of broken) {
-      const s = build();
-      const cycle = runDecisionCycle(s, { nowMs: frozen });
-      const fallback = evaluateFallback({ state: s, decision: cycle.decision, faults: detectFaults(s) });
-      // The run continues. That is the whole property.
-      expect(fallback.mode, name).toBe('baseline');
-      expect(mustBlockAction(fallback), name).toBe(false);
+      const cycle = runDecisionCycle(build(), { nowMs: frozen });
+      // The run continues — never a stop, never a block. That is the whole
+      // property. (A spent budget is not a fault: a free intervention may
+      // still be worth taking.)
+      expect(cycle.decision, name).toBeDefined();
+      expect(cycle.decision?.action.kind, name).not.toBe('stop');
+      expect(cycle.decision?.blocked, name).toBe(false);
+      if (detectFaults(build()).length > 0) expect(cycle.decision?.action.kind, name).toBe('continue');
     }
   });
 
   it('never throws, whatever it is handed', () => {
     for (const [, build] of broken) {
-      expect(() => evaluateFallback({ state: build(), faults: detectFaults(build()) })).not.toThrow();
+      expect(() => chooseEconomicAction({ state: build(), candidates: tempting(), faults: detectFaults(build()) })).not.toThrow();
     }
   });
 });

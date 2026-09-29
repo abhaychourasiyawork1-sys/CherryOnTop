@@ -52,8 +52,11 @@ function git(args: string[], cwd: string): string | null {
  *  instead, a fork is invisible to every repo's own git status, including an
  *  arbitrary real user repo passed via `--repo` that has no reason to
  *  `.gitignore` this runtime's bookkeeping. */
-function forksRoot(): string {
-  return join(homedir(), '.org-forks');
+/** Where forks live. `ORG_FORKS_ROOT` exists so a process that must not share
+ *  the host's forks — a test running beside a server that sweeps orphans at
+ *  startup — can have its own. */
+export function forksRoot(): string {
+  return process.env.ORG_FORKS_ROOT || join(homedir(), '.org-forks');
 }
 
 /** Where one fork lives, relative to nothing but what it is *of* — so two

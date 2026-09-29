@@ -51,9 +51,12 @@ function decisionNote(payload: unknown): string | null {
   if (!decision?.outcome) return null;
   if (decision.type === 'runtime_selection') {
     const runs = decision.breakdown?.runs;
-    return runs
-      ? `Chose ${decision.outcome}, on ${runs} previous runs`
-      : `Chose ${decision.outcome}`;
+    const expected = decision.breakdown?.expected_cost_usd;
+    return typeof expected === 'number'
+      ? `Chose ${decision.outcome}, the cheapest way to finish (~$${expected.toFixed(2)})`
+      : runs
+        ? `Chose ${decision.outcome}, on ${runs} previous runs`
+        : `Chose ${decision.outcome}`;
   }
   // A score is only meaningful against the threshold it was compared to. When
   // the engine short-circuits — no spawn authority, say — it records a score of

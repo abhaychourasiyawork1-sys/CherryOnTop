@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { decompositionBoundary, worthSplittingFrom, withHelpfulness } from './economic-mapping.js';
 import { calibrate, CALIBRATION_VERSION } from './calibration.js';
 import { actionCandidate } from '../decision/actions.js';
-import { evaluateActionUtility } from '../decision/utility.js';
+import { evaluateAction } from '../decision/utility.js';
 import { initialEconomicState } from '../decision/state.js';
 import type { DecisionJudgment } from './types.js';
 
@@ -58,7 +58,7 @@ describe('helpfulness', () => {
   });
 
   it('a certainly-useless action keeps its full cost', () => {
-    const u = evaluateActionUtility(withHelpfulness(validate, 0), state);
-    expect(u.score).toBeLessThan(0);
+    const u = evaluateAction(withHelpfulness(validate, 0), state);
+    expect(u.advantageUsd).toBeLessThan(0);
   });
 });

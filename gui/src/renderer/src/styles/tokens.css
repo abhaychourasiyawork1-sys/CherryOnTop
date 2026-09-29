@@ -1,43 +1,43 @@
 /* Desktop 2.0 — tokens.
-   Dark-first, light-ready. The ground stays "harbour": a deep blue-slate with
-   real chroma, never a tinted black. State hues are ordered by what needs a
+   Dark-first, light-ready. The palette is the logo's: a neutral charcoal
+   ground built up from its ink (#111214), and its cherry red (#FF1F45). State hues are ordered by what needs a
    human — finished work goes quiet grey, so the only bright things on screen
-   are the things still owed. One accent (periwinkle) marks focus and
+   are the things still owed. One accent (the logo's cherry red) marks focus and
    selection; nothing else is decorative. Components use the semantic names
    below, never a raw colour. */
 :root {
   color-scheme: dark;
 
   /* ground → surface → raised: three depths, separated by value, not borders */
-  --ground: #11171e;
-  --surface: #151d26;
-  --raised: #1b2530;
-  --overlay: #202b37;
-  --line: #222d3a;
-  --line-strong: #2d3a4a;
+  --ground: #121214;
+  --surface: #17171a;
+  --raised: #1e1e22;
+  --overlay: #242428;
+  --line: #26262b;
+  --line-strong: #333339;
 
-  --ink: #e6ebf0;
-  --ink-2: #a2afbe;
-  --ink-3: #6b7b8e;
-  --ink-inverse: #0f141a;
+  --ink: #eeeef0;
+  --ink-2: #aaaab2;
+  --ink-3: #7a7a83;
+  --ink-inverse: #111214;
 
-  --accent: #8c9af0;
-  --accent-soft: rgba(140, 154, 240, 0.14);
+  --accent: #ff4d66;
+  --accent-soft: rgba(255, 77, 102, 0.14);
 
   /* states, by what a person owes them */
   --executing: #5fd3c4;
   --planning: #8c9af0;
   --at-risk: #f2c14e;
-  --failed: #e4674f;
-  --settled: #6e7c8c;
+  --failed: #f08a3c;
+  --settled: #74747c;
   --good: #7fcf9a;
 
   --attention: var(--at-risk);
   --attention-soft: rgba(242, 193, 78, 0.12);
-  --problem-soft: rgba(228, 103, 79, 0.1);
+  --problem-soft: rgba(240, 138, 60, 0.1);
 
-  --scrim: rgba(6, 9, 13, 0.55);
-  --shadow-float: 0 18px 48px rgba(3, 6, 10, 0.5), 0 2px 6px rgba(3, 6, 10, 0.35);
+  --scrim: rgba(6, 6, 8, 0.55);
+  --shadow-float: 0 18px 48px rgba(4, 4, 6, 0.5), 0 2px 6px rgba(4, 4, 6, 0.35);
 
   /* type: one family carries the voice; mono is for figures and ids only */
   --sans: 'Instrument Sans', ui-sans-serif, system-ui, sans-serif;
@@ -98,28 +98,28 @@
 /* Light theme: the architecture is ready for it; the palette is a first pass. */
 :root[data-theme='light'] {
   color-scheme: light;
-  --ground: #f4f6f9;
+  --ground: #f6f6f7;
   --surface: #ffffff;
-  --raised: #eef1f6;
+  --raised: #eeeef0;
   --overlay: #ffffff;
-  --line: #e0e5ec;
-  --line-strong: #cdd5df;
-  --ink: #16202b;
-  --ink-2: #4b5a6b;
-  --ink-3: #7a8898;
+  --line: #e2e2e6;
+  --line-strong: #d0d0d6;
+  --ink: #111214;
+  --ink-2: #4f4f57;
+  --ink-3: #7d7d86;
   --ink-inverse: #ffffff;
-  --accent: #4f5fd1;
-  --accent-soft: rgba(79, 95, 209, 0.1);
+  --accent: #d3102f;
+  --accent-soft: rgba(211, 16, 47, 0.09);
   --executing: #13877a;
   --planning: #4f5fd1;
   --at-risk: #a86f00;
-  --failed: #c2412a;
-  --settled: #7a8898;
+  --failed: #b85a12;
+  --settled: #7d7d86;
   --good: #2c8a4d;
   --attention-soft: rgba(168, 111, 0, 0.1);
-  --problem-soft: rgba(194, 65, 42, 0.08);
-  --scrim: rgba(20, 28, 38, 0.3);
-  --shadow-float: 0 18px 48px rgba(20, 28, 38, 0.16), 0 2px 6px rgba(20, 28, 38, 0.08);
+  --problem-soft: rgba(184, 90, 18, 0.08);
+  --scrim: rgba(17, 18, 20, 0.3);
+  --shadow-float: 0 18px 48px rgba(17, 18, 20, 0.16), 0 2px 6px rgba(17, 18, 20, 0.08);
 }
 
 @media (prefers-reduced-motion: reduce) {

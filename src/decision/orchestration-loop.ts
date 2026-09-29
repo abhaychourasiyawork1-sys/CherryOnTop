@@ -24,7 +24,8 @@ import { chooseEconomicAction } from './engine.js';
 import { orchestrationCostOf, FREE_ORCHESTRATION, type OrchestrationCost } from './orchestration-cost.js';
 import type { ActionCandidate, ActionDecision } from './actions.js';
 import type { EconomicState } from './state.js';
-import type { UtilityWeights } from './utility.js';
+import { detectFaults } from './fallback.js';
+import type { DecisionFault } from './utility.js';
 
 /** How often to look, and why.
  *
@@ -76,7 +77,6 @@ let running = false;
 export interface DecisionCycleInput {
   state: EconomicState;
   cadence?: OrchestrationCadence;
-  weights?: UtilityWeights;
   /** Injected so a cycle is reproducible in a test. Production omits it. */
   nowMs?: () => number;
   /** Candidates the caller already holds and the deep path cannot derive.
@@ -87,6 +87,8 @@ export interface DecisionCycleInput {
    *  through rather than stashing them somewhere a registered source could find
    *  them is what keeps a candidate tied to the state it was computed against. */
   additionalCandidates?: ActionCandidate[];
+  /** Faults the caller observed; they make interventions infeasible. */
+  faults?: readonly DecisionFault[];
 }
 
 /** Runs one cycle.
@@ -133,7 +135,7 @@ export function runDecisionCycle(
     // happen. The decision is still made, from an empty candidate set, so the
     // run gets an explicit `continue` rather than silence.
     if (!inspection.opportunity) {
-      const decision = chooseEconomicAction({ state, candidates: [], weights: input.weights });
+      const decision = chooseEconomicAction({ state, candidates: [] });
       return {
         decision,
         cost: orchestrationCostOf({ fastPath: true, deepPath: false, candidates: 0, latencyMs: now() - startedMs }),
@@ -145,7 +147,7 @@ export function runDecisionCycle(
     }
 
     const candidates = [...evaluateDeepPath(state), ...(input.additionalCandidates ?? [])];
-    const decision = chooseEconomicAction({ state, candidates, weights: input.weights });
+    const decision = chooseEconomicAction({ state, candidates, faults: [...detectFaults(state), ...(input.faults ?? [])] });
     // A cycle that chose to continue found nothing actionable, whatever the
     // screen suspected — so it counts as quiet for the backoff. Otherwise a
     // run with one persistent weak signal would be screened deeply forever.

@@ -51,6 +51,21 @@ export const HARNESS_QUESTIONS = {
       { id: 'explain', action: 'read-only-grant', description: 'only an answer: an explanation, review or report, and nothing in the repository should be modified' },
     ],
   },
+  // How much capability finishing the task correctly takes. A difficulty the
+  // market prices candidates against — never a model choice: the options
+  // describe the work, not which model to use. Ordered easiest first, and the
+  // expected difficulty is read off the whole distribution, not the argmax.
+  // Asked only when the answer could change which candidate the market picks
+  // (execution-market.ts). Uncalibrated until a labelled set exists.
+  'execution.difficulty': {
+    version: 'execution.difficulty@1',
+    text: 'How demanding is it to complete this task correctly?',
+    options: [
+      { id: 'routine', action: 'lower-capability', description: 'routine: a small, well-specified change or answer that is hard to get wrong' },
+      { id: 'substantial', action: 'standard-capability', description: 'substantial: careful multi-step work across several places, with real room for mistakes' },
+      { id: 'hard', action: 'higher-capability', description: 'hard: subtle, ambiguous or deeply interdependent work where only very careful reasoning gets it right' },
+    ],
+  },
   'action.helpful': {
     version: 'action.helpful@1',
     // Conditioned on the action being carried out, so this composes with the

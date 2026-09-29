@@ -132,3 +132,20 @@ describe('claudeCodeAdapter session mode', () => {
     expect(cmd.at(-1)).toBe('do it');
   });
 });
+
+describe('model and effort, as the market chose them', () => {
+  it('passes the chosen effort through the CLI’s own flag', () => {
+    const argv = claudeCodeAdapter.buildCommand('g', undefined, { model: 'opus', effort: 'high' });
+    expect(argv.slice(argv.indexOf('--effort'), argv.indexOf('--effort') + 2)).toEqual(['--effort', 'high']);
+    expect(claudeCodeAdapter.buildCommand('g', undefined, {})).not.toContain('--effort');
+  });
+
+  it('reports the models and efforts it offers, and refuses models it cannot run', () => {
+    const caps = claudeCodeAdapter.discoverCapabilities?.();
+    expect(caps?.models).toEqual(expect.arrayContaining(['haiku', 'sonnet', 'opus']));
+    expect(caps?.efforts?.[0]).toBe('low');
+    expect(claudeCodeAdapter.servesModel?.('opus')).toBe(true);
+    expect(claudeCodeAdapter.servesModel?.('claude-sonnet-5')).toBe(true);
+    expect(claudeCodeAdapter.servesModel?.('gpt-5-codex')).toBe(false);
+  });
+});

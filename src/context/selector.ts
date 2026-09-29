@@ -97,9 +97,8 @@ export interface SelectContextInput {
    *  so no caller has to know the weights exist. */
   weights?: ContextScoreSignals;
   /** What the run currently knows. Optional because the deterministic benchmark
-   *  and the Baseline path select without one, and a selection made without a
-   *  state must score exactly as it did before the economics existed — that
-   *  equivalence is what makes the two arms comparable. */
+   *  selects without one, and a selection made without a state must score
+   *  exactly as it did before the economics existed. */
   state?: EconomicState;
 }
 

@@ -18,7 +18,8 @@
  *  it except the benchmark manifest. Deterministic and total: no clock, no I/O,
  *  no model. */
 import type { Authority } from '../schemas/node-contract.js';
-import { decideExecutionPath } from '../decision/engine.js';
+import { authorizeExecution } from '../decision/engine.js';
+import { decideExecution, type DecideExecutionInput } from '../engines/decide-execution.js';
 import { judgeTask } from '../intelligence/task-judge.js';
 import { taskEconomicsFor } from '../efficiency/task-economics.js';
 import { planWorkstreams, schedulingCandidates, dependentsOf, type WorkstreamNode } from '../execution/workstreams.js';
@@ -77,27 +78,35 @@ function twoStreams(dependent: boolean): WorkstreamNode[] {
   return dependent ? [a, { ...b, inputDependencies: ['a'] }] : [a, b];
 }
 
+/** Self vs delegate, answered by the market exactly as the lifecycle asks it. */
+function marketOutcome(input: DecideExecutionInput): string {
+  return authorizeExecution({
+    state: novelState({ goal: input.goal }),
+    economics: decideExecution(input),
+    dispatch: DISPATCH,
+    plannedChildCount: input.authority.max_child_count,
+  }).outcome;
+}
+
 /** One regime, built from deterministic inputs and answered by the real module. */
 export function buildScenario(regime: CapabilityRegime): RegimeScenario {
   switch (regime) {
     case 'MANAGED_SIMPLE': {
       const goal = 'Fix the typo in README.md';
       const verdict = judgeTask(goal);
-      const chosen = decideExecutionPath({
-        goal, authority: WIDE_AUTHORITY, spentUsd: 0, dispatch: DISPATCH,
+      const chosen = marketOutcome({
+        goal, authority: WIDE_AUTHORITY,
         complexity: verdict.decomposition.complexity,
         worthSplitting: verdict.decomposition.worthSplitting,
         signals: verdict.decomposition.signals,
-      }).chosen;
-      return { regime, capability: 'RUN_MODEL', reachable: chosen === 'RUN_MODEL', observed: chosen };
+      });
+      return { regime, capability: 'RUN_MODEL', reachable: chosen === 'SELF_EXECUTE', observed: chosen };
     }
 
     case 'MANAGED_NORMAL': {
       const goal = 'Add retry handling to the session refresh path in src/auth/session.ts';
-      const chosen = decideExecutionPath({
-        goal, authority: NARROW_AUTHORITY, spentUsd: 0, dispatch: DISPATCH, complexity: 'medium',
-      }).chosen;
-      return { regime, capability: 'RUN_MODEL', reachable: chosen === 'RUN_MODEL', observed: chosen };
+      const chosen = marketOutcome({ goal, authority: NARROW_AUTHORITY, complexity: 'medium' });
+      return { regime, capability: 'RUN_MODEL', reachable: chosen === 'SELF_EXECUTE', observed: chosen };
     }
 
     case 'MANAGED_RISKY': {

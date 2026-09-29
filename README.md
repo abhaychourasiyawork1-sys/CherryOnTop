@@ -159,11 +159,11 @@ The agent stays the reasoner; `CONTINUE` is a genuine no-op, and the dispatch th
 is byte-identical to the one that would have happened without it. See
 [docs/architecture/dynamic-economic-runtime.md](docs/architecture/dynamic-economic-runtime.md).
 
-There are exactly **two runtime modes**, and both are reversible without a code change.
-`ORG_EFFICIENCY_MODE=disabled` is **Baseline** — fixed per-role models, lexical context,
-nothing decided from the state of a run — and anything else is **Full Architecture**.
-(`shadow` was a third mode and is now an alias for Baseline, which is what a shadow run
-dispatched as; the measurement it existed for lives in the benchmark harness instead.)
+Every execution choice — which harness, model and effort runs a dispatch, whether to
+delegate, reuse, merge, gather evidence or recover — is made by one **Action Market** that
+minimizes the expected cost of finishing the task, with quality, safety and authority as hard
+constraints. There are no routing modes: `ORG_EFFICIENCY_MODE` no longer exists. See
+[docs/architecture/economic-action-market.md](docs/architecture/economic-action-market.md).
 `ORG_CONTEXT_PLANNER=off` returns the lexical selector on its own. Every task writes an
 `efficiency_record` when it finishes, and `org tokens` reports what was spent. See
 [USAGE.md](USAGE.md#token-efficiency) for the knobs and the failure behaviour.

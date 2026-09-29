@@ -1,4 +1,4 @@
-/** Can this task be partitioned, and is partitioning worth what it costs?
+/** Can this task be partitioned, and what shape did the market's choice take?
  *
  *  Two questions, and the whole point of this module is that they are asked
  *  separately and in that order. Collapsing them is what produces both failure
@@ -18,16 +18,18 @@
  *      does not allocate authority, choose a child count, or write subgoals —
  *      those are the planner's job and giving them to a classifier is how a
  *      "cheap" call becomes a planning dispatch in disguise.
- *   3. **Economics.** The existing `decideExecutionPath`, unchanged, consuming
- *      the evidence above plus whatever history says. Serial versus parallel is
- *      decided last, and only a scheduler that actually chose parallel work can
- *      produce `PARALLEL_DELEGATED`.
+ *   3. **The market's outcome.** Whether to delegate is the Action Market's
+ *      decision (`authorizeExecution`), passed in as `outcome` — this module
+ *      names the strategy that outcome is, and never re-decides it. Serial
+ *      versus parallel is named last, and only a scheduler that actually chose
+ *      parallel work can produce `PARALLEL_DELEGATED`.
  *
  *  A classifier that fails is not a task that fails: the gate falls back to the
  *  deterministic answer and says so in a reason code. Deterministic and total
  *  apart from the injected classifier. */
 import { receipt, type DecisionReceipt } from './types.js';
-import { decideExecutionPath, hardGates, type ExecutionPathInput, type DispatchEstimate } from './engine.js';
+import { hardGates, delegationEstimate, type DispatchEstimate } from './engine.js';
+import type { DecisionOutcome } from '../schemas/decision.js';
 import type { DispatchPreparation } from './dispatch-preparation.js';
 
 export type ExecutionStrategy = 'MANAGED' | 'SERIAL_DELEGATED' | 'PARALLEL_DELEGATED';
@@ -72,6 +74,9 @@ export type StrategyClassifier = (input: { goal: string; taskClass: string }) =>
 
 export interface DecideStrategyInput {
   preparation: DispatchPreparation;
+  /** What the Action Market decided. The strategy is the name of that
+   *  decision's shape, so it is an input, never recomputed here. */
+  outcome: DecisionOutcome;
   spentUsd: number;
   dispatch: DispatchEstimate;
   /** Bought only when partitionability is ambiguous. Absent means the gate
@@ -237,35 +242,20 @@ export function decideStrategy(input: DecideStrategyInput): StrategyDecision {
 
   if (input.prior) evidence = { ...evidence, historicalPrior: input.prior };
 
-  // Stage three. The existing economics, in the existing vocabulary — not a
-  // second engine, and not a second set of thresholds.
-  const pathInput: ExecutionPathInput = {
-    goal: preparation.goal,
-    authority: preparation.authority,
-    spentUsd: input.spentUsd,
-    dispatch: input.dispatch,
-    complexity: preparation.complexity,
-    // Structural evidence, not a re-derivation: the gate is what decides
-    // whether the goal comes apart, and economics prices that answer. An
-    // `UNCERTAIN` verdict defers to the decomposition rather than reading as a
-    // yes — treating "we could not tell" as "it splits" is how an ambiguous
-    // goal buys a planner and a fan-out on no evidence at all.
-    worthSplitting: evidence.partitionability === 'UNCERTAIN'
-      ? preparation.verdict.decomposition.worthSplitting
-      : evidence.partitionability === 'YES',
-    signals: preparation.decompositionSignals,
-    ...(input.plannedChildCount === undefined ? {} : { plannedChildCount: input.plannedChildCount }),
-    ...(input.requiresApproval === undefined ? {} : { requiresApproval: input.requiresApproval }),
-  };
-  const economics = decideExecutionPath(pathInput);
-
-  if (economics.chosen !== 'SPAWN_AGENT') {
+  // Stage three: name what the market chose. Recomputing delegation economics
+  // here would be a second answer to a question the market already answered.
+  if (input.outcome !== 'DELEGATE') {
     return {
       strategy: 'MANAGED',
-      evidence: { ...evidence, reasonCodes: [...evidence.reasonCodes, `economics:${economics.chosen}`] },
-      receipt: economics,
+      evidence: { ...evidence, reasonCodes: [...evidence.reasonCodes, `market:${input.outcome}`] },
+      receipt: receipt({ chosen: 'RUN_MODEL', reason: 'the market chose to do this work directly', estimate: input.dispatch }),
     };
   }
+  const economics = receipt({
+    chosen: 'SPAWN_AGENT',
+    reason: 'the market chose to split this work',
+    estimate: delegationEstimate(input.dispatch, input.plannedChildCount ?? 1),
+  });
 
   // Delegated. Serial unless the scheduler actually preferred concurrency —
   // "cannot parallelize" is a scheduling result, never a reason not to delegate.

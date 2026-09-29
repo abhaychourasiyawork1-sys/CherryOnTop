@@ -1,3 +1,4 @@
+import { dispatchDifficulty, uninformedDifficulty } from '../intelligence/difficulty.js';
 import { describe, it, expect, afterEach, beforeEach, vi, type Mock } from 'vitest';
 import { useFakeLaya } from '../system1/fake-provider.js';
 import { existsSync, unlinkSync, mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
@@ -185,17 +186,28 @@ describe('the planning dispatch', () => {
 
   it('routes each role on its own merits, not on one shared setting', async () => {
     process.env.ORG_PLAN_OVERRIDE_P = '1.01';
-    const calls = await runDelegating(createDb(TEST_DB), tmpRepo(), '[]');
+    const db = createDb(TEST_DB);
+    const calls = await runDelegating(db, tmpRepo(), '[]');
 
-    // Planning is a narrow job — emit a JSON array — and runs on the fast tier.
+    // Each role is its own market decision, priced against its own difficulty:
+    // the planner's job is narrower than the work's (a JSON array against a
+    // turn budget a tenth the size), so for the same task it is never judged
+    // harder.
     expect(calls[0].goal).toContain('Split this goal');
-    expect(calls[0].model).toBe('haiku');
-
-    // The work itself is not. This goal scores high complexity, so it stays on
-    // the runtime's own default: no --model flag at all.
     const work = calls.find((call) => !call.goal.includes('Split this goal'));
     expect(work).toBeDefined();
-    expect(work!.model).toBeUndefined();
+    const receipts = listEventsForNode(db, listNodes(db).find((n) => n.parentId === null)!.id)
+      .filter((e) => e.type === 'market.decision')
+      .map((e) => e.payload as { role: string; difficulty: number; model: string | null });
+    const plan = receipts.find((r) => r.role === 'plan')!;
+    const exec = receipts.find((r) => r.role === 'execute')!;
+    expect(plan.model ?? undefined).toBe(calls[0].model);
+    expect(exec.model ?? undefined).toBe(work!.model);
+    expect(typeof plan.difficulty).toBe('number');
+    expect(typeof exec.difficulty).toBe('number');
+    // Without a semantic answer, the same task is never judged a harder
+    // planning job than execution job.
+    expect(plan.difficulty).toBeLessThanOrEqual(dispatchDifficulty(uninformedDifficulty(), 1));
   });
 
   it('applies the planner turn cap to the planner Job, not just to the config', async () => {
@@ -249,8 +261,15 @@ describe('the planning dispatch', () => {
     expect((judged?.payload as { economicResult: { worthSplitting: boolean } }).economicResult.worthSplitting).toBe(false);
     expect(calls).toHaveLength(1);
     expect(calls[0].goal).not.toContain('Split this goal');
-    // Still the strong model: not splitting must not mean not thinking.
-    expect(calls[0].model).toBeUndefined();
+    // Not splitting must not silently change how the work runs: the single
+    // dispatch is exactly what the market chose for it, with no override. Which
+    // model that is comes from learned capability and difficulty, not from a
+    // reading of the goal's wording ("codebase" no longer implies "strong").
+    const decided = listEventsForNode(db, root.id)
+      .filter((e) => e.type === 'market.decision')
+      .map((e) => e.payload as { role: string; model: string | null })
+      .find((r) => r.role === 'execute')!;
+    expect(calls[0].model ?? undefined).toBe(decided.model ?? undefined);
     // No children, so nothing to synthesise.
     expect(listNodes(db).filter((node) => node.parentId !== null)).toHaveLength(0);
   });
@@ -299,26 +318,12 @@ describe('the planning dispatch', () => {
     expect(listNodes(db).filter((node) => node.parentId !== null).length).toBeLessThanOrEqual(2 * 3);
   });
 
-  it('gives the planner the whole map again when efficiency is switched off', async () => {
-    // `disabled` has to be this branch's prior behaviour exactly, or the
-    // before/after comparison is measuring two different things.
+  it('selects the planner’s context whatever the retired efficiency switch says', async () => {
+    // There is one production architecture; the old baseline switch is inert.
     process.env.ORG_EFFICIENCY_MODE = 'disabled';
     const calls = await runDelegating(createDb(TEST_DB), tmpRepo(), '[]');
-    expect(calls[0].goal).toContain('Repository files:');
-    expect(calls[0].goal).toContain('unrelated.ts');
-  });
-
-  it('computes the selection but does not use it under Baseline', async () => {
-    process.env.ORG_EFFICIENCY_MODE = 'shadow';
-    const db = createDb(TEST_DB);
-    const calls = await runDelegating(db, tmpRepo(), '[]');
-    // Dispatched like a baseline run...
-    expect(calls[0].goal).toContain('unrelated.ts');
-    // ...but the receipt records what selection would have done.
-    const root = listNodes(db).find((node) => node.parentId === null)!;
-    const receipts = listEventsForNode(db, root.id).filter((event) => event.type === 'context.receipt');
-    expect(receipts.length).toBeGreaterThan(0);
-    expect((receipts[0].payload as { applied: boolean }).applied).toBe(false);
+    expect(calls[0].goal).toContain('Repository shape:');
+    expect(calls[0].goal).not.toContain('unrelated.ts');
   });
 
   describe('when System-1 and the split score have settled that the goal splits', () => {
@@ -333,7 +338,13 @@ describe('the planning dispatch', () => {
       const plan = calls.find(isPlanning)!;
       expect(plan.goal).toContain('how, not whether');
       expect(plan.goal).not.toContain('Reply with exactly []');
-      expect(plan.model).toBeUndefined();
+      // The planner's model is the market's decision, nothing else's: the
+      // receipt for the plan dispatch names the model that ran.
+      const receipt = listEventsForNode(db, listNodes(db).find((node) => node.parentId === null)!.id)
+        .filter((e) => e.type === 'market.decision')
+        .map((e) => e.payload as { role: string; model: string | null })
+        .find((r) => r.role === 'plan')!;
+      expect(plan.model ?? undefined).toBe(receipt.model ?? undefined);
 
       // And the record says what actually happened: no receipt or execution
       // plan claiming a delegation the node never carried out.

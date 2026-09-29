@@ -89,9 +89,16 @@ function recordView(row: DecisionRow): DecisionView {
   let why = '';
   if (row.type === 'runtime_selection') {
     title = `Run it with ${row.outcome}`;
-    why = b.runs
-      ? `${pct(b.successRate ?? 0)} of ${b.runs} earlier runs succeeded with it${b.alternativesConsidered > 1 ? `, the best of ${b.alternativesConsidered} options` : ''}.`
-      : 'The only runtime available.';
+    // The Action Market's receipt: the cheapest feasible way to finish, and
+    // by how much it beat the next one. Rows from before the market carry
+    // runtime history instead.
+    why = typeof b.expected_cost_usd === 'number'
+      ? b.blocked
+        ? 'No candidate could run within this task\'s constraints.'
+        : `The cheapest way to finish of ${b.candidates} candidate${b.candidates === 1 ? '' : 's'} — about $${b.expected_cost_usd.toFixed(2)} expected${b.margin_usd > 0 ? `, $${b.margin_usd.toFixed(2)} under the next` : ''}.`
+      : b.runs
+        ? `${pct(b.successRate ?? 0)} of ${b.runs} earlier runs succeeded with it${b.alternativesConsidered > 1 ? `, the best of ${b.alternativesConsidered} options` : ''}.`
+        : 'The only runtime available.';
   } else if (row.type === 'execution_decision') {
     title = row.outcome === 'DELEGATE' ? 'Split the work across agents'
       : row.outcome === 'ESCALATE' ? 'Stop and ask you'

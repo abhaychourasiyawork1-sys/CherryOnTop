@@ -30,7 +30,8 @@ function createWindow(detachedTarget?: string): BrowserWindow {
     // which keeps the graph edge-to-edge. Elsewhere the frame is the only way to
     // move or close the window, so it stays.
     ...(process.platform === 'darwin' ? { titleBarStyle: 'hiddenInset' as const } : {}),
-    backgroundColor: '#11171E',
+    backgroundColor: '#121214',
+    icon: path.join(__dirname, '../../resources/icon.png'),
     webPreferences: {
       preload: path.join(__dirname, '../preload/index.mjs'),
       sandbox: false,

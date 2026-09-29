@@ -69,6 +69,7 @@ const OUTPUT_SCHEMA = {
 const HARNESS_PRIMITIVE: Record<keyof typeof HARNESS_QUESTIONS, DecisionPrimitive> = {
   'execution.decomposable': 'choice',
   'execution.change_requested': 'choice',
+  'execution.difficulty': 'choice',
   'action.helpful': 'noul',
   'runtime.next_action': 'choice',
 };

@@ -18,6 +18,7 @@
  *  the first step towards a per-capability schema, and a per-capability schema
  *  is a per-capability pathway with extra steps. */
 import { clamp01 } from '../efficiency/policy-types.js';
+import type { ActionTransitionEstimate } from './transition.js';
 
 /** The whole vocabulary. Ten verbs, each of which is something *any* task can
  *  do — deliberately not "refactor", "investigate", "write tests", which are
@@ -107,11 +108,35 @@ export interface ActionDecision {
    *  the state has moved on can be recognised as stale rather than applied. */
   stateVersion: number;
   action: ActionCandidate;
+  /** V(s) − Q(s,a) in dollars: what the chosen action is expected to save over
+   *  carrying on as we are. Zero for the null action; positive means an
+   *  intervention the numbers justify. */
   utility: number;
   /** Machine-readable, stable, and the thing a benchmark attributes regressions
    *  with. Prose belongs in the receipt, not here. */
   reasonCodes: string[];
   confidence: number;
+
+  // ---- the receipt: why this, and what it beat ------------------------------
+  // Optional only so a hand-built decision in a test stays legal; the market
+  // always fills every one.
+
+  estimate?: ActionTransitionEstimate;
+  expectedCostUsd?: number;
+  conservativeCostUsd?: number;
+  successLowerBound?: number;
+  /** Q₂ − Q₁. Null when nothing else was feasible. */
+  margin?: { absoluteUsd: number; relative: number } | null;
+  ranked?: Array<{
+    id: string; fingerprint: string; expectedCostUsd: number; conservativeCostUsd: number;
+    successLowerBound: number; provenance: string;
+  }>;
+  rejected?: Array<{ id: string; reasonCodes: string[] }>;
+  pruned?: string[];
+  /** True when nothing was feasible and the answer is the terminal stop. */
+  blocked?: boolean;
+  /** What deciding cost: the optimizer's own bill, measured. */
+  overhead?: { candidateCount: number; estimatorCalls: number; cacheHits: number; cacheMisses: number; latencyMs: number };
 }
 
 /** Absolute quantities: finite and non-negative, or zero. Not clamped above —

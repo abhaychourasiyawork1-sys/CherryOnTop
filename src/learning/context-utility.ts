@@ -102,8 +102,7 @@ export interface TaskClassUtility {
 const mean = (values: number[]): number =>
   values.length === 0 ? 0 : values.reduce((sum, v) => sum + v, 0) / values.length;
 
-/** Below this, a class's history is a coincidence rather than evidence — the
- *  same bar `selectRuntime` sets, for the same reason. */
+/** Below this, a class's history is a coincidence rather than evidence. */
 export const MIN_OBSERVATIONS = 3;
 
 export function contextUtilityByTaskClass(db: Db): TaskClassUtility[] {

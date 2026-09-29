@@ -39,9 +39,12 @@ function healthy(over: Partial<EconomicState> = {}): EconomicState {
   });
 }
 
-/** A run in trouble: failing, and getting nowhere for it. */
+/** A run in trouble: failing, getting nowhere for it, and — unlike a healthy
+ *  one — with nothing validated. (A validated task costs nothing to finish, so
+ *  no intervention could ever beat carrying on.) */
 const struggling = (over: Partial<EconomicState> = {}) => healthy({
   trajectory: { ...healthy().trajectory, failurePressure: 0.9, progress: 0.1 },
+  validation: { required: true, confidence: 0.2, status: 'pending' },
   ...over,
 });
 

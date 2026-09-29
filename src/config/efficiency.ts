@@ -153,8 +153,7 @@ export function taskSpendCapUsd(): number {
  *  Off returns the selector to the lexical-only behaviour this branch shipped
  *  with, which is what makes the new planner a change an operator can take
  *  back in one environment variable rather than a revert. On unless explicitly
- *  turned off, for the same reason `runtimeMode` defaults to Full: a flag nobody
- *  turns on measures nothing. */
+ *  turned off: a flag nobody turns on measures nothing. */
 export function contextPlannerEnabled(): boolean {
   const v = (process.env.ORG_CONTEXT_PLANNER ?? '').trim().toLowerCase();
   return !['off', '0', 'false', 'no', 'disabled'].includes(v);
@@ -169,41 +168,6 @@ export function repoMapTokenBudget(): number {
 export function rolePromptsEnabled(): boolean {
   const v = (process.env.ORG_ROLE_PROMPTS ?? '').trim().toLowerCase();
   return !['off', '0', 'false', 'no'].includes(v);
-}
-
-/** The two runtime modes the product has, and the only two it may ever have.
- *
- *  `baseline` is the behaviour this branch shipped with before the economic
- *  architecture: fixed per-role models, lexical context, nothing decided from
- *  the state of a run. `full` is the architecture acting on its decisions.
- *
- *  There used to be a third, `shadow`, which decided and recorded but dispatched
- *  as `baseline` would. It was a good idea in the wrong place. A shadow's whole
- *  value is being inert, and a *product* mode cannot be inert — it is one more
- *  behaviour an operator can be in, one more combination to test, and one more
- *  thing a bug report has to establish before it can be read. The measurement it
- *  existed for now happens where it belongs: `learning/shadow.ts` records a
- *  candidate decision beside the real one without being reachable from
- *  configuration at all, and the benchmark harness compares matched runs of the
- *  two real modes.
- *
- *  `ORG_EFFICIENCY_MODE=shadow` therefore resolves to `baseline`, which is
- *  exactly what a shadow run dispatched as — so a deployment that set it keeps
- *  the behaviour it had, and stops being in a mode nobody else is in. */
-export type RuntimeMode = 'baseline' | 'full';
-
-/** Which architecture this process is running.
- *
- *  Defaults to `full`: every component it gates degrades to Baseline on any
- *  failure, and a flag nobody turns on measures nothing. */
-export function runtimeMode(): RuntimeMode {
-  return parseRuntimeMode(process.env.ORG_EFFICIENCY_MODE);
-}
-
-const BASELINE_ALIASES = new Set(['disabled', 'off', '0', 'false', 'baseline', 'shadow']);
-
-export function parseRuntimeMode(value: string | undefined): RuntimeMode {
-  return BASELINE_ALIASES.has((value ?? '').trim().toLowerCase()) ? 'baseline' : 'full';
 }
 
 /** The model name for a tier, or undefined to let the runtime use its own

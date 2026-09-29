@@ -12,10 +12,15 @@
  *  version identifier that can be edited after the fact is a version identifier
  *  that will eventually be edited after the fact.
  *
- *  What it deliberately is **not** is a runtime mode. Versions accumulate
- *  without bound; product modes stay at exactly two, and the test below is what
- *  keeps that true when someone reaches for a third. */
-import { runtimeMode, type RuntimeMode } from '../config/efficiency.js';
+ *  What it deliberately is **not** is a runtime mode. There is one production
+ *  architecture — the Action Market — and no switch that selects another;
+ *  `architecture` names it so rows written before the market existed stay
+ *  distinguishable from rows written after. */
+
+/** The one production architecture. Rows from before it carry 'full' or
+ *  'baseline', the two modes it replaced. */
+export type Architecture = 'market' | 'full' | 'baseline';
+export const ARCHITECTURE: Architecture = 'market';
 
 /** Bumped by hand when a weight in `policy.ts` changes. Recorded with every
  *  measured dispatch, so two policy generations in one database are
@@ -28,17 +33,18 @@ export const CONTEXT_POLICY_VERSION = 'ctx-1';
 export const EXECUTION_POLICY_VERSION = 'exec-1';
 
 /** Bumped by hand when the decision layer's *behaviour* changes: a new term in
- *  the utility model, a changed tie-break, a new action kind that can be
- *  chosen. Not bumped for a refactor that cannot change an outcome — a version
+ *  the cost model, a changed tie-break, a new action kind that can be chosen.
+ *  `dec-2` is the cost-to-go market; `dec-1` observations were ranked by the
+ *  weighted utility and are not comparable. Not bumped for a refactor that cannot change an outcome — a version
  *  that moves for reasons nobody can observe makes every comparison look
  *  incomparable. */
-export const DECISION_ENGINE_VERSION = 'dec-1';
+export const DECISION_ENGINE_VERSION = 'dec-2';
 
 export interface PolicyVersion {
   /** Deterministic and composite. Two processes running the same code produce
    *  the same id, which is what makes it a join key rather than a label. */
   id: string;
-  architecture: RuntimeMode;
+  architecture: Architecture;
   version: string;
   createdAt: string;
   decisionEngineVersion: string;
@@ -51,13 +57,13 @@ export interface PolicyVersion {
  *  apart on the same commit are running the same policy. A timestamp baked in
  *  at import would make them look different. */
 export function policyVersion(input: {
-  architecture?: RuntimeMode;
+  architecture?: Architecture;
   contextVersion?: string;
   executionVersion?: string;
   decisionEngineVersion?: string;
   createdAt?: string;
 } = {}): PolicyVersion {
-  const architecture = input.architecture ?? runtimeMode();
+  const architecture = input.architecture ?? ARCHITECTURE;
   const context = input.contextVersion ?? CONTEXT_POLICY_VERSION;
   const execution = input.executionVersion ?? EXECUTION_POLICY_VERSION;
   const engine = input.decisionEngineVersion ?? DECISION_ENGINE_VERSION;

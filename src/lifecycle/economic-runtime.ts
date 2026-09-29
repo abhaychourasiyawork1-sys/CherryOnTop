@@ -366,17 +366,35 @@ export interface BoundaryOutcome {
  *  record them. Returning both from one call rather than exposing two entry
  *  points keeps "the state a decision was made against" and "the decision"
  *  inseparable, which is what makes a ledger entry checkable afterwards. */
-export function evaluateBoundary(db: Db, input: ExecutionBoundaryInput): BoundaryOutcome {
+export function evaluateBoundary(
+  db: Db,
+  input: ExecutionBoundaryInput,
+  options: {
+    /** Folds in what storage cannot see — other commitments' reservations and
+     *  the version they moved the state to — so the decision is made against
+     *  the state its commitment will be checked against. */
+    view?: (state: EconomicState) => EconomicState;
+  } = {},
+): BoundaryOutcome {
   const unreserved = economicStateFor(db, input);
   const entry = memoryFor(input.nodeId);
   const additionalCandidates = [
     ...evidenceCandidates(input, unreserved),
     ...recoveryCandidates(unreserved, entry),
   ];
-  const state = withReserves(unreserved, additionalCandidates);
+  const state = (options.view ?? ((s: EconomicState) => s))(withReserves(unreserved, additionalCandidates));
   const cycle = runDecisionCycle(state, { cadence: entry.cadence, additionalCandidates });
   entry.cadence = cycle.cadence;
   return { decision: cycle.decision, state, cycle };
+}
+
+/** The boundary's state as it is *now*, without advancing the node's
+ *  trajectory memory: what a commitment is checked against after anything
+ *  (a System-1 call) was awaited between deciding and acting. */
+export function currentBoundaryState(db: Db, input: ExecutionBoundaryInput): EconomicState {
+  const unreserved = economicStateFor(db, input, { commit: false });
+  const entry = memoryFor(input.nodeId);
+  return withReserves(unreserved, [...evidenceCandidates(input, unreserved), ...recoveryCandidates(unreserved, entry)]);
 }
 
 /** Holds back what proving and retrying would cost, when there is something to

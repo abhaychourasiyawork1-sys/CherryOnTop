@@ -7,7 +7,7 @@
 // Usage:
 //   node bench/run.mjs repo-map      # ORG_REPO_MAP_TOKENS=6000 vs =0
 //   node bench/run.mjs role-prompts  # ORG_ROLE_PROMPTS=on vs off   (Phase 3)
-//   node bench/run.mjs efficiency    # ORG_EFFICIENCY_MODE=enabled vs disabled (Phase 4)
+//   node bench/run.mjs efficiency    # the Action Market vs a fixed per-role candidate (benchmark arm)
 //   node bench/run.mjs turn-cap      # ORG_MAX_TURNS_EXECUTE=60 vs uncapped
 //   node bench/run.mjs result-reuse  # ORG_RESULT_CACHE_TTL_HOURS=24 vs 0
 import { execFileSync } from 'node:child_process';
@@ -20,6 +20,9 @@ import {
 } from './compare.mjs';
 import { materializeGoalWorktree, releaseGoalWorktree } from './lib/isolation.mjs';
 import { partitionByValidity, renderValidity } from './lib/validity.mjs';
+
+/** The fixed-baseline benchmark arm: one candidate per role, by constraint. */
+const FIXED_BASELINE_ARM = { ORG_MODEL_EXECUTE: 'none', ORG_MODEL_PLAN: 'haiku', ORG_MODEL_SYNTHESIZE: 'haiku' };
 
 const mode = process.argv[2];
 // `--goals=a,b` runs a subset. The full matrix is 7 goals x 2 arms, and the
@@ -38,7 +41,14 @@ const MATRIX = {
   // cancelled-while-queued dispatch guard is a bug fix (nobody wants the arm
   // that pays for discarded work), and the planner turn cap and child cap have
   // their own knobs — ORG_MAX_TURNS_PLAN and ORG_MAX_CHILD_JOBS.
-  efficiency: [['on', { ORG_EFFICIENCY_MODE: 'enabled' }], ['off', { ORG_EFFICIENCY_MODE: 'disabled' }]],
+  //
+  // There is no production switch any more: the Action Market is the only
+  // architecture. The `off` arm is a *benchmark* arm — a fixed baseline that
+  // pins every role to one candidate through the operator model constraint
+  // (the fast tier for plan/synthesize, the runtime default for execute: what
+  // the pre-market routing chose). The market still prices, gates and commits
+  // it; it simply has one candidate per role to choose from.
+  efficiency: [['on', {}], ['off', FIXED_BASELINE_ARM]],
   // Their own knobs rather than rows of the `efficiency` switch, because what
   // they bound is not a decision the switch changes. Neither is expected to
   // separate on this goal set: 60 sits above every turn count ever measured

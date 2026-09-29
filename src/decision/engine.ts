@@ -1,38 +1,51 @@
-/** The one contract every choice in the runtime is expressed through.
+/** The Action Market: the one place the runtime decides what to do next.
  *
- *  Emphatically **not** a new brain. Every number here comes from the module
- *  that already owned it — `decideExecution` for delegation economics,
- *  `routeModel` for model tiers, `decideIntegration` for synthesis,
- *  `planEvidence` for evidence. Reimplementing any of that arithmetic here
- *  would create a second answer to a question that already has one, and the two
- *  would drift.
+ *  Every specialized module is an *action provider* now. The model router
+ *  proposes Harness × Model × Effort candidates, the delegation economics
+ *  propose self vs delegate, the evidence planner proposes reads, the recovery
+ *  engine proposes retries and switches. Each may say what its action is
+ *  expected to do (an `ActionTransitionEstimate`); none of them chooses. The
+ *  choice is made here, once, by one rule:
  *
- *  What this adds is the part none of them had: a common order of operations.
+ *      pick the feasible action with the lowest conservative expected cost to
+ *      finish the task, subject to hard constraints and the quality floor.
  *
- *   1. **Hard gates first.** Authority, budget and safety are rules, not terms.
- *      A decision that can be bought by a good enough score is not a boundary.
- *   2. **Free things next.** If the answer is already held, nothing needs
- *      scoring — and scoring it anyway is a cost paid to discover there was no
- *      cost.
- *   3. **Economics last**, and always against a named alternative.
- */
+ *  The order of operations is the design:
+ *
+ *   1. hard constraints — safety, authority, approval, capability, budget.
+ *      Before any estimate exists, so no estimate can buy past one;
+ *   2. transition estimation — deterministic, cached, empirical, signals;
+ *   3. dominance pruning — drop what something else beats on every axis;
+ *   4. quality floor — against the conservative success bound, not the mean;
+ *   5. cost-to-go — Q(s,a) = C_now + E[V(s')], ranked on its upper bound;
+ *   6. deterministic tie-break — expected cost, confidence, then stable id.
+ *
+ *  What it deliberately does not do: call a model, touch a database, or read
+ *  what the task is *about*. System-1 is an estimate refiner the caller may buy
+ *  when `semanticRefinementValue` says it pays; the market then runs again. */
 import { randomUUID } from 'node:crypto';
-import { decideExecution, type DecideExecutionInput, type DecideExecutionResult } from '../engines/decide-execution.js';
-import { routeModel, type ModelRouteInput } from '../intelligence/model-router.js';
-import { decideIntegration } from '../intelligence/integrate-results.js';
-import { planEvidence, type EvidenceCandidate } from '../execution/evidence-planner.js';
-import { isClosed, type KnowledgeFrontier } from '../context/frontier.js';
-import type { ChildReport } from '../intelligence/synthesize.js';
+import type { DecideExecutionResult } from '../engines/decide-execution.js';
 import type { Authority } from '../schemas/node-contract.js';
+import type { DecisionOutcome } from '../schemas/decision.js';
+import { clamp01 } from '../efficiency/policy-types.js';
+import { SHRINKAGE_K } from '../learning/hierarchical.js';
+import { receipt, type DecisionReceipt, type DecisionEstimate } from './types.js';
+import { normalizeActionCandidate, actionCandidate, type ActionCandidate, type ActionDecision } from './actions.js';
 import {
-  receipt, FREE, type DecisionReceipt, type DecisionAlternative, type DecisionEstimate,
-} from './types.js';
+  evaluateAction, hardConstraints, deterministicEstimate, signalEstimate, isNullAction,
+  stateValue, remainingWorkTokens, usdPerToken, isConstraintCode,
+  type ActionEvaluation, type DecisionFault,
+} from './utility.js';
+import {
+  estimateTransition, candidateFingerprint,
+  type ActionTransitionEstimate, type EstimationContext, type FunnelStats,
+} from './transition.js';
+import type { EconomicState } from './state.js';
+import { assessDecisionTrust } from './trust.js';
 
 export * from './types.js';
-// One import point for the whole decision layer, the way `types.js` indexes the
-// economic state. The strategy gate composes *into* this vocabulary rather than
-// competing with it: it calls `decideExecutionPath` for the economic stage and
-// returns the same receipt.
+// One import point for the whole decision layer. The strategy gate names the
+// shape of what the market chose; it does not choose.
 export {
   decideStrategy, deterministicEvidence, sanitizeClassification, strategyReceipt,
 } from './strategy-gate.js';
@@ -41,8 +54,7 @@ export type {
   StrategyClassification, StrategyClassifier, DecideStrategyInput,
 } from './strategy-gate.js';
 
-/** What a dispatch is expected to cost, from the ledger rather than a guess.
- *  Passed in so the engine never reaches for a database. */
+/** What a dispatch is expected to cost, from the ledger rather than a guess. */
 export interface DispatchEstimate extends DecisionEstimate {}
 
 export interface SafetyInput {
@@ -52,8 +64,8 @@ export interface SafetyInput {
   requiresApproval?: boolean;
 }
 
-/** The rules that outrank every score. Returns a receipt when one fires, and
- *  null when the decision is still open. */
+/** The authority rules that outrank every cost, for callers that have an
+ *  `Authority` rather than an `EconomicState`. Null when the decision is open. */
 export function hardGates(input: SafetyInput): DecisionReceipt | null {
   if (input.requiresApproval) {
     return receipt({
@@ -61,8 +73,7 @@ export function hardGates(input: SafetyInput): DecisionReceipt | null {
       reason: 'a person has to approve this before anything is spent',
     });
   }
-  // Zero means nobody costed this node, which is not the same as out of money —
-  // the convention model-router.ts already uses.
+  // Zero means nobody costed this node, which is not the same as out of money.
   if (input.authority.budget_usd > 0 && input.spentUsd >= input.authority.budget_usd) {
     return receipt({
       chosen: 'STOP', gate: 'budget', fastPath: true,
@@ -72,269 +83,39 @@ export function hardGates(input: SafetyInput): DecisionReceipt | null {
   return null;
 }
 
-export interface ExecutionPathInput extends SafetyInput, DecideExecutionInput {
-  /** A prior answer to this exact question that is still valid. */
-  reusable?: { tokens: number; costUsd: number };
-  /** What a fresh dispatch would cost. */
-  dispatch: DispatchEstimate;
-  /** Outstanding questions. A closed frontier means the work is already done. */
-  frontier?: KnowledgeFrontier;
-  /** How many children a fan-out would actually create. Absent means "as many
-   *  as this node's authority allows", which is the number the planner is
-   *  handed as its ceiling. */
-  plannedChildCount?: number;
-}
-
-/** What a fan-out costs, as a function of how wide it is.
- *
- *  A flat "×2" was the old answer, and it was wrong in both directions: it
- *  priced a four-way split as a two-way one, and it charged the same for a
- *  two-way split whatever the node's allowance was. Three terms, all of them
- *  real dispatches somebody pays for:
- *
- *   - the planning run that produces the subgoals,
- *   - k children,
- *   - the synthesis run that combines their answers.
- *
- *  Latency is *not* k times a dispatch: children run concurrently, so the wall
- *  clock is plan + one child + synthesis. Summing children there is the mistake
- *  that makes every fan-out look slower than it is. */
+/** What a fan-out costs, as a function of how wide it is: one planning run,
+ *  k children, one synthesis. Latency is plan + one child + synthesis, because
+ *  children run concurrently. */
 export function delegationEstimate(dispatch: DispatchEstimate, childCount: number): DispatchEstimate {
   const children = Math.max(1, Math.floor(childCount));
   const dispatches = children + 2;
   return {
     tokens: dispatch.tokens * dispatches,
-    // plan -> (children, in parallel) -> synthesize.
     latencyMs: dispatch.latencyMs * 3,
     costUsd: dispatch.costUsd * dispatches,
   };
 }
 
-/** How wide the fan-out would be: what the caller planned, else what this
- *  node's agent allowance permits. Clamped at one, because a delegation that
- *  creates no children is not a delegation. */
-function plannedChildren(input: ExecutionPathInput): number {
-  return Math.max(1, Math.floor(input.plannedChildCount ?? input.authority.max_child_count ?? 1));
-}
-
-/** Reuse, spawn, run, wait or stop — the top-level shape of a node's work. */
-export function decideExecutionPath(input: ExecutionPathInput): DecisionReceipt {
-  const gated = hardGates(input);
-  if (gated) return gated;
-
-  const dispatchAlternative: DecisionAlternative = {
-    type: 'RUN_MODEL',
-    reason: 'do the work in a fresh sandbox',
-    estimate: input.dispatch,
-  };
-
-  // Free things before scored things. An exact result already in hand cannot be
-  // beaten by anything a comparison could find, so running the comparison is a
-  // cost paid to discover there was no cost.
-  if (input.reusable) {
-    return receipt({
-      chosen: 'REUSE_COMPUTATION',
-      fastPath: true,
-      reason: `this exact question already has a valid answer, saving ~${input.reusable.tokens} tokens`,
-      estimate: FREE,
-      alternatives: [dispatchAlternative],
-    });
-  }
-
-  if (input.frontier && isClosed(input.frontier) && input.frontier.known.length > 0) {
-    return receipt({
-      chosen: 'STOP',
-      fastPath: true,
-      reason: 'the evidence already held closes every outstanding question',
-      estimate: FREE,
-      alternatives: [dispatchAlternative],
-    });
-  }
-
-  // Everything below is the existing economics, unchanged — this only puts its
-  // answer in the common shape.
-  const decision = decideExecution(input);
-  const score = decision.breakdown.score ?? 0;
-  const threshold = decision.breakdown.threshold ?? 0;
-  // Margin as confidence: a decision that cleared the line by a hair is one a
-  // reader should treat as a coin toss, and the breakdown is the only place
-  // that fact exists.
-  const confidence = Math.min(1, 0.5 + Math.abs(score - threshold));
-
-  if (decision.outcome === 'ESCALATE') {
-    return receipt({
-      chosen: 'WAIT', gate: 'budget-floor', fastPath: false, confidence,
-      reason: 'splitting this needs more budget than the node holds',
-      estimate: FREE,
-      alternatives: [dispatchAlternative],
-    });
-  }
-
-  if (decision.outcome === 'DELEGATE') {
-    return receipt({
-      chosen: 'SPAWN_AGENT', confidence,
-      reason: `the goal comes apart and delegation scores ${score.toFixed(2)} against ${threshold}`,
-      estimate: delegationEstimate(input.dispatch, plannedChildren(input)),
-      alternatives: [dispatchAlternative],
-    });
-  }
-
-  return receipt({
-    chosen: 'RUN_MODEL', confidence,
-    reason: decision.breakdown.reason_single_unit_of_work
-      ? 'this is one unit of work, so splitting it would buy a planner to be told so'
-      : `delegation scores ${score.toFixed(2)} against ${threshold}`,
-    estimate: input.dispatch,
-    alternatives: [{
-      type: 'SPAWN_AGENT',
-      reason: 'split the goal across agents',
-      estimate: delegationEstimate(input.dispatch, plannedChildren(input)),
-    }],
-  });
-}
-
-export interface EvidenceInput extends SafetyInput {
-  frontier: KnowledgeFrontier;
-  candidates: EvidenceCandidate[];
-}
-
-/** How to close the next gap: reuse, expand, a tool, a test, or a model. */
-const EVIDENCE_TO_DECISION: Record<EvidenceCandidate['action'], DecisionReceipt['chosen']> = {
-  reuse: 'REUSE_CONTEXT',
-  expand: 'EXPAND_CONTEXT',
-  search: 'RUN_TOOL',
-  read_symbol: 'EXPAND_CONTEXT',
-  run_test: 'RUN_TEST',
-  run_model: 'RUN_MODEL',
-  spawn_agent: 'SPAWN_AGENT',
-};
-
-export function decideEvidence(input: EvidenceInput): DecisionReceipt {
-  const gated = hardGates(input);
-  if (gated) return gated;
-
-  const plan = planEvidence(input.frontier, input.candidates);
-  const alternatives: DecisionAlternative[] = plan.ranked
-    .filter((entry) => entry.candidate !== plan.chosen)
-    .map((entry) => ({
-      type: EVIDENCE_TO_DECISION[entry.candidate.action],
-      reason: entry.candidate.reason,
-      estimate: { tokens: entry.candidate.estimatedTokens, latencyMs: entry.candidate.estimatedLatencyMs, costUsd: 0 },
-    }));
-
-  if (!plan.chosen) {
-    return receipt({ chosen: 'STOP', reason: plan.reason, estimate: FREE, alternatives, fastPath: true });
-  }
-
-  return receipt({
-    chosen: EVIDENCE_TO_DECISION[plan.chosen.action],
-    reason: plan.reason,
-    confidence: plan.chosen.expectedGain,
-    estimate: { tokens: plan.chosen.estimatedTokens, latencyMs: plan.chosen.estimatedLatencyMs, costUsd: 0 },
-    alternatives,
-    fastPath: plan.chosen.action === 'reuse',
-  });
-}
-
-export interface IntegrationInput extends SafetyInput {
-  children: ChildReport[];
-  synthesis: DispatchEstimate;
-}
-
-/** Whether combining the children's answers needs a model. */
-export function decideSynthesis(input: IntegrationInput): DecisionReceipt {
-  const gated = hardGates(input);
-  if (gated) return gated;
-
-  const decision = decideIntegration(input.children);
-  const synthesisAlternative: DecisionAlternative = {
-    type: 'SYNTHESIZE', reason: 'pay a model to merge the reports', estimate: input.synthesis,
-  };
-
-  if (decision.kind === 'synthesize') {
-    return receipt({
-      chosen: 'SYNTHESIZE', reason: decision.reason, estimate: input.synthesis,
-      alternatives: [{ type: 'STOP', reason: 'merge the reports mechanically', estimate: FREE }],
-    });
-  }
-
-  return receipt({
-    chosen: 'STOP', fastPath: true,
-    reason: decision.kind === 'nothing'
-      ? 'no child reported anything to combine'
-      : decision.kind === 'return_child'
-        ? 'one agent answered this; its answer is the answer'
-        : 'the reports merge mechanically, so no model is needed',
-    estimate: FREE,
-    alternatives: [synthesisAlternative],
-  });
-}
-
-/** `budgetUsd` and `spentUsd` are deliberately *not* repeated here: the gate
- *  already has them, and two fields meaning the same money is how a guard and a
- *  router come to disagree about whether a node can afford anything. */
-export interface ModelInput extends SafetyInput, Omit<ModelRouteInput, 'budgetUsd' | 'spentUsd'> {
-  dispatch: DispatchEstimate;
-}
-
-/** Which model tier runs this dispatch. */
-export function decideModel(input: ModelInput): DecisionReceipt {
-  const gated = hardGates(input);
-  if (gated) return gated;
-
-  const route = routeModel({ ...input, budgetUsd: input.authority.budget_usd, spentUsd: input.spentUsd });
-  return receipt({
-    chosen: route.tier === 'deep' ? 'ESCALATE_MODEL' : 'RUN_MODEL',
-    reason: route.reason,
-    estimate: input.dispatch,
-    alternatives: [{
-      type: 'RUN_MODEL',
-      reason: 'the runtime default model',
-      estimate: input.dispatch,
-    }],
-    fastPath: route.tier === 'fast',
-  });
-}
-
 // ---------------------------------------------------------------------------
-// The state/action evaluator.
-//
-// Everything above answers one specific question each — which model, which
-// evidence, whether to split — in its own vocabulary. This answers the general
-// one: given everything the runtime currently knows, and everything it could
-// currently do, what is worth doing?
-//
-// It is emphatically not a second brain either. It contains no economics of its
-// own: `evaluateActionUtility` prices a candidate and this ranks what it
-// returns. What it adds is an order of operations and a conservative default —
-// the same two things `decideExecutionPath` adds to the engines it composes.
+// The market
 // ---------------------------------------------------------------------------
 
-import { normalizeActionCandidate, actionCandidate, type ActionCandidate, type ActionDecision } from './actions.js';
-import { clamp01 } from '../efficiency/policy-types.js';
-import type { DecisionOutcome } from '../schemas/decision.js';
-import { evaluateActionUtility, type UtilityWeights, type UtilityEvaluation } from './utility.js';
-import { assessDecisionTrust, trustAdjusted, type TrustAssessment } from './trust.js';
-import type { EconomicState } from './state.js';
+/** Two conservative costs this close are a tie. The same 1e-9 the rest of the
+ *  decision layer uses: a sixteenth-decimal difference must not make the
+ *  winner depend on arrival order. */
+const TIE_EPSILON = 1e-12;
 
-/** Floating-point equality for a ranking. The same 1e-9 tolerance
- *  `engines/economics.ts` already uses for the same reason: two scores that
- *  differ in the sixteenth decimal are a tie, and treating them otherwise makes
- *  the winner depend on the order the candidates happened to arrive in. */
-const TIE_EPSILON = 1e-9;
-
-/** How many rejections a decision records. Enough to explain a surprising
- *  answer, bounded so a hundred filtered candidates cannot turn one decision
- *  into a hundred-line row. */
+/** How many rejections a receipt names. Enough to explain a surprising answer. */
 const MAX_RECORDED_REJECTIONS = 8;
 
-/** Doing nothing, priced at nothing. The default answer, and deliberately a
- *  real candidate rather than a null return: a no-op that goes through the same
- *  ranking and the same receipt is a no-op somebody can audit. */
-function continueAction(): ActionCandidate {
-  return actionCandidate({
-    id: 'continue', kind: 'continue', capability: 'agent.continue', confidence: 1,
-  });
+/** How many ranked candidates survive pruning into the receipt and into any
+ *  semantic refinement. More than this is not a decision, it is a search. */
+export const MAX_RETAINED_CANDIDATES = 6;
+
+/** Letting the agent get on with it. A real candidate rather than a null
+ *  return, so it is priced — at V(s), which is not zero — and audited. */
+export function continueAction(): ActionCandidate {
+  return actionCandidate({ id: 'continue', kind: 'continue', capability: 'agent.continue', confidence: 1 });
 }
 
 function stopAction(): ActionCandidate {
@@ -344,259 +125,288 @@ function stopAction(): ActionCandidate {
 export interface EconomicDecisionInput {
   state: EconomicState;
   candidates: ActionCandidate[];
-  weights?: UtilityWeights;
-  nowMs?: number;
-  /** Injected so a decision is reproducible in a test without stubbing crypto.
-   *  Production never passes it. */
+  /** Faults the caller observed. Present, they make every intervention
+   *  infeasible; the null action remains. */
+  faults?: readonly DecisionFault[];
+  /** Estimates a provider already made, keyed by candidate id. They enter the
+   *  funnel above the cache: a provider that knows is not second-guessed by a
+   *  bucketed guess. Deterministic answers still win over them. */
+  estimates?: Readonly<Record<string, ActionTransitionEstimate>>;
+  estimation?: EstimationContext;
+  /** Injected so a decision is reproducible in a test. Production never
+   *  passes it. */
   decisionId?: string;
+  nowMs?: () => number;
 }
 
-interface Ranked {
+interface Priced {
   candidate: ActionCandidate;
-  evaluation: UtilityEvaluation;
-  trust: TrustAssessment;
-  /** The score actually ranked on: utility, discounted by how much the decision
-   *  deserves to be believed given what it puts at stake. Equal to the raw
-   *  utility for a free action, because being wrong about a free action costs
-   *  nothing. */
-  score: number;
+  evaluation: ActionEvaluation;
 }
 
-/** The one entry point the runtime asks "what now?" through.
- *
- *  Four steps, in an order that is the design rather than an implementation
- *  detail:
- *
- *   1. Price every candidate.
- *   2. Drop the ones a hard constraint forbids — before ranking, so no score
- *      can promote a forbidden action.
- *   3. Rank what survives by utility, then confidence, then a stable id. Never
- *      by kind, and never by anything derived from what the task is *about*.
- *   4. Fall back conservatively: `continue` unless continuing is itself
- *      disallowed, and only then `stop`. The healthy action is non-intervention.
- */
+/** The one entry point the runtime asks "what now?" through. Pure: it reads
+ *  the state and never moves it — a decision becomes real only when
+ *  `commitAction` reserves for it against the same state version. */
 export function chooseEconomicAction(input: EconomicDecisionInput): ActionDecision {
-  const { state, weights } = input;
-  const price = (candidate: ActionCandidate): Ranked => {
-    const evaluation = evaluateActionUtility(candidate, state, weights);
-    const trust = assessDecisionTrust({ state, action: candidate });
-    return { candidate, evaluation, trust, score: trustAdjusted(evaluation.score, trust) };
+  const { state } = input;
+  const now = input.nowMs ?? Date.now;
+  const startedMs = now();
+  const stats: FunnelStats = { cacheHits: 0, cacheMisses: 0, estimatorCalls: 0 };
+
+  const supplied = (input.candidates ?? []).map(normalizeActionCandidate);
+  // The null action is always on the menu unless a provider supplied its own
+  // version of it (the execution market's candidates are all "carry on, on
+  // this candidate").
+  const candidates = supplied.some((c) => c.kind === 'continue') ? supplied : [...supplied, continueAction()];
+
+  const price = (candidate: ActionCandidate): Priced => {
+    // Constraints first: a candidate a gate refuses is never estimated, so no
+    // estimate — and no estimator's cost — is spent on something forbidden.
+    const gate = hardConstraints(candidate, state, input.faults);
+    const estimate = gate.allowed
+      ? estimateFor(candidate, state, input, stats)
+      : (deterministicEstimate(candidate, state) ?? signalEstimate(candidate, state));
+    return { candidate, evaluation: evaluateAction(candidate, state, { estimate, faults: input.faults }) };
   };
 
-  const priced = (input.candidates ?? []).map(normalizeActionCandidate).map(price);
-  const allowed = priced.filter((r) => r.evaluation.allowed);
-  const rejected = priced.filter((r) => !r.evaluation.allowed);
+  const priced = candidates.map(price);
+  const feasible = priced.filter((p) => p.evaluation.allowed);
+  const rejected = priced.filter((p) => !p.evaluation.allowed);
+  const { kept, pruned } = dominancePrune(feasible);
+  const ranked = [...kept].sort(compareCost);
 
-  // Every rejection, named. A decision that cannot say what it refused and why
-  // is one nobody can argue with — the same reason `DecisionReceipt` carries
-  // its alternatives.
-  const rejectionCodes = rejected.slice(0, MAX_RECORDED_REJECTIONS).flatMap((r) =>
-    r.evaluation.reasonCodes
-      .filter((code) => code.endsWith('_floor') || code.endsWith('_stop')
-        || code.endsWith('_violation') || code.endsWith('_budget') || code.endsWith('_approval'))
-      .map((code) => `rejected:${r.candidate.id}:${code}`));
+  const rejectionCodes = rejected.slice(0, MAX_RECORDED_REJECTIONS).flatMap((p) =>
+    p.evaluation.reasonCodes
+      .filter(isConstraintCode)
+      .map((code) => `rejected:${p.candidate.id}:${code}`));
 
-  // Ranked once, so the tie-break tests below read the same order the winner
-  // came from.
-  const ranked = [...allowed].sort(compareRanked);
+  const decide = (chosen: Priced, extra: string[], blocked = false): ActionDecision => {
+    const runnerUp = ranked.find((p) => p !== chosen);
+    return {
+      decisionId: input.decisionId ?? `dec-${randomUUID()}`,
+      stateVersion: state.version,
+      action: chosen.candidate,
+      // What this is expected to save over carrying on as we are. Positive
+      // means an intervention the numbers justify.
+      utility: chosen.evaluation.advantageUsd,
+      reasonCodes: [
+        ...chosen.evaluation.reasonCodes, ...extra,
+        // Which confidence was weak, so a receipt can say what to fix.
+        ...(isNullAction(chosen.candidate) ? [] : assessDecisionTrust({ state, action: chosen.candidate }).reasonCodes),
+        ...(state.constraints.hardStop && !chosen.evaluation.reasonCodes.includes('hard_stop') ? ['hard_stop'] : []),
+        ...rejectionCodes,
+      ],
+      // The orchestrator's confidence in its own reading caps every decision
+      // it makes: doubt reduces pressure.
+      confidence: Math.min(chosen.evaluation.estimate.confidence, chosen.candidate.confidence,
+        isNullAction(chosen.candidate) ? 1 : state.trajectory.orchestrationConfidence),
+      estimate: chosen.evaluation.estimate,
+      expectedCostUsd: chosen.evaluation.expectedCostUsd,
+      conservativeCostUsd: chosen.evaluation.conservativeCostUsd,
+      successLowerBound: chosen.evaluation.successLowerBound,
+      margin: runnerUp ? marginBetween(chosen.evaluation, runnerUp.evaluation) : null,
+      ranked: ranked.slice(0, MAX_RETAINED_CANDIDATES).map(summary),
+      rejected: rejected.slice(0, MAX_RECORDED_REJECTIONS).map((p) => ({
+        id: p.candidate.id, reasonCodes: p.evaluation.reasonCodes,
+      })),
+      pruned: pruned.map((p) => p.candidate.id),
+      blocked,
+      overhead: {
+        candidateCount: candidates.length,
+        estimatorCalls: stats.estimatorCalls,
+        cacheHits: stats.cacheHits,
+        cacheMisses: stats.cacheMisses,
+        latencyMs: Math.max(0, now() - startedMs),
+      },
+    };
+  };
+
   const best = ranked[0];
-
-  const decide = (
-    candidate: ActionCandidate,
-    evaluation: UtilityEvaluation,
-    extra: string[],
-  ): ActionDecision => ({
-    decisionId: input.decisionId ?? randomDecisionId(),
-    stateVersion: state.version,
-    action: candidate,
-    utility: evaluation.score,
-    reasonCodes: [
-      ...evaluation.reasonCodes, ...extra,
-      // A decision made while the state carries a hard stop says so on its own
-      // face, even when the action it chose was the one the stop permits. The
-      // alternative is a receipt reading `positive_utility` on a run that was
-      // already over.
-      ...(state.constraints.hardStop ? ['hard_stop'] : []),
-      ...rejectionCodes,
-    ],
-    // The orchestrator's confidence in its own reading is a ceiling on every
-    // decision it makes. An uncertain orchestrator intervening harder is the
-    // failure mode this whole layer exists to avoid, and a cap is the cheapest
-    // possible expression of "doubt reduces pressure".
-    confidence: Math.min(candidate.confidence, state.trajectory.orchestrationConfidence),
-  });
-
-  if (best && best.score > 0) {
-    const extra = ['chosen_by_utility'];
+  if (best) {
+    const extra = [isNullAction(best.candidate) && best.candidate.capability === 'agent.continue'
+      ? 'no_justified_opportunity'
+      : 'chosen_by_cost_to_go'];
     const runnerUp = ranked[1];
-    if (runnerUp && Math.abs(runnerUp.score - best.score) <= TIE_EPSILON) {
-      extra.push(best.candidate.confidence === runnerUp.candidate.confidence
-        ? 'tie_broken_on_id'
-        : 'tie_broken_on_confidence');
+    if (runnerUp && Math.abs(runnerUp.evaluation.conservativeCostUsd - best.evaluation.conservativeCostUsd) <= TIE_EPSILON
+      && Math.abs(runnerUp.evaluation.expectedCostUsd - best.evaluation.expectedCostUsd) <= TIE_EPSILON) {
+      extra.push(best.candidate.confidence === runnerUp.candidate.confidence ? 'tie_broken_on_id' : 'tie_broken_on_confidence');
     }
-    return decide(best.candidate, best.evaluation, [...extra, ...best.trust.reasonCodes]);
+    return decide(best, extra);
   }
 
-  // Nothing was worth doing. The default is to let the agent get on with it —
-  // and `continue` is put through the same pricing rather than assumed legal,
-  // because a hard stop must be able to forbid it.
-  const suppliedContinue = allowed.find((r) => r.candidate.kind === 'continue');
-  const fallback = suppliedContinue ?? price(continueAction());
-  if (fallback.evaluation.allowed) {
-    return decide(fallback.candidate, fallback.evaluation, ['no_justified_opportunity']);
-  }
-
-  // Continuing is not permitted. Only now is stopping the answer — and stopping
-  // because continuing is invalid is a different fact from stopping because a
-  // score said so, so it says which.
+  // Nothing is feasible. Stopping is terminal and is only the answer because
+  // nothing else is permitted — which is a different fact from stopping
+  // because it was cheapest, so the receipt says which.
   const stop = price(stopAction());
-  return decide(stop.candidate, stop.evaluation, ['continuation_not_permitted']);
+  // Under a hard stop, stopping is the one permitted action — a real answer,
+  // not a blocked market.
+  return stop.evaluation.allowed
+    ? decide(stop, ['continuation_not_permitted'])
+    : decide(stop, ['continuation_not_permitted', 'blocked:no_feasible_action'], true);
 }
 
-function compareRanked(a: Ranked, b: Ranked): number {
-  // Trust-adjusted, so that as confidence falls the *expensive* options become
-  // uncompetitive first. An orchestrator that intervenes harder when it knows
-  // less is the failure this ordering exists to prevent.
-  const byUtility = b.score - a.score;
-  if (Math.abs(byUtility) > TIE_EPSILON) return byUtility;
+function estimateFor(
+  candidate: ActionCandidate,
+  state: EconomicState,
+  input: EconomicDecisionInput,
+  stats: FunnelStats,
+): ActionTransitionEstimate {
+  const provided = input.estimates?.[candidate.id];
+  return estimateTransition(candidate, state, input.estimation ?? {}, {
+    deterministic: (c, s) => deterministicEstimate(c, s) ?? provided ?? null,
+    signals: signalEstimate,
+  }, stats);
+}
+
+/** Drops every candidate another beats on expected cost, conservative cost and
+ *  success bound at once. Cheap, and it keeps an expensive semantic refinement
+ *  from being spent separating two options neither of which can win. */
+function dominancePrune(feasible: Priced[]): { kept: Priced[]; pruned: Priced[] } {
+  const kept: Priced[] = [];
+  const pruned: Priced[] = [];
+  for (const a of feasible) {
+    const dominated = feasible.some((b) => b !== a
+      && b.evaluation.expectedCostUsd <= a.evaluation.expectedCostUsd
+      && b.evaluation.conservativeCostUsd <= a.evaluation.conservativeCostUsd
+      && b.evaluation.successLowerBound >= a.evaluation.successLowerBound
+      && (b.evaluation.expectedCostUsd < a.evaluation.expectedCostUsd - TIE_EPSILON
+        || b.evaluation.conservativeCostUsd < a.evaluation.conservativeCostUsd - TIE_EPSILON
+        || b.evaluation.successLowerBound > a.evaluation.successLowerBound + TIE_EPSILON));
+    (dominated ? pruned : kept).push(a);
+  }
+  return { kept, pruned };
+}
+
+function compareCost(a: Priced, b: Priced): number {
+  const byConservative = a.evaluation.conservativeCostUsd - b.evaluation.conservativeCostUsd;
+  if (Math.abs(byConservative) > TIE_EPSILON) return byConservative;
+  const byExpected = a.evaluation.expectedCostUsd - b.evaluation.expectedCostUsd;
+  if (Math.abs(byExpected) > TIE_EPSILON) return byExpected;
   const byConfidence = b.candidate.confidence - a.candidate.confidence;
   if (Math.abs(byConfidence) > TIE_EPSILON) return byConfidence;
   // The last tie-break is the candidate's own stable id, never its kind and
-  // never anything read off the goal: two runs over the same state must choose
-  // the same action, and "whichever the producer listed first" is not that.
+  // never anything read off the goal.
   return a.candidate.id < b.candidate.id ? -1 : a.candidate.id > b.candidate.id ? 1 : 0;
 }
 
-function randomDecisionId(): string {
-  return `dec-${randomUUID()}`;
+export interface DecisionMargin {
+  /** Q₂ − Q₁ on the conservative cost the market ranks on, in dollars. */
+  absoluteUsd: number;
+  /** The same, relative to the winner's cost. Small means a near coin toss. */
+  relative: number;
+}
+
+function marginBetween(best: ActionEvaluation, second: ActionEvaluation): DecisionMargin {
+  const absoluteUsd = Math.max(0, second.conservativeCostUsd - best.conservativeCostUsd);
+  return { absoluteUsd, relative: absoluteUsd / Math.max(Math.abs(best.conservativeCostUsd), 1e-9) };
+}
+
+function summary(p: Priced): NonNullable<ActionDecision['ranked']>[number] {
+  return {
+    id: p.candidate.id,
+    fingerprint: candidateFingerprint(p.candidate),
+    expectedCostUsd: p.evaluation.expectedCostUsd,
+    conservativeCostUsd: p.evaluation.conservativeCostUsd,
+    successLowerBound: p.evaluation.successLowerBound,
+    provenance: p.evaluation.estimate.provenance,
+  };
 }
 
 // ---------------------------------------------------------------------------
-// The execution chokepoint
+// Delegation: a candidate provider feeding the same market
 // ---------------------------------------------------------------------------
 
-/** Whether to do the work or split it, authorized by the Action Market rather
- *  than by `decideExecution` alone.
- *
- *  This is the gap the architecture audit left open, and it is the one that
- *  mattered: delegation is the single most expensive thing the runtime can do,
- *  and it was the one expensive action that never passed through the common
- *  ranking. `decideExecution` scored delegation against its own threshold and
- *  the lifecycle acted on that score directly, so a fan-out could be authorized
- *  on a run that the economic state already knew was out of budget, out of
- *  quality headroom, or under a hard stop — because none of those facts were in
- *  the arithmetic that decided it.
- *
- *  What this does **not** do is re-decide delegation. `decideExecution` remains
- *  the estimate source and its verdict is honoured: if it says the goal does not
- *  come apart, no delegate candidate is offered at all. What the market adds is
- *  the veto — the budget, reserve, quality-floor and hard-stop checks every
- *  other expensive action already passed through.
- *
- *  Three gates run before the economics and cannot be bought past, because they
- *  are authority rather than value:
- *
- *   - no spawn authority, or no agent allowance — the node may not grow an
- *     organization however good the economics look;
- *   - not enough budget to fund a child *and* this node's own planning and
- *     synthesis — which is an escalation to a person, not a cheaper plan;
- *   - `decideExecution` having already concluded the goal is one unit of work.
- *
- *  Only when delegation is genuinely on the table do two candidates go to the
- *  market, and they are deliberately expressed in the same unit so they are
- *  comparable:
- *
- *   - **self** — doing k pieces of work one after another in this node's own
- *     sandbox: k dispatches of tokens, k dispatches of wall clock.
- *   - **delegate** — plan, k concurrent children, synthesize: k+2 dispatches of
- *     tokens, 3 of wall clock.
- *
- *  So delegation always costs two extra dispatches in tokens and buys k-3
- *  dispatches of wall clock. That is the real trade and the reason a two-way
- *  split almost never pays: it costs four dispatches to save nothing. The
- *  utility weights, the recovery reserve and the quality floor decide the rest,
- *  in the same arithmetic that decides everything else. */
+export interface DelegationHistory {
+  /** Validated-success rate of doing tasks of this shape directly. */
+  direct?: { success: number; observations: number };
+  /** Validated-success rate of delegating them. */
+  delegated?: { success: number; observations: number };
+}
+
 export interface ExecutionAuthorizationInput {
   state: EconomicState;
-  /** The estimate source. Its verdict gates whether a delegate candidate is
-   *  offered; it does not authorize one. */
+  /** The delegation economics, as an estimate source. Its breakdown prices the
+   *  delegate candidate; its verdict no longer decides anything. */
   economics: DecideExecutionResult;
-  /** One dispatch, as a unit of account. Both candidates are multiples of it,
-   *  so the comparison does not depend on it being a good forecast — only on it
-   *  being the same for both. */
+  /** One dispatch, as a unit of account both candidates are priced in. */
   dispatch: DispatchEstimate;
-  /** How many children a fan-out would actually create. */
   plannedChildCount: number;
-  weights?: UtilityWeights;
+  coordinationTokens?: number;
+  history?: DelegationHistory;
 }
 
 export interface ExecutionAuthorization {
   outcome: DecisionOutcome;
-  /** The market's receipt. Null when a hard gate decided, because a gate is not
-   *  a ranking and presenting one as a ranking would invent a comparison
-   *  nobody made. */
+  /** The market's decision. Null when an authority gate decided, because a
+   *  gate is not a ranking. */
   decision: ActionDecision | null;
-  /** Which gate fired, when one did. */
   gate?: string;
 }
 
-/** Candidates for the delegate-vs-self choice, priced at the margin.
+/** What a planning or synthesis dispatch costs relative to an execute one.
+ *  Both are bounded outputs — a JSON plan, a merged report — and measure at
+ *  about an eighth of an open-ended execute dispatch (execution-market.ts's
+ *  role defaults). Used only when the caller has no measurement of its own. */
+const NARROW_DISPATCH_SHARE = 0.125;
+
+/** Self vs delegate, priced at the margin.
  *
- *  **Marginal, not absolute**, and that is the whole of the design. Every other
- *  candidate in this runtime is an increment — read this file, run that test,
- *  retry differently — and `utility.ts` prices `tokenCost` against what is left
- *  to spend. Handing it the absolute cost of a whole task makes both options
- *  score as though they would consume the budget, which rejects the expensive
- *  one on `insufficient_budget` and drives the cheap one negative. The
- *  comparison then never happens: the market falls through to its `continue`
- *  fallback and delegation becomes unreachable at every width.
+ *  Self-execution is the null option — it is what happens if nobody decides
+ *  anything — and carries no extra cost, only the risk the delegation
+ *  economics assign to one agent attempting the whole goal. Delegation carries
+ *  only what splitting *adds*: the planning and synthesis dispatches. The wall
+ *  clock it saves is carried too, and binds only when the task has a latency
+ *  budget.
  *
- *  So self-execution is the **null option** and carries no cost at all — it is
- *  the thing that happens if nobody decides anything — and delegation carries
- *  only what splitting *adds*:
- *
- *   - it pays for the planning and synthesis dispatches, which exist only
- *     because the work was split;
- *   - it buys the wall clock of all but the longest child, net of those two
- *     extra runs;
- *   - it risks a child coming back with the wrong thing.
- *
- *  This is deliberately the same shape `execution/workstreams.ts` already uses
- *  for `parallelize` against `serialize`, and for the same reason: a scheduler
- *  that only ever proposes the fast option has not made a decision.
- *
- *  Exported so a benchmark can price the same choice offline from a recorded
- *  state without starting a runtime. */
+ *  Exported so a benchmark can price the choice offline from a recorded state. */
 export function executionCandidates(input: {
   economics: DecideExecutionResult;
   dispatch: DispatchEstimate;
   plannedChildCount: number;
+  /** Measured tokens of the planning plus synthesis dispatches splitting adds.
+   *  Absent, two narrow dispatches priced from `dispatch`. */
+  coordinationTokens?: number;
+  /** What history says about tasks of this shape: how often doing them
+   *  directly, and how often delegating them, came back validated. Blended in
+   *  by how much evidence there is, so it overrides the economics' own
+   *  estimate exactly as fast as it earns the right to. */
+  history?: DelegationHistory;
 }): ActionCandidate[] {
   const children = Math.max(1, Math.floor(input.plannedChildCount));
   const breakdown = input.economics.breakdown;
   const score = breakdown.score ?? 0;
-  const threshold = breakdown.threshold ?? 0;
-
-  // What splitting adds, and nothing that both options pay. The k children's
-  // own dispatches are excluded on purpose: doing those k pieces of work is the
-  // task, and this node pays for them whether it does them itself or hands them
-  // out.
   const extraDispatches = 2;
-  const coordinationTokens = Math.max(0, input.dispatch.tokens) * extraDispatches;
-  // Serial k dispatches against plan + one child + synthesis. Negative for a
-  // narrow split, which is the honest answer: a two-way split costs two extra
-  // runs to save nothing.
+  const coordinationTokens = Math.max(0, input.coordinationTokens
+    ?? input.dispatch.tokens * NARROW_DISPATCH_SHARE * extraDispatches);
   const latencySaved = Math.max(0, input.dispatch.latencyMs) * (children - (extraDispatches + 1));
+
+  // The delegation economics' net value, read as what it measures: a goal too
+  // broad for one agent is likelier to fail in one agent's hands. So it is the
+  // *self* candidate's failure risk — a retry the fan-out avoids. The net
+  // score, not its distance from the old threshold: that threshold was a
+  // safety margin for a rule, and the market carries its own doubt in its
+  // bounds. The score already has the risk of a child coming back wrong
+  // (`riskPenalty`) subtracted, so the delegate carries none of its own on
+  // top. A goal whose net value is nothing leaves self risk-free and the
+  // fan-out as pure coordination cost: dominated.
+  const economicsRisk = clamp01(score);
+  const learned = (prior: number, observed?: { success: number; observations: number }) => {
+    if (!observed || observed.observations <= 0) return prior;
+    const w = observed.observations / (observed.observations + SHRINKAGE_K);
+    return clamp01(prior * (1 - w) + (1 - observed.success) * w);
+  };
+  const margin = learned(economicsRisk, input.history?.direct);
+  const delegatedRisk = learned(0, input.history?.delegated);
 
   const self = actionCandidate({
     id: 'execution:self',
-    // Not a new verb. Doing the work in this node's own sandbox *is* the
-    // healthy default the vocabulary already calls `continue`.
     kind: 'continue',
     capability: 'execution.self',
-    // The null option, and it spends nothing extra: doing the work here is what
-    // happens if nobody authorizes anything else.
+    failureRisk: margin,
     confidence: 1,
+    // What doing k pieces serially costs in wall clock, so a latency budget
+    // can rule self-execution out.
+    latencyCost: Math.max(0, input.dispatch.latencyMs) * children,
     metadata: { children, source: 'decide-execution' },
   });
 
@@ -604,30 +414,11 @@ export function executionCandidates(input: {
     id: 'execution:delegate',
     kind: 'parallelize',
     capability: 'execution.delegate',
-    // Coordination *is* the token cost here — a planner and a synthesizer are
-    // dispatches nobody would buy if the work were not being split. Stated
-    // once, as coordination: `utility.ts` sums `tokenCost + coordinationCost`,
-    // so setting both would charge the same two dispatches twice.
     coordinationCost: coordinationTokens,
-    latencyCost: latencySaved < 0 ? -latencySaved : 0,
+    latencyCost: Math.max(0, input.dispatch.latencyMs) * (extraDispatches + 1),
     expectedLatencyBenefit: Math.max(0, latencySaved),
-    // The existing economics' own margin, carried as a *quality* benefit
-    // because that is what it measures and because that is the term the
-    // arithmetic reads. `decideExecution`'s `estimatedValue` is the value of
-    // handing work to a child, and its whole content is that a goal too broad
-    // for one agent is likelier to come back complete if it is split.
-    //
-    // Deliberately not `expectedProgress`: nothing in `utility.ts` scores that
-    // field, so the economics' verdict would have been computed, recorded and
-    // then silently ignored — the quietest possible way for a decision layer
-    // to stop working.
-    expectedQualityBenefit: clamp01(score - threshold),
-    // A child can come back with the wrong thing, and the more of them there
-    // are the likelier that is. `riskPenalty` is the existing model's own word
-    // for the same fact on a complex goal.
-    failureRisk: clamp01((children - 1) * 0.1 + (breakdown.riskPenalty ?? 0)),
-    qualityRisk: clamp01(breakdown.riskPenalty ?? 0),
-    confidence: clamp01(0.5 + Math.abs(score - threshold)),
+    failureRisk: delegatedRisk,
+    confidence: clamp01(0.5 + Math.abs(margin - delegatedRisk)),
     metadata: {
       children, source: 'decide-execution',
       estimate: delegationEstimate(input.dispatch, children),
@@ -637,68 +428,83 @@ export function executionCandidates(input: {
   return [self, delegate];
 }
 
-export function authorizeExecution(input: ExecutionAuthorizationInput): ExecutionAuthorization {
-  const { economics } = input;
-  const breakdown = economics.breakdown;
-
-  // Authority, not value. Each of these is a rule the node is subject to, and a
-  // score that could move one is not a boundary.
-  if (economics.outcome === 'ESCALATE') {
-    return { outcome: 'ESCALATE', decision: null, gate: 'budget-floor' };
-  }
-  if (breakdown.reason_no_spawn_authority) {
-    return { outcome: 'SELF_EXECUTE', decision: null, gate: 'no-spawn-authority' };
-  }
-  if (breakdown.reason_no_agent_allowance) {
-    return { outcome: 'SELF_EXECUTE', decision: null, gate: 'no-agent-allowance' };
-  }
-  if (breakdown.reason_single_unit_of_work) {
-    return { outcome: 'SELF_EXECUTE', decision: null, gate: 'single-unit-of-work' };
-  }
-  // The estimate source says the goal does not come apart well enough to be
-  // worth offering. Honoured rather than re-litigated: the market's job is to
-  // veto an expensive action, not to propose one its own estimator rejected.
-  if (economics.outcome !== 'DELEGATE') {
-    return { outcome: 'SELF_EXECUTE', decision: null, gate: 'economics-declined' };
-  }
-
-  const candidates = executionCandidates(input);
-  const delegate = candidates.find((candidate) => candidate.kind === 'parallelize')!;
-
-  // The market **vetoes**; it does not re-decide. That distinction is the whole
-  // contract, and getting it wrong in the other direction was tempting: a
-  // ranking here would be a second delegation economics competing with
-  // `decideExecution`'s, and the two would drift — which is precisely what the
-  // architecture forbids.
-  //
-  // So `decideExecution` remains the only thing that decides *whether splitting
-  // is worthwhile*, and what the market adds is the set of checks it never
-  // had: is this affordable, does it survive the recovery reserve, does it
-  // clear the quality floor, is the run under a hard stop, does it need an
-  // approval. Those are exactly `evaluateActionUtility`'s hard constraints, and
-  // they are the reason a fan-out could previously start on a run the economic
-  // state already knew was over.
-  const veto = evaluateActionUtility(delegate, input.state, input.weights);
-
-  // Ranked anyway, and recorded. The comparison is not authoritative yet — a
-  // benchmark needs to show that the market's ordering beats `decideExecution`'s
-  // threshold before anything is allowed to act on it — but a receipt nobody
-  // can attribute a regression with is a receipt that was not worth writing.
-  const decision = chooseEconomicAction({
-    state: input.state,
-    candidates,
-    weights: input.weights,
-  });
-
-  if (!veto.allowed) {
-    return {
-      outcome: 'SELF_EXECUTE',
-      decision,
-      gate: veto.reasonCodes.find((code) =>
-        code === 'hard_stop' || code === 'safety_violation' || code === 'requires_approval'
-        || code === 'quality_floor' || code === 'insufficient_budget') ?? 'vetoed',
+/** The delegation provider's transition estimates for self and delegate.
+ *
+ *  A failed attempt at the whole goal is not a nudge towards a retry — it *is*
+ *  the retry: the remaining work, done again. So self-execution is priced as
+ *  V(s) plus its failure risk times the remaining work, and delegation as V(s)
+ *  plus the coordination it adds. The fan-out wins exactly when the retry it
+ *  avoids is worth more than the planner and synthesizer it buys. */
+export function delegationEstimates(
+  state: EconomicState,
+  candidates: ActionCandidate[],
+): Record<string, ActionTransitionEstimate> {
+  const price = usdPerToken(state);
+  const value = stateValue(state).tokens;
+  const redo = remainingWorkTokens(state);
+  // The same uncertainty loading the market puts on carrying on, so both
+  // candidates carry the same band on the part of the cost they share.
+  const carryOn = signalEstimate(continueAction(), state);
+  const loading = carryOn.expectedRemainingCost.usd > 0
+    ? carryOn.bounds.costUpperBoundUsd / carryOn.expectedRemainingCost.usd
+    : 1;
+  const worstFailure = Math.max(0, ...candidates.map((c) => c.failureRisk));
+  const out: Record<string, ActionTransitionEstimate> = {};
+  for (const candidate of candidates) {
+    const immediate = candidate.tokenCost + candidate.coordinationCost;
+    const failure = candidate.failureRisk;
+    const remaining = value + failure * redo;
+    // Doubt about the retry this avoids, against the riskiest alternative: a
+    // delegate the estimator was unsure of is believed to save only as much as
+    // its confidence allows.
+    const claimed = Math.max(0, (worstFailure - failure) * redo);
+    out[candidate.id] = {
+      actionId: candidate.id,
+      immediateCost: { tokens: immediate, usd: immediate * price, latencyMs: candidate.latencyCost },
+      outcomes: [
+        { probability: 1 - failure, completed: false, succeeded: true, nextStateDelta: {} },
+        ...(failure > 0 ? [{ probability: failure, completed: false, succeeded: false, nextStateDelta: { failurePressure: 0.25 } }] : []),
+      ],
+      expectedRemainingCost: { tokens: remaining, usd: remaining * price, latencyMs: 0 },
+      bounds: {
+        successLowerBound: 1,
+        costUpperBoundUsd: (immediate + value * loading + failure * redo + (1 - candidate.confidence) * claimed) * price,
+      },
+      confidence: candidate.confidence,
+      provenance: 'hybrid',
+      evidenceIds: [],
     };
   }
+  return out;
+}
 
-  return { outcome: 'DELEGATE', decision };
+/** Whether to do the work or split it — decided by the market.
+ *
+ *  Authority gates run first and cannot be bought past: no spawn authority, no
+ *  agent allowance, not enough budget to fund a child and this node's own
+ *  planning (an escalation to a person), or a goal that is one unit of work.
+ *  Everything past them is a cost-to-go comparison between the two candidates
+ *  `executionCandidates` builds — the delegation economics estimate, the
+ *  market chooses. */
+export function authorizeExecution(input: ExecutionAuthorizationInput): ExecutionAuthorization {
+  const breakdown = input.economics.breakdown;
+
+  if (input.economics.outcome === 'ESCALATE') return { outcome: 'ESCALATE', decision: null, gate: 'budget-floor' };
+  if (breakdown.reason_no_spawn_authority) return { outcome: 'SELF_EXECUTE', decision: null, gate: 'no-spawn-authority' };
+  if (breakdown.reason_no_agent_allowance) return { outcome: 'SELF_EXECUTE', decision: null, gate: 'no-agent-allowance' };
+  if (breakdown.reason_single_unit_of_work) return { outcome: 'SELF_EXECUTE', decision: null, gate: 'single-unit-of-work' };
+
+  const candidates = executionCandidates(input);
+  const decision = chooseEconomicAction({
+    state: input.state, candidates, estimates: delegationEstimates(input.state, candidates),
+  });
+  if (decision.action.id === 'execution:delegate') return { outcome: 'DELEGATE', decision };
+
+  const delegateRejection = decision.rejected?.find((r) => r.id === 'execution:delegate');
+  return {
+    outcome: 'SELF_EXECUTE',
+    decision,
+    gate: delegateRejection?.reasonCodes.find(isConstraintCode)
+      ?? (decision.pruned?.includes('execution:delegate') ? 'dominated' : 'costlier'),
+  };
 }

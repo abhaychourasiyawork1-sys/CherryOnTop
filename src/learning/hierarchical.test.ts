@@ -1,8 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   estimateStrategyPrior, observationFrom, outcomeKindOf, levelWeight, SHRINKAGE_K,
-  type StrategyOutcomeObservation,
-} from './hierarchical.js';
+  type StrategyOutcomeObservation, estimateCandidateOutcome, type CandidateOutcomeObservation } from './hierarchical.js';
 import { policyVersion } from '../efficiency/policy-version.js';
 
 function observation(over: Partial<StrategyOutcomeObservation> = {}): StrategyOutcomeObservation {
@@ -160,5 +159,60 @@ describe('outcomeKindOf', () => {
     expect(outcomeKindOf({ success: true, recoveryCount: 0 })).toBe('SUCCESS');
     expect(outcomeKindOf({ success: true, recoveryCount: 1 })).toBe('SUCCESS_WITH_RECOVERY');
     expect(outcomeKindOf({ success: false, recoveryCount: 3 })).toBe('FAILURE');
+  });
+});
+
+describe('candidate × task × state evidence', () => {
+  const obs = (over: Partial<CandidateOutcomeObservation> = {}): CandidateOutcomeObservation => ({
+    candidateId: 'execute|claude-code|default|default|f',
+    task: [{ level: 'GLOBAL', value: 'all' }, { level: 'TASK_SHAPE', value: 'bugfix:low' }],
+    stateSignature: 'u3333p0f0b3',
+    predicted: { costUsd: 0.1, latencyMs: 1, successProbability: 0.8, progress: 1 },
+    actual: { costUsd: 0.3, latencyMs: 2, succeeded: true, validated: true, progress: 1, tokens: 1_000 },
+    recoveryCount: 0, validationLevel: 'V2', validity: 'VALID', ...over,
+  });
+
+  it('shrinks a narrow level towards the broad one as its evidence accumulates', () => {
+    const thin = estimateCandidateOutcome({
+      candidateId: obs().candidateId,
+      byLevel: {
+        GLOBAL: Array.from({ length: 20 }, () => obs()),
+        TASK_SHAPE: [obs({ actual: { ...obs().actual, succeeded: false, validated: false } })],
+      },
+    });
+    expect(thin.success).toBeGreaterThan(0.8);
+    expect(thin.sourceLevels.map((k) => k.level)).toEqual(['GLOBAL', 'TASK_SHAPE']);
+  });
+
+  it('measures quality risk only among dispatches that finished', () => {
+    const e = estimateCandidateOutcome({
+      candidateId: obs().candidateId,
+      byLevel: { GLOBAL: [obs(), obs({ actual: { ...obs().actual, validated: false } }), obs({ actual: { ...obs().actual, succeeded: false, validated: false } })] },
+    });
+    expect(e.qualityRisk).toBeCloseTo(0.5);
+    expect(e.success).toBeCloseTo(2 / 3);
+  });
+
+  it('carries the cost bias forward so an under-priced candidate is priced up', () => {
+    const e = estimateCandidateOutcome({ candidateId: obs().candidateId, byLevel: { GLOBAL: [obs(), obs()] } });
+    expect(e.costBiasUsd).toBeCloseTo(0.2);
+  });
+
+  it('excludes invalid observations, and counts them rather than dropping them', () => {
+    const e = estimateCandidateOutcome({
+      candidateId: obs().candidateId,
+      byLevel: { GLOBAL: [obs(), obs({ validity: 'INVALID_TELEMETRY', actual: { ...obs().actual, costUsd: 999 } }), obs({ validity: 'ABORTED' })] },
+    });
+    expect(e.census).toEqual({ total: 3, used: 1, excluded: { INVALID_TELEMETRY: 1, ABORTED: 1 } });
+    expect(e.costUsd).toBeCloseTo(0.3);
+  });
+
+  it('never pools evidence across different candidates', () => {
+    const e = estimateCandidateOutcome({
+      candidateId: obs().candidateId,
+      byLevel: { GLOBAL: [obs({ candidateId: 'execute|codex|default|default|g' })] },
+    });
+    expect(e.effectiveObservations).toBe(0);
+    expect(e.census.excluded.OTHER_CANDIDATE).toBe(1);
   });
 });

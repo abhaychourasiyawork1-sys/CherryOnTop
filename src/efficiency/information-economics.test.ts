@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import { reworkCostTokens } from '../decision/utility.js';
 import {
   evaluateInformationOpportunity, DEFAULT_DISCOVERY_MODEL, type DiscoveryModel,
 } from './information-economics.js';
@@ -101,15 +102,14 @@ describe('quality-risk reduction is real value, not a tiebreak', () => {
     expect(evaluateInformationOpportunity({ candidate: coveringTest(), state: doubtful }).expectedQualityRiskReduction).toBeGreaterThan(0);
   });
 
-  it('prices a unit of quality at a budget of tokens, as 2:2:1 says it should', () => {
+  it('prices a unit of quality at the rework it avoids — the market’s own exchange rate', () => {
     const s = state();
     const e = evaluateInformationOpportunity({ candidate: coveringTest(), state: s });
-    // Net value minus the token terms must be the quality term, and the
-    // exchange rate must be the objective's own: tokens and quality weigh the
-    // same, so one unit of quality is one whole budget.
-    const latencyInTokens = (e.expectedLatencyReduction / 600_000) * 0.5 * 100_000;
-    const qualityInTokens = e.expectedNetValue - e.expectedRediscoveryCost - latencyInTokens + e.acquisitionCost;
-    expect(qualityInTokens).toBeCloseTo(e.expectedQualityRiskReduction * 100_000, 4);
+    // Net value minus the token terms must be the quality term, priced exactly
+    // as the Action Market prices it; latency is a constraint, not bought with
+    // tokens.
+    const qualityInTokens = e.expectedNetValue - e.expectedRediscoveryCost + e.acquisitionCost;
+    expect(qualityInTokens).toBeCloseTo(e.expectedQualityRiskReduction * reworkCostTokens(s), 4);
   });
 
   it('is never negative — evidence does not make a result more likely to be wrong', () => {

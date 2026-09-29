@@ -126,43 +126,18 @@ describe('dispatchContextFor', () => {
 });
 
 describe('dispatchContextFor — modes, stability and failing upward', () => {
-  it('applies the selection when enabled', () => {
-    const db = createDb(DB);
-    const dir = tmpRepo();
-    process.env.ORG_REPO_MAP_TOKENS = '6000';
-    process.env.ORG_EFFICIENCY_MODE = 'enabled';
+  it('always applies the selection — the retired switch changes nothing', () => {
+    for (const mode of ['enabled', 'shadow', 'disabled']) {
+      const db = createDb(DB);
+      const dir = tmpRepo();
+      process.env.ORG_REPO_MAP_TOKENS = '6000';
+      process.env.ORG_EFFICIENCY_MODE = mode;
 
-    const context = dispatchContextFor(db, dir, 'fix the session refresh bug')!;
-    expect(context.receipt.applied).toBe(true);
-    expect(context.receipt.selected).toContain('src/auth/session.ts');
-    expect(context.receipt.dropped.length).toBeGreaterThan(0);
-  });
-
-  it('computes the receipt but dispatches the full map under Baseline', () => {
-    const db = createDb(DB);
-    const dir = tmpRepo();
-    process.env.ORG_REPO_MAP_TOKENS = '6000';
-    // 'shadow' is a retired alias that resolves to Baseline; asserting on it
-    // here is what stops the alias from quietly changing meaning.
-    process.env.ORG_EFFICIENCY_MODE = 'shadow';
-
-    const context = dispatchContextFor(db, dir, 'fix the session refresh bug')!;
-    // The receipt says what it *would* have dropped — the whole point of a
-    // shadow — while the content handed over is still the unselected map.
-    expect(context.receipt.applied).toBe(false);
-    expect(context.receipt.dropped.length).toBeGreaterThan(0);
-    expect(context.content).toContain('src/cart/discount.ts');
-  });
-
-  it('dispatches the full map when disabled, with the receipt still recorded', () => {
-    const db = createDb(DB);
-    const dir = tmpRepo();
-    process.env.ORG_REPO_MAP_TOKENS = '6000';
-    process.env.ORG_EFFICIENCY_MODE = 'disabled';
-
-    const context = dispatchContextFor(db, dir, 'fix the session refresh bug')!;
-    expect(context.receipt.applied).toBe(false);
-    expect(context.content).toContain('src/cart/discount.ts');
+      const context = dispatchContextFor(db, dir, 'fix the session refresh bug')!;
+      expect(context.receipt.applied, mode).toBe(true);
+      expect(context.receipt.selected, mode).toContain('src/auth/session.ts');
+      expect(context.receipt.dropped.length, mode).toBeGreaterThan(0);
+    }
   });
 
   it('gives the same bytes for the same goal, commit and policy', () => {

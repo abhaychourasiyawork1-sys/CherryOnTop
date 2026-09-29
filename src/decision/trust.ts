@@ -23,7 +23,10 @@
  *  nothing. One that spends a fifth of the budget, or lowers the chance the
  *  result is correct, needs a great deal.
  *
- *  `risk = consequence × (1 - trust)` is the whole model, and its important
+ *  `risk = consequence × (1 - trust)` is the whole model. The market reads it
+ *  where it prices a claimed saving (`signalEstimate` in utility.ts): the
+ *  saving is believed only as far as `1 - risk` allows, which widens the cost
+ *  bound the market ranks on. Its important
  *  property is the one the failure above lacks: as confidence falls, risk
  *  rises, and the *expensive* interventions become ineligible first. Doubt
  *  narrows what may be done rather than widening it.
@@ -125,22 +128,4 @@ export function assessDecisionTrust(input: {
     risk,
     reasonCodes,
   };
-}
-
-/** What a utility score is worth once trust is taken into account.
- *
- *  A multiplier rather than a gate, applied where actions are *ranked* rather
- *  than inside `evaluateActionUtility`. Two reasons, and both matter:
- *
- *   - The utility model answers "what is this worth?", which is a question
- *     about the action. Trust answers "should we believe that?", which is a
- *     question about us. Mixing them makes neither answerable on its own.
- *   - A gate here would be a second hard constraint competing with the one in
- *     `fallback.ts`, and two places that can refuse an action for
- *     insufficient confidence is one place too many.
- *
- *  Discounting towards zero, never past it: distrusting a loss does not turn it
- *  into a gain. */
-export function trustAdjusted(score: number, trust: TrustAssessment): number {
-  return score * (1 - trust.risk);
 }

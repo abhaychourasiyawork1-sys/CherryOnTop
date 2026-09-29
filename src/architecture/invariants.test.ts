@@ -21,9 +21,7 @@ import { chooseEconomicAction } from '../decision/engine.js';
 import { evaluateDeepPath } from '../decision/deep-path.js';
 import { inspectFastPath } from '../decision/fast-path.js';
 import { allocateBudget } from '../decision/budget.js';
-import { evaluateFallback } from '../decision/fallback.js';
 import { evaluateHistoricalEvidence } from '../evidence/reuse.js';
-import { parseRuntimeMode } from '../config/efficiency.js';
 import { actionCandidate, ACTION_KINDS } from '../decision/actions.js';
 import { buildCandidates } from '../context/candidates.js';
 import { taskEconomicsFor } from '../efficiency/task-economics.js';
@@ -177,11 +175,11 @@ describe('no fixed task-to-budget percentages', () => {
     const opportunities = (state: typeof early) => [
       actionCandidate({
         id: 'ctx', kind: 'acquire_evidence', capability: 'context.select',
-        expectedTokenBenefit: state.uncertainty.structural * 200_000, tokenCost: 60_000, confidence: 0.9,
+        expectedTokenBenefit: state.uncertainty.structural * 40_000, tokenCost: 6_000, confidence: 0.9,
       }),
       actionCandidate({
         id: 'val', kind: 'validate', capability: 'validation.progressive',
-        expectedQualityBenefit: state.uncertainty.validation, tokenCost: 60_000, confidence: 0.9,
+        expectedQualityBenefit: state.uncertainty.validation, tokenCost: 8_000, confidence: 0.9,
       }),
     ];
 
@@ -245,35 +243,32 @@ describe('current evidence outranks historical knowledge', () => {
   });
 });
 
-describe('insufficient confidence falls back rather than intervening', () => {
-  it('refuses an expensive action the decision is not confident enough for', () => {
+describe('insufficient confidence stands down rather than intervening', () => {
+  it('does not take an expensive action on a claim it is barely confident of', () => {
     const state = novelState();
     const decision = chooseEconomicAction({
       state,
       candidates: [actionCandidate({
         id: 'dear', kind: 'recover', capability: 'recovery.retry',
-        expectedTokenBenefit: 90_000, tokenCost: 80_000, confidence: 0.2,
+        expectedTokenBenefit: 50_000, tokenCost: 40_000, confidence: 0.2,
       })],
     });
-    const fallback = evaluateFallback({ state, decision });
-    expect(fallback.mode).toBe('baseline');
+    expect(decision.action.kind).toBe('continue');
   });
 
   it('shrinks the eligible set from the top down as confidence falls', () => {
     const state = novelState();
-    const eligible = (confidence: number) => [1_000, 30_000, 80_000].filter((tokenCost) =>
-      evaluateFallback({
+    const eligible = (confidence: number) => [1_000, 10_000, 30_000].filter((tokenCost) =>
+      chooseEconomicAction({
         state,
-        decision: chooseEconomicAction({
-          state,
-          candidates: [actionCandidate({
-            id: 'a', kind: 'acquire_evidence', capability: 'evidence.read-file',
-            expectedTokenBenefit: tokenCost * 2, tokenCost, confidence,
-          })],
-        }),
-      }).mode === 'full').length;
+        candidates: [actionCandidate({
+          id: 'a', kind: 'acquire_evidence', capability: 'evidence.read-file',
+          expectedTokenBenefit: tokenCost * 1.5, tokenCost, confidence,
+        })],
+      }).action.id === 'a').length;
     expect(eligible(0.95)).toBeGreaterThanOrEqual(eligible(0.3));
     expect(eligible(0.3)).toBeGreaterThanOrEqual(eligible(0.02));
+    expect(eligible(0.95)).toBeGreaterThan(eligible(0.02));
   });
 
   it('never makes an uncertain orchestrator more willing to act', () => {
@@ -288,23 +283,29 @@ describe('insufficient confidence falls back rather than intervening', () => {
   });
 });
 
-describe('the product has exactly two runtime modes', () => {
-  it('maps every spelling anyone has used onto baseline or full', () => {
-    const modes = new Set(
-      [
-        'disabled', 'off', '0', 'false', 'baseline', 'shadow',
-        'enabled', 'full', 'canary', 'replay', 'experiment', '', undefined,
-      ].map((value) => parseRuntimeMode(value as string | undefined)),
-    );
-    expect([...modes].sort()).toEqual(['baseline', 'full']);
+describe('the product has exactly one production architecture', () => {
+  it('declares no runtime mode anywhere in configuration', () => {
+    const source = readFileSync('src/config/efficiency.ts', 'utf8');
+    expect(source).not.toMatch(/RuntimeMode|runtimeMode|ORG_EFFICIENCY_MODE/);
   });
 
-  it('declares no third mode anywhere in configuration', () => {
-    const source = readFileSync('src/config/efficiency.ts', 'utf8');
-    expect(source).toMatch(/RuntimeMode = 'baseline' \| 'full'/);
-    // Shadow and replay belong to evaluation tooling, not to what an operator
-    // can be running.
-    expect(source).not.toMatch(/export type RuntimeMode[^\n]*shadow/);
+  it('reads no mode switch anywhere in production code', () => {
+    // Routing is a permanent subsystem: no baseline/full, no shadow router, no
+    // "routing off". Benchmark arms live outside src/.
+    const offenders: string[] = [];
+    const walk = (dir: string) => {
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        const path = join(dir, entry.name);
+        if (entry.isDirectory()) walk(path);
+        else if (path.endsWith('.ts') && !path.endsWith('.test.ts')) {
+          const code = readFileSync(path, 'utf8').split('\n')
+            .filter((line) => !/^\s*(\/\/|\*|\/\*)/.test(line)).join('\n');
+          if (/ORG_EFFICIENCY_MODE|runtimeMode\(|routingEnabled|economicMode|system1Mode/.test(code)) offenders.push(path);
+        }
+      }
+    };
+    walk('src');
+    expect(offenders).toEqual([]);
   });
 
   it('keeps shadow recording unreachable from configuration', () => {
@@ -312,5 +313,40 @@ describe('the product has exactly two runtime modes', () => {
     // It exists, and nothing about it is a mode: it records a candidate
     // decision beside the real one and returns no decision at all.
     expect(shadow).not.toMatch(/runtimeMode|ORG_EFFICIENCY_MODE/);
+  });
+});
+
+describe('the market learns what candidates can do; it assumes nothing about them', () => {
+  const MARKET_FILES = [
+    'src/intelligence/difficulty.ts', 'src/intelligence/capability.ts',
+    'src/intelligence/model-router.ts', 'src/lifecycle/execution-market.ts',
+  ];
+  const code = (file: string) => readFileSync(file, 'utf8').split('\n')
+    .filter((line) => !/^\s*(\/\/|\*|\/\*)/.test(line)).join('\n').replace(/\/\*[\s\S]*?\*\//g, '');
+
+  it('never reads the goal’s wording to decide difficulty, capability or what is learned', () => {
+    const offenders = MARKET_FILES.filter((file) =>
+      /task-judge|task-economics|intelligence\/decompose|priorDifficulty|judgeTask|taskEconomicsFor/.test(code(file)));
+    expect(offenders).toEqual([]);
+  });
+
+  it('names no model, ranks nothing by price or list position, and has no effort ladder', () => {
+    const offenders: string[] = [];
+    for (const file of MARKET_FILES) {
+      for (const [index, line] of code(file).split('\n').entries()) {
+        if (/['"`](haiku|sonnet|opus|fable|mythos|gpt-?\d*)['"`]/i.test(line)
+          || /logRank|effortRank|modelRank|capabilityScore|efforts\.indexOf|models\.indexOf/.test(line)) {
+          offenders.push(`${file}:${index + 1}: ${line.trim()}`);
+        }
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  it('keeps the adapter’s order of models and efforts uninterpreted', () => {
+    // Order is a fact about how one CLI lists things. If a snapshot's list order
+    // could be read, a vendor's ordering would become the market's.
+    const router = code('src/intelligence/model-router.ts');
+    expect(router).not.toMatch(/\[\s*i\s*\]|\.at\(|\.findIndex\(|\.indexOf\(/);
   });
 });

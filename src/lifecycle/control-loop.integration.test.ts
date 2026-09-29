@@ -29,6 +29,8 @@ import { validateDelegatedOutcome } from '../validation/delegated.js';
 import { validationProfileFor } from '../validation/profile.js';
 import { judgeTask } from '../intelligence/task-judge.js';
 import { decideExecution, type DecideExecutionResult } from '../engines/decide-execution.js';
+import { authorizeExecution } from '../decision/engine.js';
+import { initialEconomicState } from '../decision/state.js';
 import type { ExecuteStepResult } from '../execution/execute-step.js';
 import type { IntelligenceBundle } from '../intelligence/coordinator.js';
 import type { ValidationResult } from '../validation/engine.js';
@@ -68,6 +70,22 @@ interface LoopOptions {
   breakStrategyGate?: boolean;
 }
 
+/** Self vs delegate the way production decides it: the delegation economics
+ *  estimate, the Action Market chooses. */
+function marketDecision(goal: string, authority: Authority, input: { complexity?: 'low' | 'medium' | 'high'; worthSplitting?: boolean; signals?: Record<string, number> }): DecideExecutionResult {
+  const economics = decideExecution({
+    goal, authority, complexity: input.complexity ?? 'low',
+    worthSplitting: input.worthSplitting, signals: input.signals,
+  });
+  const { outcome } = authorizeExecution({
+    state: initialEconomicState({ goal, totalTokenBudget: 480_000 }),
+    economics,
+    dispatch: { tokens: 480_000 / (authority.max_child_count + 2), latencyMs: 120_000, costUsd: 0 },
+    plannedChildCount: authority.max_child_count,
+  });
+  return { ...economics, outcome };
+}
+
 /** Runs one goal through the real decision modules and the real state machine,
  *  and reports what the control plane actually did. */
 async function runControlLoop(goal: string, options: LoopOptions): Promise<ControlLoopTrace> {
@@ -84,8 +102,10 @@ async function runControlLoop(goal: string, options: LoopOptions): Promise<Contr
     const preparation = prepareDispatch({
       goal, authority, toolGrant: { allowedTools: authority.tools, readOnly: false },
     });
+    const judged = judgeTask(goal);
     strategy = decideStrategy({
       preparation, spentUsd: 0,
+      outcome: marketDecision(goal, authority, judged.decomposition).outcome,
       dispatch: { tokens: 100_000, latencyMs: 120_000, costUsd: 0.5 },
       ...(options.mode === 'full' ? { classify } : {}),
     }).strategy;
@@ -106,12 +126,7 @@ async function runControlLoop(goal: string, options: LoopOptions): Promise<Contr
           signals: judged.decomposition.signals,
         };
       }),
-      decideExecution: fromPromise(async ({ input }): Promise<DecideExecutionResult> => decideExecution({
-        goal, authority,
-        complexity: input.complexity ?? 'low',
-        worthSplitting: input.worthSplitting,
-        signals: input.signals,
-      })),
+      decideExecution: fromPromise(async ({ input }): Promise<DecideExecutionResult> => marketDecision(goal, authority, input)),
       executeStep: fromPromise(async (): Promise<ExecuteStepResult> => {
         bought.push('execute');
         return { succeeded: true, message: 'done', events: [], usage: { ...ZERO_USAGE } };
@@ -343,11 +358,11 @@ describe('no strategy transition mid-flight', () => {
     });
     const first = decideStrategy({
       preparation, spentUsd: 0, dispatch: { tokens: 1, latencyMs: 1, costUsd: 1 },
-      classify: decided as never,
+      classify: decided as never, outcome: 'SELF_EXECUTE',
     });
     const second = decideStrategy({
       preparation, spentUsd: 0, dispatch: { tokens: 1, latencyMs: 1, costUsd: 1 },
-      classify: decided as never,
+      classify: decided as never, outcome: 'SELF_EXECUTE',
     });
     // Same snapshot in, same strategy out: nothing about a live sandbox can
     // change it, because nothing about a live sandbox is an input.

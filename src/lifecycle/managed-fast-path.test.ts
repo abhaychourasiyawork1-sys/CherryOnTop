@@ -19,7 +19,10 @@ import type { ValidationResult } from '../validation/engine.js';
 import { prepareDispatch } from '../decision/dispatch-preparation.js';
 import { decideStrategy, type StrategyClassifier } from '../decision/strategy-gate.js';
 import { decideExecution } from '../engines/decide-execution.js';
-import { routeModel } from '../intelligence/model-router.js';
+import { generateExecutionCandidates, executionEstimate } from '../intelligence/model-router.js';
+import { fitCapability } from '../intelligence/capability.js';
+import { chooseEconomicAction } from '../decision/engine.js';
+import { initialEconomicState } from '../decision/state.js';
 import { judgeTask } from '../intelligence/task-judge.js';
 import { isToolAllowed } from '../engines/enforce-tools.js';
 import type { Authority } from '../schemas/node-contract.js';
@@ -39,7 +42,7 @@ describe('managed fast path — the decision', () => {
     const decision = decideStrategy({
       preparation: snapshot(), spentUsd: 0,
       dispatch: { tokens: 100_000, latencyMs: 120_000, costUsd: 0.5 },
-      classify: classifier,
+      classify: classifier, outcome: 'SELF_EXECUTE',
     });
     expect(decision.strategy).toBe('MANAGED');
     expect(classifier).not.toHaveBeenCalled();
@@ -55,12 +58,28 @@ describe('managed fast path — the decision', () => {
     }).outcome).toBe('SELF_EXECUTE');
   });
 
-  it('does not downgrade the execution model merely because the task is simple', () => {
-    // The measured reason: a README fix on the fast tier took six times the
-    // turns. Simple is an economic fact about the task, not a licence to run it
-    // on a weaker model.
-    const route = routeModel({ role: 'execute', complexity: 'low', investigative: false, budgetUsd: 5, spentUsd: 0 });
-    expect(route.tier).toBe('standard');
+  it('matches capability to the task: what has only done easy work is not sent to hard work, and vice versa', () => {
+    const harnesses = [{
+      harness: 'claude-code', acceptsModelFlag: true, serves: () => true, efforts: ['low', 'medium', 'high'],
+      models: ['haiku', 'sonnet', 'opus'], supportsSession: true, health: 'healthy' as const, fingerprint: 'f',
+    }];
+    const state = initialEconomicState({ goal: TINY_GOAL, totalTokenBudget: 2_000_000 });
+    const seen = (model: string, difficulty: number, validated: boolean) => Array.from({ length: 12 }, () => ({
+      modelKey: `execute|claude-code|${model}`, candidateKey: `execute|claude-code|${model}|high`,
+      facts: {}, difficulty, validated, weight: 1,
+    }));
+    const capability = fitCapability([...seen('haiku', 0.1, true), ...seen('haiku', 0.8, false), ...seen('opus', 0.95, true)]);
+    const pick = (difficulty: number) => {
+      const candidates = generateExecutionCandidates({
+        role: 'execute', difficulty, difficultyUpper: Math.min(1, difficulty + 0.05),
+        dispatchTokens: 40_000, dispatchLatencyMs: 1, harnesses, capability,
+      });
+      return chooseEconomicAction({
+        state, candidates, estimates: Object.fromEntries(candidates.map((c) => [c.id, executionEstimate(c, state)])),
+      }).action;
+    };
+    expect(pick(0.1).metadata.model).not.toBe('opus');
+    expect(pick(0.9).metadata.model).toBe('opus');
   });
 
   it('asks for less context than the ceiling for an anchored edit', () => {

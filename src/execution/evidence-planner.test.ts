@@ -1,9 +1,8 @@
 import { describe, it, expect } from 'vitest';
-import {
-  planEvidence, scoreCandidate, candidatesFor, MIN_WORTHWHILE_SCORE,
-  type EvidenceCandidate,
-} from './evidence-planner.js';
+import { evidenceActions, candidatesFor, type EvidenceCandidate } from './evidence-planner.js';
 import { EMPTY_FRONTIER, updateFrontier } from '../context/frontier.js';
+import { chooseEconomicAction } from '../decision/engine.js';
+import { initialEconomicState } from '../decision/state.js';
 import type { ContextRef } from '../context/types.js';
 
 const ref = (id: string): ContextRef => ({ semanticId: id, version: 1, contentHash: `h-${id}` });
@@ -14,73 +13,47 @@ const candidate = (over: Partial<EvidenceCandidate> = {}): EvidenceCandidate => 
   expectedGain: 0.9, reason: 'a dispatch', ...over,
 });
 
-describe('scoring', () => {
-  it('prefers what teaches the same thing for less', () => {
-    const cheap = candidate({ action: 'expand', estimatedTokens: 500, estimatedLatencyMs: 0, expectedGain: 0.8 });
-    const dear = candidate();
-    expect(scoreCandidate(cheap)).toBeGreaterThan(scoreCandidate(dear));
+const state = () => initialEconomicState({ goal: 'g', totalTokenBudget: 4_000_000 });
+
+/** What the market makes of the planner's proposals, when finding the answer
+ *  by exploration would cost `gap` tokens. */
+function choose(frontier: typeof open, candidates: EvidenceCandidate[], gap = 20_000) {
+  return chooseEconomicAction({ state: state(), candidates: evidenceActions(frontier, candidates, gap) });
+}
+
+describe('proposals, not a choice', () => {
+  it('proposes nothing when the frontier is closed, however good a candidate looks', () => {
+    expect(evidenceActions(EMPTY_FRONTIER, [candidate({ expectedGain: 1, estimatedTokens: 0 })], 20_000)).toEqual([]);
+    expect(choose(EMPTY_FRONTIER, [candidate()]).action.kind).toBe('continue');
   });
 
-  it('treats something already in hand as unbeatable', () => {
-    const held = candidate({ action: 'reuse', estimatedTokens: 0, estimatedLatencyMs: 0, expectedGain: 1 });
-    expect(scoreCandidate(held)).toBe(Number.POSITIVE_INFINITY);
+  it('prices a way of closing the gap in the market’s units: rediscovery avoided, tokens spent', () => {
+    const [action] = evidenceActions(open, [candidate({ expectedGain: 0.5, estimatedTokens: 300 })], 20_000);
+    expect(action.expectedTokenBenefit).toBe(10_000);
+    expect(action.tokenCost).toBe(300);
+    expect(action.expectedInformationGain).toBe(0.5);
   });
 
-  it('gives nothing for an action that teaches nothing, however cheap', () => {
-    expect(scoreCandidate(candidate({ estimatedTokens: 0, estimatedLatencyMs: 0, expectedGain: 0 }))).toBe(0);
-  });
-});
-
-describe('planning', () => {
-  it('stops when the frontier is closed, however good a candidate looks', () => {
-    // The whole point. A closed frontier makes every candidate irrelevant, and
-    // a planner that scores first and checks second gathers evidence nobody
-    // needs.
-    const decision = planEvidence(EMPTY_FRONTIER, [candidate({ action: 'reuse', estimatedTokens: 0, estimatedLatencyMs: 0 })]);
-    expect(decision.stop).toBe(true);
-    expect(decision.chosen).toBeNull();
-    expect(decision.reason).toMatch(/frontier is closed/);
-  });
-
-  it('picks the deterministic tool over the model when both would settle it', () => {
-    const decision = planEvidence(open, [
-      candidate(),
-      candidate({ action: 'search', estimatedTokens: 200, estimatedLatencyMs: 500, expectedGain: 0.4, reason: 'a search' }),
+  it('lets the market pick the deterministic tool over the model when both would settle it', () => {
+    const decision = choose(open, [
+      candidate({ action: 'run_model', estimatedTokens: 10_000, expectedGain: 0.9 }),
+      candidate({ action: 'search', estimatedTokens: 200, estimatedLatencyMs: 500, expectedGain: 0.8 }),
     ]);
-    expect(decision.chosen?.action).toBe('search');
-    // The receipt names what it beat, not just what it chose.
-    expect(decision.reason).toMatch(/over run_model/);
+    expect(decision.action.metadata.evidenceAction).toBe('search');
   });
 
-  it('declines to gather when the best option costs more than it is worth', () => {
-    // Forty turns and no answer is what this prevents.
-    const decision = planEvidence(open, [candidate({ expectedGain: 0.01, estimatedTokens: 500_000, estimatedLatencyMs: 300_000 })]);
-    expect(decision.stop).toBe(true);
-    expect(decision.reason).toMatch(/cost more than it is expected to be worth/);
+  it('lets the market decline to gather when every way costs more than it is worth', () => {
+    const decision = choose(open, [candidate({ estimatedTokens: 50_000, expectedGain: 0.1 })]);
+    expect(decision.action.kind).toBe('continue');
+    expect(decision.reasonCodes).toContain('no_justified_opportunity');
   });
 
-  it('stops when nothing at all can settle the gap', () => {
-    const decision = planEvidence(open, []);
-    expect(decision.stop).toBe(true);
-    expect(decision.ranked).toEqual([]);
-  });
-
-  it('records every alternative with its score, best first', () => {
-    const decision = planEvidence(open, [candidate(), candidate({ action: 'expand', estimatedTokens: 100, estimatedLatencyMs: 0, expectedGain: 0.8 })]);
-    expect(decision.ranked.map((r) => r.candidate.action)).toEqual(['expand', 'run_model']);
-    expect(decision.ranked[0].score).toBeGreaterThan(decision.ranked[1].score);
-  });
-
-  it('breaks a tie towards the cheaper kind of action', () => {
-    const tied = { estimatedTokens: 1000, estimatedLatencyMs: 1000, expectedGain: 0.5, reason: 'tied' };
-    const decision = planEvidence(open, [candidate({ ...tied, action: 'run_model' }), candidate({ ...tied, action: 'reuse' })]);
-    expect(decision.chosen?.action).toBe('reuse');
-  });
-
-  it('uses a floor low enough that ordinary work still happens', () => {
-    // A guard that stops everything is not a guard, it is an outage.
-    const ordinary = candidate();
-    expect(scoreCandidate(ordinary)).toBeGreaterThan(MIN_WORTHWHILE_SCORE);
+  it('records the alternatives the market weighed', () => {
+    const decision = choose(open, [
+      candidate({ action: 'search', estimatedTokens: 200, expectedGain: 0.4 }),
+      candidate({ action: 'reuse', estimatedTokens: 50, estimatedLatencyMs: 0, expectedGain: 1 }),
+    ]);
+    expect((decision.ranked ?? []).length + (decision.pruned ?? []).length).toBeGreaterThanOrEqual(2);
   });
 });
 
@@ -92,21 +65,18 @@ describe('generating candidates from what the graph already holds', () => {
     dispatchLatencyMs: 263_000,
   };
 
-  it('offers reuse for something already held, and prefers it', () => {
-    const decision = planEvidence(open, candidatesFor(ref('repo_file:a.ts'), inputs));
-    expect(decision.chosen?.action).toBe('reuse');
+  it('offers reuse for something already held, and the market prefers it', () => {
+    expect(choose(open, candidatesFor(ref('repo_file:a.ts'), inputs)).action.metadata.evidenceAction).toBe('reuse');
   });
 
   it('offers expansion for something indexed but not materialized', () => {
-    const decision = planEvidence(open, candidatesFor(ref('repo_file:b.ts'), inputs));
-    expect(decision.chosen?.action).toBe('expand');
+    expect(choose(open, candidatesFor(ref('repo_file:b.ts'), inputs)).action.metadata.evidenceAction).toBe('expand');
   });
 
-  it('falls through to a dispatch only when nothing cheaper applies', () => {
+  it('falls through to a dispatch only when nothing cheaper applies — and a search still wins', () => {
     const candidates = candidatesFor(ref('repo_file:unknown.ts'), inputs);
     expect(candidates.map((c) => c.action)).toEqual(['search', 'run_model']);
-    // ...and even then, a search is tried first.
-    expect(planEvidence(open, candidates).chosen?.action).toBe('search');
+    expect(choose(open, candidates).action.metadata.evidenceAction).toBe('search');
   });
 
   it('prices a dispatch from what one actually cost, not from a guess', () => {

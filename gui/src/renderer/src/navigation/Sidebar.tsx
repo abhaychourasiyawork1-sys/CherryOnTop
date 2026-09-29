@@ -59,7 +59,18 @@ export function Sidebar(props: Props) {
     <nav className="sidebar" data-collapsed={props.collapsed} aria-label="Sessions">
       <div className="sidebar-top">
         <button type="button" className="brand" onClick={props.onHome} aria-current={props.atHome ? 'page' : undefined} title="Home">
-          <span className="brand-mark" aria-hidden="true">C</span>
+          <svg className="brand-mark" viewBox="300 50 935 710" aria-hidden="true" focusable="false">
+            <defs><radialGradient id="brand-cherry" cx="0.3" cy="0.28" r="0.8"><stop offset="0" stopColor="#FFC2C8"/><stop offset="0.38" stopColor="#FF1F45"/><stop offset="1" stopColor="#B80D2C"/></radialGradient></defs>
+            <circle cx="765" cy="177" r="108" fill="url(#brand-cherry)"/>
+            <g fill="currentColor"><path d="M679 320 L679 340 C679 430 600 465 510 495 C420 525 360 580 360 690" fill="none" stroke="currentColor" strokeWidth="84" strokeLinejoin="round"/>
+            <path d="M851 320 L851 340 C851 430 930 465 1020 495 C1110 525 1170 580 1170 690" fill="none" stroke="currentColor" strokeWidth="84" strokeLinejoin="round"/>
+            <rect x="637" y="300" width="84" height="40" rx="14"/>
+            <rect x="809" y="300" width="84" height="40" rx="14"/>
+            <circle cx="360" cy="690" r="42"/>
+            <circle cx="1170" cy="690" r="42"/>
+            <path d="M590 738 L590 690 C590 625 625 585 675 552 C715 527 748 512 765 490 C782 512 815 527 855 552 C905 585 942 625 942 690 L942 738 L858 738 L858 690 C858 648 835 622 800 598 C785 588 775 585 765 585 C755 585 745 588 730 598 C695 622 672 648 672 690 L672 738 Z" stroke="currentColor" strokeWidth="6" strokeLinejoin="round"/>
+            </g>
+          </svg>
           {!props.collapsed && <span className="brand-name">CherryOnTop</span>}
         </button>
       </div>

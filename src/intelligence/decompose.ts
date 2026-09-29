@@ -10,7 +10,6 @@
  *  says so, but every signal it fires on is named in the decision breakdown, so
  *  a wrong call is visible rather than mysterious. */
 
-import { runtimeMode } from '../config/efficiency.js';
 
 export interface Decomposition {
   complexity: 'low' | 'medium' | 'high';
@@ -96,19 +95,14 @@ export function assessDecomposition(goal: string): Decomposition {
   // Difficulty and splittability are two different questions, and sharing one
   // score for both is what sent "review the codebase for bugs" to five agents.
   // Breadth makes a goal *big*, which is a reason to keep the strong model —
-  // `modelChoiceFor` routes on this complexity — but on its own it says nothing
+  // execution candidates' priors read this complexity — but on its own it says nothing
   // about whether the work comes apart. "Review the codebase" is one coherent
   // investigation that happens to cover a lot of ground; it has no seam to cut
   // along. Breadth only becomes a split signal once there is more than one kind
   // of work to spread across it.
-  // `disabled` and `shadow` keep the old rule — breadth alone splits — so
-  // `bench/run.mjs efficiency` compares exactly this change against exactly the
-  // behaviour it replaces. The signals below are recorded either way, so a
-  // shadow run's decision rows still show what the new rule would have done.
-  const applied = runtimeMode() === 'full';
   const explicit = EXPLICIT_SPLIT.test(goal);
   const coherent = !explicit && workTypes <= 1 && conjunctions === 0;
-  const splitScore = coherent && applied ? score - breadth * 2 : score;
+  const splitScore = coherent ? score - breadth * 2 : score;
 
   const signals = {
     breadth_terms: breadth,

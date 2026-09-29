@@ -19,6 +19,9 @@ export interface BuildCommandOptions {
   /** Passed verbatim to the runtime's model flag. A short alias ("haiku",
    *  "sonnet") or a full pinned id both work. */
   model?: string;
+  /** Reasoning effort, passed to the runtime's own effort flag. Only one of
+   *  the levels the adapter reports in `discoverCapabilities().efforts`. */
+  effort?: string;
   /** Hard cap on agent turns for this dispatch. */
   maxTurns?: number;
   /** Appended to the runtime's built-in system prompt (Task 12). */
@@ -29,8 +32,42 @@ export interface BuildCommandOptions {
   session?: boolean;
 }
 
+/** What a harness can do right now, separate from what the market chooses.
+ *  Candidates are generated from these rather than from hardcoded router
+ *  assumptions, and the fingerprint is part of every candidate's identity so
+ *  evidence never pools across different execution semantics. */
+export interface HarnessCapabilitySnapshot {
+  harness: string;
+  /** Whether a model name survives into this harness's argv at all. */
+  acceptsModelFlag: boolean;
+  /** Whether this harness can serve a given model name. */
+  serves(model: string): boolean;
+  /** Reasoning-effort settings it exposes. `default` when it exposes none. The
+   *  order is not interpreted: the market learns what an effort is worth. */
+  efforts: string[];
+  /** Model names it offers, as its own CLI spells them. Empty when it only
+   *  runs its default model. The market proposes each; nothing ranks them
+   *  here, and their order means nothing. */
+  models: string[];
+  /** Numeric facts the adapter knows about one candidate (context size, an
+   *  effort index, anything). Facts describe; they never rank. Each fact's
+   *  weight in what a candidate can do is learned from outcomes. */
+  candidateFacts?: (model: string | undefined, effort: string) => Record<string, number>;
+  supportsSession: boolean;
+  health: 'healthy' | 'degraded' | 'rate_limited' | 'down';
+  /** Stable hash of the above: two snapshots with different semantics never
+   *  share a fingerprint. */
+  fingerprint: string;
+}
+
 export interface RuntimeAdapter {
   name: string;
+  /** Optional: an adapter that knows more about itself than argv probing can
+   *  reveal (native effort levels, sandbox modes) reports it here. Absent, the
+   *  snapshot is derived by probing `buildCommand` — see execution-market.ts. */
+  discoverCapabilities?(): Partial<Omit<HarnessCapabilitySnapshot, 'harness' | 'health' | 'fingerprint'>>;
+  /** See `HarnessCapabilitySnapshot.candidateFacts`. */
+  candidateFacts?(model: string | undefined, effort: string): Record<string, number>;
   /** `grant` is optional so a caller that has no contract in hand (a plan or
    *  synthesis pass on the parent's own authority) still builds a command. When
    *  it is supplied the adapter must express it in the runtime's own permission

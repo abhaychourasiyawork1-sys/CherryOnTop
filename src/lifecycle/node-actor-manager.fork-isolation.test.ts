@@ -1,12 +1,19 @@
-import { describe, it, expect, afterEach } from 'vitest';
-import { existsSync, unlinkSync, mkdtempSync, writeFileSync, readFileSync } from 'node:fs';
+import { describe, it, expect, afterEach, afterAll } from 'vitest';
+import { existsSync, unlinkSync, mkdtempSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
-import { tmpdir } from 'node:os';
+import { tmpdir, homedir } from 'node:os';
 import { join } from 'node:path';
 import { createDb } from '../db/client.js';
 import { getNode, insertNode } from '../db/queries/nodes.js';
 import { realDelegateDeps, integrateFork, settleFork } from './node-actor-manager.js';
 import { forkWorkspace } from '../execution/workspace-fork.js';
+
+// This file's forks live in a directory of their own: a server test running in
+// parallel sweeps orphaned forks out of the shared default root at startup, and
+// would delete these mid-test. Under $HOME, because only home is visible to
+// the cluster.
+process.env.ORG_FORKS_ROOT = mkdtempSync(join(homedir(), '.org-forks-test-'));
+afterAll(() => rmSync(process.env.ORG_FORKS_ROOT!, { recursive: true, force: true }));
 
 // Two failure modes this closes, both real and both observed: a benchmark run
 // that left 85 files of cross-goal contamination in the live working tree

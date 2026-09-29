@@ -40,6 +40,9 @@ export interface ExecuteStepInput {
   onEvent?: (event: StructuredEvent) => void;
   /** Per-dispatch model override (role-tiered by the caller). Omitted → runtime default. */
   model?: string;
+  /** Per-dispatch reasoning effort, when the harness exposes one. Omitted →
+   *  the runtime's own default. */
+  effort?: string;
   /** Hard turn cap for this dispatch. */
   maxTurns?: number;
   /** Appended to the runtime's system prompt. */
@@ -231,6 +234,7 @@ async function runStep(
       image: input.image ?? RUNNER_IMAGE,
       command: input.adapter.buildCommand(input.goal, input.grant, {
         model: input.model,
+        ...(input.effort ? { effort: input.effort } : {}),
         maxTurns: input.maxTurns,
         systemPrompt: input.systemPrompt,
         ...(sessionMode ? { session: true } : {}),

@@ -12,7 +12,7 @@ function prep(goal: string, authority: Authority = WIDE) {
 const DISPATCH = { tokens: 100_000, latencyMs: 120_000, costUsd: 0.5 };
 
 function decide(goal: string, over: Partial<Parameters<typeof decideStrategy>[0]> = {}) {
-  return decideStrategy({ preparation: prep(goal), spentUsd: 0, dispatch: DISPATCH, ...over });
+  return decideStrategy({ preparation: prep(goal), spentUsd: 0, dispatch: DISPATCH, outcome: 'SELF_EXECUTE', ...over });
 }
 
 describe('deterministic gate', () => {
@@ -96,24 +96,33 @@ describe('classifier stage', () => {
   });
 });
 
-describe('economic stage', () => {
+describe('naming the market’s choice', () => {
+  it('names the market’s outcome and never recomputes delegation economics', () => {
+    // The market decided to do this directly; the gate must not second-guess
+    // it however splittable the goal looks.
+    const goal = 'Fix the auth bug, and also add tests for the parser';
+    const direct = decide(goal, { outcome: 'SELF_EXECUTE', parallelSelected: true });
+    expect(direct.strategy).toBe('MANAGED');
+    expect(direct.evidence.reasonCodes).toContain('market:SELF_EXECUTE');
+  });
+
   it('reaches SERIAL_DELEGATED when the work splits but parallelism is not justified', () => {
-    const decision = decide('Fix the auth bug, and also add tests for the parser', { parallelSelected: false });
+    const decision = decide('Fix the auth bug, and also add tests for the parser', { outcome: 'DELEGATE', parallelSelected: false });
     expect(decision.strategy).toBe('SERIAL_DELEGATED');
     expect(decision.evidence.reasonCodes).toContain('delegate_serial:scheduler_did_not_select_parallel');
   });
 
   it('reaches PARALLEL_DELEGATED only when the scheduler selected parallel work', () => {
     const goal = 'Fix the auth bug, and also add tests for the parser';
-    expect(decide(goal, { parallelSelected: true }).strategy).toBe('PARALLEL_DELEGATED');
-    expect(decide(goal, { parallelSelected: undefined }).strategy).toBe('SERIAL_DELEGATED');
+    expect(decide(goal, { outcome: 'DELEGATE', parallelSelected: true }).strategy).toBe('PARALLEL_DELEGATED');
+    expect(decide(goal, { outcome: 'DELEGATE', parallelSelected: undefined }).strategy).toBe('SERIAL_DELEGATED');
   });
 
   it('stays MANAGED when the node may not spawn, however splittable the goal', () => {
     const noSpawn: Authority = { ...WIDE, spawn_children: false, max_child_count: 0 };
     const decision = decideStrategy({
       preparation: prep('Fix the auth bug, and also add tests for the parser', noSpawn),
-      spentUsd: 0, dispatch: DISPATCH, parallelSelected: true,
+      spentUsd: 0, dispatch: DISPATCH, parallelSelected: true, outcome: 'SELF_EXECUTE',
     });
     expect(decision.strategy).toBe('MANAGED');
   });
@@ -122,7 +131,7 @@ describe('economic stage', () => {
     const classify = vi.fn<StrategyClassifier>();
     const decision = decideStrategy({
       preparation: prep('Fix the typo in README.md'), spentUsd: 0, dispatch: DISPATCH,
-      classify, requiresApproval: true,
+      classify, requiresApproval: true, outcome: 'SELF_EXECUTE',
     });
     expect(classify).not.toHaveBeenCalled();
     expect(decision.strategy).toBe('MANAGED');
