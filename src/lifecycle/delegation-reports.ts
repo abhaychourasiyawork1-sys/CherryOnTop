@@ -126,6 +126,10 @@ export interface ReworkContextInput {
   previousReport?: ChildReport;
   /** Earlier feedback, oldest first. Used only to say which checks keep failing. */
   feedbackHistory: ParentFeedback[];
+  /** `rework` is the same child continuing in its own workspace. `reassignment`
+   *  is a *different* child picking the work up in a fresh one, told what the
+   *  last owner established. Defaults to rework, the normal case. */
+  handoff?: 'rework' | 'reassignment';
 }
 
 /** The handoff for the *same* child's next revision.
@@ -143,7 +147,13 @@ export function compactReworkContext(input: ReworkContextInput): string {
   const earlier = new Set(input.feedbackHistory.flatMap((old) => old.failedChecks.map((failed) => failed.check)));
   const repeated = feedback.failedChecks.filter((failed) => earlier.has(failed.check)).map((failed) => failed.check);
 
-  const lines: string[] = [
+  const reassigned = input.handoff === 'reassignment';
+  const lines: string[] = reassigned ? [
+    `## Reassigned: revision ${feedback.revision} — the previous owner's work was reviewed and not accepted`,
+    'You are a different agent starting in a fresh workspace. Use what the previous owner established; do not repeat what it verified.',
+    '',
+    '### What the parent found',
+  ] : [
     `## Rework: revision ${feedback.revision} — your work was reviewed and not accepted yet`,
     'You keep the same workspace and everything you already changed. Fix only what failed; do not start over.',
     '',
@@ -172,7 +182,7 @@ export function compactReworkContext(input: ReworkContextInput): string {
   }
   const previous = input.previousReport;
   if (previous) {
-    lines.push('', '### Your previous report', clip(previous.summary, 500) || '(no summary)');
+    lines.push('', reassigned ? '### The previous owner\'s report' : '### Your previous report', clip(previous.summary, 500) || '(no summary)');
     if (previous.changedFiles.length > 0) lines.push(`Changed: ${previous.changedFiles.slice(0, 15).join(', ')}`);
     if (previous.evidenceRefs.length > 0) lines.push(`Evidence: ${previous.evidenceRefs.slice(0, 10).join(', ')}`);
     const failedRuns = previous.testsRun.filter((run) => !run.passed).slice(0, 5);

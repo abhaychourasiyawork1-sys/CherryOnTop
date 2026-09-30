@@ -51,6 +51,12 @@ export function canTransitionDelegation(from: DelegationStatus, to: DelegationSt
   return TRANSITIONS[from].includes(to);
 }
 
+export class IllegalDelegationTransitionError extends Error {
+  constructor(id: string, readonly from: DelegationStatus, readonly to: DelegationStatus) {
+    super(`Delegation ${id} cannot move ${from} → ${to}`);
+  }
+}
+
 export function isTerminalDelegationStatus(status: DelegationStatus): boolean {
   return TRANSITIONS[status].length === 0;
 }

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { delegateToChildren, childAuthority } from './delegate-child.js';
+import { delegateToChildren, childAuthority, MAX_REWORK_REVISIONS } from './delegate-child.js';
 import type { Authority } from '../schemas/node-contract.js';
 
 function spyDeps(succeed: (goal: string) => boolean = () => true) {
@@ -97,12 +97,12 @@ describe('delegateToChildren', () => {
     expect(calls.filter((c) => c.startsWith('create:'))).toHaveLength(1);
   });
 
-  it('fails when a sibling cannot be fixed even after replacement, and names which', async () => {
-    // Genuinely unfixable work (matched by a stable substring, since a
-    // replacement's goal is the original plus a continuation note, not the
-    // original goal verbatim) still ends up reported as failed once every
-    // attempt is spent — replacement is a chance to recover, not a way to
-    // launder a failure into a success.
+  it('fails when a sibling cannot be fixed even after rework, and names which', async () => {
+    // Genuinely unfixable work (matched by a stable prefix, since a rework's
+    // goal is the original plus the parent's feedback, not the original goal
+    // verbatim) still ends up reported as failed once every revision is spent —
+    // rework is a chance to recover, not a way to launder a failure into a
+    // success.
     const { deps } = spyDeps((goal) => !goal.startsWith('Add cart tests'));
     const result = await delegateToChildren(
       { parentId: 'n1', goal: 'g', subgoals: ['Audit auth', 'Add cart tests'] },
@@ -114,14 +114,21 @@ describe('delegateToChildren', () => {
   });
 });
 
-describe('delegateToChildren replacing a failed child', () => {
-  it('gives a failed piece of work to a fresh sibling instead of accepting the failure', async () => {
+// These replace the "replacing a failed child" tests, which asserted that a
+// failed piece is handed to a *fresh sibling* (a new node, a new fork, the old
+// attempt's context reduced to a paragraph). That is intentionally no longer the
+// behaviour: a failed piece goes back to the SAME child, in the workspace that
+// already holds its work, and a different child takes over only through an
+// explicit reassignment decision (see delegation-rework.test.ts).
+describe('delegateToChildren reworking a failed child', () => {
+  it('gives a failed piece back to the same child instead of a fresh sibling', async () => {
     const created: string[] = [];
+    const started: string[] = [];
     let attempts = 0;
     const deps = {
       createChildNode: (_p: string, goal: string) => { created.push(goal); return `c${created.length}`; },
       recordCommitment: () => {},
-      startChild: () => {},
+      startChild: (childId: string) => { started.push(childId); },
       waitForChild: async () => ({ succeeded: ++attempts >= 2 }), // fails once, then succeeds
     };
     const result = await delegateToChildren(
@@ -129,68 +136,67 @@ describe('delegateToChildren replacing a failed child', () => {
       deps,
     );
     expect(result.succeeded).toBe(true);
-    expect(created).toHaveLength(2); // the original attempt, and its replacement
+    expect(created).toHaveLength(1); // one child, ever
+    expect(started).toEqual(['c1', 'c1']); // dispatched twice: the work, then the rework
   });
 
-  it('tells the replacement what the failed attempt found', async () => {
-    let firstChildId = '';
+  it('tells the same child what its failed attempt reported', async () => {
     const goals: string[] = [];
+    let attempts = 0;
     const deps = {
-      createChildNode: (_p: string, goal: string) => {
-        goals.push(goal);
-        const id = firstChildId ? 'c2' : 'c1';
-        if (!firstChildId) firstChildId = id;
-        return id;
-      },
+      createChildNode: () => 'c1',
       recordCommitment: () => {},
-      startChild: () => {},
-      waitForChild: async (id: string) => ({ succeeded: id !== 'c1' }),
-      getFindings: (id: string) => (id === 'c1' ? 'Confirmed the schema migration is safe; ran out of turns before applying it.' : ''),
+      startChild: (_id: string, goal: string) => { goals.push(goal); },
+      waitForChild: async () => (++attempts === 1
+        ? { succeeded: false, answer: 'Confirmed the schema migration is safe; ran out of turns before applying it.' }
+        : { succeeded: true }),
     };
     await delegateToChildren({ parentId: 'n1', goal: 'Ship the feature', subgoals: ['Ship the feature'] }, deps);
     expect(goals[0]).toBe('Ship the feature');
-    expect(goals[1]).toContain('Ship the feature');
+    expect(goals[1].startsWith('Ship the feature')).toBe(true);
     expect(goals[1]).toContain('Confirmed the schema migration is safe');
-    expect(goals[1]).toContain('Continue from there');
+    expect(goals[1]).toContain('do not start over');
   });
 
-  it('marks the failed child as superseded by its replacement', async () => {
+  it('never marks the failed child as superseded — nothing replaced it', async () => {
     const superseded: [string, string][] = [];
-    let n = 0;
+    let attempts = 0;
     const deps = {
-      createChildNode: () => `c${++n}`,
+      createChildNode: () => 'c1',
       recordCommitment: () => {},
       startChild: () => {},
-      waitForChild: async (id: string) => ({ succeeded: id !== 'c1' }),
+      waitForChild: async () => ({ succeeded: ++attempts > 1 }),
       markSuperseded: (failedId: string, replacementId: string) => { superseded.push([failedId, replacementId]); },
     };
     await delegateToChildren({ parentId: 'n1', goal: 'g', subgoals: ['a'] }, deps);
-    expect(superseded).toEqual([['c1', 'c2']]);
+    expect(superseded).toEqual([]);
   });
 
-  it('gives up after exhausting every attempt, not forever', async () => {
+  it('gives up after the rework limit, not forever, and never spawns a replacement to keep trying', async () => {
+    let created = 0;
     let dispatches = 0;
     const deps = {
-      createChildNode: () => { dispatches++; return `c${dispatches}`; },
+      createChildNode: () => { created++; return 'c1'; },
       recordCommitment: () => {},
-      startChild: () => {},
+      startChild: () => { dispatches++; },
       waitForChild: async () => ({ succeeded: false }), // never succeeds
     };
     const result = await delegateToChildren({ parentId: 'n1', goal: 'g', subgoals: ['a'] }, deps);
     expect(result.succeeded).toBe(false);
-    expect(dispatches).toBe(3); // MAX_CHILD_ATTEMPTS: the original plus two replacements
+    expect(created).toBe(1);
+    expect(dispatches).toBe(1 + MAX_REWORK_REVISIONS); // the work, then each rework by the same child
   });
 
   it('does not touch a sibling that succeeded on its first try', async () => {
-    const created: string[] = [];
+    const started: string[] = [];
     const deps = {
-      createChildNode: (_p: string, goal: string) => { created.push(goal); return `c${created.length}`; },
+      createChildNode: (() => { let n = 0; return () => `c${++n}`; })(),
       recordCommitment: () => {},
-      startChild: () => {},
+      startChild: (childId: string) => { started.push(childId); },
       waitForChild: async () => ({ succeeded: true }),
     };
     await delegateToChildren({ parentId: 'n1', goal: 'g', subgoals: ['a', 'b'] }, deps);
-    expect(created).toHaveLength(2); // no replacements dispatched
+    expect(started).toEqual(['c1', 'c2']); // no rework dispatched
   });
 });
 

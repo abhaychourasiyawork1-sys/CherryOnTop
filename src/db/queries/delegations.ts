@@ -1,10 +1,10 @@
-import { asc, eq } from 'drizzle-orm';
+import { asc, eq, notInArray } from 'drizzle-orm';
 import type { Db } from '../client.js';
 import { delegations } from '../schema.js';
 import {
   DelegationPatchSchema, DelegationRecordSchema, NewDelegationSchema,
-  canTransitionDelegation,
-  type DelegationPatch, type DelegationRecord, type DelegationStatus, type NewDelegation,
+  canTransitionDelegation, IllegalDelegationTransitionError,
+  type DelegationPatch, type DelegationRecord, type NewDelegation,
 } from '../../schemas/delegation.js';
 
 /** The assignment does not exist. Distinct from a stale write so a caller can
@@ -21,11 +21,7 @@ export class DelegationStaleError extends Error {
   }
 }
 
-export class IllegalDelegationTransitionError extends Error {
-  constructor(id: string, readonly from: DelegationStatus, readonly to: DelegationStatus) {
-    super(`Delegation ${id} cannot move ${from} → ${to}`);
-  }
-}
+export { IllegalDelegationTransitionError };
 
 // The columns are the authority for status/revision/attempt (they are what is
 // compare-and-swapped); the blob carries everything else.
@@ -109,4 +105,14 @@ export function updateDelegation(
     }).where(eq(delegations.id, id)).run();
     return next;
   });
+}
+
+/** Host paths of the isolated workspaces that still hold work nobody has taken
+ *  responsibility for: everything except merged, cancelled or handed-on
+ *  assignments. What an orphan sweep must not delete — an escalated or
+ *  conflicted assignment's candidate *is* the evidence its decision is about. */
+export function listRetainedWorkspacePaths(db: Db): string[] {
+  return db.select().from(delegations)
+    .where(notInArray(delegations.status, ['MERGED', 'CANCELLED', 'REASSIGNED'])).all()
+    .flatMap((row) => (row.data.workspace?.path ? [row.data.workspace.path] : []));
 }
