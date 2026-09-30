@@ -431,3 +431,47 @@ describe('delegateToChildren: stopping', () => {
     expect(created).toEqual(['research the product']);
   });
 });
+
+describe('handoffs are bounded, whatever the reports say', () => {
+  it('shares one allowance across prerequisite reports instead of taking the cap from each', async () => {
+    const { PREREQUISITE_CHARS_TOTAL } = await import('./delegate-child.js');
+    const goals = new Map<string, string>();
+    let next = 0;
+    await delegateToChildren(
+      {
+        parentId: 'p', goal: 'g',
+        subgoals: ['research one', 'research two', 'research three', 'research four', 'research five', 'build it'],
+        after: [[], [], [], [], [], [0, 1, 2, 3, 4]],
+      },
+      {
+        createChildNode: (_p, goal) => { const id = `c${++next}`; goals.set(id, goal); return id; },
+        recordCommitment: () => {},
+        startChild: () => {},
+        waitForChild: async () => ({ succeeded: true }),
+        getFindings: (id) => `${id}:`.padEnd(9_000, 'x'),
+      },
+    );
+    const builder = goals.get('c6')!;
+    // Five 9,000-character reports used to arrive at 4,000 each (20,000).
+    expect(builder.length).toBeLessThan(PREREQUISITE_CHARS_TOTAL + 1_500);
+    for (const id of ['c1', 'c2', 'c3', 'c4', 'c5']) expect(builder).toContain(`${id}:`);
+  });
+
+  it('does not waste the allowance on short reports: they keep everything, long ones get the rest', async () => {
+    const { fairShares } = await import('./delegate-child.js');
+    expect(fairShares([100, 100, 9_000], 12_000, 4_000)).toEqual([100, 100, 4_000]);
+    expect(fairShares([9_000, 9_000, 9_000], 12_000, 4_000)).toEqual([4_000, 4_000, 4_000]);
+    expect(fairShares([9_000, 9_000, 9_000, 9_000], 12_000, 4_000)).toEqual([3_000, 3_000, 3_000, 3_000]);
+    expect(fairShares([], 12_000, 4_000)).toEqual([]);
+  });
+
+  it('tells a replacement what the failed attempt found without pasting the whole transcript', async () => {
+    const { boundFindings, FINDINGS_HEAD_CHARS, FINDINGS_TAIL_CHARS } = await import('./delegate-child.js');
+    const report = `START ${'x'.repeat(50_000)} CONCLUSION: the migration is safe`;
+    const bounded = boundFindings(report);
+    expect(bounded.length).toBeLessThan(FINDINGS_HEAD_CHARS + FINDINGS_TAIL_CHARS + 100);
+    expect(bounded).toContain('START');
+    expect(bounded).toContain('CONCLUSION: the migration is safe');
+    expect(boundFindings('short report')).toBe('short report');
+  });
+});

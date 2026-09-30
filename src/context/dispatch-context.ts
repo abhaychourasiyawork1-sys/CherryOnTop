@@ -97,7 +97,11 @@ export interface DispatchReceipt {
    *  the paths it described. Never materialized here: this is the request that
    *  `context/evidence-actions.ts` prices again and fulfils at an execution
    *  boundary, if it is still worth it by then. */
-  fullArtifactRequests?: Array<{ path: string; tokens: number; expectedNetValue: number }>;
+  fullArtifactRequests?: Array<{
+    path: string; tokens: number; expectedNetValue: number;
+    /** What is being asked for: the whole file, or one named declaration. */
+    representation?: 'full' | 'symbol'; symbol?: string; fullTokens?: number;
+  }>;
 }
 
 export interface DispatchContext {

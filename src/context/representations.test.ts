@@ -133,3 +133,40 @@ describe('cheapest sufficient', () => {
     expect(isRefusal(cheapestSufficient(db, object, { worktreePath, atLeast: 'full', tokenBudget: 1 }))).toBe(true);
   });
 });
+
+describe('the symbol rung', () => {
+  const WITH_SYMBOL = ['// filler', 'export function login(user: string) {', '  return user;', '}', ...Array.from({ length: 200 }, (_, i) => `// ${i}`)].join('\n');
+
+  function objectFor(content: string) {
+    const path = mkdtempSync(join(tmpdir(), 'representations-sym-'));
+    writeFileSync(join(path, 'a.ts'), content);
+    const db = createDb(TEST_DB);
+    const object = putContextObject(db, {
+      semanticId: 'repo_file:a.ts', kind: 'repo_file', content,
+      source: { kind: 'repo', locator: 'a.ts' }, scope: reader,
+    });
+    return { db, object, worktreePath: path };
+  }
+
+  it('sits between the snippet and the whole file', () => {
+    expect(representationRank('symbol')).toBeGreaterThan(representationRank('snippet'));
+    expect(representationRank('symbol')).toBeLessThan(representationRank('full'));
+  });
+
+  it('produces the named declaration and marks the result partial', () => {
+    const { db, object, worktreePath } = objectFor(WITH_SYMBOL);
+    const result = materialize(db, object, 'symbol', { symbol: 'login', worktreePath });
+    expect(isRefusal(result)).toBe(false);
+    if (!isRefusal(result)) {
+      expect(result.content).toContain('return user;');
+      expect(result.content).not.toContain('// 100');
+      expect(result.partial).toBe(true);
+    }
+  });
+
+  it('refuses, naming what is possible, when the symbol is absent or not asked for', () => {
+    const { db, object, worktreePath } = objectFor(WITH_SYMBOL);
+    expect(isRefusal(materialize(db, object, 'symbol', { symbol: 'nope', worktreePath }))).toBe(true);
+    expect(isRefusal(materialize(db, object, 'symbol', { worktreePath }))).toBe(true);
+  });
+});

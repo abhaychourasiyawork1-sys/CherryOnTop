@@ -26,6 +26,7 @@ function deps(over: Partial<EvidenceAcquisitionDeps> = {}): EvidenceAcquisitionD
   return {
     sizeOf: vi.fn(() => 1_600),
     read: vi.fn(() => 'export function refreshSession() {}'),
+    revision: vi.fn(() => null),
     ...over,
   };
 }
@@ -183,5 +184,111 @@ describe('renderAcquiredEvidence', () => {
     expect(rendered).toContain('src/a.ts');
     expect(rendered).toContain('const a = 1;');
     expect(rendered).toContain('```');
+  });
+});
+
+describe('targeted acquisition', () => {
+  const FILE = [
+    "import { store } from './store.js';",
+    '',
+    '/** Refreshes a session. */',
+    'export function refreshSession(id: string) {',
+    '  return store.get(id);',
+    '}',
+    '',
+    ...Array.from({ length: 60 }, (_, i) => `export function unrelated${i}() { return ${i}; }`),
+  ].join('\n');
+
+  const targeted = (over: Partial<EvidenceRequest> = {}) => request({
+    acquisitionCost: 40, expectedBenefit: 1_500,
+    target: { symbol: 'refreshSession', fullAcquisitionCost: 700 },
+    ...over,
+  });
+  const acquireTargeted = (over: Partial<Parameters<typeof requestEvidenceAtBoundary>[0]> = {}, d: EvidenceAcquisitionDeps = deps({ sizeOf: () => FILE.length, read: () => FILE })) =>
+    requestEvidenceAtBoundary({ state: state(), request: targeted(), worktreePath: WORKTREE, repositoryRevision: 'abc123', ...over }, d);
+
+  it('sends the declaration and not the file, and says which lines it is', async () => {
+    const result = await acquireTargeted();
+    expect(result.acquired).toBe(true);
+    expect(result.representation).toBe('symbol');
+    expect(result.content).toContain('return store.get(id);');
+    expect(result.content).not.toContain('unrelated30');
+    expect(result.excerpt).toMatchObject({ from: 3, to: 6, symbol: 'refreshSession' });
+    expect(result.reasonCodes).toContain('targeted');
+    // Measured on what was sent, which is a small fraction of the file.
+    expect(result.tokens).toBeLessThan(FILE.length / 4 / 4);
+  });
+
+  it('records the provenance of an excerpt as an excerpt', async () => {
+    const result = await acquireTargeted();
+    expect(result.evidence!.source).toBe('read:symbol:refreshSession:src/auth/session.ts');
+    expect(result.evidence!.repositoryRevision).toBe('abc123');
+  });
+
+  it('escalates to the whole file when the declaration cannot be delimited, if the file still pays', async () => {
+    const result = await acquireTargeted({}, deps({ sizeOf: () => 800, read: () => 'no such declaration in this small file\n'.repeat(20) }));
+    expect(result.acquired).toBe(true);
+    expect(result.representation).toBe('full');
+    expect(result.reasonCodes).toContain('escalated_to_full');
+  });
+
+  it('does not escalate to a whole file that would not pay for itself', async () => {
+    const result = await acquireTargeted(
+      { request: targeted({ target: { symbol: 'refreshSession', fullAcquisitionCost: 9_000 } }) },
+      deps({ sizeOf: () => 800, read: () => 'nothing here\n'.repeat(20) }),
+    );
+    expect(result.acquired).toBe(false);
+    expect(result.reasonCodes).toContain('targeted_unavailable');
+  });
+
+  it('reaches into a file too large to send whole, because only the excerpt is sent', async () => {
+    const big = `${FILE}\n${'// padding\n'.repeat(20_000)}`;
+    expect(big.length).toBeGreaterThan(MAX_ARTIFACT_BYTES);
+    const result = await acquireTargeted({}, deps({ sizeOf: () => big.length, read: () => big }));
+    expect(result.acquired).toBe(true);
+    expect(result.representation).toBe('symbol');
+  });
+
+  it('still refuses a file too large to read at all', async () => {
+    const result = await acquireTargeted({}, deps({ sizeOf: () => 50_000_000, read: () => FILE }));
+    expect(result.acquired).toBe(false);
+    expect(result.reasonCodes).toContain('artifact_too_large');
+  });
+
+  it('refuses an excerpt that turned out larger than the value it was raised for', async () => {
+    const greedy = ['export function refreshSession() {', ...Array.from({ length: 250 }, () => '  work(); work(); work(); work();'), '}'].join('\n');
+    const result = await acquireTargeted({ request: targeted({ expectedBenefit: 200 }) }, deps({ sizeOf: () => greedy.length, read: () => greedy }));
+    expect(result.acquired).toBe(false);
+    expect(result.reasonCodes).toContain('negative_net_value');
+  });
+});
+
+describe('revision safety', () => {
+  const at = (head: string | null) => deps({ revision: () => head });
+
+  it('refuses to send a file for a request raised against another commit', async () => {
+    const result = await acquire({ repositoryRevision: 'abc123' }, at('def456'));
+    expect(result.acquired).toBe(false);
+    expect(result.reasonCodes).toContain('revision_mismatch');
+  });
+
+  it('proceeds when the revision matches, or when either side cannot say', async () => {
+    expect((await acquire({ repositoryRevision: 'abc123' }, at('abc123'))).acquired).toBe(true);
+    expect((await acquire({ repositoryRevision: 'abc123' }, at(null))).acquired).toBe(true);
+    expect((await acquire({ repositoryRevision: undefined }, at('def456'))).acquired).toBe(true);
+  });
+});
+
+describe('rendering what was acquired', () => {
+  it('leaves a whole file rendered exactly as it always was', () => {
+    expect(renderAcquiredEvidence('a.ts', 'x')).toBe(
+      'Contents of a.ts (provided because finding it would have cost more than sending it):\n```\nx\n```');
+  });
+
+  it('introduces an excerpt as one, so it is not mistaken for the file', () => {
+    const text = renderAcquiredEvidence('a.ts', 'function f() {}', { from: 3, to: 5, total: 90, symbol: 'f' });
+    expect(text).toContain('lines 3-5 of 90');
+    expect(text).toMatch(/only part of the file/);
+    expect(text).toContain('function f() {}');
   });
 });

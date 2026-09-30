@@ -15,15 +15,18 @@ import { codexAdapter } from '../adapters/codex.js';
 import {
   selectExecution, settleExecution, refuseCandidate, refuseModel, recordCandidateOutcomes, forgetExecutionNode,
   observeHarnessHealth, refineDifficulty, withLearningValue, capabilitiesOf, CANDIDATE_OUTCOME_KIND,
+  measuredDispatchTokens, costCalibration,
 } from './execution-market.js';
 import { generateExecutionCandidates, executionEstimate } from '../intelligence/model-router.js';
 import { initialEconomicState } from '../decision/state.js';
 import { recordDispatchUsage } from '../db/queries/tokens.js';
+import { MIN_SAMPLES } from '../efficiency/execution-cost-model.js';
 import { difficultyFrom, withObservedFailures } from '../intelligence/difficulty.js';
 import { createSystem1 } from '../system1/guard.js';
 import { fakeLaya } from '../system1/fake-provider.js';
 import { candidateFingerprint, clearPredictionCache } from '../decision/transition.js';
 import { actionCandidate } from '../decision/actions.js';
+import { modelCapabilities, currentAccount, ALL_MODELS } from '../execution/model-capability.js';
 
 const TEST_DB = './test-execution-market.db';
 const GOAL = 'Fix the off-by-one in src/cart/checkout.ts';
@@ -36,6 +39,7 @@ afterEach(() => {
   observeHarnessHealth('claude-code', 'healthy');
   observeHarnessHealth('codex', 'healthy');
   clearPredictionCache();
+  modelCapabilities.clear();
 });
 
 function node(db: ReturnType<typeof createDb>, budgetUsd = 10): string {
@@ -214,11 +218,14 @@ describe('the fixes: nothing blocks, nothing sticks, nothing is refused twice', 
   it('finishes on something that fits instead of blocking a task near the end of its budget', () => {
     const db = createDb(TEST_DB);
     const id = node(db, 1);
-    // 85% of a one-dollar authority already spent.
-    recordDispatchUsage(db, {
-      nodeId: id, role: 'execute', model: null, costUsd: 0.85, createdAt: new Date().toISOString(),
-      usage: { inputTokens: 1, outputTokens: 1, cacheReadTokens: 0, cacheCreationTokens: 0, numTurns: 1 } as never,
-    });
+    // 85% of a one-dollar authority already spent, on dispatches that history
+    // shows to be small: enough of them to be evidence (a single dispatch is an
+    // anecdote, and is priced from the static prior instead).
+    const tiny = { inputTokens: 1, outputTokens: 1, cacheReadTokens: 0, cacheCreationTokens: 0, numTurns: 1 } as never;
+    recordDispatchUsage(db, { nodeId: id, role: 'execute', model: null, costUsd: 0.85, createdAt: new Date().toISOString(), usage: tiny });
+    for (let i = 0; i < MIN_SAMPLES; i++) {
+      recordDispatchUsage(db, { nodeId: id, role: 'execute', model: null, costUsd: 0, createdAt: new Date().toISOString(), usage: tiny });
+    }
     const selection = selectExecution(db, { nodeId: id, role: 'execute', goal: GOAL, adapters });
     expect(selection.blocked).toBe(false);
     expect(selection.decision.estimate?.immediateCost.usd).toBeLessThanOrEqual(0.15 + 1e-9);
@@ -351,5 +358,113 @@ describe('information has a price, so a wrong prior cannot lock in', () => {
     for (const c of priced.filter((x) => ((x.metadata.learningValueUsd as number | undefined) ?? 0) > 0)) {
       expect(executionEstimate(c, state()).bounds.successLowerBound).toBeGreaterThanOrEqual(state().constraints.qualityFloor);
     }
+  });
+});
+
+
+describe('what the fleet already learned about a model, before another sandbox is spent finding out', () => {
+  const blockOn = (provider: string, model: string, failure: 'model_unavailable' | 'auth' = 'model_unavailable') =>
+    modelCapabilities.observeFailure({ provider, model, account: currentAccount() }, failure);
+
+  it('rules a model out for a different node once any node has been refused it', () => {
+    const db = createDb(TEST_DB);
+    const first = node(db);
+    const chosen = selectExecution(db, { nodeId: first, role: 'execute', goal: GOAL, adapters });
+    blockOn(chosen.adapter!.name, chosen.model!);
+
+    const other = node(db);
+    const next = selectExecution(db, { nodeId: other, role: 'execute', goal: GOAL, adapters, harness: chosen.adapter!.name });
+    expect(next.blocked).toBe(false);
+    expect(next.model).not.toBe(chosen.model);
+    // The rejection is on the record, with its reason, on the market decision.
+    const reasons = (next.decision.rejected ?? []).flatMap((r) => r.reasonCodes);
+    expect(reasons.some((c) => c.includes('model_capability_cooldown'))).toBe(true);
+    forgetExecutionNode(first); forgetExecutionNode(other);
+  });
+
+  it('brings the model back the moment it works, without waiting out the cooldown', () => {
+    const db = createDb(TEST_DB);
+    const first = node(db);
+    const chosen = selectExecution(db, { nodeId: first, role: 'execute', goal: GOAL, adapters });
+    blockOn(chosen.adapter!.name, chosen.model!);
+    modelCapabilities.observeSuccess({ provider: chosen.adapter!.name, model: chosen.model!, account: currentAccount() });
+    const again = selectExecution(db, { nodeId: node(db), role: 'execute', goal: GOAL, adapters });
+    expect(again.model).toBe(chosen.model);
+    forgetExecutionNode(first);
+  });
+
+  it('never lets a cached belief empty the market: with everything in cooldown it is set aside', () => {
+    const db = createDb(TEST_DB);
+    for (const a of adapters) blockOn(a.name, ALL_MODELS, 'auth');
+    const id = node(db);
+    const selection = selectExecution(db, { nodeId: id, role: 'execute', goal: GOAL, adapters });
+    // The runtime, not a stale cooldown, gets to say no: the dispatch still has
+    // a candidate, and its own model-fallback path handles a real refusal.
+    expect(selection.blocked).toBe(false);
+    expect(selection.adapter).toBeDefined();
+    forgetExecutionNode(id);
+  });
+
+  it('does not touch a model on another account', () => {
+    const db = createDb(TEST_DB);
+    const first = node(db);
+    const chosen = selectExecution(db, { nodeId: first, role: 'execute', goal: GOAL, adapters });
+    modelCapabilities.observeFailure({ provider: chosen.adapter!.name, model: chosen.model!, account: 'some-other-account' }, 'model_unavailable');
+    const again = selectExecution(db, { nodeId: node(db), role: 'execute', goal: GOAL, adapters });
+    expect(again.model).toBe(chosen.model);
+    forgetExecutionNode(first);
+  });
+});
+
+
+describe('pricing a dispatch from what similar ones cost', () => {
+  const usage = (tokens: number) => ({ inputTokens: tokens, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, numTurns: 1 });
+  const record = (db: ReturnType<typeof createDb>, model: string | null, tokens: number, extra: { effort?: string; taskClass?: string } = {}) =>
+    recordDispatchUsage(db, { nodeId: 'n', role: 'execute', model, usage: usage(tokens), costUsd: 0, createdAt: 't', ...extra });
+
+  it('keeps the static prior until there is enough history to be evidence', () => {
+    const db = createDb(TEST_DB);
+    const prior = measuredDispatchTokens(db, 'execute');
+    for (let i = 0; i < MIN_SAMPLES - 1; i++) record(db, 'sonnet', 900_000);
+    expect(measuredDispatchTokens(db, 'execute')).toBe(prior);
+    record(db, 'sonnet', 900_000);
+    expect(measuredDispatchTokens(db, 'execute')).toBe(900_000);
+  });
+
+  it('prices a candidate from the tail of its own history, not from the cheap median alone', () => {
+    const db = createDb(TEST_DB);
+    // Every model: usually 40k, sometimes 400k.
+    const history = [40_000, 40_000, 40_000, 40_000, 40_000, 40_000, 40_000, 40_000, 400_000, 400_000];
+    for (const model of ['sonnet', 'haiku', 'opus', null]) for (const t of history) record(db, model, t);
+    const id = node(db);
+    const selection = selectExecution(db, { nodeId: id, role: 'execute', goal: GOAL, adapters: [claudeCodeAdapter] });
+    const q = selection.candidate.metadata.costQuantiles as { p50: number; p90: number; lambda: number };
+    expect(q.p90).toBeGreaterThan(q.p50 * 5);
+    // Priced between the median and the tail at the task's own risk aversion.
+    expect(selection.candidate.tokenCost).toBeGreaterThan(q.p50);
+    expect(selection.candidate.tokenCost).toBe(Math.round(q.p50 + q.lambda * (q.p90 - q.p50)));
+    forgetExecutionNode(id);
+  });
+
+  it('records the distribution a candidate was priced from, and the calibration of it afterwards', () => {
+    const db = createDb(TEST_DB);
+    for (let i = 0; i < 12; i++) { record(db, 'sonnet', 50_000 + i * 1_000); record(db, 'haiku', 20_000 + i * 500); record(db, null, 30_000); }
+    const id = node(db);
+    const selection = selectExecution(db, { nodeId: id, role: 'execute', goal: GOAL, adapters: [claudeCodeAdapter] });
+    const q = selection.candidate.metadata.costQuantiles as { p50: number; p90: number; sampleCount: number; segment: string; lambda: number };
+    expect(q).toBeDefined();
+    expect(q.sampleCount).toBeGreaterThanOrEqual(MIN_SAMPLES);
+    expect(q.p90).toBeGreaterThanOrEqual(q.p50);
+    expect(q.lambda).toBeGreaterThanOrEqual(0);
+
+    settleExecution(db, id, selection, { tokens: Math.round(q.p50), usd: 0.1, latencyMs: 1_000, succeeded: true });
+    const calibration = costCalibration(db);
+    expect(calibration.n).toBe(1);
+    expect(calibration.p50).toBe(1);
+    forgetExecutionNode(id);
+  });
+
+  it('reads a fresh database as calibrated on nothing rather than failing', () => {
+    expect(costCalibration(createDb(TEST_DB))).toMatchObject({ n: 0 });
   });
 });

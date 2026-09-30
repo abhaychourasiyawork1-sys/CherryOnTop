@@ -276,12 +276,57 @@ export interface DelegationSchedule {
  *  Their files already reached its tree (each child's fork is integrated as it
  *  finishes, and a new fork carries the parent's working tree); the reports
  *  say where to look, so it does not rediscover them. */
+/** What all of a piece's prerequisite reports may cost together, in characters,
+ *  and the most any one may take. A dependent that waits on four pieces used to
+ *  be handed four reports of up to 4,000 characters each regardless of what else
+ *  it was carrying; the total is now bounded and shared out. */
+export const PREREQUISITE_CHARS_TOTAL = 12_000;
+export const PREREQUISITE_CHARS_EACH = 4_000;
+
+/** Splits a shared allowance across items of different sizes without wasting it:
+ *  a short report that needs less than its equal share leaves the remainder for
+ *  the long ones ("water-filling"). Deterministic. */
+export function fairShares(lengths: number[], total: number, cap: number): number[] {
+  const shares = lengths.map(() => 0);
+  let remaining = total;
+  let open = lengths.map((_, i) => i).sort((a, b) => lengths[a] - lengths[b] || a - b);
+  while (open.length > 0 && remaining > 0) {
+    const equal = Math.floor(remaining / open.length);
+    const index = open[0];
+    const need = Math.min(cap, lengths[index]);
+    if (need <= equal) {
+      shares[index] = need;
+      remaining -= need;
+      open = open.slice(1);
+    } else {
+      // Everyone left needs more than an equal share: give each exactly that.
+      for (const i of open) shares[i] = Math.min(cap, equal);
+      break;
+    }
+  }
+  return shares;
+}
+
 function withPrerequisites(goal: string, reports: { goal: string; findings: string }[]): string {
   const usable = reports.filter((report) => report.findings.trim());
   if (usable.length === 0) return goal;
-  const clip = (text: string) => (text.length > 4_000 ? `${text.slice(0, 4_000)}\n[…clipped]` : text);
+  const texts = usable.map((report) => report.findings.trim());
+  const shares = fairShares(texts.map((t) => t.length), PREREQUISITE_CHARS_TOTAL, PREREQUISITE_CHARS_EACH);
+  const clip = (text: string, max: number) => (text.length > max ? `${text.slice(0, max)}\n[…clipped]` : text);
   return `${goal}\n\nThis piece builds on work already finished. What it reported:\n\n${usable
-    .map((report) => `### ${report.goal}\n${clip(report.findings.trim())}`).join('\n\n')}`;
+    .map((report, i) => `### ${report.goal}\n${clip(texts[i], shares[i])}`).join('\n\n')}`;
+}
+
+/** How much of a failed attempt's account a replacement is handed. The end of a
+ *  report is where "what I found before I stopped" lives, so the clip keeps a
+ *  little of the start and most of the end. */
+export const FINDINGS_HEAD_CHARS = 1_500;
+export const FINDINGS_TAIL_CHARS = 4_500;
+
+export function boundFindings(text: string): string {
+  const trimmed = text.trim();
+  if (trimmed.length <= FINDINGS_HEAD_CHARS + FINDINGS_TAIL_CHARS) return trimmed;
+  return `${trimmed.slice(0, FINDINGS_HEAD_CHARS)}\n[…middle of the report clipped…]\n${trimmed.slice(-FINDINGS_TAIL_CHARS)}`;
 }
 
 function continuationGoal(originalGoal: string, findings: string | undefined): string {
@@ -289,7 +334,7 @@ function continuationGoal(originalGoal: string, findings: string | undefined): s
   // re-reads the whole goal from nothing re-derives what the failed attempt
   // already found, at full price, for the same chance.
   return findings?.trim()
-    ? `${originalGoal}\n\nA previous attempt at this exact piece of work did not finish. What it found before stopping:\n\n${findings.trim()}\n\nContinue from there — do not repeat what it already verified as done or established as true.`
+    ? `${originalGoal}\n\nA previous attempt at this exact piece of work did not finish. What it found before stopping:\n\n${boundFindings(findings)}\n\nContinue from there — do not repeat what it already verified as done or established as true.`
     : `${originalGoal}\n\nA previous attempt at this exact piece of work did not finish and left no usable report. Start fresh.`;
 }
 

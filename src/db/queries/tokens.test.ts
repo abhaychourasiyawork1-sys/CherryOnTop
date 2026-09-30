@@ -129,3 +129,37 @@ describe('tokensForNode', () => {
     expect(tokensForNode(db, 'n2')).toBe(0);
   });
 });
+
+describe('loadCostSamples', () => {
+  it('returns one sample per dispatch with the features the cost model conditions on', async () => {
+    const { loadCostSamples } = await import('./tokens.js');
+    const db = createDb(DB);
+    const t = '2026-09-08T00:00:00.000Z';
+    recordDispatchUsage(db, { nodeId: 'a', role: 'execute', model: 'sonnet', usage: usage(1_000, 200), costUsd: 0.05, createdAt: t, effort: 'high', taskClass: 'debugging' });
+    recordDispatchUsage(db, { nodeId: 'a', role: 'execute', model: null, usage: usage(500, 100), costUsd: 0.02, createdAt: t });
+    recordDispatchUsage(db, { nodeId: 'a', role: 'plan', model: 'haiku', usage: usage(80, 20), costUsd: 0.001, createdAt: t });
+
+    const execute = loadCostSamples(db, 'execute');
+    expect(execute).toHaveLength(2);
+    expect(execute).toContainEqual({ role: 'execute', model: 'sonnet', effort: 'high', taskClass: 'debugging', tokens: 1_200 });
+    // A dispatch on the runtime's own default model is a model like any other.
+    expect(execute).toContainEqual({ role: 'execute', model: '(default)', tokens: 600 });
+    expect(loadCostSamples(db, 'plan')).toHaveLength(1);
+  });
+
+  it('does not count a dispatch that never happened as a dispatch of zero tokens', async () => {
+    const { loadCostSamples } = await import('./tokens.js');
+    const db = createDb(DB);
+    recordDispatchUsage(db, { nodeId: 'a', role: 'execute:cache-hit', model: null, usage: usage(0, 0), costUsd: 0, createdAt: 't' });
+    recordDispatchUsage(db, { nodeId: 'a', role: 'plan:cache-hit', model: null, usage: usage(0, 0), costUsd: 0, createdAt: 't' });
+    expect(loadCostSamples(db, 'execute')).toEqual([]);
+    expect(loadCostSamples(db, 'plan')).toEqual([]);
+  });
+
+  it('reads rows written before features were recorded', async () => {
+    const { loadCostSamples } = await import('./tokens.js');
+    const db = createDb(DB);
+    recordDispatchUsage(db, { nodeId: 'a', role: 'execute', model: 'haiku', usage: usage(10, 5), costUsd: 0, createdAt: 't' });
+    expect(loadCostSamples(db, 'execute')[0]).toEqual({ role: 'execute', model: 'haiku', tokens: 15 });
+  });
+});

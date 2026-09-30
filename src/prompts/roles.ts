@@ -109,7 +109,16 @@ function stanza(role: PromptRole, p: RolePromptParams): string {
   }
 }
 
+/** The two halves of a role prompt, kept apart because they change at different
+ *  rates: the constitution is the same for every dispatch, the stanza for every
+ *  dispatch of one role and task. The prompt compiler lays them out by that
+ *  difference so the longest possible run of leading bytes stays identical. */
+export function buildRolePromptParts(role: PromptRole, params: RolePromptParams = {}): { constitution: string; stanza: string } {
+  return { constitution: HARNESS_CONSTITUTION, stanza: stanza(role, params) };
+}
+
 /** The constitution plus a role stanza, for `--append-system-prompt`. */
 export function buildRolePrompt(role: PromptRole, params: RolePromptParams = {}): string {
-  return `${HARNESS_CONSTITUTION}\n\n${stanza(role, params)}`;
+  const { constitution, stanza: text } = buildRolePromptParts(role, params);
+  return `${constitution}\n\n${text}`;
 }

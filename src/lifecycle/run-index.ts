@@ -19,7 +19,7 @@
 import type { Db } from '../db/client.js';
 import type { StructuredEvent } from '../adapters/adapter.js';
 import type { ToolGrant } from '../adapters/adapter.js';
-import { observationsFromEvents, type Observation } from '../execution/observation.js';
+import { observationsFromEvents, isVerifyingCommand, type Observation } from '../execution/observation.js';
 import { projectObservation } from '../execution/tool-projections/registry.js';
 import { putContextObject } from '../context/store.js';
 import { publishContextVersion } from '../context/rpc.js';
@@ -28,6 +28,10 @@ import { dependenciesFromEvents } from '../context/dependencies.js';
 import { recordContextUtility } from '../learning/context-utility.js';
 import type { TaskClass } from '../intelligence/task-judge.js';
 import type { DispatchReceipt } from '../context/dispatch-context.js';
+import { applyManifestDelta } from '../context/runtime/task-context-manifest.js';
+import { parseResultEnvelope } from '../intelligence/result-envelope.js';
+import type { SecurityScope } from '../context/types.js';
+import type { ManifestUpdate } from '../context/runtime/manifest-types.js';
 
 /** Raw output larger than this is left in the event log and referenced rather
  *  than inlined. The threshold is generous: the cost of inlining a small
@@ -38,6 +42,10 @@ const INLINE_LIMIT = 8_000;
 export interface IndexedRun {
   observations: number;
   refs: ContextRef[];
+  /** The refs that matter to the task as a whole, by the role they play in its
+   *  manifest. Everything else the run did stays reachable through the event
+   *  log and the graph, and is not the manifest's business. */
+  sections: { validation: ContextRef[]; artifacts: ContextRef[] };
   /** Repo-relative paths the run read, from its own tool calls. */
   read: string[];
 }
@@ -57,6 +65,7 @@ export function indexRunObservations(
 ): IndexedRun {
   const scope = scopeOf(input.grant.allowedTools, input.grant.readOnly);
   const refs: ContextRef[] = [];
+  const sections: IndexedRun['sections'] = { validation: [], artifacts: [] };
   let observations: Observation[] = [];
 
   try {
@@ -88,6 +97,8 @@ export function indexRunObservations(
       });
       refs.push(object.ref);
       publishContextVersion(object);
+      const role = manifestRoleOf(observation);
+      if (role) sections[role].push(object.ref);
 
       // The reduced view, as a derived object. Stored rather than recomputed so
       // a consumer choosing a representation does not re-run every reducer.
@@ -116,7 +127,34 @@ export function indexRunObservations(
     read = [];
   }
 
-  return { observations: observations.length, refs, read };
+  return { observations: observations.length, refs, sections, read };
+}
+
+const EDITING_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit']);
+
+/** Which manifest section, if any, one observation belongs in. Deterministic
+ *  and cheap: a check is a command that *is* a test runner, build or type
+ *  check (the same predicate validation uses), and something produced is a
+ *  file the run wrote. */
+function manifestRoleOf(observation: Observation): 'validation' | 'artifacts' | null {
+  // A check that failed is still the task's validation evidence — often the
+  // most important kind — so success is only asked of what the run produced.
+  if (EDITING_TOOLS.has(observation.tool.name)) return observation.execution.succeeded ? 'artifacts' : null;
+  if (observation.tool.name === 'Bash' && isVerifyingCommand(String(observation.invocation.input.command ?? ''))) return 'validation';
+  return null;
+}
+
+/** Records a dispatch's checks and products against its task, as one manifest
+ *  revision. Total, for the reason the rest of this file is: a run that
+ *  produced an answer must not be failed by writing down what it did. */
+export function recordRunInManifest(db: Db, taskId: string, indexed: IndexedRun): ManifestUpdate | null {
+  if (indexed.sections.validation.length === 0 && indexed.sections.artifacts.length === 0) return null;
+  try {
+    return applyManifestDelta(db, taskId, { add: indexed.sections });
+  } catch (err) {
+    console.error(`Failed to record a run in the manifest of task ${taskId}:`, err);
+    return null;
+  }
 }
 
 /** Scores what the projection predicted against what the run read. Total, for
@@ -148,4 +186,45 @@ export function scoreProjection(
     tokensAvoided: input.tokensAvoided ?? 0,
     executionAvoided: input.executionAvoided ?? false,
   });
+}
+
+/** A finished piece of work, as a fact the task can point at.
+ *
+ *  The child's complete answer stays where it is (`nodes.answer` and the event
+ *  log). What is stored is its own structured account of itself — summary,
+ *  findings, files changed, what it could not verify — which is what a parent or
+ *  a dependent actually reads, bounded to a few hundred tokens. Falls back to the
+ *  opening of the prose for a child that did not report structurally.
+ *
+ *  Total, like everything here. */
+export function recordChildFinding(
+  db: Db,
+  input: { taskId: string; childId: string; goal: string; report: string; succeeded: boolean; scope: SecurityScope },
+): ContextRef | null {
+  try {
+    if (!input.report.trim()) return null;
+    const parsed = parseResultEnvelope(input.report, input.succeeded ? 'success' : 'failed');
+    const { envelope } = parsed;
+    const digest = parsed.structured
+      ? [
+          `${envelope.status}: ${envelope.summary}`,
+          ...envelope.findings.map((f) => `- ${f}`),
+          envelope.changedFiles.length ? `changed: ${envelope.changedFiles.join(', ')}` : '',
+          envelope.uncertainties.length ? `not verified: ${envelope.uncertainties.join('; ')}` : '',
+        ].filter(Boolean).join('\n')
+      : parsed.prose.slice(0, 1_200);
+    const object = putContextObject(db, {
+      semanticId: `finding:${input.childId}`,
+      kind: 'finding',
+      content: digest.slice(0, 4_000),
+      source: { kind: 'inline', locator: input.childId },
+      scope: input.scope,
+      reusePolicy: 'SUGGESTION_ONLY',
+    });
+    const update = applyManifestDelta(db, input.taskId, { add: { facts: [object.ref] } });
+    return update.rejected.length === 0 ? object.ref : null;
+  } catch (err) {
+    console.error(`Failed to record the finding of child ${input.childId}:`, err);
+    return null;
+  }
 }

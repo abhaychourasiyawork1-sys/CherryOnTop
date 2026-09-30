@@ -23,6 +23,7 @@
  *  Doubt is priced through the pessimistic bound: capability at its lower edge
  *  against difficulty at its upper one. An operator who names a model narrows the
  *  menu to it; budget is a constraint the market enforces. */
+import type { CostQuantiles } from '../efficiency/execution-cost-model.js';
 import { modelForTier, hasExplicitModel, dispatchOptionsFor, type DispatchRole } from '../config/efficiency.js';
 import { actionCandidate, type ActionCandidate } from '../decision/actions.js';
 import type { EconomicState } from '../decision/state.js';
@@ -66,6 +67,11 @@ export interface ExecutionCandidateInput {
   /** Measured mean tokens per dispatch of this role on each model, from the
    *  ledger (`(default)` for the runtime default). Replaces the token guess. */
   measuredTokens?: Readonly<Record<string, number>>;
+  /** A finer estimate for one model × effort, when the cost model has enough
+   *  history to condition on both. Takes precedence over `measuredTokens` for
+   *  that candidate and hands back the quantiles it rested on, so the decision
+   *  can be checked against what the dispatch then cost. */
+  measuredTokensOf?: (model: string | undefined, effort: string) => { tokens: number; quantiles: CostQuantiles } | undefined;
   /** The operator's named model was refused by the harness itself: propose
    *  the full menu rather than fail the run over a knob. */
   relaxOperatorModel?: boolean;
@@ -140,8 +146,10 @@ export function generateExecutionCandidates(input: ExecutionCandidateInput): Act
   const out: ActionCandidate[] = [];
   for (const harness of input.harnesses) {
     for (const model of models) {
-      const measured = input.measuredTokens?.[model ?? DEFAULT_KEY];
+      const modelMeasured = input.measuredTokens?.[model ?? DEFAULT_KEY];
       for (const effort of harness.efforts) {
+        const finer = input.measuredTokensOf?.(model, effort);
+        const measured = finer?.tokens ?? modelMeasured;
         const identity = {
           modelKey: modelKeyFor(input.role, harness.harness, model),
           candidateKey: candidateKeyFor(input.role, harness.harness, model, effort),
@@ -169,6 +177,7 @@ export function generateExecutionCandidates(input: ExecutionCandidateInput): Act
             difficulty: input.difficulty, difficultyUpper,
             facts: identity.facts, candidateKey: identity.candidateKey,
             unitTokens: unit,
+            ...(finer ? { costQuantiles: finer.quantiles } : {}),
             // The family outcomes teach: every effort of one model on one harness.
             modelKey: identity.modelKey,
             capabilityFingerprint: harness.fingerprint,

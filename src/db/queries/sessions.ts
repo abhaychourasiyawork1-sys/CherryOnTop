@@ -116,6 +116,27 @@ export function sessionMemoryFor(db: Db, sessionId: string, before?: string): st
   return renderSessionMemory(sessionTurns(db, sessionId, before));
 }
 
+/** The same memory at successively tighter budgets, richest first. What the
+ *  prompt compiler walks down when the assembled prompt is over its ceiling:
+ *  each rung keeps the first turn and the newest turns (the shape above) and
+ *  compresses more of the middle. Only rungs that actually shrink are kept, so
+ *  a short conversation has the single rendering it always had. */
+export const MEMORY_LADDER = [
+  MEMORY_BUDGET,
+  { recentTurns: 2, answerChars: 1500, totalChars: 8000 },
+  { recentTurns: 1, answerChars: 400, totalChars: 2000 },
+];
+
+export function sessionMemoryLadder(db: Db, sessionId: string, before?: string): string[] {
+  const turns = sessionTurns(db, sessionId, before);
+  const rungs: string[] = [];
+  for (const budget of MEMORY_LADDER) {
+    const text = renderSessionMemory(turns, budget);
+    if (rungs.length === 0 || text.length < rungs[rungs.length - 1].length) rungs.push(text);
+  }
+  return rungs.filter((text) => text.length > 0);
+}
+
 function outcome(state: string): string {
   return state === 'COMPLETE' ? 'done' : state === 'FAILED' ? 'failed' : state === 'CANCELLED' ? 'stopped' : 'in progress';
 }

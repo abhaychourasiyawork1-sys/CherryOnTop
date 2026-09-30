@@ -33,7 +33,8 @@ import { insertDecision } from '../db/queries/decisions.js';
 import { listMemory, getRuntimeStats, type RuntimeStat } from '../db/queries/memory.js';
 import { tokensByRole } from '../db/queries/tokens.js';
 import { getCostForNodes } from '../db/queries/stats.js';
-import { memory } from '../db/schema.js';
+import { eq } from 'drizzle-orm';
+import { memory, events } from '../db/schema.js';
 import { publish } from '../events/bus.js';
 import type { DispatchRole } from '../config/efficiency.js';
 import {
@@ -65,6 +66,11 @@ import { economicStateFor } from './economic-runtime.js';
 import { compileHarnessRequest, HARNESS_QUESTIONS } from '../system1/compiler.js';
 import type { JudgeOutcome, System1 } from '../system1/guard.js';
 import { DEFAULT_SYSTEM1_CALL_USD } from '../decision/system1-decision.js';
+import { modelCapabilities, currentAccount } from '../execution/model-capability.js';
+import {
+  estimateQuantiles, riskAdjusted, riskAversion, coverageOf, type CostSample, type CostQuantiles,
+} from '../efficiency/execution-cost-model.js';
+import { loadCostSamples } from '../db/queries/tokens.js';
 
 // ---------------------------------------------------------------------------
 // Capability discovery
@@ -179,6 +185,26 @@ function refusalsFor(nodeId: string, candidates: ActionCandidate[]): Map<string,
   return out;
 }
 
+/** Candidates whose model the fleet has already learned it cannot run on this
+ *  account, and is still inside the cooldown of learning it. Process-wide, unlike
+ *  a node's own refusals: the quota or entitlement that produced the refusal is
+ *  the account's, so the next node should not pay a sandbox to be told again.
+ *
+ *  Soft by construction — see the fall-back in `prepareMarket`. */
+function capabilityRefusals(candidates: ActionCandidate[]): Map<string, string> {
+  const out = new Map<string, string>();
+  const account = currentAccount();
+  for (const c of candidates) {
+    const state = modelCapabilities.state({
+      provider: c.metadata.harness as string,
+      model: (c.metadata.model as string | undefined) ?? 'default',
+      account,
+    });
+    if (state) out.set(c.id, `model_capability_cooldown:${state.failureClass ?? 'unavailable'}`);
+  }
+  return out;
+}
+
 /** The state a node's decisions are made and committed against: storage's
  *  view plus this process's reservations and commitment epoch. */
 export function marketViewOf(nodeId: string, observed: EconomicState): EconomicState {
@@ -216,16 +242,14 @@ const DEFAULT_DISPATCH: Record<DispatchRole, { tokens: number; latencyMs: number
   synthesize: { tokens: 5_000, latencyMs: 20_000 },
 };
 
-/** Mean input+output tokens per dispatch of this role, from the rows
- *  `recordUsage` already writes — the same unit the task's token budget
- *  counts. The unit every candidate for the role is priced in. */
+/** Median input+output tokens of one dispatch of this role, from the rows
+ *  `recordUsage` already writes — the same unit the task's token budget counts.
+ *  With too little history to be evidence (`MIN_SAMPLES`) it is the static
+ *  prior, exactly as before any history existed. */
 export function measuredDispatchTokens(db: Db, role: DispatchRole): number {
   try {
-    const rows = tokensByRole(db).rows.filter((r) => r.role === role);
-    const dispatches = rows.reduce((sum, r) => sum + r.dispatches, 0);
-    if (dispatches === 0) return DEFAULT_DISPATCH[role].tokens;
-    const tokens = rows.reduce((sum, r) => sum + r.inputTokens + r.outputTokens, 0);
-    return Math.max(1, Math.round(tokens / dispatches));
+    const q = estimateQuantiles(loadCostSamples(db, role), { role });
+    return q ? Math.max(1, Math.round(q.p50)) : DEFAULT_DISPATCH[role].tokens;
   } catch {
     return DEFAULT_DISPATCH[role].tokens;
   }
@@ -402,20 +426,6 @@ function roleOpennessFor(role: DispatchRole): number {
   return roleOpenness(turns(role), Math.max(1, ...known));
 }
 
-/** Mean input+output tokens per dispatch of this role, per model, from the
- *  ledger. What each model has actually cost here replaces the prior's guess. */
-function measuredTokensByModel(db: Db, role: DispatchRole): Record<string, number> {
-  try {
-    const out: Record<string, number> = {};
-    for (const row of tokensByRole(db).rows.filter((r) => r.role === role && r.dispatches > 0)) {
-      out[row.model] = (row.inputTokens + row.outputTokens) / row.dispatches;
-    }
-    return out;
-  } catch {
-    return {};
-  }
-}
-
 /** A candidate that would need more than the task has left is not refused —
  *  it is priced as what it can be: a run capped by the live spend limit at
  *  what remains, which finishes only if the work turns out to fit. The market
@@ -471,6 +481,9 @@ export interface ExecutionSelectionInput {
    *  children's reports — priced by the market like any candidate. */
   alternatives?: ActionCandidate[];
   repository?: string;
+  /** What kind of work this is, when the caller judged it: one of the features
+   *  the cost model conditions on. */
+  taskClass?: string;
 }
 
 export interface ExecutionSelection {
@@ -509,6 +522,20 @@ const MAX_COMMIT_ATTEMPTS = 3;
 /** Everything a decision is made from — candidates, feasibility, budget caps,
  *  reuse and empirical estimates — without deciding. Shared by the real
  *  selection and by previews (the difficulty question's value-of-information). */
+function safeCostSamples(db: Db, role: DispatchRole): CostSample[] {
+  try {
+    return loadCostSamples(db, role);
+  } catch {
+    return [];
+  }
+}
+
+/** How much of the task's token budget is already gone, on [0,1]. */
+function spentShare(state: EconomicState): number {
+  const total = state.resources.totalTokenBudget;
+  return total > 0 ? Math.min(1, Math.max(0, state.resources.consumedTokens / total)) : 0;
+}
+
 function prepareMarket(db: Db, input: ExecutionSelectionInput) {
   const harnesses = input.adapters.map((adapter) => capabilitiesOf(adapter));
   const observedState = marketState(db, input.nodeId, input.goal);
@@ -527,10 +554,31 @@ function prepareMarket(db: Db, input: ExecutionSelectionInput) {
   const observations = loadObservations(db);
   const capability = fitCapability(capabilityObservations(observations));
 
+  // What a dispatch of this role costs, as a distribution learned from the
+  // ones already paid for, priced at a point between the median and the tail
+  // that depends on how much room and how much slack the task has. Every figure
+  // falls back to the static prior when its segment has too little history.
+  const samples = safeCostSamples(db, input.role);
+  const lambda = riskAversion({
+    qualityFloor: observedState.constraints.qualityFloor,
+    budgetSpentShare: spentShare(observedState),
+  });
+  const roleQuantiles = estimateQuantiles(samples, { role: input.role });
+  const unitTokens = roleQuantiles
+    ? Math.max(1, Math.round(riskAdjusted(roleQuantiles, lambda)))
+    : DEFAULT_DISPATCH[input.role].tokens;
+  const measuredTokensOf = (model: string | undefined, effort: string) => {
+    const quantiles = estimateQuantiles(samples, {
+      role: input.role, model: model ?? '(default)', effort, ...(input.taskClass ? { taskClass: input.taskClass } : {}),
+    });
+    return quantiles
+      ? { tokens: Math.max(1, Math.round(riskAdjusted(quantiles, lambda))), quantiles: { ...quantiles, lambda } as CostQuantiles }
+      : undefined;
+  };
   const generate = (relaxOperatorModel: boolean) => generateExecutionCandidates({
     role: input.role, difficulty: dispatchD, difficultyUpper: dispatchUpper, capability, harnesses, relaxOperatorModel,
-    measuredTokens: measuredTokensByModel(db, input.role),
-    dispatchTokens: measuredDispatchTokens(db, input.role),
+    measuredTokensOf,
+    dispatchTokens: unitTokens,
     dispatchLatencyMs: unit.latencyMs,
   });
   const constrainHarness = (candidates: ActionCandidate[]) => {
@@ -545,7 +593,19 @@ function prepareMarket(db: Db, input: ExecutionSelectionInput) {
   // another candidate rather than failing over a knob — and the receipt says
   // so on every candidate.
   const narrowed = generate(false);
+  // What was learned about the account is applied beside what this node learned,
+  // but remembered as a separate kind of refusal: it is a cached belief, and a
+  // cached belief must never be what leaves the market with nothing to run.
+  const softRefused = new Set<string>();
+  const applyCapability = (candidates: ActionCandidate[]) => {
+    for (const [id, why] of capabilityRefusals(candidates)) {
+      if (refused.has(id)) continue;
+      refused.set(id, why);
+      softRefused.add(id);
+    }
+  };
   for (const [id, why] of refusalsFor(input.nodeId, narrowed)) refused.set(id, why);
+  applyCapability(narrowed);
   constrainHarness(narrowed);
   const nothingNarrowedRuns = markFeasibility({ candidates: narrowed, harnesses, refused })
     .every((c) => typeof c.metadata.infeasible === 'string');
@@ -554,8 +614,16 @@ function prepareMarket(db: Db, input: ExecutionSelectionInput) {
     && narrowed.some((c) => refused.get(c.id) !== undefined && refused.get(c.id) !== 'dispatch_assembled_for_other_harness');
   const generated = operatorRefused ? generate(true) : narrowed;
   for (const [id, why] of refusalsFor(input.nodeId, generated)) refused.set(id, why);
+  applyCapability(generated);
   constrainHarness(generated);
-  const executable = capToBudget(markFeasibility({ candidates: generated, harnesses, refused }), observedState);
+  let executable = capToBudget(markFeasibility({ candidates: generated, harnesses, refused }), observedState);
+  // A cooldown that would leave nothing to run is a stale belief or a genuinely
+  // dead account; either way the runtime, not the cache, should be the one to
+  // say no — it costs one sandbox, and its own fallback path handles the answer.
+  if (softRefused.size > 0 && executable.every((c) => typeof c.metadata.infeasible === 'string')) {
+    for (const id of softRefused) refused.delete(id);
+    executable = capToBudget(markFeasibility({ candidates: generated, harnesses, refused }), observedState);
+  }
 
   // Exact reuse is itself a candidate, priced deterministically: its cost is
   // nothing and its outcome is the answer already validated.
@@ -680,6 +748,15 @@ export function settleExecution(
     },
   });
   pending.set(nodeId, entry);
+  // The distribution this candidate was priced from, against what it then
+  // cost: the only way to learn whether the cost model was calibrated. Recorded
+  // beside the settlement, not inside it, so `market.settled` keeps its shape.
+  const predictedCost = selection.candidate.metadata.costQuantiles as (CostQuantiles & { lambda?: number }) | undefined;
+  if (predictedCost) {
+    emit(db, nodeId, 'market.cost_calibration', {
+      candidate: selection.candidate.id, predicted: predictedCost, actualTokens: actual.tokens,
+    });
+  }
   emit(db, nodeId, 'market.settled', {
     commitmentId: settled.commitment.commitmentId,
     decisionId: settled.commitment.decisionId,
@@ -871,4 +948,18 @@ export async function refineDifficulty(
   const confidence = outcome.judgment?.confidence.provider ?? 0.5;
   semanticDifficulty.set(input.nodeId, { value, confidence });
   return { difficulty: withSemanticEstimate(base, value, confidence), valueUsd, asked: true, outcome };
+}
+
+/** How well the cost model has predicted, from the calibration records in the
+ *  event log: the share of dispatches that came in at or under each predicted
+ *  quantile. A calibrated model reads about 0.5, 0.75 and 0.9. */
+export function costCalibration(db: Db) {
+  const records: Array<{ predicted: CostQuantiles; actual: number }> = [];
+  for (const row of db.select().from(events).where(eq(events.type, 'market.cost_calibration')).all()) {
+    const payload = row.payload as { predicted?: CostQuantiles; actualTokens?: number } | null;
+    if (payload?.predicted && typeof payload.actualTokens === 'number') {
+      records.push({ predicted: payload.predicted, actual: payload.actualTokens });
+    }
+  }
+  return coverageOf(records);
 }

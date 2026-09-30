@@ -149,6 +149,24 @@ describe('model and effort follow the task’s difficulty through learned capabi
   });
 });
 
+describe('a measured estimate can be conditioned on more than the model', () => {
+  it('prefers a per-effort estimate to the per-model one, and records what it rested on', () => {
+    const quantiles = { p50: 100_000, p75: 130_000, p90: 200_000, sampleCount: 12, modelVersion: 'segmented-quantile-v1', segment: 'role+model+effort' };
+    const measured = generateExecutionCandidates({
+      role: 'execute', difficulty: 0.2, harnesses: [claude], dispatchTokens: 40_000, dispatchLatencyMs: 1,
+      measuredTokens: { sonnet: 40_000 },
+      measuredTokensOf: (model, effort) => (model === 'sonnet' && effort === 'high' ? { tokens: 160_000, quantiles } : undefined),
+    });
+    const high = measured.find((c) => c.id === candidateIdFor('claude-code', 'sonnet', 'high'))!;
+    const low = measured.find((c) => c.id === candidateIdFor('claude-code', 'sonnet', 'low'))!;
+    expect(high.tokenCost).toBe(160_000);
+    expect(high.metadata.costQuantiles).toEqual(quantiles);
+    // Every other effort falls back to the model-level figure.
+    expect(low.tokenCost).toBe(40_000);
+    expect(low.metadata.costQuantiles).toBeUndefined();
+  });
+});
+
 describe('a wrong result costs more the worse it can be detected', () => {
   it('prices undetected error above detected error', () => {
     const c = candidates(0.9)[0];

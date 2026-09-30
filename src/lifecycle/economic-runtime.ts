@@ -216,7 +216,10 @@ export interface ExecutionBoundaryInput {
    *  Passed in rather than recomputed: the selection has already priced these
    *  against the repository inventory, and asking a candidate source to do it
    *  again would mean a second scan and a second answer. */
-  fullArtifactRequests?: Array<{ path: string; tokens: number; expectedNetValue: number }>;
+  fullArtifactRequests?: Array<{
+    path: string; tokens: number; expectedNetValue: number;
+    representation?: 'full' | 'symbol'; symbol?: string; fullTokens?: number;
+  }>;
   /** Already-spent dollars, from the caller, which has them. Kept out of this
    *  module so it does not acquire a second way to ask what a node cost. */
   spentUsd?: number;
@@ -478,7 +481,14 @@ function evidenceCandidates(input: ExecutionBoundaryInput, state: EconomicState)
     qualityRisk: 0,
     expectedInformationGain: state.uncertainty.structural,
     confidence: state.trajectory.orchestrationConfidence,
-    metadata: { path: request.path, source: 'context-selection' },
+    metadata: {
+      path: request.path, source: 'context-selection',
+      // Which rung of the ladder is being bought first, and the price of the
+      // rung above it — what the boundary re-prices from if the first fails.
+      ...(request.representation === 'symbol' && request.symbol
+        ? { representation: 'symbol', symbol: request.symbol, fullTokens: request.fullTokens ?? request.tokens }
+        : { representation: 'full' }),
+    },
   }));
 }
 

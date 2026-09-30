@@ -23,10 +23,10 @@ import { artifactsFromEvent } from '../execution/artifacts.js';
 import { treeState, treeChanges } from '../execution/tree-changes.js';
 import { codexAdapter } from '../adapters/codex.js';
 import { buildPlanPrompt, parsePlan, type ParsedPlan } from '../intelligence/plan.js';
-import { buildSynthesisPrompt, type ChildReport } from '../intelligence/synthesize.js';
+import type { ChildReport } from '../intelligence/synthesize.js';
 import { decideIntegration } from '../intelligence/integrate-results.js';
 import { answerOf } from '../db/queries/answers.js';
-import { sessionMemoryFor } from '../db/queries/sessions.js';
+import { sessionMemoryLadder } from '../db/queries/sessions.js';
 import { recordRunOutcome, recordStrategyOutcome, listMemory } from '../db/queries/memory.js';
 import { getCostForNodes } from '../db/queries/stats.js';
 import { resolveCredentials, checkCredentials, gitIdentity, githubCredentials, grantsGitHub } from '../execution/credentials.js';
@@ -34,7 +34,7 @@ import { sandboxLimiter, maxConcurrentFromEnv, CRITICAL_PATH } from '../executio
 import { efficiencyLedger, type LedgerRole } from '../efficiency/ledger.js';
 import type { EfficiencyOutcome } from '../efficiency/metrics.js';
 import type { DispatchReceipt } from '../context/dispatch-context.js';
-import { buildRolePrompt } from '../prompts/roles.js';
+import { buildRolePrompt, buildRolePromptParts } from '../prompts/roles.js';
 import os from 'node:os';
 import { deleteNodeNetworkPolicy, deleteNodeJobs } from '../k8s/cleanup.js';
 import { subtreeNodeIds } from '../db/queries/nodes.js';
@@ -55,7 +55,10 @@ import { extractAnchors } from '../efficiency/task-economics.js';
 import { planCacheKey, getCachedPlan, putCachedPlan } from '../db/queries/plan-cache.js';
 import { resultCacheKey, getCachedResult, putCachedResult, type CachedResult } from '../db/queries/result-cache.js';
 import { dependenciesFromEvents, buildDependencyFingerprint, dependenciesValid } from '../context/dependencies.js';
-import { indexRunObservations, scoreProjection } from './run-index.js';
+import { indexRunObservations, scoreProjection, recordRunInManifest, recordChildFinding } from './run-index.js';
+import { getManifest } from '../context/runtime/task-context-manifest.js';
+import { createDispatchLedger, type DispatchLedger } from '../observability/context-ledger.js';
+import { assembleExecutePrompt, assemblePlanPrompt, assembleSynthesisPrompt, promptBudgetFromConfig } from '../prompt/prompt-runtime.js';
 import { buildAgentEnvelope, renderEnvelope, EnvelopeError } from '../intelligence/agent-envelope.js';
 import { putAgentEnvelope, getAgentEnvelope } from '../db/queries/envelopes.js';
 import { scopeOf } from '../context/types.js';
@@ -75,15 +78,15 @@ import { templateFor, pruneTemplate } from '../intelligence/execution-templates.
 import type { TaskClass } from '../intelligence/task-judge.js';
 import { authorizeExecution, receipt, type DecisionReceipt, type DelegationHistory } from '../decision/engine.js';
 import { candidateFingerprint } from '../decision/transition.js';
+import { modelCapabilities, currentAccount, classifyRuntimeFailure, ALL_MODELS } from '../execution/model-capability.js';
 import {
-  selectExecution, settleExecution, refuseModel, forgetExecutionNode, recordCandidateOutcomes,
+  selectExecution, settleExecution, cancelExecution, refuseModel, forgetExecutionNode, recordCandidateOutcomes,
   observeHarnessHealth, measuredDispatchTokens, marketViewOf, commitDecision, settleDecision, refineDifficulty,
   type ExecutionSelection,
 } from './execution-market.js';
 import { usdPerToken, isConstraintCode } from '../decision/utility.js';
 import { uninformedDifficulty, withSemanticEstimate } from '../intelligence/difficulty.js';
 import { rateLimitFromEvents } from '../execution/rate-limit.js';
-import { withRepoContext } from '../intelligence/repo-map.js';
 import { dispatchContextFor, warmRepoInventory } from '../context/dispatch-context-cache.js';
 import { recordDispatchUsage, turnsForNode } from '../db/queries/tokens.js';
 import { shouldRetryWithoutModel, recoveredUsage } from '../execution/tokens.js';
@@ -319,9 +322,19 @@ export function realDelegateDeps(db: Db, parentId?: string): DelegateChildDeps {
     waitForChild: async (childId) => {
       const result = await waitForNodeCompletion(db, childId);
       const fork = forks.get(childId);
-      if (!fork) return result;
-      forks.delete(childId);
-      return settleFork(fork, result);
+      const settled = fork ? (forks.delete(childId), await settleFork(fork, result)) : result;
+      // What the finished piece established, recorded against the task so the
+      // manifest can point at it. The child's report itself is untouched.
+      if (settled.succeeded && !settled.cancelled) {
+        const child = getNode(db, childId);
+        if (child) {
+          recordChildFinding(db, {
+            taskId: taskRootId(db, childId), childId, goal: child.goal, report: answerOf(db, childId),
+            succeeded: true, scope: scopeOf(grantOf(child.contract.authority).allowedTools, grantOf(child.contract.authority).readOnly),
+          });
+        }
+      }
+      return settled;
     },
     getFindings: (childId) => answerOf(db, childId),
     markSuperseded: (failedId, replacementId) => {
@@ -376,6 +389,23 @@ async function runOnMarket(
         observeHarnessHealth(current.adapter.name, 'degraded');
       } else if (result.succeeded) {
         observeHarnessHealth(current.adapter.name, 'healthy');
+      }
+    }
+    // What this run says about the account, remembered for every node. A
+    // success clears a block; a refusal the runtime itself worded as one starts
+    // a cooldown, so the next node does not pay a sandbox to be told again.
+    if (current.adapter) {
+      const account = currentAccount();
+      const model = current.model ?? 'default';
+      if (result.succeeded) {
+        modelCapabilities.observeSuccess({ provider: current.adapter.name, model, account });
+      } else {
+        const failure = classifyRuntimeFailure(result.events as StructuredEvent[]);
+        if (failure === 'model_unavailable') {
+          modelCapabilities.observeFailure({ provider: current.adapter.name, model, account }, 'model_unavailable');
+        } else if (failure === 'auth') {
+          modelCapabilities.observeFailure({ provider: current.adapter.name, model: ALL_MODELS, account }, 'auth');
+        }
       }
     }
     settleExecution(db, nodeId, current, {
@@ -588,6 +618,46 @@ function publishExecutionPlan(db: Db, nodeId: string, taskClass: TaskClass, know
   }
 }
 
+/** The task a node belongs to: the root of its tree. */
+function taskRootId(db: Db, nodeId: string): string {
+  let current = nodeId;
+  for (let depth = 0; depth < 32; depth++) {
+    const parent = getNode(db, current)?.parentId;
+    if (!parent) return current;
+    current = parent;
+  }
+  return current;
+}
+
+/** One trace per logical dispatch: the prompt it was compiled from, what the
+ *  boundary bought for it, what the runtime then spent. Total — measuring must
+ *  never cost the run. */
+function newDispatchLedger(db: Db, nodeId: string, role: DispatchRole): DispatchLedger {
+  let taskId = nodeId;
+  try { taskId = taskRootId(db, nodeId); } catch { /* the node id is the best key left */ }
+  return createDispatchLedger({ taskId, nodeId, dispatchId: `${nodeId}/${role}/${randomUUID().slice(0, 8)}` });
+}
+
+function flushDispatchLedger(db: Db, nodeId: string, dispatchLedger: DispatchLedger): void {
+  dispatchLedger.flush((type, payload) => {
+    const now = new Date().toISOString();
+    const id = appendEvent(db, { nodeId, type, payload, createdAt: now });
+    publish({ id, nodeId, type, payload, createdAt: now });
+  });
+}
+
+/** A prompt the compiler refused is a dispatch that must not happen: a required
+ *  piece did not fit the argument limit, and sending it would fail in the kernel
+ *  with a cryptic E2BIG instead of saying so. */
+function refusedStep(reason: string) {
+  return {
+    succeeded: false,
+    message: `This dispatch's prompt cannot fit the runtime's input limit: ${reason}`,
+    events: [] as StructuredEvent[],
+    usage: { ...ZERO_USAGE },
+  };
+}
+
 /** Publishes what context this dispatch was given and what it left out.
  *
  *  The receipt is the answer to "why did the agent not know about that file?".
@@ -649,6 +719,8 @@ async function economicBoundary(
   input: {
     nodeId: string; goal: string; worktreePath: string;
     fullArtifactRequests?: DispatchReceipt['fullArtifactRequests'];
+    /** Told what was actually bought, so the dispatch's trace can say so. */
+    onAcquired?: (a: { path: string; tokens: number; representation: 'full' | 'symbol' }) => void;
   },
 ): Promise<string> {
   try {
@@ -805,7 +877,10 @@ async function carryOut(
   db: Db,
   decision: ActionDecision,
   state: EconomicState,
-  input: { nodeId: string; goal: string; worktreePath: string },
+  input: {
+    nodeId: string; goal: string; worktreePath: string;
+    onAcquired?: (a: { path: string; tokens: number; representation: 'full' | 'symbol' }) => void;
+  },
 ): Promise<string> {
   const { action } = decision;
 
@@ -814,6 +889,9 @@ async function carryOut(
   const path = typeof action.metadata.path === 'string' ? action.metadata.path : null;
   if (action.kind !== 'acquire_evidence' || !path) return '';
 
+  const symbol = action.metadata.representation === 'symbol' && typeof action.metadata.symbol === 'string'
+    ? action.metadata.symbol : null;
+  const fullTokens = typeof action.metadata.fullTokens === 'number' ? action.metadata.fullTokens : action.tokenCost;
   const result = await requestEvidenceAtBoundary({
     state,
     worktreePath: input.worktreePath,
@@ -825,13 +903,19 @@ async function carryOut(
       acquisitionCost: action.tokenCost,
       qualityRisk: action.qualityRisk,
       reasonCodes: decision.reasonCodes,
+      // The named declaration first; the file only if that cannot be delimited
+      // and the file still pays at its own price.
+      ...(symbol ? { target: { symbol, fullAcquisitionCost: fullTokens } } : {}),
     },
   });
 
   publishEvidenceOutcome(db, input.nodeId, path, result.acquired, result.tokens, result.reasonCodes);
   if (!result.acquired || !result.content) return '';
-  publishProgress(db, input.nodeId, `Sending ${path} rather than letting the agent go and find it`);
-  return renderAcquiredEvidence(path, result.content);
+  input.onAcquired?.({ path, tokens: result.tokens, representation: result.representation ?? 'full' });
+  publishProgress(db, input.nodeId, result.representation === 'symbol'
+    ? `Sending just \`${symbol}\` from ${path} rather than letting the agent go and find it`
+    : `Sending ${path} rather than letting the agent go and find it`);
+  return renderAcquiredEvidence(path, result.content, result.excerpt);
 }
 
 /** A decision the market made and then could not commit — the state moved,
@@ -911,6 +995,8 @@ function recordUsage(
   r: {
     nodeId: string; role: string; model: string | null; usage: DispatchUsage;
     costUsd: number; tokensAvoided?: number;
+    /** What the cost model conditions on beyond role and model. */
+    effort?: string; taskClass?: string;
     /** Time inside the dispatch spent before the runtime said anything. */
     startupMs?: number;
   },
@@ -1260,12 +1346,28 @@ async function synthesizeChildren(db: Db, nodeId: string, goal: string): Promise
     // the lead's job — merge overlaps, keep file:line detail, order by importance,
     // no preamble — so when there is no stanza it has to go inline on the goal, or
     // it reaches nobody at all.
-    const roleSystemPrompt = rolePromptsEnabled() && honoursSystemPrompt(adapter)
-      ? buildRolePrompt('synthesize')
+    const synthRoleParts = rolePromptsEnabled() && honoursSystemPrompt(adapter)
+      ? buildRolePromptParts('synthesize')
       : undefined;
-    const synthesisGoal = roleSystemPrompt
-      ? buildSynthesisPrompt(goal, synthesisChildren)
-      : `${buildSynthesisPrompt(goal, synthesisChildren)}\n\n${buildRolePrompt('synthesize')}`;
+    // Every report was clipped on its own and then all of them concatenated, so
+    // eleven long ones overflowed the runtime's single-argument limit while each
+    // stayed inside its own ceiling. Compiled together they share one.
+    const synthLedger = newDispatchLedger(db, nodeId, 'synthesize');
+    const synthAssembled = assembleSynthesisPrompt({
+      ...(synthRoleParts ? { role: synthRoleParts } : { inlineRole: buildRolePrompt('synthesize') }),
+      goal,
+      children: synthesisChildren,
+    }, promptBudgetFromConfig());
+    if (synthAssembled.receipt) synthLedger.recordCompile(synthAssembled.receipt);
+    if (synthAssembled.refused) {
+      synthLedger.record('compile', { reason: `refused: ${synthAssembled.refused}` });
+      flushDispatchLedger(db, nodeId, synthLedger);
+      cancelExecution(nodeId, selection);
+      publishProgress(db, nodeId, `Could not combine the agents' reports — too much to fit in one prompt (${synthAssembled.refused}); their individual reports stand`);
+      return '';
+    }
+    const roleSystemPrompt = synthAssembled.system;
+    const synthesisGoal = synthAssembled.goal;
 
     const runOnce = (model: string | undefined, effort?: string) => dispatch(db, nodeId, () => executeStep({
       nodeId,
@@ -1300,7 +1402,13 @@ async function synthesizeChildren(db: Db, nodeId: string, goal: string): Promise
       nodeId, role: 'synthesize', model: usedModel ?? null,
       usage: result.usage, costUsd: costFromEvents(result.events),
       startupMs: result.startupMs,
+      ...(ran.selection.effort ? { effort: ran.selection.effort } : {}),
     });
+    synthLedger.record('model', {
+      tokens: result.usage.inputTokens + result.usage.outputTokens,
+      reason: `in=${result.usage.inputTokens} out=${result.usage.outputTokens} cacheRead=${result.usage.cacheReadTokens} turns=${result.usage.numTurns}`,
+    });
+    flushDispatchLedger(db, nodeId, synthLedger);
 
     // An errored `result` is the runtime's complaint, not an answer — and the
     // caller publishes whatever comes back here as the node's answer. With
@@ -1584,11 +1692,12 @@ function drainTiming(nodeId: string): { queuedMs: number; dispatchMs: number } {
  *  turns, recorded as an event so the receipt shows what the run was given.
  *  Empty for children (they get their parent's handoff instead) and for runs
  *  outside a session. */
-function sessionPreface(db: Db, nodeId: string): string {
+function sessionPrefaceRungs(db: Db, nodeId: string): string[] {
   const node = getNode(db, nodeId);
-  if (!node?.sessionId || node.parentId) return '';
-  return sessionMemoryFor(db, node.sessionId, nodeId);
+  if (!node?.sessionId || node.parentId) return [];
+  return sessionMemoryLadder(db, node.sessionId, nodeId);
 }
+
 
 /** Whether this node's DELEGATE was backed strongly enough that the planner
  *  may not overturn it. Read off the decision row, so it is the same numbers
@@ -1698,20 +1807,38 @@ async function planSubgoals(db: Db, nodeId: string, goal: string, maxChildren: n
     // the runtime will actually deliver it. buildPlanPrompt no longer states the
     // planner's job or its output contract, so when there is no stanza it has to
     // go inline on the goal.
-    const roleSystemPrompt = rolePromptsEnabled() && honoursSystemPrompt(adapter)
-      ? buildRolePrompt('plan')
+    const planRoleParts = rolePromptsEnabled() && honoursSystemPrompt(adapter)
+      ? buildRolePromptParts('plan')
       : undefined;
-    const preface = sessionPreface(db, nodeId);
+    const prefaceRungs = sessionPrefaceRungs(db, nodeId);
     const planPrompt0 = buildPlanPrompt(goal, maxChildren, { mustSplit: settled.settled });
-    const basePlan = preface ? `${preface}\n\n${planPrompt0}` : planPrompt0;
-    const planPrompt = roleSystemPrompt ? basePlan : `${basePlan}\n\n${buildRolePrompt('plan')}`;
     // The planner used to start from nothing and spend its turns discovering
     // the repository — the single most expensive coordination dispatch there
     // is, and it re-derives what the scan already knows. It splits the goal, so
     // it gets the same goal-selected context a child would.
-    const planContext = dispatchContextFor(db, worktreePath, goal);
+    const planGrant = readOnlyPlanningGrant(node ? grantOf(node.contract.authority) : undefined);
+    const planContext = dispatchContextFor(db, worktreePath, goal, {
+      working: { taskId: taskRootId(db, nodeId), scope: scopeOf(planGrant.allowedTools, planGrant.readOnly) },
+    });
     if (planContext) publishContextReceipt(db, nodeId, planContext.receipt);
-    const planGoal = planContext ? withRepoContext(planPrompt, planContext.content) : planPrompt;
+    const planLedger = newDispatchLedger(db, nodeId, 'plan');
+    const planAssembled = assemblePlanPrompt({
+      ...(planRoleParts ? { role: planRoleParts } : { inlineRole: buildRolePrompt('plan') }),
+      goal: planPrompt0,
+      repoContext: planContext?.content,
+      ...(prefaceRungs.length > 0 ? { preface: { text: prefaceRungs[0], fallbacks: prefaceRungs.slice(1) } } : {}),
+    }, promptBudgetFromConfig());
+    if (planContext) planLedger.record('select', { tokens: planContext.receipt.selectedTokens, reason: `selected=${planContext.receipt.selected.length}` });
+    if (planAssembled.receipt) planLedger.recordCompile(planAssembled.receipt);
+    if (planAssembled.refused) {
+      planLedger.record('compile', { reason: `refused: ${planAssembled.refused}` });
+      flushDispatchLedger(db, nodeId, planLedger);
+      cancelExecution(nodeId, selection);
+      publishProgress(db, nodeId, `Skipping the planning pass — its prompt cannot fit the runtime's input limit (${planAssembled.refused})`);
+      return NO_PLAN;
+    }
+    const roleSystemPrompt = planAssembled.system;
+    const planGoal = planAssembled.goal;
 
     const runOnce = (model: string | undefined, effort?: string) => dispatch(db, nodeId, () => executeStep({
       nodeId,
@@ -1728,7 +1855,7 @@ async function planSubgoals(db: Db, nodeId: string, goal: string, maxChildren: n
       maxTurns: opts.maxTurns,
       // Planning looks, it does not work. A node whose row we cannot read gets
       // the plain read-only set, which is narrower than anything it could hold.
-      grant: readOnlyPlanningGrant(node ? grantOf(node.contract.authority) : undefined),
+      grant: planGrant,
       onEvent: (event) => {
         // `plan.` rather than `exec.`, so a reader can tell "deciding how to
         // split this" from the work itself — they are two different sandbox
@@ -1759,7 +1886,13 @@ async function planSubgoals(db: Db, nodeId: string, goal: string, maxChildren: n
       nodeId, role: 'plan', model: usedModel ?? null,
       usage: result.usage, costUsd: costFromEvents(result.events),
       startupMs: result.startupMs,
+      ...(ran.selection.effort ? { effort: ran.selection.effort } : {}),
     });
+    planLedger.record('model', {
+      tokens: result.usage.inputTokens + result.usage.outputTokens,
+      reason: `in=${result.usage.inputTokens} out=${result.usage.outputTokens} cacheRead=${result.usage.cacheReadTokens} turns=${result.usage.numTurns}`,
+    });
+    flushDispatchLedger(db, nodeId, planLedger);
     // A planner that errored (turn cap, rate limit, timeout) gave no answer,
     // and an empty result from it is not "does not split". It used to be
     // cached as that verdict, so one planner cut off at its turn cap made
@@ -2137,7 +2270,8 @@ function productionMachine(db: Db, nodeId: string) {
         }
         // A follow-up in a chat means something only against the turns before
         // it — "what did you change?" — so the conversation is part of the key.
-        const conversation = sessionPreface(db, nodeId);
+        const conversationRungs = sessionPrefaceRungs(db, nodeId);
+        const conversation = conversationRungs[0] ?? '';
         const cacheGoal = conversation ? `${conversation}\n\n${input.goal}` : input.goal;
         // Validity is asked of each candidate answer in turn, newest first:
         // does the code it actually read still say what it said?
@@ -2168,7 +2302,7 @@ function productionMachine(db: Db, nodeId: string) {
         }
         const selection = selectExecution(db, {
           nodeId, role: 'execute', goal: input.goal, adapters: availableAdapters(),
-          difficulty: refined.difficulty,
+          difficulty: refined.difficulty, taskClass: verdict.taskClass,
           ...(node?.repoPath ? { repository: node.repoPath } : {}),
           reusable: (candidate) => {
             if (failedBefore) return null;
@@ -2260,6 +2394,7 @@ function productionMachine(db: Db, nodeId: string) {
         // avoid. No context (disabled, not a repo, scan failed) → the bare goal.
         const repoContext = proofOnly ? null : dispatchContextFor(db, worktreePath, input.goal, {
           signals: prep.economics, policy: prep.contextPolicy,
+          working: { taskId: taskRootId(db, nodeId), scope: scopeOf(grant.allowedTools, grant.readOnly) },
         });
         if (repoContext) publishContextReceipt(db, nodeId, repoContext.receipt);
 
@@ -2281,8 +2416,8 @@ function productionMachine(db: Db, nodeId: string) {
         const decisionSession = adapter.supportsSession === true
           && rolePromptsEnabled() && honoursSystemPrompt(adapter)
           && system1().ready();
-        const roleSystemPrompt = rolePromptsEnabled() && honoursSystemPrompt(adapter)
-          ? buildRolePrompt('execute', {
+        const rolePromptParts = rolePromptsEnabled() && honoursSystemPrompt(adapter)
+          ? buildRolePromptParts('execute', {
               decisionCapability: decisionSession,
               allowedTools: grant.allowedTools,
               constraints,
@@ -2303,13 +2438,9 @@ function productionMachine(db: Db, nodeId: string) {
                 : undefined,
             })
           : undefined;
-        const goalWithConstraints = (!roleSystemPrompt && constraints.length > 0)
+        const goalWithConstraints = (!rolePromptParts && constraints.length > 0)
           ? `Standing instructions (follow even where they conflict with the most direct path, and say so if one blocks you):\n${constraints.map((c) => `  - ${c}`).join('\n')}\n\n${input.goal}`
           : input.goal;
-        // The context goes on last, so it wraps the whole instruction block
-        // instead of landing between the standing instructions and the goal they
-        // govern — a file listing separating an instruction from its task is a
-        // worse prompt than either change intended on its own.
         // What the parent addressed to this child, if anything. Rendered into
         // the argv rather than into the node's goal, because the goal is what a
         // person reads in the tree — an envelope folded into it would turn a
@@ -2319,25 +2450,49 @@ function productionMachine(db: Db, nodeId: string) {
         const envelopeText = envelope ? renderEnvelope(envelope) : '';
         // A root run in a chat session is told the session so far, the same way a
         // child is told its parent's handoff; a child never is (it has one).
-        const preface = envelopeText || (proofOnly ? '' : conversation);
-        if (preface && !envelopeText) publishProgress(db, nodeId, 'Continuing the conversation with what earlier turns in this session asked and found');
-        const goalWithHandoff = preface
-          ? `${preface}\n\n${goalWithConstraints}`
-          : goalWithConstraints;
+        const continuing = !envelopeText && !proofOnly && conversation !== '';
+        if (continuing) publishProgress(db, nodeId, 'Continuing the conversation with what earlier turns in this session asked and found');
         // The economic boundary. Asked once, here, at the point the dispatch is
-        // assembled — and answering "nothing to do" leaves `goalForDispatch`
-        // byte-identical to what it would have been, which is what makes
-        // CONTINUE a true no-op rather than a no-op with a comment.
+        // assembled — and answering "nothing to do" adds nothing to the prompt,
+        // which is what makes CONTINUE a true no-op rather than a no-op with a
+        // comment.
+        const promptLedger = newDispatchLedger(db, nodeId, 'execute');
         const acquired = await economicBoundary(db, {
           nodeId, goal: input.goal, worktreePath,
           fullArtifactRequests: repoContext?.receipt.fullArtifactRequests,
+          onAcquired: (a) => promptLedger.record('materialize', {
+            tokens: a.tokens, sourceRef: a.path, representation: a.representation, reason: 'economic boundary',
+          }),
         });
-        const goalWithEvidence = acquired ? `${goalWithHandoff}\n\n${acquired}` : goalWithHandoff;
-        const goalForDispatch = proofOnly
-          ? `${PROOF_PASS_INSTRUCTION}\n\n${goalWithEvidence}`
-          : repoContext
-            ? withRepoContext(goalWithEvidence, repoContext.content)
-            : goalWithEvidence;
+        // One compile, under one budget, for everything the agent is handed:
+        // the role prompt, the repository context, the handoff or conversation,
+        // the goal and whatever the boundary bought. Built once out here, like
+        // the pieces themselves, so the fallback retry below cannot assemble a
+        // second copy. Under budget it is byte-for-byte the concatenation this
+        // used to be; over budget it shrinks the optional pieces in a fixed
+        // order, and refuses rather than truncate the goal.
+        const assembled = assembleExecutePrompt({
+          ...(rolePromptParts ? { role: rolePromptParts } : {}),
+          goal: goalWithConstraints,
+          ...(proofOnly ? { proofInstruction: PROOF_PASS_INSTRUCTION } : {}),
+          repoContext: repoContext?.content,
+          ...(envelopeText ? { envelope: envelopeText } : {}),
+          ...(continuing ? { preface: { text: conversation, fallbacks: conversationRungs.slice(1) } } : {}),
+          ...(acquired ? { evidence: acquired } : {}),
+        }, promptBudgetFromConfig());
+        if (repoContext) promptLedger.record('select', { tokens: repoContext.receipt.selectedTokens, reason: `selected=${repoContext.receipt.selected.length}` });
+        if (assembled.receipt) promptLedger.recordCompile(assembled.receipt);
+        if (assembled.refused) {
+          promptLedger.record('compile', { reason: `refused: ${assembled.refused}` });
+          flushDispatchLedger(db, nodeId, promptLedger);
+          // Nothing will run, so nothing is spent: release what the market held.
+          cancelExecution(nodeId, selection);
+          const result = refusedStep(assembled.refused);
+          publishStepOutcome(db, nodeId, result);
+          return result;
+        }
+        const roleSystemPrompt = assembled.system;
+        const goalForDispatch = assembled.goal;
 
         // Reset per attempt: the fallback retry below re-runs the dispatch, and
         // its stream is the one whose rows the observations belong to.
@@ -2419,6 +2574,12 @@ function productionMachine(db: Db, nodeId: string) {
           nodeId, role: 'execute', model: usedModel ?? null,
           usage: result.usage, costUsd: costFromEvents(result.events),
           startupMs: result.startupMs,
+          ...(ran.selection.effort ? { effort: ran.selection.effort } : {}),
+          taskClass: verdict.taskClass,
+        });
+        promptLedger.record('model', {
+          tokens: result.usage.inputTokens + result.usage.outputTokens,
+          reason: `in=${result.usage.inputTokens} out=${result.usage.outputTokens} cacheRead=${result.usage.cacheReadTokens} cacheWrite=${result.usage.cacheCreationTokens} turns=${result.usage.numTurns}`,
         });
         publishStepOutcome(db, nodeId, result);
         // What the run changed on disk that its Write/Edit calls did not say —
@@ -2442,6 +2603,21 @@ function productionMachine(db: Db, nodeId: string) {
         // might matter, and pointing at the event rows that already hold the
         // output rather than copying it.
         const indexed = indexRunObservations(db, { nodeId, events: result.events, eventIds, grant });
+        // The manifest delta: what this dispatch established for the task as a
+        // whole, recorded once as a single revision. The trace says which
+        // revision it produced, so a benchmark can follow the task's context
+        // from one dispatch to the next.
+        const taskId = taskRootId(db, nodeId);
+        recordRunInManifest(db, taskId, indexed);
+        try {
+          const manifest = getManifest(db, taskId);
+          if (manifest) {
+            promptLedger.record('retain', {
+              reason: `manifest r${manifest.revision} workingSet=${manifest.workingSet.length} facts=${manifest.facts.length} artifacts=${manifest.artifacts.length} validation=${manifest.validation.length}`,
+            });
+          }
+        } catch { /* observability only */ }
+        flushDispatchLedger(db, nodeId, promptLedger);
         // What the projection predicted, against what the run actually read.
         // Free, because the run already told us both.
         scoreProjection(db, {

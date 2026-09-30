@@ -164,6 +164,17 @@ export function repoMapTokenBudget(): number {
   return envInt('ORG_REPO_MAP_TOKENS', 6000);
 }
 
+/** The model's context window, in tokens, that the prompt budget is drawn from. */
+export function contextWindowTokens(): number {
+  return envInt('ORG_CONTEXT_WINDOW_TOKENS', 200_000) || 200_000;
+}
+
+/** Exact bytes one argv string may occupy. The kernel refuses a single argument
+ *  past 131,072 bytes; the default leaves headroom below that. */
+export function promptArgBytes(): number {
+  return envInt('ORG_PROMPT_ARG_BYTES', 120_000) || 120_000;
+}
+
 /** Role-scoped system prompts (Phase 3). On unless explicitly turned off. */
 export function rolePromptsEnabled(): boolean {
   const v = (process.env.ORG_ROLE_PROMPTS ?? '').trim().toLowerCase();
