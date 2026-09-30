@@ -9,6 +9,7 @@ import { seedBuiltinMandates } from '../db/queries/mandates.js';
 import { listNodes } from '../db/queries/nodes.js';
 import { fromContainerPath } from '../k8s/kind.js';
 import { sweepOrphanedForks } from '../execution/workspace-fork.js';
+import { listRetainedWorkspacePaths } from '../db/queries/delegations.js';
 import type { TrpcContext } from './trpc.js';
 
 export function buildServer(dbPath: string, startNode: TrpcContext['startNode'] = startNodeActor) {
@@ -42,6 +43,10 @@ export function buildServer(dbPath: string, startNode: TrpcContext['startNode'] 
       .map((node) => fromContainerPath(node.repoPath!))
       .filter((path): path is string => path !== null),
   );
+  // Nor the workspace of any assignment still waiting on a decision: a failed
+  // review, an escalation or a blocked merge retains its child's candidate on
+  // purpose, and it belongs to no live node.
+  for (const path of listRetainedWorkspacePaths(db)) liveRepoPaths.add(path);
   const sweptForks = sweepOrphanedForks(liveRepoPaths);
   if (sweptForks.length > 0) {
     console.error(`Removed ${sweptForks.length} orphaned workspace fork(s) left behind by a previous run.`);

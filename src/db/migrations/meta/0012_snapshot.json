@@ -1,8 +1,8 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "428db270-aa24-42b4-b041-66de20273a80",
-  "prevId": "a6d3e503-35bb-4fe9-b5a3-d42f45a7bf29",
+  "id": "1128537c-56d5-43eb-8ba7-536ac177d3d9",
+  "prevId": "428db270-aa24-42b4-b041-66de20273a80",
   "tables": {
     "approvals": {
       "name": "approvals",
@@ -710,7 +710,16 @@
           "autoincrement": false
         }
       },
-      "indexes": {},
+      "indexes": {
+        "memory_kind_key": {
+          "name": "memory_kind_key",
+          "columns": [
+            "kind",
+            "key"
+          ],
+          "isUnique": false
+        }
+      },
       "foreignKeys": {},
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},

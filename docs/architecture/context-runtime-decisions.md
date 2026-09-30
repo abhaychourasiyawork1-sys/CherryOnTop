@@ -159,7 +159,7 @@ and not re-buying selections, not "knowledge reuse".
 ### D4 — No new table
 
 **Decision.** Manifest revisions live in `memory` (kind `task_context_manifest`), immutable per revision,
-trimmed to 16. **One migration**: `memory(kind, key)` index (`0011`).
+trimmed to 16. **One migration**: `memory(kind, key)` index (`0012`).
 
 **Evidence.** The plan's O1 leaves it open; the query pattern is by task. Adding the manifest exposed that
 every `memory` reader filters by `(kind, key)` on an unindexed table: at 50,000 rows, recording a 30-path
@@ -233,12 +233,14 @@ trusting the routing change.
 ### D9 — Handoffs: bounded, not re-architected
 
 **Decision.** `AgentEnvelope` is already the reference-based, scope-checked, revision-named handoff. Not
-replaced. What was unbounded: prerequisite reports (4,000 chars × N) and a replacement's continuation text (a
-failed attempt's *whole* answer). Now a shared 12,000-character allowance is water-filled across
-prerequisites, and continuation keeps head + tail (`fairShares`, `boundFindings`). Finished children are
-recorded as `finding` objects in the parent's manifest (`facts`) as their own structured account, not their
-transcript. The prerequisite prose stays in the child's goal, as before, because the goal-visible contract is
-tested and the child cannot resolve a ref anyway (no live RPC — D1).
+replaced. What was unbounded: prerequisite reports (4,000 chars × N). A shared 12,000-character allowance is
+now water-filled across them (`fairShares`). A replacement's continuation text was also unbounded and got a
+head-and-tail clip, but the merge with upstream's same-child rework removed that path entirely, so the clip was
+deleted with it rather than left as dead code. Finished children are recorded as `finding` objects in the
+task's manifest (`facts`) **when the parent accepts and merges them** (`mergeAcceptedDelegation`), as their own
+structured account, not their transcript: a finding nobody accepted is a claim, not a fact. The prerequisite
+prose stays in the child's goal, as before, because the goal-visible contract is tested and the child cannot
+resolve a ref anyway (no live RPC — D1).
 **Not built:** delta handoff (R10→R12). A handoff is a short list of refs; nothing to save.
 
 ### D10 — Cache-aware layout: formalised, effect nil, opportunity named

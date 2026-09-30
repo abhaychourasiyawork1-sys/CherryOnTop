@@ -2,6 +2,7 @@ import { sqliteTable, text, integer, real, index } from 'drizzle-orm/sqlite-core
 import type { NodeContract, Authority } from '../schemas/node-contract.js';
 import type { Commitment } from '../schemas/commitment.js';
 import type { Decision } from '../schemas/decision.js';
+import type { DelegationRecord } from '../schemas/delegation.js';
 
 export const nodes = sqliteTable('nodes', {
   id: text('id').primaryKey(),
@@ -219,3 +220,27 @@ export const evidenceConflicts = sqliteTable('evidence_conflicts', {
   resolved: integer('resolved', { mode: 'boolean' }).notNull().default(false),
   createdAt: text('created_at').notNull(),
 });
+
+/** The durable parent→child work contract (see `schemas/delegation.ts`).
+ *
+ *  Its own table rather than columns on `nodes` or a field on a commitment: a
+ *  node's state machine says whether a process is running, a commitment is a
+ *  resource reservation, and neither says whose turn it is on the work — the
+ *  child's to do it, or the parent's to accept it. `status`, `revision` and
+ *  `attempt` are denormalised so they can be queried and compare-and-swapped
+ *  without decoding the blob; the columns are the authority, and reads overlay
+ *  them onto `data`, exactly as `commitments` does. */
+export const delegations = sqliteTable('delegations', {
+  id: text('id').primaryKey(),
+  parentId: text('parent_id').notNull(),
+  childId: text('child_id').notNull(),
+  data: text('data', { mode: 'json' }).$type<DelegationRecord>().notNull(),
+  status: text('status').notNull(),
+  revision: integer('revision').notNull(),
+  attempt: integer('attempt').notNull(),
+  createdAt: text('created_at').notNull(),
+  updatedAt: text('updated_at').notNull(),
+}, (table) => [
+  index('delegations_parent').on(table.parentId),
+  index('delegations_child').on(table.childId),
+]);

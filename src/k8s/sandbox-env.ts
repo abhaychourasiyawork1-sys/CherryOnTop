@@ -23,24 +23,35 @@ export interface ExtraMount {
  *  (objects, refs) is read-only, so an agent cannot rewrite the user's branches
  *  from inside the sandbox; the worktree's own admin directory (index, HEAD)
  *  stays writable so status and diff can refresh it. */
-export function gitMounts(worktreeHostPath: string): ExtraMount[] {
+/** The git directories behind a linked worktree, or null for an ordinary
+ *  repository, a missing path, or anything unreadable. `common` is the shared
+ *  repository (objects, refs — and the parent of the main working tree);
+ *  `admin` is this worktree's own directory (index, HEAD). */
+function linkedWorktreeGit(worktreeHostPath: string): { common: string; admin: string } | null {
   const dotGit = path.join(worktreeHostPath, '.git');
   let pointer: string;
   try {
-    if (!statSync(dotGit).isFile()) return []; // an ordinary repo: already inside the mount
+    if (!statSync(dotGit).isFile()) return null; // an ordinary repo: already inside the mount
     pointer = readFileSync(dotGit, 'utf8');
   } catch {
-    return [];
+    return null;
   }
   const match = /^gitdir:\s*(.+)$/m.exec(pointer);
-  if (!match) return [];
-  const gitdir = path.resolve(worktreeHostPath, match[1].trim());
-  let common = gitdir;
+  if (!match) return null;
+  const admin = path.resolve(worktreeHostPath, match[1].trim());
+  let common = admin;
   try {
-    common = path.resolve(gitdir, readFileSync(path.join(gitdir, 'commondir'), 'utf8').trim());
+    common = path.resolve(admin, readFileSync(path.join(admin, 'commondir'), 'utf8').trim());
   } catch {
     // No commondir: a standalone gitdir, mounted whole below.
   }
+  return { common, admin };
+}
+
+export function gitMounts(worktreeHostPath: string): ExtraMount[] {
+  const git = linkedWorktreeGit(worktreeHostPath);
+  if (!git) return [];
+  const { common, admin: gitdir } = git;
   try {
     return [
       { hostPath: toContainerPath(common), mountPath: common, readOnly: true },
@@ -48,6 +59,55 @@ export function gitMounts(worktreeHostPath: string): ExtraMount[] {
     ];
   } catch {
     return []; // outside $HOME: not visible to the cluster, git stays unavailable
+  }
+}
+
+/** Whether this host's installed dependencies can be shared with the sandbox.
+ *  The runner is Linux; a `node_modules` installed on macOS or Windows holds
+ *  native binaries (esbuild, better-sqlite3, ...) it cannot load, and sharing
+ *  it would replace "no dependencies" with "dependencies that crash". */
+function dependencySharingAllowed(env: NodeJS.ProcessEnv, platform: NodeJS.Platform): boolean {
+  return env.ORG_SANDBOX_DEPS !== 'off' && platform === 'linux';
+}
+
+/** The main repository's installed dependencies, shared into a linked worktree.
+ *
+ *  A worktree is tracked files only, so every forked child started with no
+ *  `node_modules`: it reinstalled (turns, tokens, network it may not have) or
+ *  could not run a test — which also means it could not produce the evidence its
+ *  parent's acceptance needs. The project's own measurement puts "the sandbox
+ *  has no project environment" as the largest single cost cause (RC1 in
+ *  docs/superpowers/2026-09-25-swebench-cost-root-cause.md); lending the host
+ *  Python was the fix for Python, and this is the same idea for the repository's
+ *  own dependencies.
+ *
+ *  Mounted **read-only** at `/workspace/node_modules`, over the workspace mount:
+ *  one copy for every node in the tree, nothing to install, and no child can
+ *  change what its siblings and the user share. The price is deliberate — a
+ *  child cannot add a dependency. That is a change to what the whole project
+ *  depends on, so it is reported up rather than done in a sandbox.
+ *
+ *  Only for a *linked* worktree: an ordinary repository is the main tree and is
+ *  already mounted whole, dependencies included. A worktree that has dependencies
+ *  of its own keeps them. Total — anything the cluster cannot see costs the
+ *  mount, never the run. */
+export function dependencyMounts(
+  worktreeHostPath: string,
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+): ExtraMount[] {
+  if (!dependencySharingAllowed(env, platform)) return [];
+  const git = linkedWorktreeGit(worktreeHostPath);
+  if (!git) return [];
+  // The common dir is `<main>/.git`; the main working tree is its parent.
+  const shared = path.join(path.dirname(git.common), 'node_modules');
+  try {
+    if (!statSync(shared).isDirectory()) return [];
+    // Its own dependencies, when it has them, are the ones it should use.
+    if (existsSync(path.join(worktreeHostPath, 'node_modules'))) return [];
+    return [{ hostPath: toContainerPath(shared), mountPath: '/workspace/node_modules', readOnly: true }];
+  } catch {
+    return [];
   }
 }
 
@@ -106,7 +166,11 @@ export function toolchainMounts(env: NodeJS.ProcessEnv = process.env): { mounts:
  *  turns finding out. Measured on scikit-learn: an agent that did not know conda
  *  could create environments hand-built two venvs (~10 calls), and `git stash`
  *  failing on the read-only history cost three more. */
-export function sandboxNotes(worktreeHostPath: string | null, env: NodeJS.ProcessEnv = process.env): string[] {
+export function sandboxNotes(
+  worktreeHostPath: string | null,
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+): string[] {
   const notes: string[] = [];
   const dirs = (env.ORG_SANDBOX_TOOLCHAIN ?? '').split(',').map((d) => d.trim()).filter((d) => d && existsSync(d));
   for (const dir of dirs) {
@@ -115,6 +179,9 @@ export function sandboxNotes(worktreeHostPath: string | null, env: NodeJS.Proces
     if (existsSync(path.join(dir, 'bin', 'conda'))) {
       notes.push('To test against pinned or old dependencies, `conda create -y -n <name> python=<ver> <pkgs>` works and is fast (it reuses a local package cache); build the project inside that env.');
     }
+  }
+  if (worktreeHostPath && dependencyMounts(worktreeHostPath, env, platform).length > 0) {
+    notes.push('`node_modules` is the project\'s installed dependencies, shared and read-only: run tests and builds directly, do not `npm install`. If the work needs a new dependency, say so in your report (and change `package.json`) rather than trying to install it.');
   }
   if (worktreeHostPath && gitMounts(worktreeHostPath).length > 0) {
     notes.push('Git history is read-only: `git diff`, `git log` and `git show HEAD:<path>` work; `git stash`, `commit` and `checkout -b` do not. Compare against the original with `git show HEAD:<path>`.');
