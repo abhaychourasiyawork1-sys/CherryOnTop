@@ -9,7 +9,7 @@ import { extractAnchors } from '../efficiency/task-economics.js';
 import { assessDecomposition } from '../intelligence/decompose.js';
 import { validateDelegationPlan, type DelegationValidationResult } from '../decision/delegation-validator.js';
 import {
-  canTransitionDelegation, IllegalDelegationTransitionError,
+  canTransitionDelegation, IllegalDelegationTransitionError, DelegationStaleError, DelegationNotFoundError,
   type DelegationPatch, type DelegationRecord, type DelegationStatus, type NewDelegation,
   type ParentFeedback, type WorkspaceRef,
 } from '../schemas/delegation.js';
@@ -66,6 +66,12 @@ export interface DelegateInput {
    *  paths (CI config, env files, manifests, lockfiles) need an explicit grant
    *  either way. The review checks the child's diff against it. */
   writeScopeBySubgoal?: Array<string[] | undefined>;
+  /** This parent already delegated and was restarted: pick the work up where the
+   *  durable assignments say it is, instead of refusing to split a second time.
+   *  Pieces that already have an assignment are resumed (or left alone, if they
+   *  settled); pieces that never got one are started. Set only when
+   *  `needsResume` says there is something to resume. */
+  resume?: boolean;
 }
 
 /**
@@ -211,13 +217,23 @@ export interface AssignmentContract {
  *  `merge` is the only way an ACCEPTED assignment reaches the parent's tree. */
 export interface DelegationLedger {
   open(input: Omit<NewDelegation, 'id'>): DelegationRecord;
+  /** `expectedRevision` makes the write a compare-and-swap: it is refused, with
+   *  `DelegationStaleError`, if the assignment has moved since the caller last
+   *  read it. Every write the loop makes passes it, so two drivers on one
+   *  assignment (a resumed parent racing a leftover, a recovery pass) cannot
+   *  both act on the same state. */
   transition(
     id: string, to: DelegationStatus, patch?: DelegationPatch, detail?: DelegationEventDetail,
+    options?: { expectedRevision?: number },
   ): DelegationRecord;
   get(id: string): DelegationRecord | undefined;
+  /** Every assignment this parent has made, oldest first — reassigned owners
+   *  included. What a restarted parent reads to find where its work is. */
+  listForParent(parentId: string): DelegationRecord[];
   /** Integrates an ACCEPTED assignment's candidate into the parent's tree:
    *  ACCEPTED → MERGING → MERGED, or INTEGRATION_BLOCKED when it does not apply.
-   *  Refuses anything not ACCEPTED. */
+   *  Refuses anything not ACCEPTED — or MERGING, which is a merge a restart cut
+   *  off and is finished rather than begun again. */
   merge(id: string): Promise<'MERGED' | 'INTEGRATION_BLOCKED'>;
 }
 
@@ -253,9 +269,12 @@ export function createMemoryLedger(options: MemoryLedgerOptions = {}): MemoryLed
       options.onTransition?.(record, null);
       return record;
     },
-    transition(id, to, patch = {}) {
+    transition(id, to, patch = {}, _detail, transitionOptions) {
       const current = records.get(id);
-      if (!current) throw new Error(`Delegation ${id} does not exist`);
+      if (!current) throw new DelegationNotFoundError(id);
+      if (transitionOptions?.expectedRevision !== undefined && transitionOptions.expectedRevision !== current.revision) {
+        throw new DelegationStaleError(id, transitionOptions.expectedRevision, current.revision);
+      }
       if (to !== current.status && !canTransitionDelegation(current.status, to)) {
         throw new IllegalDelegationTransitionError(id, current.status, to);
       }
@@ -268,10 +287,12 @@ export function createMemoryLedger(options: MemoryLedgerOptions = {}): MemoryLed
     },
     get: (id) => records.get(id),
     list: () => [...records.values()],
+    listForParent: (parentId) => [...records.values()].filter((record) => record.parentId === parentId),
     async merge(id) {
       const record = records.get(id);
-      if (!record) throw new Error(`Delegation ${id} does not exist`);
-      ledger.transition(id, 'MERGING');
+      if (!record) throw new DelegationNotFoundError(id);
+      // A merge the restart cut off is already MERGING: finish it.
+      if (record.status !== 'MERGING') ledger.transition(id, 'MERGING');
       const merged = options.integrate ? await options.integrate(record) : true;
       const done = ledger.transition(id, merged ? 'MERGED' : 'INTEGRATION_BLOCKED');
       return done.status === 'MERGED' ? 'MERGED' : 'INTEGRATION_BLOCKED';
@@ -457,6 +478,8 @@ export interface AssignmentContext {
 }
 
 interface Piece {
+  /** Its position in the parent's plan. */
+  index: number;
   /** The piece as planned: what a person reads, and what a rework is told it is
    *  still trying to do. */
   baseGoal: string;
@@ -482,7 +505,7 @@ function assignPiece(ctx: AssignmentContext, piece: Piece): { record: Delegation
   const childId = deps.createChildNode(ctx.parentId, piece.goal, ctx.siblingCount, ctx.approvedBudgetUsd);
   const described = deps.describeChild?.(childId);
   const record = ledger.open({
-    parentId: ctx.parentId, childId, goal: piece.baseGoal,
+    parentId: ctx.parentId, childId, goal: piece.baseGoal, piece: piece.index,
     definitionOfDone: piece.contract.definitionOfDone,
     acceptanceChecks: piece.contract.acceptanceChecks,
     ...(piece.contract.writeScope ? { writeScope: piece.contract.writeScope } : {}),
@@ -514,7 +537,7 @@ export function requestRework(ctx: AssignmentContext, assignmentId: string, base
   const reworking = ledger.transition(assignmentId, 'REWORKING', { attempt: current.attempt + 1 }, {
     reason: 'sent back to the same child with the parent\'s feedback',
     evidenceRefs: current.feedback.failedChecks.flatMap((failed) => failed.evidenceRefs),
-  });
+  }, { expectedRevision: current.revision });
   const context = compactReworkContext({
     goal: baseGoal, definitionOfDone: reworking.definitionOfDone, acceptanceChecks: reworking.acceptanceChecks,
     feedback: current.feedback, ...(current.report ? { previousReport: current.report } : {}),
@@ -566,6 +589,7 @@ export function requestReassignment(
   const described = deps.describeChild?.(childId);
   const successor = ledger.open({
     parentId: ctx.parentId, childId, goal: old.goal,
+    ...(old.piece === undefined ? {} : { piece: old.piece }),
     definitionOfDone: old.definitionOfDone, acceptanceChecks: old.acceptanceChecks,
     ...(old.writeScope ? { writeScope: old.writeScope } : {}),
     dependencies: old.dependencies, reassignedFrom: old.id,
@@ -578,7 +602,8 @@ export function requestReassignment(
       toAssignmentId: successor.id, toChildId: childId, reason: decision.reason,
       evidenceRefs: decision.evidenceRefs ?? [], decidedBy: decision.decidedBy, at: new Date().toISOString(),
     },
-  }, { reason: decision.reason, ...(decision.evidenceRefs ? { evidenceRefs: decision.evidenceRefs } : {}) });
+  }, { reason: decision.reason, ...(decision.evidenceRefs ? { evidenceRefs: decision.evidenceRefs } : {}) },
+  { expectedRevision: old.revision });
   deps.markSuperseded?.(old.childId, childId);
   // The old owner's assignment is over; its candidate is no longer anyone's to
   // merge. What it established travels in the handoff above.
@@ -596,7 +621,7 @@ export function requestReassignment(
 
 function cancelAssignment(ctx: AssignmentContext, record: DelegationRecord, reason: string): DelegationRecord {
   const cancelled = canTransitionDelegation(record.status, 'CANCELLED')
-    ? ctx.ledger.transition(record.id, 'CANCELLED', {}, { reason })
+    ? ctx.ledger.transition(record.id, 'CANCELLED', {}, { reason }, { expectedRevision: record.revision })
     : record;
   // A cancelled assignment is an explicit terminal cleanup: nothing will merge it.
   ctx.deps.discardWorkspace?.(cancelled);
@@ -607,7 +632,7 @@ function escalateAssignment(ctx: AssignmentContext, record: DelegationRecord, re
   // The workspace stays: an escalated piece is waiting on a decision, and its
   // candidate and evidence are what that decision is about.
   return canTransitionDelegation(record.status, 'ESCALATED')
-    ? ctx.ledger.transition(record.id, 'ESCALATED', {}, { reason })
+    ? ctx.ledger.transition(record.id, 'ESCALATED', {}, { reason }, { expectedRevision: record.revision })
     : record;
 }
 
@@ -650,10 +675,44 @@ async function recoveryDecision(
   }
 }
 
-/** Carries one assignment from a started child to its end: reported, reviewed,
+/** The check text a conflict rework is recorded under, so a resumed driver can
+ *  tell how many it has already spent. */
+const CONFLICT_CHECK = 'the change merges cleanly onto the parent tree';
+
+/** Conflict reworks this assignment has already had, read from its own record. */
+function conflictReworksSpent(record: DelegationRecord): number {
+  return [...record.feedbackHistory, ...(record.feedback ? [record.feedback] : [])]
+    .filter((feedback) => feedback.failedChecks.some((failed) => failed.check === CONFLICT_CHECK)).length;
+}
+
+/** How many owners this piece has already been through, by following the chain. */
+function reassignmentDepth(ledger: DelegationLedger, record: DelegationRecord): number {
+  let depth = 0;
+  for (let at = record; at.reassignedFrom && depth < 20;) {
+    const previous = ledger.get(at.reassignedFrom);
+    if (!previous) break;
+    depth++;
+    at = previous;
+  }
+  return depth;
+}
+
+/** Carries one assignment from wherever it is to its end: reported, reviewed,
  *  and then either accepted and merged, or sent back — to the same child.
  *
- *  Each pass through the loop is one revision. The child finishing is
+ *  **Driven by the record's status, not by where the code happens to be.** Each
+ *  pass looks at the status and does the one thing that status calls for, so the
+ *  same loop serves a fresh assignment and one a restart left half-done: a
+ *  parent that comes back to a child at `REPORT_READY` reviews it, at `ACCEPTED`
+ *  merges it, at `FEEDBACK_REQUIRED` decides and reworks it — and never starts a
+ *  child that already finished. Nothing it needs is held in memory that a
+ *  restart would lose; what is (the latest run) is re-read when missing.
+ *
+ *  Every write is a compare-and-swap on the revision it last read. If something
+ *  else moved the assignment — a second driver, a recovery pass — this one
+ *  stands down rather than act on a state it has not seen.
+ *
+ *  Each pass through rework is one revision. The child finishing is
  *  REPORT_READY; only the parent's review turns that into ACCEPTED; only
  *  ACCEPTED can merge. */
 async function driveAssignment(
@@ -661,125 +720,216 @@ async function driveAssignment(
 ): Promise<PieceOutcome> {
   const { deps, ledger } = ctx;
   let { record, childId } = started;
-  let reworks = 0;
-  let conflictReworks = 0;
-  let reassignments = 0;
+  let reworks = Math.max(0, record.attempt - 1);
+  let conflictReworks = conflictReworksSpent(record);
+  let reassignments = reassignmentDepth(ledger, record);
+  /** The child's latest result. Absent after a restart until it is read back. */
+  let run: ChildRunResult | undefined;
   const outcome = (finalRecord: DelegationRecord): PieceOutcome =>
     ({ childId, assignmentId: finalRecord.id, status: finalRecord.status });
+  const move = (to: DelegationStatus, patch: DelegationPatch = {}, detail?: DelegationEventDetail) => {
+    record = ledger.transition(record.id, to, patch, detail, { expectedRevision: record.revision });
+    return record;
+  };
 
-  for (;;) {
-    let run: ChildRunResult;
-    try {
-      run = await deps.waitForChild(childId);
-    } catch (err) {
-      // The wait itself failed (a timeout): the child may still be running. The
-      // contract says so rather than staying WORKING for ever.
-      if (canTransitionDelegation(record.status, 'BLOCKED')) {
-        ledger.transition(record.id, 'BLOCKED', {}, { reason: err instanceof Error ? err.message : String(err) });
-      }
-      throw err;
-    }
-
-    // Stopped on purpose: not reviewed, not reworked, not replaced.
-    if (run.cancelled) return outcome(cancelAssignment(ctx, record, 'the child was stopped'));
-
-    const report = buildChildDelegationReport({
-      assignmentId: record.id, answer: run.answer ?? '', succeeded: run.succeeded,
-      ...(run.changedFiles ? { changedFiles: run.changedFiles } : {}),
-      ...(run.observedChecks ? { observedChecks: run.observedChecks } : {}),
-      ...(run.evidenceRefs ? { evidenceRefs: run.evidenceRefs } : {}),
-    });
-    record = ledger.transition(record.id, 'REPORT_READY', { report }, { evidenceRefs: report.evidenceRefs });
-
-    if (deps.parentStopped?.()) return outcome(cancelAssignment(ctx, record, 'the delegating task was stopped'));
-
-    record = ledger.transition(record.id, 'UNDER_REVIEW');
-    const verdict = reviewChildWork({
-      assignment: record, run,
-      ...(deps.verifyCheck ? { verifyCheck: (check: string) => deps.verifyCheck!(check, record) } : {}),
-    });
-
-    if (verdict.accepted) {
-      record = ledger.transition(record.id, 'ACCEPTED', {}, { evidenceRefs: verdict.evidenceRefs });
-      let merged = await serialMerge(ctx, record.id);
-
-      // A conflict is not a failure of the work, and the parent is the wrong one
-      // to settle it: it would read two diffs it did not write, for code it does
-      // not own. The child wrote one side and knows why. So — once — the
-      // conflict goes back to the same child, in its own workspace, with both
-      // sides in front of it. If that is not possible or not worth it, the
-      // assignment simply stays INTEGRATION_BLOCKED.
-      if (
-        merged === 'INTEGRATION_BLOCKED' && deps.prepareConflictRework
-        && conflictReworks < MAX_CONFLICT_REWORKS && !deps.parentStopped?.()
-      ) {
-        const blocked = ledger.get(record.id) ?? record;
-        const prepared = deps.prepareConflictRework(blocked);
-        if (prepared && prepared.conflicts.length === 0) {
-          merged = await serialMerge(ctx, record.id); // the rebase was clean: try again
-        } else if (prepared) {
-          const files = prepared.conflicts.slice(0, 10).join(', ');
-          const conflictFeedback = buildParentFeedback({
-            assignmentId: record.id, revision: blocked.revision + 1,
-            failedChecks: [{
-              check: 'the change merges cleanly onto the parent tree',
-              observed: `it conflicts with work already merged, in: ${files}. The conflict markers are in your workspace.`,
-              expected: 'both your change and the work already merged, kept',
-              evidenceRefs: [],
-            }],
-            guidance: ['Open each listed file, resolve every <<<<<<< / ======= / >>>>>>> marker keeping both intents, re-run the checks, then report again.'],
-          });
-          const decision = await recoveryDecision(
-            ctx, { assignment: blocked, feedback: conflictFeedback, reworks, run }, reassignments);
-          if (decision.action === 'rework' && !deps.parentStopped?.()) {
-            const history = [...blocked.feedbackHistory, ...(blocked.feedback ? [blocked.feedback] : [])].slice(-5);
-            ledger.transition(record.id, 'FEEDBACK_REQUIRED', { feedback: conflictFeedback, feedbackHistory: history }, {
-              reason: `merge conflict in: ${files}`,
-            });
-            record = requestRework(ctx, record.id, piece.baseGoal);
-            reworks++;
-            conflictReworks++;
-            continue;
-          }
+  try {
+    for (;;) {
+      switch (record.status) {
+        case 'ASSIGNED': {
+          // Opened but never started: the restart came between the two.
+          move('WORKING');
+          deps.startChild(childId, piece.goal);
+          break;
         }
+
+        case 'BLOCKED':
+        case 'WORKING':
+        case 'REWORKING': {
+          if (record.status === 'BLOCKED') move('WORKING');
+          try {
+            run = await deps.waitForChild(childId);
+          } catch (err) {
+            // The wait itself failed (a timeout): the child may still be running.
+            // The contract says so rather than staying WORKING for ever.
+            if (canTransitionDelegation(record.status, 'BLOCKED')) {
+              move('BLOCKED', {}, { reason: err instanceof Error ? err.message : String(err) });
+            }
+            throw err;
+          }
+          // Stopped on purpose: not reviewed, not reworked, not replaced.
+          if (run.cancelled) return outcome(cancelAssignment(ctx, record, 'the child was stopped'));
+          const report = buildChildDelegationReport({
+            assignmentId: record.id, answer: run.answer ?? '', succeeded: run.succeeded,
+            ...(run.changedFiles ? { changedFiles: run.changedFiles } : {}),
+            ...(run.observedChecks ? { observedChecks: run.observedChecks } : {}),
+            ...(run.evidenceRefs ? { evidenceRefs: run.evidenceRefs } : {}),
+          });
+          move('REPORT_READY', { report }, { evidenceRefs: report.evidenceRefs });
+          break;
+        }
+
+        case 'REPORT_READY': {
+          if (deps.parentStopped?.()) return outcome(cancelAssignment(ctx, record, 'the delegating task was stopped'));
+          move('UNDER_REVIEW');
+          break;
+        }
+
+        case 'UNDER_REVIEW': {
+          // After a restart the result is not in memory; the child is finished,
+          // so reading it back is immediate.
+          run ??= await deps.waitForChild(childId);
+          const verdict = reviewChildWork({
+            assignment: record, run,
+            ...(deps.verifyCheck ? { verifyCheck: (check: string) => deps.verifyCheck!(check, record) } : {}),
+          });
+          if (verdict.accepted) {
+            move('ACCEPTED', {}, { evidenceRefs: verdict.evidenceRefs });
+            break;
+          }
+          // Refused. The child keeps its workspace and its context; what it needs
+          // is to know exactly what failed.
+          const feedback = buildParentFeedback({
+            assignmentId: record.id, revision: record.revision + 1, failedChecks: verdict.failedChecks,
+            guidance: ['Run each failed check yourself and put its result in your report — the parent accepts only on evidence.'],
+          });
+          const history = [...record.feedbackHistory, ...(record.feedback ? [record.feedback] : [])].slice(-5);
+          move('FEEDBACK_REQUIRED', { feedback, feedbackHistory: history }, {
+            reason: `parent acceptance failed: ${verdict.failedChecks.map((failed) => failed.check).join('; ')}`,
+            evidenceRefs: verdict.failedChecks.flatMap((failed) => failed.evidenceRefs),
+          });
+          break;
+        }
+
+        case 'ACCEPTED':
+        case 'MERGING': {
+          let merged = await serialMerge(ctx, record.id);
+          record = ledger.get(record.id) ?? record;
+
+          // A conflict is not a failure of the work, and the parent is the wrong one
+          // to settle it: it would read two diffs it did not write, for code it does
+          // not own. The child wrote one side and knows why. So — once — the
+          // conflict goes back to the same child, in its own workspace, with both
+          // sides in front of it. If that is not possible or not worth it, the
+          // assignment simply stays INTEGRATION_BLOCKED.
+          if (
+            merged === 'INTEGRATION_BLOCKED' && deps.prepareConflictRework
+            && conflictReworks < MAX_CONFLICT_REWORKS && !deps.parentStopped?.()
+          ) {
+            const prepared = deps.prepareConflictRework(record);
+            if (prepared && prepared.conflicts.length === 0) {
+              merged = await serialMerge(ctx, record.id); // the rebase was clean: try again
+              record = ledger.get(record.id) ?? record;
+            } else if (prepared) {
+              const files = prepared.conflicts.slice(0, 10).join(', ');
+              const conflictFeedback = buildParentFeedback({
+                assignmentId: record.id, revision: record.revision + 1,
+                failedChecks: [{
+                  check: CONFLICT_CHECK,
+                  observed: `it conflicts with work already merged, in: ${files}. The conflict markers are in your workspace.`,
+                  expected: 'both your change and the work already merged, kept',
+                  evidenceRefs: [],
+                }],
+                guidance: ['Open each listed file, resolve every <<<<<<< / ======= / >>>>>>> marker keeping both intents, re-run the checks, then report again.'],
+              });
+              run ??= await deps.waitForChild(childId);
+              const decision = await recoveryDecision(
+                ctx, { assignment: record, feedback: conflictFeedback, reworks, run }, reassignments);
+              if (decision.action === 'rework' && !deps.parentStopped?.()) {
+                const history = [...record.feedbackHistory, ...(record.feedback ? [record.feedback] : [])].slice(-5);
+                move('FEEDBACK_REQUIRED', { feedback: conflictFeedback, feedbackHistory: history }, {
+                  reason: `merge conflict in: ${files}`,
+                });
+                record = requestRework(ctx, record.id, piece.baseGoal);
+                reworks++;
+                conflictReworks++;
+                run = undefined;
+                break;
+              }
+            }
+          }
+          if (record.status === 'REWORKING') break; // sent back above
+          return { childId, assignmentId: record.id, status: merged };
+        }
+
+        case 'FEEDBACK_REQUIRED': {
+          const feedback = record.feedback;
+          if (!feedback) return outcome(escalateAssignment(ctx, record, 'the assignment needs a decision but recorded no feedback'));
+          run ??= await deps.waitForChild(childId);
+          const decision = await recoveryDecision(ctx, { assignment: record, feedback, reworks, run }, reassignments);
+          if (decision.action === 'escalate') return outcome(escalateAssignment(ctx, record, decision.reason));
+          if (decision.action === 'cancel') return outcome(cancelAssignment(ctx, record, decision.reason));
+          if (deps.parentStopped?.()) return outcome(cancelAssignment(ctx, record, 'the delegating task was stopped'));
+
+          if (decision.action === 'reassign') {
+            try {
+              const next = requestReassignment(ctx, record.id, decision, piece);
+              record = next.record;
+              childId = next.childId;
+              reworks = 0;
+              conflictReworks = 0;
+              reassignments++;
+              run = undefined;
+            } catch (err) {
+              if (!(err instanceof ReassignmentRefused)) throw err;
+              return outcome(escalateAssignment(ctx, record, err.message));
+            }
+            break;
+          }
+
+          record = requestRework(ctx, record.id, piece.baseGoal);
+          reworks++;
+          run = undefined;
+          break;
+        }
+
+        // MERGED, INTEGRATION_BLOCKED, ESCALATED, CANCELLED, REASSIGNED: settled,
+        // or waiting on a decision that is not this loop's to make.
+        default:
+          return outcome(record);
       }
-      return { childId, assignmentId: record.id, status: merged };
     }
-
-    // Refused. The child keeps its workspace and its context; what it needs is
-    // to know exactly what failed.
-    const feedback = buildParentFeedback({
-      assignmentId: record.id, revision: record.revision + 1, failedChecks: verdict.failedChecks,
-      guidance: ['Run each failed check yourself and put its result in your report — the parent accepts only on evidence.'],
-    });
-    const history = [...record.feedbackHistory, ...(record.feedback ? [record.feedback] : [])].slice(-5);
-    record = ledger.transition(record.id, 'FEEDBACK_REQUIRED', { feedback, feedbackHistory: history }, {
-      reason: `parent acceptance failed: ${verdict.failedChecks.map((failed) => failed.check).join('; ')}`,
-      evidenceRefs: verdict.failedChecks.flatMap((failed) => failed.evidenceRefs),
-    });
-
-    const decision = await recoveryDecision(ctx, { assignment: record, feedback, reworks, run }, reassignments);
-    if (decision.action === 'escalate') return outcome(escalateAssignment(ctx, record, decision.reason));
-    if (decision.action === 'cancel') return outcome(cancelAssignment(ctx, record, decision.reason));
-    if (deps.parentStopped?.()) return outcome(cancelAssignment(ctx, record, 'the delegating task was stopped'));
-
-    if (decision.action === 'reassign') {
-      try {
-        const next = requestReassignment(ctx, record.id, decision, piece);
-        record = next.record;
-        childId = next.childId;
-        reworks = 0;
-        reassignments++;
-      } catch (err) {
-        if (!(err instanceof ReassignmentRefused)) throw err;
-        return outcome(escalateAssignment(ctx, record, err.message));
-      }
-      continue;
-    }
-
-    record = requestRework(ctx, record.id, piece.baseGoal);
-    reworks++;
+  } catch (err) {
+    // Something else moved this assignment: another driver, or a recovery pass.
+    // Acting on a state this one has not seen is how a merge happens twice.
+    if (err instanceof DelegationStaleError) return outcome(ledger.get(record.id) ?? record);
+    throw err;
   }
+}
+
+/** Assignment statuses in which work is still owed. Anything else has settled or
+ *  is waiting on a decision. */
+const IN_FLIGHT: ReadonlySet<DelegationStatus> = new Set([
+  'ASSIGNED', 'WORKING', 'REWORKING', 'BLOCKED', 'REPORT_READY', 'UNDER_REVIEW',
+  'FEEDBACK_REQUIRED', 'ACCEPTED', 'MERGING',
+]);
+
+/** The live assignment for each piece: the one that is not a superseded owner. */
+function activeByPiece(records: readonly DelegationRecord[]): Map<number, DelegationRecord> {
+  const active = new Map<number, DelegationRecord>();
+  for (const record of records) {
+    if (record.piece === undefined || record.status === 'REASSIGNED') continue;
+    active.set(record.piece, record); // oldest first, so a successor replaces its predecessor
+  }
+  return active;
+}
+
+/** Whether a restarted parent has anything to resume.
+ *
+ *  True when an assignment is still in flight, or when a piece never got one and
+ *  everything it waits for has merged (so it can start now). False when every
+ *  piece has settled — merged, cancelled, escalated or waiting on a decision — in
+ *  which case the old rule stands and the parent does not split a second time. */
+export function needsResume(
+  records: readonly DelegationRecord[], after: readonly (readonly number[])[], pieceCount: number,
+): boolean {
+  const active = activeByPiece(records);
+  if ([...active.values()].some((record) => IN_FLIGHT.has(record.status))) return true;
+  for (let index = 0; index < pieceCount; index++) {
+    if (active.has(index)) continue;
+    const prerequisites = after[index] ?? [];
+    if (prerequisites.every((dep) => active.get(dep)?.status === 'MERGED')) return true;
+  }
+  return false;
 }
 
 /** Hands each subgoal to its own child and runs them on the schedule the work
@@ -805,7 +955,7 @@ export async function delegateToChildren(
   // No usable split means no delegation. Handing the child the parent's own
   // goal is the clone case, and it is never the right answer: the parent should
   // do the work itself instead.
-  if ((input.existingChildren ?? 0) > 0) {
+  if ((input.existingChildren ?? 0) > 0 && !input.resume) {
     return {
       succeeded: false,
       notDelegatable: true,
@@ -835,7 +985,9 @@ export async function delegateToChildren(
   // every way a plan is bad is cheap to detect now and expensive to discover
   // after k sandboxes have started. An invalid plan is not a failed
   // delegation — it is a goal to do directly.
-  if (input.authority) {
+  // Not on a resume: the plan was already validated and funded, and a restart
+  // must never be able to veto work that is in flight.
+  if (input.authority && !input.resume) {
     const validation = validateDelegationPlan(
       { goal: input.goal, authority: input.authority },
       {
@@ -870,6 +1022,11 @@ export async function delegateToChildren(
     ...(input.approvedBudgetUsd === undefined ? {} : { approvedBudgetUsd: input.approvedBudgetUsd }),
     mergeChain: Promise.resolve(),
   };
+
+  // A restarted parent finds its earlier assignments here. Empty on a first run,
+  // so the loop below is the same code either way: for each piece, use the
+  // assignment that exists or make the one that does not.
+  const existing = input.resume ? activeByPiece(ctx.ledger.listForParent(input.parentId)) : new Map<number, DelegationRecord>();
 
   const results: { childId: string; goal: string; status: DelegationStatus }[] = [];
   const cancelled: { goal: string; reason: string }[] = [];
@@ -910,7 +1067,7 @@ export async function delegateToChildren(
         })),
       );
       const piece: Piece = {
-        baseGoal: subgoals[index], goal,
+        index, baseGoal: subgoals[index], goal,
         contract: {
           // A child's own DoD, when the plan gave one; otherwise the minimal
           // contract its subgoal states.
@@ -923,10 +1080,14 @@ export async function delegateToChildren(
         },
         dependencies: prerequisites.flatMap((dep) => assignmentOf.get(dep) ?? []),
       };
+      // Already assigned before a restart: that assignment is this piece's, and
+      // it is picked up where its record says it is. Never assigned twice.
+      const prior = existing.get(index);
+      if (prior) return { id, piece, record: prior, childId: prior.childId };
       return { id, piece, ...assignPiece(ctx, piece) };
     });
 
-    // Each child is driven from its own report to its own end: accepted and
+    // Each child is driven from its own state to its own end: accepted and
     // merged, or sent back to the same child, or escalated. A slow sibling never
     // waits behind another's rework, and a failed one never disturbs an
     // accepted one.

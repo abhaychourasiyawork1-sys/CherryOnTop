@@ -364,6 +364,26 @@ export function integrateForkDetailed(fork: WorkspaceFork): IntegrationResult {
   }
 }
 
+/** Whether this fork's changes are already in the base.
+ *
+ *  For finishing a merge a restart cut off: the apply may have happened with the
+ *  daemon dying before it was recorded. Applying again is not a safe way to find
+ *  out — it can succeed, conflict or double a hunk depending on the patch — but
+ *  a patch that reverse-applies cleanly is, exactly, a patch that is already
+ *  there. An empty candidate has nothing left to apply. False when it cannot
+ *  tell, so the caller merges rather than assuming. */
+export function isForkIntegrated(fork: WorkspaceFork): boolean {
+  try {
+    execFileSync('git', ['add', '-A'], { cwd: fork.path, stdio: 'ignore' });
+    const diff = gitText(['diff', '--cached', '--binary', '--no-renames'], fork.path);
+    if (!diff.trim()) return true;
+    execFileSync('git', ['apply', '--reverse', '--check', '--binary'], { cwd: fork.basePath, input: diff, stdio: ['pipe', 'ignore', 'ignore'] });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export function integrateFork(fork: WorkspaceFork): boolean {
   return integrateForkDetailed(fork).merged;
 }

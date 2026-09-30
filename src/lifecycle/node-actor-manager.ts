@@ -16,8 +16,12 @@ import { insertDecision, listDecisionsForNode } from '../db/queries/decisions.js
 import { escalate } from '../approvals/escalation.js';
 import { insertApproval, getPendingApproval, resolveApproval } from '../db/queries/approvals.js';
 import type { NodeMachineContext } from './node-machine.js';
-import { delegateToChildren, childAuthority, type DelegateChildDeps, type DelegationLedger } from './delegate-child.js';
-import { getDelegation } from '../db/queries/delegations.js';
+import { delegateToChildren, childAuthority, needsResume, type DelegateChildDeps, type DelegationLedger, type RecoveryContext, type RecoveryDecision } from './delegate-child.js';
+import { decideAssignmentRecovery } from './assignment-market.js';
+import { normalizeEconomicState } from '../decision/state.js';
+import { saveDelegationPlan, loadDelegationPlan } from '../db/queries/delegation-plans.js';
+import type { ExecuteStepResult } from '../execution/execute-step.js';
+import { getDelegation, listDelegationsForParent, listDelegationsForChild } from '../db/queries/delegations.js';
 import { openDelegation, transitionDelegation } from './delegation-events.js';
 import type { WorkspaceRef } from '../schemas/delegation.js';
 import type { ChildRunResult, CheckVerifier } from './delegation-review.js';
@@ -27,7 +31,7 @@ import { insertArtifact, listArtifactsForNode } from '../db/queries/artifacts.js
 import { artifactsFromEvent } from '../execution/artifacts.js';
 import { treeState, treeChanges } from '../execution/tree-changes.js';
 import { codexAdapter } from '../adapters/codex.js';
-import { buildPlanPrompt, parsePlan, type ParsedPlan } from '../intelligence/plan.js';
+import { buildPlanPrompt, parsePlan, isEvidenceableCheck, type ParsedPlan } from '../intelligence/plan.js';
 import { buildSynthesisPrompt, type ChildReport } from '../intelligence/synthesize.js';
 import { decideIntegration } from '../intelligence/integrate-results.js';
 import { answerOf } from '../db/queries/answers.js';
@@ -48,7 +52,7 @@ import { subtreeNodeIds } from '../db/queries/nodes.js';
 import { allowedTools, isReadOnly } from '../engines/enforce-tools.js';
 import type { Authority } from '../schemas/node-contract.js';
 import {
-  forkWorkspace, releaseFork, integrateFork, integrateForkDetailed, rebaseForkOntoBase,
+  forkWorkspace, releaseFork, integrateFork, integrateForkDetailed, rebaseForkOntoBase, isForkIntegrated,
   candidateChangedFiles, filesWithConflictMarkers, type WorkspaceFork, type IntegrationResult,
 } from '../execution/workspace-fork.js';
 
@@ -194,12 +198,20 @@ export function mergeAcceptedDelegation(
 ): 'MERGED' | 'INTEGRATION_BLOCKED' {
   const record = getDelegation(db, assignmentId);
   if (!record) throw new Error(`Delegation ${assignmentId} does not exist`);
-  transitionDelegation(db, assignmentId, 'MERGING', {}, new Date().toISOString());
+  // Already MERGING is a merge a restart cut off: it is finished, not begun
+  // again. Anything else has to go through the table, which is what refuses a
+  // child that was never accepted.
+  const resuming = record.status === 'MERGING';
+  if (!resuming) transitionDelegation(db, assignmentId, 'MERGING', {}, new Date().toISOString());
 
   const workspace = record.workspace;
   // No workspace means the child worked in the parent's own tree; there is no
   // separate candidate to integrate, only the acceptance that already happened.
-  const attempt = workspace ? integrate(workspaceFork(workspace)) : true;
+  // A resumed merge first asks whether the apply already landed before the
+  // daemon died, rather than applying twice.
+  const attempt = !workspace ? true
+    : resuming && isForkIntegrated(workspaceFork(workspace)) ? true
+    : integrate(workspaceFork(workspace));
   const result: IntegrationResult = typeof attempt === 'boolean'
     ? { merged: attempt, conflicts: [], unionResolved: [] }
     : attempt;
@@ -223,9 +235,10 @@ export function mergeAcceptedDelegation(
 export function dbDelegationLedger(db: Db): DelegationLedger {
   return {
     open: (input) => openDelegation(db, { ...input, id: randomUUID() }, new Date().toISOString()),
-    transition: (id, to, patch, detail) =>
-      transitionDelegation(db, id, to, patch ?? {}, new Date().toISOString(), detail),
+    transition: (id, to, patch, detail, options) =>
+      transitionDelegation(db, id, to, patch ?? {}, new Date().toISOString(), detail, options),
     get: (id) => getDelegation(db, id),
+    listForParent: (parentId) => listDelegationsForParent(db, parentId),
     merge: async (id) => mergeAcceptedDelegation(db, id),
   };
 }
@@ -487,19 +500,12 @@ export function realDelegateDeps(db: Db, parentId?: string): DelegateChildDeps {
       const granted = getNode(db, childId)?.contract.authority.budget_usd;
       return granted === undefined ? undefined : Math.max(0, granted - getCostForNodes(db, [childId]));
     },
+    // The governor after a failed review: the Action Market's own recovery
+    // pricing (see `decideRecoveryFor`), behind a hard budget floor. It can only
+    // choose among ways of continuing or stopping; the verdict on the work is
+    // the review's, not its.
+    decideRecovery: (context) => decideRecoveryFor(db, context),
     // The candidate being checked is this assignment's own workspace.
-    // The governor after a failed review, built from the existing budget
-    // primitives rather than a second optimiser: another revision is a real
-    // dispatch, and a child that can no longer fund one is not sent back — the
-    // parent stops and asks. This can only ever say *less* (escalate); rework
-    // is the default and the acceptance verdict is not its to change.
-    decideRecovery: ({ assignment }) => {
-      const granted = getNode(db, assignment.childId)?.contract.authority.budget_usd;
-      const remaining = granted === undefined ? undefined : Math.max(0, granted - getCostForNodes(db, [assignment.childId]));
-      return remaining !== undefined && remaining < MIN_AGENT_BUDGET_USD
-        ? { action: 'escalate', reason: `the child has $${remaining.toFixed(2)} left, less than the $${MIN_AGENT_BUDGET_USD.toFixed(2)} another revision needs` }
-        : { action: 'rework' };
-    },
     verifyCheck: (check, assignment) =>
       fileCheckVerifier(assignment.workspace ?? workspaces.get(assignment.childId))(check),
     parentStopped: () => {
@@ -509,8 +515,14 @@ export function realDelegateDeps(db: Db, parentId?: string): DelegateChildDeps {
     // Execution over, and nothing more. Not "integrated", not "accepted": the
     // parent's review decides what a finished child is worth, and only an
     // accepted one merges (`mergeAcceptedDelegation`).
-    waitForChild: async (childId) =>
-      observeCandidate(childRunResult(db, childId, await waitForNodeCompletion(db, childId)), workspaces.get(childId)),
+    waitForChild: async (childId) => {
+      const completion = await childCompletion(db, childId);
+      // The workspace is on the assignment, so a parent that restarted (and so
+      // has an empty map here) still finds its child's.
+      const workspace = workspaces.get(childId)
+        ?? listDelegationsForChild(db, childId).map((record) => record.workspace).filter(Boolean).at(-1);
+      return observeCandidate(childRunResult(db, childId, completion), workspace);
+    },
     getFindings: (childId) => answerOf(db, childId),
     markSuperseded: (failedId, replacementId) => {
       try {
@@ -522,6 +534,161 @@ export function realDelegateDeps(db: Db, parentId?: string): DelegateChildDeps {
       }
     },
   };
+}
+
+/** The child's own economic state, from what the runtime already recorded about
+ *  it, with its dollar authority laid over the token accounting.
+ *
+ *  `economicStateFor` prices in tokens and knows nothing of a child's dollar
+ *  grant; the market ranks in dollars and refuses what the money cannot fund. So
+ *  the grant, the spend and the price per token this child actually paid are
+ *  added when there is a measurement of them. Reading the state must not leave a
+ *  trace: it is a question, not a boundary, so it does not advance the node's
+ *  trajectory memory and does not leave an entry behind for a finished node. */
+export function assignmentEconomicState(db: Db, childId: string, goal: string): EconomicState {
+  try {
+    const base = economicStateFor(db, { nodeId: childId, goal }, { commit: false });
+    const authority = getNode(db, childId)?.contract.authority;
+    const spentUsd = getCostForNodes(db, [childId]);
+    const consumed = base.resources.consumedTokens;
+    return normalizeEconomicState({
+      ...base,
+      resources: {
+        ...base.resources,
+        ...(authority && spentUsd > 0 && consumed > 0
+          ? { budgetUsd: authority.budget_usd, spentUsd, usdPerToken: spentUsd / consumed }
+          : {}),
+      },
+    });
+  } finally {
+    forgetNode(childId);
+  }
+}
+
+/** What to do about a refused assignment, in production.
+ *
+ *  Two layers, in this order. A hard floor first: a child that cannot fund
+ *  another dispatch is not sent back, whatever the market would say. Then the
+ *  market (`assignment-market.ts`), which prices keeping the child against
+ *  handing the work on against stopping, from this child's own measured state.
+ *  The decision and what it considered are written to the log, so "why was this
+ *  reworked / reassigned / escalated" has an answer beyond the status. */
+export function decideRecoveryFor(db: Db, context: RecoveryContext): RecoveryDecision {
+  const { assignment } = context;
+  const granted = getNode(db, assignment.childId)?.contract.authority.budget_usd;
+  const remaining = granted === undefined
+    ? undefined : Math.max(0, granted - getCostForNodes(db, [assignment.childId]));
+  if (remaining !== undefined && remaining < MIN_AGENT_BUDGET_USD) {
+    return {
+      action: 'escalate',
+      reason: `the child has $${remaining.toFixed(2)} left, less than the $${MIN_AGENT_BUDGET_USD.toFixed(2)} another revision needs`,
+    };
+  }
+
+  const { decision, receipt } = decideAssignmentRecovery({
+    context,
+    state: assignmentEconomicState(db, assignment.childId, assignment.goal),
+    // A different owner has to be fundable: the successor is capped at what this
+    // child has left, and `requestReassignment` refuses below the same floor.
+    canReassign: remaining === undefined || remaining >= MIN_AGENT_BUDGET_USD,
+  });
+  try {
+    const now = new Date().toISOString();
+    const payload = { assignmentId: assignment.id, parentId: assignment.parentId, childId: assignment.childId, ...receipt };
+    // Not under `delegation.`: those are the assignment's own status changes,
+    // and this is a decision about one.
+    const id = appendEvent(db, { nodeId: assignment.parentId, type: 'recovery.assignment_decided', payload, createdAt: now });
+    publish({ id, nodeId: assignment.parentId, type: 'recovery.assignment_decided', payload, createdAt: now });
+  } catch (err) {
+    // The decision stands without its receipt; a log that cannot be written must
+    // not cost the assignment its recovery.
+    console.error(`Failed to record the recovery decision for assignment ${assignment.id}:`, err);
+  }
+  return decision;
+}
+
+/** One node's delegation: plan the split, hand it out, and combine the answers —
+ *  or, for a node restarted mid-delegation, pick the work up where it stopped.
+ *
+ *  Restarting used to lose the whole organisation. Assignments were durable, but
+ *  the loop that drove them was not, and a resumed parent found children already
+ *  existed, refused to split a second time, and did the work itself — leaving a
+ *  child that had finished at REPORT_READY unreviewed and unmerged, its workspace
+ *  orphaned. The plan is now kept beside the assignments, so a parent that comes
+ *  back with work in flight (or a piece that never got its turn) reattaches to
+ *  it. With nothing in flight the old rule stands: a node that already delegated
+ *  does not split a second time. */
+export async function delegateNode(
+  db: Db,
+  nodeId: string,
+  input: { goal: string; approvedBudgetUsd?: number },
+  makeDeps: (db: Db, parentId: string) => DelegateChildDeps = realDelegateDeps,
+): Promise<ExecuteStepResult> {
+  const node = getNode(db, nodeId);
+  const existingChildren = listNodes(db).filter((child) => child.parentId === nodeId).length;
+
+  const saved = existingChildren > 0 ? loadDelegationPlan(db, nodeId) : undefined;
+  const resuming = saved !== undefined
+    && needsResume(listDelegationsForParent(db, nodeId), saved.after, saved.subgoals.length);
+
+  // Planning costs a sandbox. Do not pay for one only to refuse the
+  // result because this node has already delegated.
+  // Nor to be told again what this node was already told: a validation
+  // retry comes back through DELEGATE, and on a dirty tree (no plan
+  // cache) every retry used to buy the same refusal again.
+  const alreadyDeclined = delegationDeclinedReason(db, nodeId) !== undefined;
+  const plan: ParsedPlan = resuming ? saved! : existingChildren > 0 || alreadyDeclined
+    ? NO_PLAN
+    : await planSubgoals(db, nodeId, input.goal, node?.contract.authority.max_child_count ?? 0);
+
+  if (resuming) {
+    publishProgress(db, nodeId, 'Picking the delegated work back up where it stopped');
+  } else if (plan.subgoals.length > 0) {
+    // Kept beside the assignments it is about to produce: a restart can only
+    // find the pieces that had not been handed out yet if it can find the plan.
+    try {
+      saveDelegationPlan(db, nodeId, plan, new Date().toISOString());
+    } catch (err) {
+      console.error(`Failed to keep the delegation plan for node ${nodeId}:`, err);
+    }
+    // How many ways, not what each piece is. Every subgoal is a whole
+    // instruction, so joining four of them produced a 1,500-character
+    // "progress" line that buried the transcript it was meant to
+    // narrate — and each one appears immediately below as a named agent
+    // anyway.
+    publishProgress(db, nodeId, `Splitting the work ${plan.subgoals.length} ways`);
+    // Warm the map here, once, before the children start: they all sit
+    // on this same commit, so otherwise N children starting together
+    // each build an identical map and store an identical row.
+    const mapPath = node?.repoPath ?? process.env.ORG_WORKTREE_PATH;
+    if (mapPath) warmRepoInventory(db, mapPath);
+  }
+
+  const result = await delegateToChildren({
+    parentId: nodeId, goal: input.goal, subgoals: plan.subgoals, after: plan.after,
+    // What the parent will hold each piece to, from the plan: each piece's own
+    // definition of done and the checks that prove it. Only what evidence can
+    // meet was admitted (see `isEvidenceableCheck`).
+    definitionOfDoneBySubgoal: plan.definitionOfDone,
+    acceptanceChecksBySubgoal: plan.acceptanceChecks,
+    existingChildren,
+    resume: resuming,
+    approvedBudgetUsd: input.approvedBudgetUsd,
+    // So the plan is checked against what this node may actually
+    // authorize, before a single child node exists.
+    ...(node ? { authority: node.contract.authority } : {}),
+  }, makeDeps(db, nodeId));
+
+  if (result.notDelegatable) recordDelegationDeclined(db, nodeId, result.message);
+  // The root owes an answer, not a tally of its children.
+  if (!result.notDelegatable) {
+    const combined = await synthesizeChildren(db, nodeId, input.goal);
+    if (combined) {
+      publishAnswer(db, nodeId, combined);
+      return { ...result, message: combined };
+    }
+  }
+  return result;
 }
 
 const ADAPTERS: RuntimeAdapter[] = [claudeCodeAdapter, codexAdapter];
@@ -1795,7 +1962,7 @@ function delegationIsSettled(db: Db, nodeId: string): { settled: boolean; p?: nu
   }
 }
 
-const NO_PLAN: ParsedPlan = { subgoals: [], after: [] };
+const NO_PLAN: ParsedPlan = { subgoals: [], after: [], definitionOfDone: [], acceptanceChecks: [] };
 
 async function planSubgoals(db: Db, nodeId: string, goal: string, maxChildren: number): Promise<ParsedPlan> {
   const node = getNode(db, nodeId);
@@ -1841,6 +2008,10 @@ async function planSubgoals(db: Db, nodeId: string, goal: string, maxChildren: n
         return {
           subgoals,
           after: subgoals.map((_, i) => (cached.after[i] ?? []).filter((ref) => ref < i)),
+          definitionOfDone: subgoals.map((_, i) => cached.definitionOfDone[i] ?? []),
+          // Re-filtered on the way out: a cached row is only as trustworthy as the
+          // rule that admitted its checks then, and the rule may have tightened.
+          acceptanceChecks: subgoals.map((_, i) => (cached.acceptanceChecks[i] ?? []).filter(isEvidenceableCheck)),
         };
       }
     } catch {
@@ -1977,7 +2148,9 @@ async function planSubgoals(db: Db, nodeId: string, goal: string, maxChildren: n
     // already computed and paid for, and the node would self-execute instead.
     if (cacheKey) {
       try {
-        putCachedPlan(db, cacheKey, subgoals, head!, new Date().toISOString(), plan.after);
+        putCachedPlan(db, cacheKey, subgoals, head!, new Date().toISOString(), plan.after, {
+          definitionOfDone: plan.definitionOfDone, acceptanceChecks: plan.acceptanceChecks,
+        });
       } catch (err) {
         console.error(`Failed to cache the plan for node ${nodeId}:`, err);
       }
@@ -2209,51 +2382,7 @@ function productionMachine(db: Db, nodeId: string) {
         escalate(input.nodeId, input.reason, { insertApproval: (record) => insertApproval(db, record) }),
       ),
       delegateToChild: fromPromise(async ({ input }: { input: { nodeId: string; goal: string; approvedBudgetUsd?: number } }) =>
-        (async () => {
-          const node = getNode(db, nodeId);
-          const existingChildren = listNodes(db).filter((child) => child.parentId === nodeId).length;
-          // Planning costs a sandbox. Do not pay for one only to refuse the
-          // result because this node has already delegated.
-          // Nor to be told again what this node was already told: a validation
-          // retry comes back through DELEGATE, and on a dirty tree (no plan
-          // cache) every retry used to buy the same refusal again.
-          const alreadyDeclined = delegationDeclinedReason(db, nodeId) !== undefined;
-          const { subgoals, after } = existingChildren > 0 || alreadyDeclined
-            ? NO_PLAN
-            : await planSubgoals(db, nodeId, input.goal, node?.contract.authority.max_child_count ?? 0);
-          if (subgoals.length > 0) {
-            // How many ways, not what each piece is. Every subgoal is a whole
-            // instruction, so joining four of them produced a 1,500-character
-            // "progress" line that buried the transcript it was meant to
-            // narrate — and each one appears immediately below as a named agent
-            // anyway.
-            publishProgress(db, nodeId, `Splitting the work ${subgoals.length} ways`);
-            // Warm the map here, once, before the children start: they all sit
-            // on this same commit, so otherwise N children starting together
-            // each build an identical map and store an identical row.
-            const mapPath = node?.repoPath ?? process.env.ORG_WORKTREE_PATH;
-            if (mapPath) warmRepoInventory(db, mapPath);
-          }
-          const result = await delegateToChildren({
-            parentId: nodeId, goal: input.goal, subgoals, after,
-            existingChildren,
-            approvedBudgetUsd: input.approvedBudgetUsd,
-            // So the plan is checked against what this node may actually
-            // authorize, before a single child node exists.
-            ...(node ? { authority: node.contract.authority } : {}),
-          }, realDelegateDeps(db, nodeId));
-
-          if (result.notDelegatable) recordDelegationDeclined(db, nodeId, result.message);
-          // The root owes an answer, not a tally of its children.
-          if (!result.notDelegatable) {
-            const combined = await synthesizeChildren(db, nodeId, input.goal);
-            if (combined) {
-              publishAnswer(db, nodeId, combined);
-              return { ...result, message: combined };
-            }
-          }
-          return result;
-        })(),
+        delegateNode(db, nodeId, { goal: input.goal, ...(input.approvedBudgetUsd === undefined ? {} : { approvedBudgetUsd: input.approvedBudgetUsd }) }),
       ),
       executeStep: fromPromise(async ({ input }) => {
         const node = getNode(db, nodeId);
@@ -3305,8 +3434,17 @@ export async function waitForNodeCompletion(
   // caller needs more than pass/fail.
   // Stopped on purpose is not a failure: a parent that "replaced" it would
   // undo the stop (found live — cancelling a task spawned two replacements).
-  if (snapshot.value === 'CANCELLED') return { succeeded: false, cancelled: true };
-  if (snapshot.value !== 'COMPLETE') return { succeeded: false };
+  return completionOfState(db, nodeId, String(snapshot.value));
+}
+
+/** What a node's terminal state means as an outcome. Split out so a node that
+ *  finished before this process started — no actor, only its record — reads the
+ *  same way as one that finished while it was being watched. */
+export function completionOfState(
+  db: Db, nodeId: string, state: string,
+): { succeeded: boolean; cancelled?: boolean } {
+  if (state === 'CANCELLED') return { succeeded: false, cancelled: true };
+  if (state !== 'COMPLETE') return { succeeded: false };
   const lastValidation = listEventsForNode(db, nodeId)
     .filter((e) => e.type === 'validation.result')
     .sort((a, b) => b.id - a.id)[0];
@@ -3314,4 +3452,28 @@ export async function waitForNodeCompletion(
   // "must not manufacture a success" rule recordValidation itself applies.
   const passed = (lastValidation?.payload as { passed?: boolean } | undefined)?.passed === true;
   return { succeeded: passed };
+}
+
+/** Where a delegated child stands, whether or not this process has been
+ *  watching it.
+ *
+ *  A restarted parent meets children it has no actor for. One that already
+ *  finished is read from its record. One the restart parked as INTERRUPTED is
+ *  started again from its snapshot — the person who resumed the parent chose to
+ *  carry the delegation on, and that includes the children it was waiting for.
+ *  One that is neither running nor recoverable is reported as not having
+ *  succeeded, which is the honest reading. */
+export async function childCompletion(
+  db: Db, nodeId: string,
+): Promise<{ succeeded: boolean; cancelled?: boolean }> {
+  if (!actors.has(nodeId)) {
+    const node = getNode(db, nodeId);
+    if (node && TERMINAL_STATES.has(node.state)) return completionOfState(db, nodeId, node.state);
+    if (node?.state === 'INTERRUPTED' && node.snapshot) {
+      restoreNodeActor(db, nodeId, node.goal, node.snapshot);
+    } else {
+      return { succeeded: false };
+    }
+  }
+  return waitForNodeCompletion(db, nodeId);
 }

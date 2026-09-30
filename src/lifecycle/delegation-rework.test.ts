@@ -1,9 +1,10 @@
 import { describe, it, expect, vi } from 'vitest';
 import {
-  delegateToChildren, createMemoryLedger, MAX_REWORK_REVISIONS, MAX_CONFLICT_REWORKS,
+  delegateToChildren, createMemoryLedger, needsResume, MAX_REWORK_REVISIONS, MAX_CONFLICT_REWORKS,
   type DelegateChildDeps, type RecoveryDecision,
 } from './delegate-child.js';
 import type { ChildRunResult } from './delegation-review.js';
+import { DelegationStaleError } from '../schemas/delegation.js';
 
 const PASS_TEST = { id: 'observed:npm test', command: 'npm test', passed: true };
 const green = (over: Partial<ChildRunResult> = {}): ChildRunResult => ({
@@ -530,5 +531,198 @@ describe('a conflict is settled by the child that wrote one side of it', () => {
     expect(starts[2].goal).toContain('conflict markers');
     expect(result.succeeded).toBe(true);
     expect(log.filter((l) => l.startsWith('integrate:'))).toHaveLength(2); // the blocked merge, then the one that landed
+  });
+});
+
+describe('two drivers on one assignment: the stale one stands down', () => {
+  it('refuses a write over a revision the writer has not seen', () => {
+    const ledger = createMemoryLedger();
+    const a = ledger.open({ parentId: 'p', childId: 'c1', goal: 'g', definitionOfDone: [], acceptanceChecks: [], dependencies: [], budgetUsd: 1 });
+    ledger.transition(a.id, 'WORKING', {}, undefined, { expectedRevision: a.revision });
+    expect(() => ledger.transition(a.id, 'REPORT_READY', {}, undefined, { expectedRevision: a.revision }))
+      .toThrow(DelegationStaleError);
+    expect(ledger.get(a.id)!.status).toBe('WORKING');
+  });
+
+  it('a driver that finds the assignment moved under it stops without merging or dispatching again', async () => {
+    const { deps, ledger, log, starts } = world(() => green());
+    // Another actor (a second driver, a recovery pass) cancels the assignment
+    // between this driver's report and its review.
+    const real = ledger.transition.bind(ledger);
+    ledger.transition = (id, to, patch, detail, options) => {
+      const result = real(id, to, patch, detail, options);
+      if (to === 'REPORT_READY') real(id, 'CANCELLED', {}, { reason: 'someone else' });
+      return result;
+    };
+    const result = await delegateToChildren({ parentId: 'p', goal: 'g', subgoals: ['x'] }, deps);
+    expect(result.succeeded).toBe(false);
+    expect(log.filter((l) => l.startsWith('integrate:'))).toEqual([]);
+    expect(starts).toHaveLength(1);
+    expect(ledger.list()[0].status).toBe('CANCELLED');
+  });
+});
+
+describe('resuming after a restart: the durable record decides where the work is', () => {
+  /** An assignment left at `status`, as the database would hold it after a crash. */
+  function crashedAt(status: 'ASSIGNED' | 'WORKING' | 'REPORT_READY' | 'UNDER_REVIEW' | 'FEEDBACK_REQUIRED' | 'ACCEPTED' | 'MERGING' | 'MERGED' | 'REASSIGNED',
+    over: { piece?: number; childId?: string; checks?: string[] } = {}, into?: ReturnType<typeof createMemoryLedger>) {
+    const ledger = into ?? createMemoryLedger();
+    const record = ledger.open({
+      parentId: 'p', childId: over.childId ?? 'c1', goal: 'Build the cart', piece: over.piece ?? 0,
+      definitionOfDone: ['Build the cart'], acceptanceChecks: over.checks ?? [], dependencies: [], budgetUsd: 1,
+    });
+    const path: Record<string, Array<Parameters<typeof ledger.transition>[1]>> = {
+      ASSIGNED: [], WORKING: ['WORKING'], REPORT_READY: ['WORKING', 'REPORT_READY'],
+      UNDER_REVIEW: ['WORKING', 'REPORT_READY', 'UNDER_REVIEW'],
+      FEEDBACK_REQUIRED: ['WORKING', 'REPORT_READY', 'UNDER_REVIEW', 'FEEDBACK_REQUIRED'],
+      ACCEPTED: ['WORKING', 'REPORT_READY', 'UNDER_REVIEW', 'ACCEPTED'],
+      MERGING: ['WORKING', 'REPORT_READY', 'UNDER_REVIEW', 'ACCEPTED', 'MERGING'],
+      MERGED: ['WORKING', 'REPORT_READY', 'UNDER_REVIEW', 'ACCEPTED', 'MERGING', 'MERGED'],
+      REASSIGNED: ['WORKING', 'REASSIGNED'],
+    };
+    for (const to of path[status]) {
+      ledger.transition(record.id, to, to === 'FEEDBACK_REQUIRED' ? {
+        feedback: { assignmentId: record.id, revision: 5, failedChecks: [{ check: 'npm test', observed: 'no run', expected: 'green', evidenceRefs: [] }], requiredChanges: [], guidance: [], nextChecks: ['npm test'] },
+      } : {});
+    }
+    return ledger;
+  }
+  const resumed = (ledger: ReturnType<typeof createMemoryLedger>, extra: Partial<DelegateChildDeps> = {}, script: Parameters<typeof world>[0] = () => green()) => {
+    const w = world(script, { ledger, ...extra });
+    // `world` builds its own ledger and log hooks; resume reuses the crashed one.
+    return { ...w, run: (input: Partial<Parameters<typeof delegateToChildren>[0]> = {}) => delegateToChildren({
+      parentId: 'p', goal: 'g', subgoals: ['Build the cart'], existingChildren: 1, resume: true, ...input,
+    }, w.deps) };
+  };
+
+  it('reviews and merges a child that had already reported, without starting it again', async () => {
+    const ledger = createMemoryLedger({ integrate: () => true });
+    crashedAt('REPORT_READY', {}, ledger);
+    const w = resumed(ledger);
+    const result = await w.run();
+    expect(result.succeeded).toBe(true);
+    expect(w.deps.createChildNode).not.toHaveBeenCalled();
+    expect(w.starts).toHaveLength(0);
+    expect(ledger.list()[0].status).toBe('MERGED');
+  });
+
+  it('carries an interrupted review through to acceptance', async () => {
+    const ledger = createMemoryLedger({ integrate: () => true });
+    crashedAt('UNDER_REVIEW', {}, ledger);
+    const w = resumed(ledger);
+    expect((await w.run()).succeeded).toBe(true);
+    expect(w.starts).toHaveLength(0);
+    expect(ledger.list()[0].status).toBe('MERGED');
+  });
+
+  it('merges work that was accepted but not yet merged, including a merge the crash cut off', async () => {
+    for (const status of ['ACCEPTED', 'MERGING'] as const) {
+      const integrated: string[] = [];
+      const ledger = createMemoryLedger({ integrate: (r) => { integrated.push(r.childId); return true; } });
+      crashedAt(status, {}, ledger);
+      const w = resumed(ledger);
+      expect((await w.run()).succeeded).toBe(true);
+      expect(integrated).toEqual(['c1']);
+      expect(w.starts).toHaveLength(0);
+      expect(ledger.list()[0].status).toBe('MERGED');
+    }
+  });
+
+  it('sends the same child back for rework when the crash came between feedback and the rework', async () => {
+    const ledger = createMemoryLedger({ integrate: () => true });
+    crashedAt('FEEDBACK_REQUIRED', { checks: ['npm test'] }, ledger);
+    const w = resumed(ledger, {}, (_g, dispatch) => green());
+    const result = await w.run();
+    expect(result.succeeded).toBe(true);
+    expect(w.deps.createChildNode).not.toHaveBeenCalled();
+    expect(w.starts.map((s) => s.childId)).toEqual(['c1']);
+    expect(w.starts[0].goal).toContain('npm test');
+  });
+
+  it('waits for a child that is still running, and starts nothing', async () => {
+    const ledger = createMemoryLedger({ integrate: () => true });
+    crashedAt('WORKING', {}, ledger);
+    const w = resumed(ledger);
+    expect((await w.run()).succeeded).toBe(true);
+    expect(w.starts).toHaveLength(0);
+    expect(w.deps.waitForChild).toHaveBeenCalledWith('c1');
+  });
+
+  it('starts a child that was assigned but never started', async () => {
+    const ledger = createMemoryLedger({ integrate: () => true });
+    crashedAt('ASSIGNED', {}, ledger);
+    const w = resumed(ledger);
+    expect((await w.run()).succeeded).toBe(true);
+    expect(w.starts.map((s) => s.childId)).toEqual(['c1']);
+    expect(w.deps.createChildNode).not.toHaveBeenCalled();
+  });
+
+  it('does not redo a piece that already merged, and starts the piece that was waiting on it', async () => {
+    const ledger = createMemoryLedger({ integrate: () => true });
+    crashedAt('MERGED', { piece: 0, childId: 'c1' }, ledger);
+    const w = resumed(ledger, { getFindings: (id: string) => (id === 'c1' ? 'The API is at /v2.' : '') });
+    const result = await w.run({ subgoals: ['Research', 'Build from the research'], after: [[], [0]] });
+    expect(result.succeeded).toBe(true);
+    expect(w.deps.createChildNode).toHaveBeenCalledTimes(1); // only the piece that had not been assigned
+    expect(w.starts).toHaveLength(1);
+    expect(w.starts[0].goal).toContain('The API is at /v2.');
+    const [first, second] = ledger.list();
+    expect(first.status).toBe('MERGED');
+    expect(second).toMatchObject({ piece: 1, dependencies: [first.id], status: 'MERGED' });
+  });
+
+  it('drives the successor of a reassignment, not the owner it replaced', async () => {
+    const ledger = createMemoryLedger({ integrate: () => true });
+    const old = crashedAt('REASSIGNED', { childId: 'c1' }, ledger).list()[0];
+    const successor = ledger.open({
+      parentId: 'p', childId: 'c2', goal: 'Build the cart', piece: 0, reassignedFrom: old.id,
+      definitionOfDone: ['Build the cart'], acceptanceChecks: [], dependencies: [], budgetUsd: 1,
+    });
+    ledger.transition(successor.id, 'WORKING');
+    const w = resumed(ledger);
+    expect((await w.run()).succeeded).toBe(true);
+    expect(w.deps.waitForChild).toHaveBeenCalledWith('c2');
+    expect(w.deps.waitForChild).not.toHaveBeenCalledWith('c1');
+    expect(ledger.list().map((r) => r.status)).toEqual(['REASSIGNED', 'MERGED']);
+  });
+
+  it('still refuses to split a second time when nothing is in flight — the old guard stands', async () => {
+    const ledger = createMemoryLedger();
+    crashedAt('MERGED', {}, ledger);
+    const w = resumed(ledger);
+    const result = await w.run({ resume: false });
+    expect(result.notDelegatable).toBe(true);
+    expect(result.message).toContain('already split');
+    expect(w.deps.createChildNode).not.toHaveBeenCalled();
+  });
+});
+
+describe('needsResume', () => {
+  const rec = (piece: number, status: string, reassignedFrom?: string) =>
+    ({ id: `a${piece}${status}`, piece, status, ...(reassignedFrom ? { reassignedFrom } : {}) }) as never;
+
+  it('is true while any assignment is in flight', () => {
+    for (const status of ['ASSIGNED', 'WORKING', 'REWORKING', 'BLOCKED', 'REPORT_READY', 'UNDER_REVIEW', 'FEEDBACK_REQUIRED', 'ACCEPTED', 'MERGING']) {
+      expect(needsResume([rec(0, status)], [[]], 1)).toBe(true);
+    }
+  });
+
+  it('is false when everything settled: merged, cancelled, escalated or waiting on a decision', () => {
+    for (const status of ['MERGED', 'CANCELLED', 'ESCALATED', 'INTEGRATION_BLOCKED']) {
+      expect(needsResume([rec(0, status)], [[]], 1)).toBe(false);
+    }
+  });
+
+  it('is true when a piece was never assigned and everything it waits for merged', () => {
+    expect(needsResume([rec(0, 'MERGED')], [[], [0]], 2)).toBe(true);
+  });
+
+  it('is false when the unassigned piece waits on something that did not merge', () => {
+    expect(needsResume([rec(0, 'ESCALATED')], [[], [0]], 2)).toBe(false);
+  });
+
+  it('ignores an owner that was reassigned away, and follows its successor', () => {
+    expect(needsResume([rec(0, 'REASSIGNED'), rec(0, 'WORKING', 'a0REASSIGNED')], [[]], 1)).toBe(true);
+    expect(needsResume([rec(0, 'REASSIGNED'), rec(0, 'MERGED', 'a0REASSIGNED')], [[]], 1)).toBe(false);
   });
 });

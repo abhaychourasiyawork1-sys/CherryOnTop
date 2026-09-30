@@ -51,6 +51,20 @@ export function canTransitionDelegation(from: DelegationStatus, to: DelegationSt
   return TRANSITIONS[from].includes(to);
 }
 
+/** The assignment does not exist. Distinct from a stale write so a caller can
+ *  tell "you are talking about nothing" from "someone else moved it". */
+export class DelegationNotFoundError extends Error {
+  constructor(id: string) { super(`Delegation ${id} does not exist`); }
+}
+
+/** Another writer got there first. The caller re-reads and decides again rather
+ *  than overwriting a state it has not seen. */
+export class DelegationStaleError extends Error {
+  constructor(id: string, expected: number, actual: number) {
+    super(`Delegation ${id} is at revision ${actual}, not ${expected}`);
+  }
+}
+
 export class IllegalDelegationTransitionError extends Error {
   constructor(id: string, readonly from: DelegationStatus, readonly to: DelegationStatus) {
     super(`Delegation ${id} cannot move ${from} → ${to}`);
@@ -139,6 +153,10 @@ export const DelegationRecordSchema = z.object({
    *  manifests, lockfiles) always need an explicit grant. Fixed at assignment,
    *  like the budget. */
   writeScope: z.array(z.string()).optional(),
+  /** Which subgoal of the parent's plan this is (its index). What lets a
+   *  restarted parent find the assignment that already exists for a piece
+   *  instead of assigning it a second time. */
+  piece: z.number().int().nonnegative().optional(),
   /** Assignment ids this piece had to wait for. */
   dependencies: z.array(z.string()).default([]),
   status: DelegationStatusSchema,

@@ -3,25 +3,11 @@ import type { Db } from '../client.js';
 import { delegations } from '../schema.js';
 import {
   DelegationPatchSchema, DelegationRecordSchema, NewDelegationSchema,
-  canTransitionDelegation, IllegalDelegationTransitionError,
+  canTransitionDelegation, DelegationNotFoundError, DelegationStaleError, IllegalDelegationTransitionError,
   type DelegationPatch, type DelegationRecord, type NewDelegation,
 } from '../../schemas/delegation.js';
 
-/** The assignment does not exist. Distinct from a stale write so a caller can
- *  tell "you are talking about nothing" from "someone else moved it". */
-export class DelegationNotFoundError extends Error {
-  constructor(id: string) { super(`Delegation ${id} does not exist`); }
-}
-
-/** Another writer got there first. The caller re-reads and decides again rather
- *  than overwriting a state it has not seen. */
-export class DelegationStaleError extends Error {
-  constructor(id: string, expected: number, actual: number) {
-    super(`Delegation ${id} is at revision ${actual}, not ${expected}`);
-  }
-}
-
-export { IllegalDelegationTransitionError };
+export { DelegationNotFoundError, DelegationStaleError, IllegalDelegationTransitionError };
 
 // The columns are the authority for status/revision/attempt (they are what is
 // compare-and-swapped); the blob carries everything else.

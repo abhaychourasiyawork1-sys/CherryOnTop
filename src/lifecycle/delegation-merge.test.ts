@@ -9,6 +9,7 @@ import { getDelegation } from '../db/queries/delegations.js';
 import { IllegalDelegationTransitionError } from '../schemas/delegation.js';
 import { forkWorkspace, type WorkspaceFork } from '../execution/workspace-fork.js';
 import { mergeAcceptedDelegation } from './node-actor-manager.js';
+import { isForkIntegrated } from '../execution/workspace-fork.js';
 import { openDelegation, transitionDelegation, delegationEventsFor } from './delegation-events.js';
 
 process.env.ORG_FORKS_ROOT = mkdtempSync(join(homedir(), '.org-forks-merge-test-'));
@@ -38,7 +39,7 @@ function repo(): string {
 const gitOut = (cwd: string, ...args: string[]) => execFileSync('git', args, { cwd, encoding: 'utf8' });
 
 /** A parent, a child whose fork has written `a.ts`, and an assignment in the given state. */
-function setup(fork: WorkspaceFork | null, upTo: 'ASSIGNED' | 'REPORT_READY' | 'UNDER_REVIEW' | 'ACCEPTED') {
+function setup(fork: WorkspaceFork | null, upTo: 'ASSIGNED' | 'REPORT_READY' | 'UNDER_REVIEW' | 'ACCEPTED' | 'MERGING') {
   const db = createDb(TEST_DB);
   const contract = (goal: string) => ({
     goal, definition_of_done: ['done'],
@@ -51,7 +52,7 @@ function setup(fork: WorkspaceFork | null, upTo: 'ASSIGNED' | 'REPORT_READY' | '
     acceptanceChecks: [], dependencies: [], budgetUsd: 1,
     ...(fork ? { workspace: { path: fork.path, basePath: fork.basePath, revision: fork.revision } } : {}),
   }, 't1');
-  const path: Array<'WORKING' | 'REPORT_READY' | 'UNDER_REVIEW' | 'ACCEPTED'> = ['WORKING', 'REPORT_READY', 'UNDER_REVIEW', 'ACCEPTED'];
+  const path: Array<'WORKING' | 'REPORT_READY' | 'UNDER_REVIEW' | 'ACCEPTED' | 'MERGING'> = ['WORKING', 'REPORT_READY', 'UNDER_REVIEW', 'ACCEPTED', 'MERGING'];
   for (const status of path.slice(0, upTo === 'ASSIGNED' ? 0 : path.indexOf(upTo) + 1)) {
     transitionDelegation(db, 'a1', status, {}, 't2');
   }
@@ -151,5 +152,52 @@ describe('mergeAcceptedDelegation', () => {
   it('refuses an unknown assignment', () => {
     const db = createDb(TEST_DB);
     expect(() => mergeAcceptedDelegation(db, 'nope')).toThrow(/does not exist/);
+  });
+
+  describe('a merge a restart cut off', () => {
+    it('finishes a MERGING assignment whose changes never reached the tree', () => {
+      const base = repo();
+      const fork = forkWorkspace(base, 'HEAD', 'c1')!;
+      writeFileSync(join(fork.path, 'new.ts'), 'export const n = 1;\n');
+      const db = setup(fork, 'MERGING'); // the daemon died after MERGING was written, before the apply
+
+      expect(mergeAcceptedDelegation(db, 'a1')).toBe('MERGED');
+      expect(readFileSync(join(base, 'new.ts'), 'utf8')).toBe('export const n = 1;\n');
+      expect(getDelegation(db, 'a1')?.status).toBe('MERGED');
+      expect(existsSync(fork.path)).toBe(false);
+    });
+
+    it('recognises changes that already landed, and does not apply them a second time', () => {
+      const base = repo();
+      const fork = forkWorkspace(base, 'HEAD', 'c1')!;
+      writeFileSync(join(fork.path, 'a.ts'), 'export const a = 2;\n');
+      const db = setup(fork, 'MERGING');
+      // The apply happened; the daemon died before writing MERGED.
+      execFileSync('git', ['apply', '--3way', '--binary'], {
+        cwd: base, input: gitOut(fork.path, 'diff', '--binary'), stdio: ['pipe', 'ignore', 'ignore'],
+      });
+      expect(isForkIntegrated(fork)).toBe(true);
+
+      let applied = 0;
+      const outcome = mergeAcceptedDelegation(db, 'a1', () => { applied++; return true; });
+
+      expect(outcome).toBe('MERGED');
+      expect(applied).toBe(0); // recognised, not redone
+      expect(readFileSync(join(base, 'a.ts'), 'utf8')).toBe('export const a = 2;\n');
+    });
+
+    it('does not mistake an unmerged candidate for a merged one', () => {
+      const base = repo();
+      const fork = forkWorkspace(base, 'HEAD', 'c1')!;
+      writeFileSync(join(fork.path, 'a.ts'), 'export const a = 2;\n');
+      expect(isForkIntegrated(fork)).toBe(false);
+      fork.release();
+    });
+
+    it('an empty candidate counts as integrated: there is nothing left to apply', () => {
+      const fork = forkWorkspace(repo(), 'HEAD', 'c1')!;
+      expect(isForkIntegrated(fork)).toBe(true);
+      fork.release();
+    });
   });
 });
