@@ -9,9 +9,26 @@ export function planCacheKey(goal: string, head: string): string {
   return createHash('sha256').update(`${goal}\0${head}`).digest('hex');
 }
 
-interface PlanValue { subgoals: string[]; after?: number[][]; repoHead: string }
+interface PlanValue {
+  subgoals: string[]; after?: number[][]; repoHead: string;
+  definitionOfDone?: string[][]; acceptanceChecks?: string[][];
+}
 
-export interface CachedPlan { subgoals: string[]; after: number[][] }
+export interface CachedPlan {
+  subgoals: string[]; after: number[][];
+  /** Aligned with `subgoals`; empty per piece for a row written before contracts existed. */
+  definitionOfDone: string[][]; acceptanceChecks: string[][];
+}
+
+/** A stored list of lists, aligned to the subgoals and safe to trust: anything
+ *  malformed is an empty list for that piece, never an error. */
+function listsAligned(value: unknown, count: number): string[][] {
+  const lists = Array.isArray(value) ? value : [];
+  return Array.from({ length: count }, (_, i) => {
+    const list = lists[i];
+    return Array.isArray(list) ? list.filter((item): item is string => typeof item === 'string') : [];
+  });
+}
 
 /** A previously computed subgoal list for this exact goal + committed HEAD,
  *  if one was stored within `ttlHours`. Any miss / malformed row / disabled
@@ -34,15 +51,26 @@ export function getCachedPlan(db: Db, key: string, ttlHours: number, now: Date =
   }
   // Rows written before ordering existed carry none: every piece ran at once.
   const after = Array.isArray(value?.after) ? value!.after : [];
-  return { subgoals, after };
+  return {
+    subgoals, after,
+    definitionOfDone: listsAligned(value?.definitionOfDone, subgoals.length),
+    acceptanceChecks: listsAligned(value?.acceptanceChecks, subgoals.length),
+  };
 }
 
-export function putCachedPlan(db: Db, key: string, subgoals: string[], head: string, createdAt: string, after: number[][] = []): void {
+export function putCachedPlan(
+  db: Db, key: string, subgoals: string[], head: string, createdAt: string, after: number[][] = [],
+  contracts: { definitionOfDone?: string[][]; acceptanceChecks?: string[][] } = {},
+): void {
   db.insert(memory).values({
     id: randomUUID(),
     kind: KIND,
     key,
-    value: { subgoals, after, repoHead: head } satisfies PlanValue,
+    value: {
+      subgoals, after, repoHead: head,
+      ...(contracts.definitionOfDone ? { definitionOfDone: contracts.definitionOfDone } : {}),
+      ...(contracts.acceptanceChecks ? { acceptanceChecks: contracts.acceptanceChecks } : {}),
+    } satisfies PlanValue,
     confidence: null,
     nodeId: null,
     createdAt,

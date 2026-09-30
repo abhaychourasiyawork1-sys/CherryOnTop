@@ -107,7 +107,7 @@ describe('parsePlan: ordered pieces', () => {
   it('reads strings and {goal, after} entries together', () => {
     process.env.ORG_MAX_CHILD_JOBS = '3';
     const text = 'Here is the plan:\n```json\n["Research the product", "Research design references", {"goal": "Build the page", "after": [0, 1]}]\n```';
-    expect(parsePlan(text, 3)).toEqual({
+    expect(parsePlan(text, 3)).toMatchObject({
       subgoals: ['Research the product', 'Research design references', 'Build the page'],
       after: [[], [], [0, 1]],
     });
@@ -122,11 +122,75 @@ describe('parsePlan: ordered pieces', () => {
   it('remaps indexes past a blank entry the planner emitted', () => {
     process.env.ORG_MAX_CHILD_JOBS = '3';
     expect(parsePlan('["a", "  ", {"goal": "c", "after": [2, 0]}]', 3))
-      .toEqual({ subgoals: ['a', 'c'], after: [[], [0]] });
+      .toMatchObject({ subgoals: ['a', 'c'], after: [[], [0]] });
   });
 
   it('drops references to pieces cut by the child cap', () => {
     expect(parsePlan('["a", "b", {"goal": "c", "after": [1]}]', 2))
-      .toEqual({ subgoals: ['a', 'b'], after: [[], []] });
+      .toMatchObject({ subgoals: ['a', 'b'], after: [[], []] });
+  });
+});
+
+describe('parsePlan: what the parent will require of each piece', () => {
+  const plan = (entries: unknown[]) => parsePlan(JSON.stringify(entries), 4);
+
+  it('reads a piece\'s own definition of done and the checks that prove it', () => {
+    const parsed = plan([
+      { goal: 'Build the cart', done: ['cart renders', 'cart persists'], checks: ['npm test -- cart', 'file:src/cart.tsx'] },
+      { goal: 'Write the docs', done: ['docs build'] },
+    ]);
+    expect(parsed.definitionOfDone).toEqual([['cart renders', 'cart persists'], ['docs build']]);
+    expect(parsed.acceptanceChecks).toEqual([['npm test -- cart', 'file:src/cart.tsx'], []]);
+  });
+
+  it('stays aligned with subgoals, empty where the planner said nothing — plain strings still work', () => {
+    const parsed = plan(['Audit auth', 'Add cart tests']);
+    expect(parsed.subgoals).toHaveLength(2);
+    expect(parsed.definitionOfDone).toEqual([[], []]);
+    expect(parsed.acceptanceChecks).toEqual([[], []]);
+  });
+
+  it('admits only checks the runtime can actually evidence: a verifying command or a file', () => {
+    // Acceptance is met by evidence alone. "The cart renders correctly" can never
+    // be evidenced, so admitting it would fail every piece until it escalated.
+    const parsed = plan([
+      { goal: 'Build the cart', checks: ['the cart renders correctly', 'npm test', 'it should be fast', 'file:src/cart.tsx', 'echo done', 'pytest tests/cart'] },
+      'Write the docs',
+    ]);
+    expect(parsed.acceptanceChecks[0]).toEqual(['npm test', 'file:src/cart.tsx', 'pytest tests/cart']);
+  });
+
+  it('refuses a file check that points outside the workspace', () => {
+    const parsed = plan([{ goal: 'a', checks: ['file:../secrets.env', 'file:/etc/passwd', 'file:src/ok.ts'] }, 'b']);
+    expect(parsed.acceptanceChecks[0]).toEqual(['file:src/ok.ts']);
+  });
+
+  it('bounds what a planner can ask for', () => {
+    const many = Array.from({ length: 20 }, (_, i) => `npm test -- case${i}`);
+    const parsed = plan([{ goal: 'a', done: Array.from({ length: 20 }, (_, i) => `item ${i} ${'x'.repeat(500)}`), checks: many }, 'b']);
+    expect(parsed.acceptanceChecks[0]).toHaveLength(3);
+    expect(parsed.definitionOfDone[0]).toHaveLength(5);
+    expect(parsed.definitionOfDone[0][0].length).toBeLessThanOrEqual(200);
+  });
+
+  it('accepts a single string where a list was expected, and ignores junk types', () => {
+    const parsed = plan([{ goal: 'a', done: 'one thing', checks: 'npm test' }, { goal: 'b', done: 7, checks: [1, null, 'npm test'] }]);
+    expect(parsed.definitionOfDone).toEqual([['one thing'], []]);
+    expect(parsed.acceptanceChecks).toEqual([['npm test'], ['npm test']]);
+  });
+
+  it('keeps the contracts of the pieces that survive the child cap, and drops the rest', () => {
+    const parsed = parsePlan(JSON.stringify([
+      { goal: 'a', checks: ['npm test'] }, { goal: 'b', checks: ['npm run lint'] }, { goal: 'c', checks: ['npm run build'] },
+    ]), 2);
+    expect(parsed.subgoals).toEqual(['a', 'b']);
+    expect(parsed.acceptanceChecks).toEqual([['npm test'], ['npm run lint']]);
+  });
+
+  it('asks the planner for them, and tells it not to invent a check it cannot name', () => {
+    const prompt = buildPlanPrompt('Build the cart and the docs', 3);
+    expect(prompt).toContain('"done"');
+    expect(prompt).toContain('"checks"');
+    expect(prompt).toMatch(/only when a (concrete )?command or file proves/i);
   });
 });

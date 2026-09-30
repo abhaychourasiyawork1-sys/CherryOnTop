@@ -167,6 +167,9 @@ The market may evaluate the cost of more rework versus escalation/reassignment, 
 | A child's changed files, and what it may write | `src/execution/workspace-fork.ts` (`candidateChangedFiles`), `src/lifecycle/delegation-scope.ts` |
 | Mechanical merge, and settling a conflict in the child's own worktree | `src/execution/workspace-fork.ts` (`integrateForkDetailed`, `rebaseForkOntoBase`, `filesWithConflictMarkers`) |
 | Dependencies shared read-only into forked sandboxes | `src/k8s/sandbox-env.ts` (`dependencyMounts`) |
+| What the parent holds each piece to (definition of done, evidenceable checks) | `src/intelligence/plan.ts` (`parsePlan`, `isEvidenceableCheck`) |
+| Recovery after a refusal, priced by the market | `src/lifecycle/assignment-market.ts`, `src/lifecycle/node-actor-manager.ts` (`decideRecoveryFor`) |
+| Resuming a delegation after a restart | `src/lifecycle/delegate-child.ts` (`needsResume`), `src/lifecycle/node-actor-manager.ts` (`delegateNode`), `src/db/queries/delegation-plans.ts` |
 
 `INTEGRATION_BLOCKED` leaves the parent's tree exactly as it was; the candidate
 is retained. `ESCALATED` is where an assignment goes when the rework limit is
@@ -186,3 +189,24 @@ has markers is never accepted.
 Cleanly mergeable is not the same as correct: two children can each merge
 without conflict and still break each other. Verifying the integrated tree is
 not yet built (see the audit).
+
+## Recovery, and restarts
+
+**After a refusal** the choice — the same child again, a different owner, or stop
+and ask — is priced by the Action Market's own recovery model rather than fixed
+by a count. Rework keeps what the child established; it is refused outright when
+it would be the same idea again (the same checks failing a second time with
+nothing gained), which is what makes a different owner reachable. A fresh owner
+is priced as a from-scratch attempt plus the handoff. Where nothing has been
+measured the market defers to the default, the same child reworked. It cannot
+accept, and the hard limits — the rework cap, the reassignment cap, the child's
+remaining budget — apply to whatever it says.
+
+**After a restart** every non-terminal node is parked as `INTERRUPTED`, and
+resuming the parent is the decision to carry the delegation on. The parent's
+plan is kept beside its assignments; on resume each piece with a live assignment
+is picked up at the status its record is in — reviewed if it had reported,
+merged if it had been accepted, reworked if it had been refused — and a piece
+that never got one is started. Nothing that finished is started again, and no
+piece is assigned twice. Every write is a compare-and-swap on the assignment's
+revision, so a second driver stands down instead of acting on a stale state.
