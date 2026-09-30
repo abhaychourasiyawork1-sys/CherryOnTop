@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import {
-  delegateToChildren, createMemoryLedger, MAX_REWORK_REVISIONS,
+  delegateToChildren, createMemoryLedger, MAX_REWORK_REVISIONS, MAX_CONFLICT_REWORKS,
   type DelegateChildDeps, type RecoveryDecision,
 } from './delegate-child.js';
 import type { ChildRunResult } from './delegation-review.js';
@@ -102,6 +102,44 @@ describe('assign → work → report → accept → merge', () => {
     expect(budget).toBe(2);
     expect(contract).toMatchObject({ definitionOfDone: ['Build the cart'], acceptanceChecks: ['npm test passes'] });
     expect(JSON.stringify(contract)).not.toContain('a very long parent goal');
+  });
+});
+
+describe('write scope', () => {
+  it('stores the granted scope on the assignment and tells the child, compactly, in its envelope', async () => {
+    const recordEnvelope = vi.fn();
+    const { deps, ledger } = world(() => green(), { recordEnvelope });
+    await delegateToChildren({
+      parentId: 'p', goal: 'g', subgoals: ['Build the cart', 'Write docs'],
+      writeScopeBySubgoal: [['src/cart/**'], undefined as unknown as string[]],
+    }, deps);
+    const [cart, docs] = ledger.list();
+    expect(cart.writeScope).toEqual(['src/cart/**']);
+    expect(docs.writeScope).toBeUndefined();
+    expect(recordEnvelope.mock.calls[0][3]).toMatchObject({ writeScope: ['src/cart/**'] });
+  });
+
+  it('sends a write outside the scope back to the same child, with the paths, and merges once it is fixed', async () => {
+    const { deps, starts, log } = world((_goal, dispatch) => green({
+      changedFiles: dispatch === 1 ? ['src/cart/a.ts', 'src/auth/login.ts'] : ['src/cart/a.ts'],
+    }));
+    const result = await delegateToChildren({
+      parentId: 'p', goal: 'g', subgoals: ['Build the cart'], writeScopeBySubgoal: [['src/cart/**']],
+    }, deps);
+    expect(result.succeeded).toBe(true);
+    expect(deps.createChildNode).toHaveBeenCalledTimes(1);
+    expect(starts.map((s) => s.childId)).toEqual(['c1', 'c1']);
+    expect(starts[1].goal).toContain('src/auth/login.ts');
+    expect(log.filter((l) => l.startsWith('integrate:'))).toEqual(['integrate:c1']);
+    expect(log.indexOf('integrate:c1')).toBeGreaterThan(log.indexOf('c1:REWORKING>REPORT_READY'));
+  });
+
+  it('never merges work that keeps touching a protected file', async () => {
+    const { deps, log, ledger } = world(() => green({ changedFiles: ['package.json'] }));
+    const result = await delegateToChildren({ parentId: 'p', goal: 'g', subgoals: ['Add a feature'] }, deps);
+    expect(result.succeeded).toBe(false);
+    expect(ledger.list()[0].status).toBe('ESCALATED');
+    expect(log.filter((l) => l.startsWith('integrate:'))).toEqual([]);
   });
 });
 
@@ -407,5 +445,90 @@ describe('integration conflict is not an implementation failure', () => {
     });
     await delegateToChildren({ parentId: 'p', goal: 'g', subgoals: ['a', 'b', 'c'] }, deps);
     expect(overlapped).toBe(false);
+  });
+});
+
+describe('a conflict is settled by the child that wrote one side of it', () => {
+  it('sends the conflict back to the same child, in its own workspace, and merges once it is resolved', async () => {
+    let merges = 0;
+    const prepareConflictRework = vi.fn(() => ({ conflicts: ['src/cart.ts'] }));
+    const { deps, ledger, log, starts } = world(() => green(), {
+      integrate: () => ++merges > 1, // the first merge conflicts; after the child resolves it, the second does not
+      prepareConflictRework,
+    });
+    const result = await delegateToChildren(
+      { parentId: 'p', goal: 'g', subgoals: ['Build the cart'], acceptanceChecks: ['npm test passes'] }, deps);
+
+    expect(result.succeeded).toBe(true);
+    // The same child, dispatched again — no new node, no parent-side rewriting.
+    expect(deps.createChildNode).toHaveBeenCalledTimes(1);
+    expect(starts.map((s) => s.childId)).toEqual(['c1', 'c1']);
+    expect(prepareConflictRework).toHaveBeenCalledTimes(1);
+    // It is told which files, and that the markers are in its own workspace.
+    expect(starts[1].goal).toContain('src/cart.ts');
+    expect(starts[1].goal).toMatch(/markers are in your workspace/);
+    expect(statusesOf(log, 'c1')).toEqual([
+      'ASSIGNED', 'WORKING', 'REPORT_READY', 'UNDER_REVIEW', 'ACCEPTED', 'MERGING', 'INTEGRATION_BLOCKED',
+      'FEEDBACK_REQUIRED', 'REWORKING', 'REPORT_READY', 'UNDER_REVIEW', 'ACCEPTED', 'MERGING', 'MERGED',
+    ]);
+    expect(ledger.list()[0].status).toBe('MERGED');
+  });
+
+  it('retries the merge without bothering the child when the rebase turned out clean', async () => {
+    let merges = 0;
+    const { deps, starts, ledger } = world(() => green(), {
+      integrate: () => ++merges > 1,
+      prepareConflictRework: () => ({ conflicts: [] }),
+    });
+    const result = await delegateToChildren({ parentId: 'p', goal: 'g', subgoals: ['x'] }, deps);
+    expect(result.succeeded).toBe(true);
+    expect(starts).toHaveLength(1); // nobody was sent back
+    expect(ledger.list()[0].status).toBe('MERGED');
+  });
+
+  it('spends one conflict rework, then leaves the assignment INTEGRATION_BLOCKED rather than looping', async () => {
+    const { deps, starts, ledger } = world(() => green(), {
+      integrate: () => false,
+      prepareConflictRework: () => ({ conflicts: ['a.ts'] }),
+    });
+    const result = await delegateToChildren({ parentId: 'p', goal: 'g', subgoals: ['x'] }, deps);
+    expect(starts).toHaveLength(1 + MAX_CONFLICT_REWORKS);
+    expect(ledger.list()[0].status).toBe('INTEGRATION_BLOCKED');
+    expect(result.succeeded).toBe(false);
+    // Still a conflict, not a failure of the work.
+    expect(result.message).toMatch(/accepted but could not be merged/);
+    expect(result.message).not.toMatch(/did not succeed/);
+  });
+
+  it('leaves it INTEGRATION_BLOCKED, untouched, when the conflict cannot be prepared for the child', async () => {
+    const { deps, starts, ledger } = world(() => green(), { integrate: () => false, prepareConflictRework: () => null });
+    await delegateToChildren({ parentId: 'p', goal: 'g', subgoals: ['x'] }, deps);
+    expect(starts).toHaveLength(1);
+    expect(ledger.list()[0].status).toBe('INTEGRATION_BLOCKED');
+  });
+
+  it('does not send the child back when the governor declines another revision', async () => {
+    const { deps, starts, ledger } = world(() => green(), {
+      integrate: () => false,
+      prepareConflictRework: () => ({ conflicts: ['a.ts'] }),
+      decideRecovery: async () => ({ action: 'escalate', reason: 'out of budget' }),
+    });
+    await delegateToChildren({ parentId: 'p', goal: 'g', subgoals: ['x'] }, deps);
+    expect(starts).toHaveLength(1);
+    expect(ledger.list()[0].status).toBe('INTEGRATION_BLOCKED');
+  });
+
+  it('refuses a resolved-looking report that still has conflict markers, and sends it back again', async () => {
+    let merges = 0;
+    const { deps, starts, log } = world(
+      (_goal, dispatch) => green(dispatch === 2 ? { conflictMarkers: ['src/cart.ts'] } : dispatch === 3 ? {} : {}),
+      { integrate: () => ++merges > 1, prepareConflictRework: () => ({ conflicts: ['src/cart.ts'] }) },
+    );
+    const result = await delegateToChildren({ parentId: 'p', goal: 'g', subgoals: ['x'] }, deps);
+    // Dispatch 2 left markers behind: refused (never merged), reworked once more.
+    expect(starts.map((s) => s.childId)).toEqual(['c1', 'c1', 'c1']);
+    expect(starts[2].goal).toContain('conflict markers');
+    expect(result.succeeded).toBe(true);
+    expect(log.filter((l) => l.startsWith('integrate:'))).toHaveLength(2); // the blocked merge, then the one that landed
   });
 });

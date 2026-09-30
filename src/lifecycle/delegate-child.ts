@@ -61,6 +61,11 @@ export interface DelegateInput {
   /** Aligned with `subgoals`: parent checks specific to one piece, added to
    *  `acceptanceChecks`. */
   acceptanceChecksBySubgoal?: string[][];
+  /** Aligned with `subgoals`: the paths each child may write. Granted, never
+   *  inferred — an entry left undefined grants no explicit scope, and protected
+   *  paths (CI config, env files, manifests, lockfiles) need an explicit grant
+   *  either way. The review checks the child's diff against it. */
+  writeScopeBySubgoal?: Array<string[] | undefined>;
 }
 
 /**
@@ -194,6 +199,7 @@ export function delegationTopology(
 export interface AssignmentContract {
   definitionOfDone: string[];
   acceptanceChecks: string[];
+  writeScope?: string[];
 }
 
 /** The durable work contract, as the delegation loop sees it.
@@ -303,6 +309,13 @@ export interface RecoveryContext {
  *  workspace and its context. A hard cap: no decision can raise it. */
 export const MAX_REWORK_REVISIONS = 2;
 
+/** Conflict reworks per assignment: how many times the same child is asked to
+ *  settle a merge conflict in its own workspace. One is enough to tell a genuine
+ *  disagreement from a stale base; if it still does not merge, that is a
+ *  decision for someone else, not a loop. It also counts toward
+ *  `MAX_REWORK_REVISIONS`. */
+export const MAX_CONFLICT_REWORKS = 1;
+
 /** Reassignments per piece of work, however they were decided. A decision is
  *  required for each; this bounds a governor that keeps deciding the same way. */
 export const MAX_REASSIGNMENTS = 2;
@@ -361,6 +374,14 @@ export interface DelegateChildDeps {
   /** The economic governor's say after a failed review. Absent means rework
    *  until the limit, then escalate. */
   decideRecovery?: (context: RecoveryContext) => RecoveryDecision | Promise<RecoveryDecision>;
+  /** Readies an accepted child whose merge conflicted for a rework that settles
+   *  the conflict *where the child can see both sides*: its workspace is moved
+   *  onto the parent's current state with its own work re-applied, leaving any
+   *  overlap as markers. Returns the conflicting files; an empty list means the
+   *  rebase was clean and the merge can simply be retried; null means it could
+   *  not be done, and the assignment stays INTEGRATION_BLOCKED. Absent means a
+   *  conflict is left as it is. */
+  prepareConflictRework?: (assignment: DelegationRecord) => { conflicts: string[] } | null;
   /** Links an old owner to the child that took over from it — explicit
    *  reassignment only, never a retry. */
   markSuperseded?: (failedId: string, replacementId: string) => void;
@@ -464,6 +485,7 @@ function assignPiece(ctx: AssignmentContext, piece: Piece): { record: Delegation
     parentId: ctx.parentId, childId, goal: piece.baseGoal,
     definitionOfDone: piece.contract.definitionOfDone,
     acceptanceChecks: piece.contract.acceptanceChecks,
+    ...(piece.contract.writeScope ? { writeScope: piece.contract.writeScope } : {}),
     dependencies: piece.dependencies,
     budgetUsd: described?.budgetUsd ?? ctx.approvedBudgetUsd ?? 0,
     ...(described?.authority ? { authority: described.authority } : {}),
@@ -545,6 +567,7 @@ export function requestReassignment(
   const successor = ledger.open({
     parentId: ctx.parentId, childId, goal: old.goal,
     definitionOfDone: old.definitionOfDone, acceptanceChecks: old.acceptanceChecks,
+    ...(old.writeScope ? { writeScope: old.writeScope } : {}),
     dependencies: old.dependencies, reassignedFrom: old.id,
     budgetUsd: described?.budgetUsd ?? (remaining === undefined ? old.budgetUsd : Math.min(old.budgetUsd, remaining)),
     ...(described?.authority ? { authority: described.authority } : {}),
@@ -564,6 +587,7 @@ export function requestReassignment(
   deps.recordCommitment(childId, goal, old.definitionOfDone);
   deps.recordEnvelope?.(childId, goal, ctx.approvedBudgetUsd ?? 0, {
     definitionOfDone: old.definitionOfDone, acceptanceChecks: old.acceptanceChecks,
+    ...(old.writeScope ? { writeScope: old.writeScope } : {}),
   });
   const working = ledger.transition(successor.id, 'WORKING');
   deps.startChild(childId, goal);
@@ -638,6 +662,7 @@ async function driveAssignment(
   const { deps, ledger } = ctx;
   let { record, childId } = started;
   let reworks = 0;
+  let conflictReworks = 0;
   let reassignments = 0;
   const outcome = (finalRecord: DelegationRecord): PieceOutcome =>
     ({ childId, assignmentId: finalRecord.id, status: finalRecord.status });
@@ -676,7 +701,48 @@ async function driveAssignment(
 
     if (verdict.accepted) {
       record = ledger.transition(record.id, 'ACCEPTED', {}, { evidenceRefs: verdict.evidenceRefs });
-      const merged = await serialMerge(ctx, record.id);
+      let merged = await serialMerge(ctx, record.id);
+
+      // A conflict is not a failure of the work, and the parent is the wrong one
+      // to settle it: it would read two diffs it did not write, for code it does
+      // not own. The child wrote one side and knows why. So — once — the
+      // conflict goes back to the same child, in its own workspace, with both
+      // sides in front of it. If that is not possible or not worth it, the
+      // assignment simply stays INTEGRATION_BLOCKED.
+      if (
+        merged === 'INTEGRATION_BLOCKED' && deps.prepareConflictRework
+        && conflictReworks < MAX_CONFLICT_REWORKS && !deps.parentStopped?.()
+      ) {
+        const blocked = ledger.get(record.id) ?? record;
+        const prepared = deps.prepareConflictRework(blocked);
+        if (prepared && prepared.conflicts.length === 0) {
+          merged = await serialMerge(ctx, record.id); // the rebase was clean: try again
+        } else if (prepared) {
+          const files = prepared.conflicts.slice(0, 10).join(', ');
+          const conflictFeedback = buildParentFeedback({
+            assignmentId: record.id, revision: blocked.revision + 1,
+            failedChecks: [{
+              check: 'the change merges cleanly onto the parent tree',
+              observed: `it conflicts with work already merged, in: ${files}. The conflict markers are in your workspace.`,
+              expected: 'both your change and the work already merged, kept',
+              evidenceRefs: [],
+            }],
+            guidance: ['Open each listed file, resolve every <<<<<<< / ======= / >>>>>>> marker keeping both intents, re-run the checks, then report again.'],
+          });
+          const decision = await recoveryDecision(
+            ctx, { assignment: blocked, feedback: conflictFeedback, reworks, run }, reassignments);
+          if (decision.action === 'rework' && !deps.parentStopped?.()) {
+            const history = [...blocked.feedbackHistory, ...(blocked.feedback ? [blocked.feedback] : [])].slice(-5);
+            ledger.transition(record.id, 'FEEDBACK_REQUIRED', { feedback: conflictFeedback, feedbackHistory: history }, {
+              reason: `merge conflict in: ${files}`,
+            });
+            record = requestRework(ctx, record.id, piece.baseGoal);
+            reworks++;
+            conflictReworks++;
+            continue;
+          }
+        }
+      }
       return { childId, assignmentId: record.id, status: merged };
     }
 
@@ -853,6 +919,7 @@ export async function delegateToChildren(
           acceptanceChecks: [...new Set([
             ...(input.acceptanceChecks ?? []), ...(input.acceptanceChecksBySubgoal?.[index] ?? []),
           ])],
+          ...(input.writeScopeBySubgoal?.[index] ? { writeScope: input.writeScopeBySubgoal[index] } : {}),
         },
         dependencies: prerequisites.flatMap((dep) => assignmentOf.get(dep) ?? []),
       };

@@ -21,6 +21,7 @@ import { getDelegation } from '../db/queries/delegations.js';
 import { openDelegation, transitionDelegation } from './delegation-events.js';
 import type { WorkspaceRef } from '../schemas/delegation.js';
 import type { ChildRunResult, CheckVerifier } from './delegation-review.js';
+import { PROTECTED_PATHS } from './delegation-scope.js';
 import { insertCommitment, updateCommitmentStatus, setCommitmentEvidence, listCommitmentsForNode } from '../db/queries/commitments.js';
 import { insertArtifact, listArtifactsForNode } from '../db/queries/artifacts.js';
 import { artifactsFromEvent } from '../execution/artifacts.js';
@@ -40,13 +41,21 @@ import type { EfficiencyOutcome } from '../efficiency/metrics.js';
 import type { DispatchReceipt } from '../context/dispatch-context.js';
 import { buildRolePrompt } from '../prompts/roles.js';
 import os from 'node:os';
-import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { dirname as dirnameOf, join as joinPath } from 'node:path';
+import { existsSync } from 'node:fs';
+import { join as joinPath } from 'node:path';
 import { deleteNodeNetworkPolicy, deleteNodeJobs } from '../k8s/cleanup.js';
 import { subtreeNodeIds } from '../db/queries/nodes.js';
 import { allowedTools, isReadOnly } from '../engines/enforce-tools.js';
 import type { Authority } from '../schemas/node-contract.js';
-import { forkWorkspace, releaseFork, type WorkspaceFork } from '../execution/workspace-fork.js';
+import {
+  forkWorkspace, releaseFork, integrateFork, integrateForkDetailed, rebaseForkOntoBase,
+  candidateChangedFiles, filesWithConflictMarkers, type WorkspaceFork, type IntegrationResult,
+} from '../execution/workspace-fork.js';
+
+// The mechanical merge primitive lives beside the fork it merges; re-exported so
+// callers that already import it from here keep working. Whether a child's work
+// may be merged at all is decided in `mergeAcceptedDelegation`, not there.
+export { integrateFork };
 import { toContainerPath, fromContainerPath } from '../k8s/kind.js';
 import { sandboxNotes } from '../k8s/sandbox-env.js';
 import type { ToolGrant, RuntimeAdapter, StructuredEvent } from '../adapters/adapter.js';
@@ -154,90 +163,6 @@ function runnerImageOverride(): string | undefined {
   return process.env.ORG_RUNNER_IMAGE;
 }
 
-/** What one path looked like in the base before an integration touched it:
- *  the file on disk (or its absence) and its index entry. */
-interface PathSnapshot {
-  path: string;
-  content: Buffer | null;
-  mode: number | null;
-  /** `mode sha stage\tpath`, as `git update-index --index-info` reads it. */
-  indexEntries: string[];
-}
-
-function snapshotPaths(basePath: string, paths: string[]): PathSnapshot[] {
-  return paths.map((path) => {
-    const full = joinPath(basePath, path);
-    let content: Buffer | null = null;
-    let mode: number | null = null;
-    try {
-      const stat = lstatSync(full);
-      if (stat.isFile()) { content = readFileSync(full); mode = stat.mode & 0o777; }
-    } catch { /* absent: the file does not exist yet */ }
-    const listed = execFileSync('git', ['ls-files', '-s', '-z', '--', path], { cwd: basePath, encoding: 'utf8' });
-    return { path, content, mode, indexEntries: listed.split('\0').filter(Boolean) };
-  });
-}
-
-/** Puts the base back the way `snapshotPaths` found it. A 3-way apply that hits
- *  a real conflict exits non-zero *after* writing conflict markers and unmerged
- *  index entries into the tree — and the base is the authoritative tree, so a
- *  refused integration must not leave a trace in it. Best-effort per path:
- *  restoring what can be restored beats stopping at the first that cannot. */
-function restorePaths(basePath: string, snapshots: PathSnapshot[]): void {
-  for (const snapshot of snapshots) {
-    const full = joinPath(basePath, snapshot.path);
-    try {
-      execFileSync('git', ['update-index', '--force-remove', '--', snapshot.path], { cwd: basePath, stdio: 'ignore' });
-      if (snapshot.content) {
-        mkdirSync(dirnameOf(full), { recursive: true });
-        writeFileSync(full, snapshot.content);
-        if (snapshot.mode !== null) chmodSync(full, snapshot.mode);
-      } else if (existsSync(full)) {
-        rmSync(full, { force: true });
-      }
-      const entries = snapshot.indexEntries.filter((line) => line.length > 0);
-      if (entries.length > 0) {
-        execFileSync('git', ['update-index', '--index-info'], { cwd: basePath, input: `${entries.join('\n')}\n`, stdio: ['pipe', 'ignore', 'ignore'] });
-      }
-    } catch (err) {
-      console.error(`Could not restore ${snapshot.path} in ${basePath} after a refused integration:`, err);
-    }
-  }
-}
-
-/** Applies what a forked child wrote back onto the tree it was forked from.
- *
- *  `git apply --3way`, not a filesystem copy: siblings that both forked from
- *  the same revision and both wrote can still integrate cleanly one after the
- *  other, and a real overlapping edit fails loudly here instead of silently
- *  clobbering whichever sibling's write landed second. `false` means the merge
- *  did not go through *and the base is exactly as it was* — the caller must not
- *  report that child a success, since its writes never reached the tree the
- *  rest of the run sees.
- *
- *  This is the mechanical primitive. Whether a child's work may be integrated at
- *  all is not decided here: see `mergeAcceptedDelegation`, the only production
- *  caller, which refuses anything the parent has not accepted. */
-export function integrateFork(fork: WorkspaceFork): boolean {
-  let snapshots: PathSnapshot[] = [];
-  try {
-    execFileSync('git', ['add', '-A'], { cwd: fork.path, stdio: 'ignore' });
-    // No rename detection: both sides of a rename are then plain paths we can
-    // snapshot, and the 3-way merge handles a delete plus an add.
-    const diff = execFileSync('git', ['diff', '--cached', '--binary', '--no-renames'], { cwd: fork.path, encoding: 'utf8' });
-    if (!diff.trim()) return true;
-    const touched = execFileSync('git', ['diff', '--cached', '--name-only', '-z', '--no-renames'], { cwd: fork.path, encoding: 'utf8' })
-      .split('\0').filter(Boolean);
-    snapshots = snapshotPaths(fork.basePath, touched);
-    execFileSync('git', ['apply', '--3way', '--binary'], { cwd: fork.basePath, input: diff, stdio: ['pipe', 'ignore', 'ignore'] });
-    return true;
-  } catch (err) {
-    restorePaths(fork.basePath, snapshots);
-    console.error(`Failed to integrate the fork at ${fork.path} back onto ${fork.basePath}:`, err);
-    return false;
-  }
-}
-
 function workspaceFork(workspace: WorkspaceRef): WorkspaceFork {
   return {
     path: workspace.path, basePath: workspace.basePath, revision: workspace.revision,
@@ -265,7 +190,7 @@ function workspaceFork(workspace: WorkspaceRef): WorkspaceFork {
 export function mergeAcceptedDelegation(
   db: Db,
   assignmentId: string,
-  integrate: (fork: WorkspaceFork) => boolean = integrateFork,
+  integrate: (fork: WorkspaceFork) => boolean | IntegrationResult = integrateForkDetailed,
 ): 'MERGED' | 'INTEGRATION_BLOCKED' {
   const record = getDelegation(db, assignmentId);
   if (!record) throw new Error(`Delegation ${assignmentId} does not exist`);
@@ -274,14 +199,21 @@ export function mergeAcceptedDelegation(
   const workspace = record.workspace;
   // No workspace means the child worked in the parent's own tree; there is no
   // separate candidate to integrate, only the acceptance that already happened.
-  const merged = workspace ? integrate(workspaceFork(workspace)) : true;
-  if (!merged) {
+  const attempt = workspace ? integrate(workspaceFork(workspace)) : true;
+  const result: IntegrationResult = typeof attempt === 'boolean'
+    ? { merged: attempt, conflicts: [], unionResolved: [] }
+    : attempt;
+  if (!result.merged) {
     transitionDelegation(db, assignmentId, 'INTEGRATION_BLOCKED', {}, new Date().toISOString(), {
-      reason: 'the accepted candidate did not apply cleanly onto the parent tree',
+      reason: result.conflicts.length > 0
+        ? `the accepted candidate conflicts with work already merged, in: ${result.conflicts.slice(0, 10).join(', ')}`
+        : 'the accepted candidate did not apply cleanly onto the parent tree',
     });
     return 'INTEGRATION_BLOCKED';
   }
-  transitionDelegation(db, assignmentId, 'MERGED', {}, new Date().toISOString());
+  transitionDelegation(db, assignmentId, 'MERGED', {}, new Date().toISOString(), result.unionResolved.length > 0
+    ? { reason: `merged; kept both sides of append-only files: ${result.unionResolved.join(', ')}` }
+    : {});
   if (workspace) releaseFork(workspace.basePath, workspace.path);
   return 'MERGED';
 }
@@ -296,6 +228,22 @@ export function dbDelegationLedger(db: Db): DelegationLedger {
     get: (id) => getDelegation(db, id),
     merge: async (id) => mergeAcceptedDelegation(db, id),
   };
+}
+
+/** What the child's own worktree says about its work, laid over what the
+ *  runtime recorded.
+ *
+ *  The tree is the ground truth: a tool-event tracker misses a `sed -i` or a
+ *  generated file, and the write-scope check has to be about what is actually
+ *  in the candidate. Also reports any conflict markers left in it, since a
+ *  candidate that still has them is not finished. A child with no workspace of
+ *  its own (it shares its parent's tree, or the tree cannot be read) keeps what
+ *  the runtime recorded. */
+export function observeCandidate(run: ChildRunResult, workspace: WorkspaceRef | undefined): ChildRunResult {
+  if (!workspace || run.cancelled) return run;
+  const changed = candidateChangedFiles(workspace.path);
+  if (!changed) return run;
+  return { ...run, changedFiles: changed, conflictMarkers: filesWithConflictMarkers(workspace.path, changed) };
 }
 
 /** The event id at which the child's current revision began: its last rework, or
@@ -489,6 +437,10 @@ export function realDelegateDeps(db: Db, parentId?: string): DelegateChildDeps {
             ...(child.contract.constraints ?? []),
             ...(contract?.definitionOfDone.length ? [`Definition of done: ${contract.definitionOfDone.join(' | ').slice(0, 1_500)}`] : []),
             ...(contract?.acceptanceChecks.length ? [`The parent will accept this work only if: ${contract.acceptanceChecks.join(' | ').slice(0, 1_500)}`] : []),
+            // What the child may touch, stated up front: a rework spent on a write
+            // it was never allowed to make costs more than the sentence does.
+            ...(contract?.writeScope?.length ? [`You may modify only: ${contract.writeScope.join(', ').slice(0, 1_500)}`] : []),
+            `Do not edit CI config, env files, package manifests or lockfiles (${PROTECTED_PATHS.join(', ')}) unless your assignment names them — report the need instead.`,
           ],
           budget: {
             usd: approvedBudgetUsd || child.contract.authority.budget_usd,
@@ -515,6 +467,15 @@ export function realDelegateDeps(db: Db, parentId?: string): DelegateChildDeps {
       for (const commitment of listCommitmentsForNode(db, childId)) {
         updateCommitmentStatus(db, commitment.id, 'pending', now);
       }
+    },
+    // A conflicted merge is settled by the child that wrote one side of it: its
+    // workspace is moved onto the parent's current state with its work re-applied,
+    // and the overlap is left as markers in *its* tree. The parent's is untouched.
+    prepareConflictRework: (assignment) => {
+      const workspace = assignment.workspace ?? workspaces.get(assignment.childId);
+      if (!workspace) return null;
+      const rebased = rebaseForkOntoBase(workspaceFork(workspace));
+      return rebased ? { conflicts: rebased.conflicts } : null;
     },
     discardWorkspace: (assignment) => {
       const workspace = assignment.workspace ?? workspaces.get(assignment.childId);
@@ -548,7 +509,8 @@ export function realDelegateDeps(db: Db, parentId?: string): DelegateChildDeps {
     // Execution over, and nothing more. Not "integrated", not "accepted": the
     // parent's review decides what a finished child is worth, and only an
     // accepted one merges (`mergeAcceptedDelegation`).
-    waitForChild: async (childId) => childRunResult(db, childId, await waitForNodeCompletion(db, childId)),
+    waitForChild: async (childId) =>
+      observeCandidate(childRunResult(db, childId, await waitForNodeCompletion(db, childId)), workspaces.get(childId)),
     getFindings: (childId) => answerOf(db, childId),
     markSuperseded: (failedId, replacementId) => {
       try {

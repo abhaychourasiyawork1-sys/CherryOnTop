@@ -8,7 +8,8 @@ const GREEN: ValidationResult = {
 };
 const RED: ValidationResult = { ...GREEN, passed: false, reasonCodes: ['V2:observed_verification_failed'] };
 
-const assignment = (acceptanceChecks: string[] = []) => ({ id: 'a1', acceptanceChecks, dependencies: [] as string[] });
+const assignment = (acceptanceChecks: string[] = [], writeScope?: string[]) =>
+  ({ id: 'a1', acceptanceChecks, dependencies: [] as string[], ...(writeScope ? { writeScope } : {}) });
 
 function run(over: Partial<ChildRunResult> = {}): ChildRunResult {
   return {
@@ -108,5 +109,50 @@ describe('reviewChildWork', () => {
     const failing = reviewChildWork({ assignment: assignment(), run: { succeeded: false } });
     expect(passing.accepted).toBe(true);
     expect(failing.accepted).toBe(false);
+  });
+
+  describe('write scope: the parent\'s authority over what the child may touch', () => {
+    it('rejects a write outside the granted scope, naming the paths', () => {
+      const verdict = reviewChildWork({
+        assignment: assignment([], ['src/cart/**']),
+        run: run({ changedFiles: ['src/cart/a.ts', 'src/auth/login.ts'] }),
+      });
+      expect(verdict.accepted).toBe(false);
+      expect(verdict.failedChecks).toEqual([expect.objectContaining({
+        check: 'stayed within its write scope', observed: expect.stringContaining('src/auth/login.ts'),
+      })]);
+      expect(verdict.failedChecks[0].observed).not.toContain('src/cart/a.ts');
+    });
+
+    it('rejects a protected file with no explicit grant, even with no scope at all', () => {
+      const verdict = reviewChildWork({ assignment: assignment(), run: run({ changedFiles: ['src/a.ts', 'package.json'] }) });
+      expect(verdict.accepted).toBe(false);
+      expect(verdict.failedChecks[0].observed).toContain('package.json');
+      expect(verdict.failedChecks[0].expected).toMatch(/explicit grant|report/i);
+    });
+
+    it('accepts a protected file the parent explicitly granted', () => {
+      const verdict = reviewChildWork({ assignment: assignment([], ['package.json', 'src/**']), run: run({ changedFiles: ['package.json', 'src/a.ts'] }) });
+      expect(verdict.accepted).toBe(true);
+    });
+
+    it('accepts ordinary work when no scope was granted: nothing is guessed', () => {
+      const verdict = reviewChildWork({ assignment: assignment(), run: run({ changedFiles: ['src/a.ts', 'test/a.test.ts', 'docs/x.md'] }) });
+      expect(verdict.accepted).toBe(true);
+    });
+
+    it('keeps a reported authority breach and a scope breach as two separate findings', () => {
+      const verdict = reviewChildWork({ assignment: assignment([], ['src/**']), run: run({ changedFiles: ['other.ts'], authorityCompliant: false }) });
+      expect(verdict.failedChecks.filter((c) => /authority|scope/.test(c.check))).toHaveLength(2);
+      expect(verdict.failedChecks.map((c) => c.check)).toContain('stayed within its write scope');
+    });
+  });
+
+  it('never accepts a candidate that still has unresolved conflict markers, however green its tests were', () => {
+    const verdict = reviewChildWork({ assignment: assignment(), run: run({ conflictMarkers: ['src/cart.ts'] }) });
+    expect(verdict.accepted).toBe(false);
+    expect(verdict.failedChecks).toEqual([expect.objectContaining({
+      check: 'resolved every merge conflict', observed: expect.stringContaining('src/cart.ts'),
+    })]);
   });
 });

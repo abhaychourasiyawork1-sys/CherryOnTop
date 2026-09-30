@@ -164,7 +164,25 @@ The market may evaluate the cost of more rework versus escalation/reassignment, 
 | The parent's acceptance decision, from evidence | `src/lifecycle/delegation-review.ts` |
 | The assign → report → review → accept/rework/reassign → merge loop | `src/lifecycle/delegate-child.ts` (`driveAssignment`, `requestRework`, `requestReassignment`) |
 | The only path from a child's workspace to the parent's tree | `src/lifecycle/node-actor-manager.ts` (`mergeAcceptedDelegation`, over `integrateFork`) |
+| A child's changed files, and what it may write | `src/execution/workspace-fork.ts` (`candidateChangedFiles`), `src/lifecycle/delegation-scope.ts` |
+| Mechanical merge, and settling a conflict in the child's own worktree | `src/execution/workspace-fork.ts` (`integrateForkDetailed`, `rebaseForkOntoBase`, `filesWithConflictMarkers`) |
+| Dependencies shared read-only into forked sandboxes | `src/k8s/sandbox-env.ts` (`dependencyMounts`) |
 
 `INTEGRATION_BLOCKED` leaves the parent's tree exactly as it was; the candidate
 is retained. `ESCALATED` is where an assignment goes when the rework limit is
 reached or a governor declines another revision — never a silent replacement.
+
+## Merge conflicts
+
+Textual conflicts are settled cheapest-first: git's 3-way merge (edits to
+different parts of one file merge with no help); then, for append-only files
+only, keeping both sides; then the same child. The parent never resolves a
+conflict itself — it would read two diffs it did not write, for code it does
+not own. For the child, the worktree is moved onto the parent's current state
+with the child's own work re-applied, and the overlap is left as conflict
+markers in *its* tree; the parent's tree is not touched. A candidate that still
+has markers is never accepted.
+
+Cleanly mergeable is not the same as correct: two children can each merge
+without conflict and still break each other. Verifying the integrated tree is
+not yet built (see the audit).

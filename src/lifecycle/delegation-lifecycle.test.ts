@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, afterAll } from 'vitest';
-import { existsSync, unlinkSync, mkdtempSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, unlinkSync, mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { tmpdir, homedir } from 'node:os';
 import { join } from 'node:path';
@@ -7,7 +7,7 @@ import { createDb, type Db } from '../db/client.js';
 import { getNode, insertNode, listNodes } from '../db/queries/nodes.js';
 import { listDelegationsForParent, getDelegation } from '../db/queries/delegations.js';
 import { delegateToChildren, MAX_REWORK_REVISIONS, type DelegateChildDeps, type RecoveryDecision } from './delegate-child.js';
-import { realDelegateDeps } from './node-actor-manager.js';
+import { realDelegateDeps, observeCandidate } from './node-actor-manager.js';
 import { delegationEventsFor } from './delegation-events.js';
 import type { ChildRunResult } from './delegation-review.js';
 
@@ -76,7 +76,9 @@ function harness(work: (job: Job) => Work, extra: Partial<DelegateChildDeps> = {
       const job = pending.get(childId)!;
       const { writes, ...result } = work(job);
       for (const [file, content] of Object.entries(writes ?? {})) if (content !== undefined) writeFileSync(join(job.workspace, file), content);
-      return { succeeded: true, changedFiles: Object.keys(writes ?? {}), answer: 'done', ...result };
+      // What the runtime would report, with the changed files and any conflict
+      // markers read from the worktree itself, as production does.
+      return observeCandidate({ succeeded: true, answer: 'done', ...result }, real.describeChild!(childId)!.workspace);
     },
     ...extra,
   };
@@ -289,32 +291,136 @@ describe('exceptional reassignment', () => {
 });
 
 describe('integration conflict', () => {
-  it('two accepted siblings that overlap: the first merges, the second is INTEGRATION_BLOCKED — not a failure', async () => {
+  const list = (n: number) => Array.from({ length: n }, (_, i) => `line ${i + 1}`).join('\n') + '\n';
+  const setLine = (text: string, n: number, value: string) => {
+    const lines = text.split('\n'); lines[n - 1] = value; return lines.join('\n');
+  };
+  /** What a child does with a conflicted file: keeps both sides, drops the markers. */
+  const resolve = (workspace: string, file: string) => {
+    const kept = readFileSync(join(workspace, file), 'utf8').split('\n').filter((line) => !/^(<{7}|={7}|>{7})/.test(line));
+    writeFileSync(join(workspace, file), kept.join('\n'));
+  };
+
+  it('two accepted siblings that overlap: the second is sent back to the same child, which keeps both, and both merge', async () => {
     // Both goals are free of file names, so nothing tells the scheduler they
-    // touch the same file: they run together, and both write shared.ts.
-    const { db, base, deps, jobs } = harness((job) => ({
-      writes: { 'shared.ts': `export const shared = "${job.goal.includes('one') ? 'one' : 'two'}";\n` },
-      observedChecks: [TESTS_PASS],
-    }));
+    // touch the same file: they run together, and both edit line 5 of one file.
+    let seed = '';
+    const { db, base, deps, jobs } = harness((job) => {
+      if (job.dispatch === 2) {
+        // The conflict is in this child's own workspace, with both sides visible.
+        expect(readFileSync(join(job.workspace, 'shared.ts'), 'utf8')).toContain('<<<<<<<');
+        resolve(job.workspace, 'shared.ts');
+        return { observedChecks: [TESTS_PASS] };
+      }
+      return { writes: { 'shared.ts': setLine(seed, 5, `line 5 by ${job.goal.includes('one') ? 'one' : 'two'}`) }, observedChecks: [TESTS_PASS] };
+    });
+    // The shared file has to exist in the base before anyone forks it.
+    seed = list(30);
+    writeFileSync(join(base, 'shared.ts'), seed);
+    git(base, 'add', '-A'); git(base, 'commit', '-qm', 'shared');
+    // Forks were taken from the base as it was: re-fork against the new HEAD.
     const result = await delegateToChildren({
       parentId: 'parent', goal: 'g', subgoals: ['do part one', 'do part two'], acceptanceChecks: ['npm test passes'],
     }, deps);
 
-    const [first, second] = listDelegationsForParent(db, 'parent');
-    expect([first.status, second.status].sort()).toEqual(['INTEGRATION_BLOCKED', 'MERGED']);
-    const blocked = first.status === 'INTEGRATION_BLOCKED' ? first : second;
-    const merged = blocked === first ? second : first;
-    expect(result.succeeded).toBe(false);
-    expect(result.message).toMatch(/accepted but could not be merged/);
-    expect(result.message).not.toMatch(/did not succeed/);
-    // The merged one's work is in the tree, untouched by the conflict; the tree is clean of markers.
-    const shared = readFileSync(join(base, 'shared.ts'), 'utf8');
-    expect(shared).not.toContain('<<<<<<<');
+    const records = listDelegationsForParent(db, 'parent');
+    expect(records.map((r) => r.status)).toEqual(['MERGED', 'MERGED']);
+    expect(result.succeeded).toBe(true);
+    // Exactly one child was sent back — the one that lost the race — and it was the same child.
+    const reworked = jobs.filter((j) => j.dispatch === 2);
+    expect(reworked).toHaveLength(1);
+    expect(jobs.filter((j) => j.childId === reworked[0].childId)).toHaveLength(2);
+    expect(listNodes(db).filter((n) => n.parentId === 'parent')).toHaveLength(2); // no replacement child
+    // Both children's edits are in the parent's tree, and it is clean of markers.
+    const merged = readFileSync(join(base, 'shared.ts'), 'utf8');
+    expect(merged).toContain('line 5 by one');
+    expect(merged).toContain('line 5 by two');
+    expect(merged).not.toContain('<<<<<<<');
     expect(git(base, 'ls-files', '-u')).toBe('');
-    expect(shared).toContain(merged.goal.includes('one') ? '"one"' : '"two"');
-    // No rework was spent on work that was right; its candidate is kept.
-    expect(jobs.filter((j) => j.childId === blocked.childId)).toHaveLength(1);
-    expect(existsSync(blocked.workspace!.path)).toBe(true);
-    expect(lifecycle(db, blocked.childId).at(-1)).toBe('INTEGRATION_BLOCKED');
+    // The audit trail shows a conflict, not a failure, then the resolution.
+    const loser = records.find((r) => r.childId === reworked[0].childId)!;
+    expect(lifecycle(db, loser.childId)).toEqual([
+      'ASSIGNED', 'WORKING', 'REPORT_READY', 'UNDER_REVIEW', 'ACCEPTED', 'MERGING', 'INTEGRATION_BLOCKED',
+      'FEEDBACK_REQUIRED', 'REWORKING', 'REPORT_READY', 'UNDER_REVIEW', 'ACCEPTED', 'MERGING', 'MERGED',
+    ]);
+    const blocked = delegationEventsFor(db, 'parent').find((e) => e.type === 'delegation.integration_blocked')!;
+    expect((blocked.payload as { reason: string }).reason).toContain('shared.ts');
+  });
+
+  it('never merges a "resolved" child that still has conflict markers in it', async () => {
+    let seed = list(30);
+    const { db, base, deps } = harness((job) => (job.dispatch === 1
+      ? { writes: { 'shared.ts': setLine(seed, 5, `line 5 by ${job.goal.includes('one') ? 'one' : 'two'}`) }, observedChecks: [TESTS_PASS] }
+      : { observedChecks: [TESTS_PASS] })); // a later dispatch reports done and touches nothing: markers still there
+    writeFileSync(join(base, 'shared.ts'), seed);
+    git(base, 'add', '-A'); git(base, 'commit', '-qm', 'shared');
+    await delegateToChildren({ parentId: 'parent', goal: 'g', subgoals: ['do part one', 'do part two'], acceptanceChecks: ['npm test passes'] }, deps);
+
+    const records = listDelegationsForParent(db, 'parent');
+    expect(records.map((r) => r.status).sort()).toEqual(['ESCALATED', 'MERGED']);
+    // Whatever happened to the loser, the markers never reached the tree.
+    expect(readFileSync(join(base, 'shared.ts'), 'utf8')).not.toMatch(/^<{7}/m);
+    expect(git(base, 'ls-files', '-u')).toBe('');
+  });
+
+  it('keeps both sides of an append-only file mechanically, so nobody is sent back', async () => {
+    const { db, base, deps, jobs } = harness((job) => ({
+      writes: { '.gitignore': `node_modules\n${job.goal.includes('one') ? 'dist' : 'coverage'}\n` }, observedChecks: [TESTS_PASS],
+    }));
+    writeFileSync(join(base, '.gitignore'), 'node_modules\n');
+    git(base, 'add', '-A'); git(base, 'commit', '-qm', 'ignore');
+    const result = await delegateToChildren({
+      parentId: 'parent', goal: 'g', subgoals: ['do part one', 'do part two'], acceptanceChecks: ['npm test passes'],
+    }, deps);
+    expect(result.succeeded).toBe(true);
+    expect(jobs).toHaveLength(2); // no rework dispatch
+    const lines = readFileSync(join(base, '.gitignore'), 'utf8').split('\n');
+    expect(lines).toEqual(expect.arrayContaining(['node_modules', 'dist', 'coverage']));
+    expect(listDelegationsForParent(db, 'parent').map((r) => r.status)).toEqual(['MERGED', 'MERGED']);
+    const merged = delegationEventsFor(db, 'parent').filter((e) => e.type === 'delegation.merged');
+    expect(merged.some((e) => ((e.payload as { reason?: string }).reason ?? '').includes('.gitignore'))).toBe(true);
+  });
+});
+
+describe('write scope, against the real worktree', () => {
+  it('refuses a protected file and sends the child back; it merges once the edit is gone', async () => {
+    const { db, base, deps, jobs } = harness((job) => (job.dispatch === 1
+      ? { writes: { 'feature.ts': 'export {};\n', 'package.json': '{ "changed": true }\n' }, observedChecks: [TESTS_PASS] }
+      : { writes: { 'package.json': readFileSync(join(base_(), 'package.json'), 'utf8') }, observedChecks: [TESTS_PASS] }));
+    let baseRef = '';
+    function base_() { return baseRef; }
+    baseRef = base;
+    writeFileSync(join(base, 'package.json'), '{ "name": "x" }\n');
+    git(base, 'add', '-A'); git(base, 'commit', '-qm', 'pkg');
+    const result = await delegateToChildren({ parentId: 'parent', goal: 'g', subgoals: ['add the feature'], acceptanceChecks: ['npm test passes'] }, deps);
+    expect(result.succeeded).toBe(true);
+    expect(jobs).toHaveLength(2);
+    expect(jobs[1].goal).toContain('package.json');
+    expect(readFileSync(join(base, 'package.json'), 'utf8')).toBe('{ "name": "x" }\n');
+    expect(existsSync(join(base, 'feature.ts'))).toBe(true);
+    void db;
+  });
+
+  it('holds a child to the scope it was granted', async () => {
+    const { base, deps, jobs } = harness((job) => (job.dispatch === 1
+      ? { writes: { 'src/cart.ts': 'a\n', 'src/auth.ts': 'stray\n' }, observedChecks: [TESTS_PASS] }
+      : { writes: { 'src/auth.ts': undefined }, observedChecks: [TESTS_PASS] }));
+    const result = await delegateToChildren({
+      parentId: 'parent', goal: 'g', subgoals: ['build the cart'], acceptanceChecks: ['npm test passes'],
+      writeScopeBySubgoal: [['src/cart.ts']],
+    }, {
+      ...deps,
+      startChild: (childId, goal) => {
+        const ws = deps.describeChild!(childId)!.workspace!.path;
+        mkdirSync(join(ws, 'src'), { recursive: true });
+        // On the rework the child removes the file it should not have written.
+        if (jobs.length >= 1) rmSync(join(ws, 'src', 'auth.ts'), { force: true });
+        deps.startChild(childId, goal);
+      },
+    });
+    expect(result.succeeded).toBe(true);
+    expect(jobs[1].goal).toContain('src/auth.ts');
+    expect(existsSync(join(base, 'src', 'auth.ts'))).toBe(false);
+    expect(existsSync(join(base, 'src', 'cart.ts'))).toBe(true);
   });
 });

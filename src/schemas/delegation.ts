@@ -134,6 +134,11 @@ export const DelegationRecordSchema = z.object({
   goal: z.string().min(1),
   definitionOfDone: z.array(z.string()).default([]),
   acceptanceChecks: z.array(z.string()).default([]),
+  /** Paths the child may write, when the parent granted a scope. Absent means no
+   *  explicit scope — not "anything": protected paths (CI config, env files,
+   *  manifests, lockfiles) always need an explicit grant. Fixed at assignment,
+   *  like the budget. */
+  writeScope: z.array(z.string()).optional(),
   /** Assignment ids this piece had to wait for. */
   dependencies: z.array(z.string()).default([]),
   status: DelegationStatusSchema,

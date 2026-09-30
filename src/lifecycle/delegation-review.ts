@@ -19,6 +19,7 @@ import { validateDelegatedOutcome, type DelegatedChildOutcome } from '../validat
 import { MINIMUM_QUALITY_FLOOR } from '../validation/contract.js';
 import type { ValidationResult } from '../validation/engine.js';
 import type { FailedCheck } from './delegation-reports.js';
+import { writeScopeViolations } from './delegation-scope.js';
 
 export interface ObservedCheck { id: string; command: string; passed: boolean }
 
@@ -42,6 +43,9 @@ export interface ChildRunResult {
   /** Whether everything it did was inside its granted authority. Absent means
    *  nothing reported a breach. */
   authorityCompliant?: boolean;
+  /** Changed files that still hold unresolved merge-conflict markers. A candidate
+   *  that has any is not finished, whatever else is true of it. */
+  conflictMarkers?: string[];
 }
 
 /** A fresh answer for one acceptance check, from a capability the trace does not
@@ -49,7 +53,7 @@ export interface ChildRunResult {
 export type CheckVerifier = (check: string) => { passed: boolean; evidenceId: string; observed?: string } | null;
 
 export interface ReviewInput {
-  assignment: { id: string; acceptanceChecks: string[]; dependencies: string[] };
+  assignment: { id: string; acceptanceChecks: string[]; dependencies: string[]; writeScope?: string[] };
   run: ChildRunResult;
   verifyCheck?: CheckVerifier;
 }
@@ -142,7 +146,37 @@ export function reviewChildWork(input: ReviewInput): ReviewVerdict {
     },
   });
 
+  // What the candidate actually touched, against what it was allowed to touch.
+  // The diff is the list; no model is involved and nothing is guessed.
+  const violations = writeScopeViolations(changedFiles, assignment.writeScope);
+
+  const markers = run.conflictMarkers ?? [];
+
   const failedChecks: FailedCheck[] = [];
+  if (markers.length > 0) {
+    failedChecks.push({
+      check: 'resolved every merge conflict',
+      observed: `unresolved conflict markers in: ${markers.slice(0, 10).join(', ')}`,
+      expected: 'no <<<<<<< / >>>>>>> markers left — keep both your change and the work already merged',
+      evidenceRefs: [],
+    });
+  }
+  if (violations.length > 0) {
+    const outside = violations.filter((violation) => violation.reason === 'outside_scope').map((violation) => violation.path);
+    const protectedPaths = violations.filter((violation) => violation.reason === 'protected').map((violation) => violation.path);
+    const observed = [
+      outside.length > 0 ? `wrote outside its scope: ${outside.slice(0, 10).join(', ')}` : '',
+      protectedPaths.length > 0 ? `wrote protected files: ${protectedPaths.slice(0, 10).join(', ')}` : '',
+    ].filter(Boolean).join('; ');
+    failedChecks.push({
+      check: 'stayed within its write scope',
+      observed,
+      expected: assignment.writeScope
+        ? `only paths within: ${assignment.writeScope.slice(0, 10).join(', ')}; protected files need an explicit grant — report the need instead of editing them`
+        : 'no protected files (CI config, env files, package manifests, lockfiles) without an explicit grant — report the need instead of editing them',
+      evidenceRefs: [],
+    });
+  }
   if (result.reasons.includes(`authority_violation:${assignment.id}`)) {
     failedChecks.push({
       check: 'stayed within the authority it was granted',
@@ -176,5 +210,5 @@ export function reviewChildWork(input: ReviewInput): ReviewVerdict {
     ...outcomes.filter((entry) => entry.met).flatMap((entry) => entry.evidenceRefs),
     ...(validation.passed ? validation.evidenceIds : []),
   ])];
-  return { accepted: result.passed, failedChecks, evidenceRefs, reasons: result.reasons };
+  return { accepted: result.passed && violations.length === 0 && markers.length === 0, failedChecks, evidenceRefs, reasons: result.reasons };
 }
