@@ -28,7 +28,8 @@ import { dependenciesFromEvents } from '../context/dependencies.js';
 import { recordContextUtility } from '../learning/context-utility.js';
 import type { TaskClass } from '../intelligence/task-judge.js';
 import type { DispatchReceipt } from '../context/dispatch-context.js';
-import { applyManifestDelta } from '../context/runtime/task-context-manifest.js';
+import { applyManifestDelta, getManifest } from '../context/runtime/task-context-manifest.js';
+import type { DispatchLedger } from '../observability/context-ledger.js';
 import { parseResultEnvelope } from '../intelligence/result-envelope.js';
 import type { SecurityScope } from '../context/types.js';
 import type { ManifestUpdate } from '../context/runtime/manifest-types.js';
@@ -76,7 +77,11 @@ export function indexRunObservations(
 
   for (const observation of observations) {
     try {
-      const eventId = input.eventIds[observation.execution.sequence];
+      // The event that holds the *output*, not the one that holds the call: a
+      // reference to the raw text has to lead to the raw text. (It used to point
+      // at the call, so a large output that was left in the log and referenced
+      // could not be fetched back through its own reference.)
+      const eventId = input.eventIds[observation.execution.resultSequence ?? observation.execution.sequence];
       const small = observation.raw.length <= INLINE_LIMIT;
       // Small output is inlined so an expansion can always be served; large
       // output stays where it already is and is pointed at.
@@ -145,16 +150,32 @@ function manifestRoleOf(observation: Observation): 'validation' | 'artifacts' | 
 }
 
 /** Records a dispatch's checks and products against its task, as one manifest
- *  revision. Total, for the reason the rest of this file is: a run that
- *  produced an answer must not be failed by writing down what it did. */
-export function recordRunInManifest(db: Db, taskId: string, indexed: IndexedRun): ManifestUpdate | null {
-  if (indexed.sections.validation.length === 0 && indexed.sections.artifacts.length === 0) return null;
-  try {
-    return applyManifestDelta(db, taskId, { add: indexed.sections });
-  } catch (err) {
-    console.error(`Failed to record a run in the manifest of task ${taskId}:`, err);
-    return null;
+ *  revision, and notes the resulting revision on the dispatch's trace. Total,
+ *  for the reason the rest of this file is: a run that produced an answer must
+ *  not be failed by writing down what it did. */
+export function recordRunInManifest(
+  db: Db,
+  taskId: string,
+  indexed: IndexedRun,
+  trace?: DispatchLedger,
+): ManifestUpdate | null {
+  let update: ManifestUpdate | null = null;
+  if (indexed.sections.validation.length > 0 || indexed.sections.artifacts.length > 0) {
+    try {
+      update = applyManifestDelta(db, taskId, { add: indexed.sections });
+    } catch (err) {
+      console.error(`Failed to record a run in the manifest of task ${taskId}:`, err);
+    }
   }
+  try {
+    const manifest = update?.manifest ?? getManifest(db, taskId);
+    if (manifest) {
+      trace?.record('retain', {
+        reason: `manifest r${manifest.revision} workingSet=${manifest.workingSet.length} facts=${manifest.facts.length} artifacts=${manifest.artifacts.length} validation=${manifest.validation.length}`,
+      });
+    }
+  } catch { /* observability only */ }
+  return update;
 }
 
 /** Scores what the projection predicted against what the run read. Total, for

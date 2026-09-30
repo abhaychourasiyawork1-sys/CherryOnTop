@@ -149,6 +149,12 @@ function lastResultText(events: StructuredEvent[]): string | null {
 export function classifyRuntimeFailure(events: StructuredEvent[]): 'model_unavailable' | 'auth' | null {
   const text = lastResultText(events);
   if (text === null) return null;
+  // An entitlement or credential refusal happens at the first request, before
+  // the agent has said or done anything. A run that got as far as a turn failed
+  // for a reason of its own — and its error text can mention "model not found"
+  // or "401" as the *subject of the task* (fixing an auth bug, say). Believing
+  // that would block a model, fleet-wide, over one task's vocabulary.
+  if (events.some((event) => event.type === 'assistant')) return null;
   if (shouldRetryWithoutModel(events)) return 'model_unavailable';
   return AUTH_FAILURE.test(text) ? 'auth' : null;
 }

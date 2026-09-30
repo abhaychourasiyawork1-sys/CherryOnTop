@@ -55,6 +55,61 @@ export function recoveredUsage(events: StructuredEvent[]): { usage: DispatchUsag
   return { usage, ...(model ? { model } : {}) };
 }
 
+export interface VisibleContextProfile {
+  turns: number;
+  first: number;
+  last: number;
+  peak: number;
+  average: number;
+  /** Sharp falls in what the model could see from one turn to the next. */
+  reductions: Array<{ from: number; to: number; tokens: number }>;
+}
+
+/** A turn that sees this fraction of the previous turn's context or less is
+ *  read as the runtime having cleared or compacted its history. Ordinary
+ *  turns only grow the prefix; a fall this large has no other cause. */
+export const CONTEXT_REDUCTION_RATIO = 0.7;
+
+/** How much context the model could see on each turn of a run, from the usage
+ *  every assistant message already reports.
+ *
+ *  CherryOnTop does not own the conversation (the agent CLI does, inside the
+ *  sandbox), so it cannot prune or compact it — but it can *watch* it. What a
+ *  turn sees is input plus everything read from or written to the prompt cache;
+ *  the peak is the context the run actually carried, and a sharp fall between two
+ *  turns is the runtime compacting or clearing on its own, which is the
+ *  provider-native mechanism this system defers to. Measured rather than
+ *  assumed, so a benchmark can say how big the context got and whether the
+ *  runtime shrank it. Total. */
+export function visibleContextProfile(events: StructuredEvent[]): VisibleContextProfile {
+  const seen = new Set<string>();
+  const sizes: number[] = [];
+  const n = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v) ? v : 0);
+  for (const event of events) {
+    if (event.type !== 'assistant') continue;
+    const p = event.payload as { parent_tool_use_id?: unknown; message?: { id?: unknown; usage?: Record<string, unknown> } } | null;
+    const id = p?.message?.id;
+    if (p?.parent_tool_use_id || typeof id !== 'string' || seen.has(id)) continue;
+    seen.add(id);
+    const u = p?.message?.usage ?? {};
+    sizes.push(n(u.input_tokens) + n(u.cache_read_input_tokens) + n(u.cache_creation_input_tokens));
+  }
+  const reductions: VisibleContextProfile['reductions'] = [];
+  for (let i = 1; i < sizes.length; i++) {
+    if (sizes[i] <= sizes[i - 1] * CONTEXT_REDUCTION_RATIO) {
+      reductions.push({ from: sizes[i - 1], to: sizes[i], tokens: sizes[i - 1] - sizes[i] });
+    }
+  }
+  return {
+    turns: sizes.length,
+    first: sizes[0] ?? 0,
+    last: sizes.at(-1) ?? 0,
+    peak: sizes.length ? Math.max(...sizes) : 0,
+    average: sizes.length ? sizes.reduce((a, b) => a + b, 0) / sizes.length : 0,
+    reductions,
+  };
+}
+
 export function usageFromEvents(events: StructuredEvent[]): DispatchUsage {
   const payload = lastResultPayload(events);
   if (!payload) return recoveredUsage(events).usage;

@@ -85,6 +85,10 @@ export function assertWellFormed(document: PromptDocument): void {
     seen.add(block.id);
     let previous = block.content.length;
     for (const fallback of block.fallbacks ?? []) {
+      // A required block that shrinks to nothing has been dropped in all but name.
+      if (block.required && fallback.length === 0) {
+        throw new PromptIrError(`a fallback of required block ${block.id} may not be empty`);
+      }
       // A "fallback" that is not smaller would let the demotion loop spin
       // forever while claiming progress.
       if (fallback.length >= previous) {

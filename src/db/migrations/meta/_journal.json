@@ -78,6 +78,13 @@
       "when": 1790520337780,
       "tag": "0010_short_shriek",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "6",
+      "when": 1790785105686,
+      "tag": "0011_memory_kind_key_index",
+      "breakpoints": true
     }
   ]
 }

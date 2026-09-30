@@ -122,3 +122,28 @@ describe('aggregation', () => {
     expect(summary.droppedBlocks).toBe(1);
   });
 });
+
+describe('what the model could see', () => {
+  const rec = (over: Partial<ContextLedgerRecord>): ContextLedgerRecord => ({
+    taskId: 't', nodeId: 'n', dispatchId: 'n#1', phase: 'visible', createdAt: '2026-09-30T00:00:00.000Z', ...over,
+  });
+
+  it('reports the busiest turn across dispatches, and adds up what the runtime shed itself', () => {
+    const summary = summarizeContextLedger([
+      rec({ tokens: 41_000 }), rec({ dispatchId: 'b', tokens: 88_000 }), rec({ dispatchId: 'c', tokens: 12_000 }),
+      rec({ phase: 'compact', tokens: 60_000 }),
+    ]);
+    expect(summary.peakVisibleTokens).toBe(88_000);
+    expect(summary.compactedTokens).toBe(60_000);
+  });
+
+  it('carries the prompt’s place in the usable window on the compile record', () => {
+    const compiled = compilePrompt({
+      blocks: [{ id: 'g', kind: 'goal', channel: 'user', cacheClass: 'DYNAMIC', priority: 9, required: true, content: 'x'.repeat(400) }],
+    }, DEFAULT_PROMPT_BUDGET);
+    expect(compiled.receipt.pressure.state).toBe('LOW');
+    const ledger = createDispatchLedger({ taskId: 't', nodeId: 'n', dispatchId: 'n#1' }, clock);
+    ledger.recordCompile(compiled.receipt);
+    expect(ledger.records().at(-1)!.reason).toContain('pressure=LOW');
+  });
+});

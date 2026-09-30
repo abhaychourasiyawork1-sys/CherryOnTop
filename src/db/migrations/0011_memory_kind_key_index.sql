@@ -1,0 +1,1 @@
+CREATE INDEX `memory_kind_key` ON `memory` (`kind`,`key`);

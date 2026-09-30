@@ -160,3 +160,13 @@ describe('the store as a derived index', () => {
     expect(after.ref.contentHash).toBe(object.ref.contentHash);
   });
 });
+
+describe('lookup cost', () => {
+  it('finds a semantic identity through an index on (kind, key), not by scanning every row of the table', () => {
+    const db = createDb(TEST_DB);
+    const plan = db.$client
+      .prepare("EXPLAIN QUERY PLAN SELECT * FROM memory WHERE kind = 'context_object' AND key = 'repo_file:a.ts'")
+      .all() as Array<{ detail: string }>;
+    expect(plan.map((row) => row.detail).join(' ')).toContain('memory_kind_key');
+  });
+});

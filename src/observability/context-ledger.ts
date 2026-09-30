@@ -31,6 +31,7 @@ export type ContextPhase =
   | 'materialize'  // a representation of one artifact was bought
   | 'compile'      // the prompt compiler produced the final argv
   | 'model'        // the runtime spent tokens against it
+  | 'visible'      // how much context the model could see on its busiest turn
   | 'retain'       // a result was classified for retention
   | 'prune'        // model-visible content was replaced by a reference
   | 'compact'      // model-visible history was summarised
@@ -113,7 +114,7 @@ export function createDispatchLedger(
       // figure would double-count it in every per-phase aggregate.
       record('compile', {
         fingerprint: receipt.cache.stable,
-        reason: `${receipt.status} total=${receipt.totalTokens} channels=${receipt.bytes.system}+${receipt.bytes.user}B`,
+        reason: `${receipt.status} total=${receipt.totalTokens} channels=${receipt.bytes.system}+${receipt.bytes.user}B pressure=${receipt.pressure.state}`,
       });
     },
     records: () => rows.map((r) => ({ ...r })),
@@ -139,6 +140,8 @@ export interface ContextLedgerSummary {
   promptTokensByKind: Record<string, number>;
   droppedBlocks: number;
   demotedBlocks: number;
+  /** The largest context any dispatch's model could see on one turn. */
+  peakVisibleTokens: number;
   /** How many different stable prefixes the dispatches used. Fewer than
    *  dispatches means siblings and retries are sharing a cacheable prefix. */
   distinctStablePrefixes: number;
@@ -154,10 +157,12 @@ export function summarizeContextLedger(records: ContextLedgerRecord[]): ContextL
   let targeted = 0;
   let dropped = 0;
   let demoted = 0;
+  let peakVisible = 0;
 
   for (const r of records) {
     dispatches.add(r.dispatchId);
     if (r.tokens !== undefined) tokensByPhase[r.phase] = (tokensByPhase[r.phase] ?? 0) + r.tokens;
+    if (r.phase === 'visible' && r.tokens !== undefined) peakVisible = Math.max(peakVisible, r.tokens);
     if (r.phase === 'materialize') {
       if (r.representation === 'full') whole++;
       else targeted++;
@@ -180,6 +185,7 @@ export function summarizeContextLedger(records: ContextLedgerRecord[]): ContextL
       wholeFileRate: acquired === 0 ? 0 : whole / acquired,
     },
     prunedTokens: tokensByPhase.prune ?? 0,
+    peakVisibleTokens: peakVisible,
     compactedTokens: tokensByPhase.compact ?? 0,
     promptTokensByKind,
     droppedBlocks: dropped,

@@ -26,7 +26,7 @@ import {
   BLOCK_SEPARATOR, assertWellFormed, dedupe, layoutOrder,
   type CacheClass, type PromptBlock, type PromptChannel, type PromptDocument,
 } from './prompt-ir.js';
-import { effectiveInputTokens, type PromptBudget } from './prompt-budget.js';
+import { effectiveInputTokens, pressureOf, type ContextPressure, type PromptBudget } from './prompt-budget.js';
 
 export type CompileStatus = 'ok' | 'demoted' | 'refused';
 
@@ -56,6 +56,10 @@ export interface PromptCompileReceipt {
   merged: string[];
   reasons: string[];
   cache: CacheReceipt;
+  /** Where the assembled prompt sits in the model's usable window. The opening
+   *  of the conversation, not the whole of it: what the run then carries is
+   *  measured from its own usage (`visibleContextProfile`). */
+  pressure: ContextPressure;
 }
 
 export interface CompiledPrompt {
@@ -174,11 +178,12 @@ function receiptOf(
   text: Record<PromptChannel, string>,
 ): PromptCompileReceipt {
   const live = slots.filter((s) => !s.dropped && textOf(s).length > 0);
+  const total = live.reduce((sum, s) => sum + tokensOf(s), 0);
   return {
     version: 1,
     status,
     budget: { effectiveTokens: tokenCeiling, maxBytesPerChannel: budget.maxBytesPerChannel },
-    totalTokens: live.reduce((sum, s) => sum + tokensOf(s), 0),
+    totalTokens: total,
     bytes: { system: Buffer.byteLength(text.system, 'utf8'), user: Buffer.byteLength(text.user, 'utf8') },
     blocks: live.map((s) => ({
       id: s.block.id, kind: s.block.kind, channel: s.block.channel, cacheClass: s.block.cacheClass,
@@ -187,6 +192,7 @@ function receiptOf(
     })),
     dropped, demoted, merged, reasons,
     cache: cacheReceipt(blocks, BLOCK_SEPARATOR, text),
+    pressure: pressureOf(total, budget),
   };
 }
 

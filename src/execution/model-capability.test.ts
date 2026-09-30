@@ -97,6 +97,15 @@ describe('reading the runtime’s own account of a failure', () => {
     expect(classifyRuntimeFailure(failure(text))).toBe(expected);
   });
 
+  it('says nothing about a failure that happened after the agent had started working', () => {
+    // A task about a missing model or a 401 will say so in its own error text.
+    const afterWork: StructuredEvent[] = [
+      { type: 'assistant', payload: { message: { id: 'm1', usage: {} } } },
+      ...failure('model "orders" is not found — the migration is wrong (HTTP 401 from the fixture)'),
+    ];
+    expect(classifyRuntimeFailure(afterWork)).toBeNull();
+  });
+
   it('says nothing about a run that did not fail', () => {
     expect(classifyRuntimeFailure([{ type: 'result', payload: { is_error: false, result: 'done' } }])).toBeNull();
     expect(classifyRuntimeFailure([])).toBeNull();

@@ -45,6 +45,9 @@ describe('IR', () => {
     expect(() => assertWellFormed({ blocks: [block({ id: 'x' }), block({ id: 'x' })] })).toThrow(PromptIrError);
     expect(() => assertWellFormed({ blocks: [block({ content: 'abc', fallbacks: ['abcd'] })] })).toThrow(PromptIrError);
     expect(() => assertWellFormed({ blocks: [block({ content: 'abcd', fallbacks: ['abc', 'abc'] })] })).toThrow(PromptIrError);
+    // ...and a required block may not "shrink" to nothing, which would be a silent drop.
+    expect(() => assertWellFormed({ blocks: [block({ required: true, content: 'abcd', fallbacks: ['ab', ''] })] })).toThrow(PromptIrError);
+    expect(() => assertWellFormed({ blocks: [block({ required: false, content: 'abcd', fallbacks: ['ab', ''] })] })).not.toThrow();
   });
 });
 

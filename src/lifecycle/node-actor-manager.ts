@@ -56,7 +56,6 @@ import { planCacheKey, getCachedPlan, putCachedPlan } from '../db/queries/plan-c
 import { resultCacheKey, getCachedResult, putCachedResult, type CachedResult } from '../db/queries/result-cache.js';
 import { dependenciesFromEvents, buildDependencyFingerprint, dependenciesValid } from '../context/dependencies.js';
 import { indexRunObservations, scoreProjection, recordRunInManifest, recordChildFinding } from './run-index.js';
-import { getManifest } from '../context/runtime/task-context-manifest.js';
 import { createDispatchLedger, type DispatchLedger } from '../observability/context-ledger.js';
 import { assembleExecutePrompt, assemblePlanPrompt, assembleSynthesisPrompt, promptBudgetFromConfig } from '../prompt/prompt-runtime.js';
 import { buildAgentEnvelope, renderEnvelope, EnvelopeError } from '../intelligence/agent-envelope.js';
@@ -89,7 +88,7 @@ import { uninformedDifficulty, withSemanticEstimate } from '../intelligence/diff
 import { rateLimitFromEvents } from '../execution/rate-limit.js';
 import { dispatchContextFor, warmRepoInventory } from '../context/dispatch-context-cache.js';
 import { recordDispatchUsage, turnsForNode } from '../db/queries/tokens.js';
-import { shouldRetryWithoutModel, recoveredUsage } from '../execution/tokens.js';
+import { shouldRetryWithoutModel, recoveredUsage, visibleContextProfile } from '../execution/tokens.js';
 import { estimateCostUsd } from '../execution/pricing.js';
 import { readOnlyPlanningGrant, investigativeExecuteGrant, needsProofOnly, unprovableWithoutChanges, PROOF_PASS_INSTRUCTION, PROOF_PASS_TURNS } from './dispatch-helpers.js';
 import {
@@ -644,6 +643,24 @@ function flushDispatchLedger(db: Db, nodeId: string, dispatchLedger: DispatchLed
     const id = appendEvent(db, { nodeId, type, payload, createdAt: now });
     publish({ id, nodeId, type, payload, createdAt: now });
   });
+}
+
+/** What the run's context looked like from the model's side: the busiest turn,
+ *  and any point where the runtime cleared or compacted its own history. The
+ *  conversation is the agent CLI's, not ours; this is how it is measured
+ *  anyway, from the usage every turn already reports. */
+function recordVisibleContext(trace: DispatchLedger, events: StructuredEvent[]): void {
+  try {
+    const profile = visibleContextProfile(events);
+    if (profile.turns === 0) return;
+    trace.record('visible', {
+      tokens: profile.peak,
+      reason: `turns=${profile.turns} first=${profile.first} last=${profile.last} avg=${Math.round(profile.average)}`,
+    });
+    for (const cut of profile.reductions) {
+      trace.record('compact', { tokens: cut.tokens, reason: `runtime reduced its own context ${cut.from}->${cut.to}` });
+    }
+  } catch { /* observability only */ }
 }
 
 /** A prompt the compiler refused is a dispatch that must not happen: a required
@@ -1408,6 +1425,7 @@ async function synthesizeChildren(db: Db, nodeId: string, goal: string): Promise
       tokens: result.usage.inputTokens + result.usage.outputTokens,
       reason: `in=${result.usage.inputTokens} out=${result.usage.outputTokens} cacheRead=${result.usage.cacheReadTokens} turns=${result.usage.numTurns}`,
     });
+    recordVisibleContext(synthLedger, result.events as StructuredEvent[]);
     flushDispatchLedger(db, nodeId, synthLedger);
 
     // An errored `result` is the runtime's complaint, not an answer — and the
@@ -1892,6 +1910,7 @@ async function planSubgoals(db: Db, nodeId: string, goal: string, maxChildren: n
       tokens: result.usage.inputTokens + result.usage.outputTokens,
       reason: `in=${result.usage.inputTokens} out=${result.usage.outputTokens} cacheRead=${result.usage.cacheReadTokens} turns=${result.usage.numTurns}`,
     });
+    recordVisibleContext(planLedger, result.events as StructuredEvent[]);
     flushDispatchLedger(db, nodeId, planLedger);
     // A planner that errored (turn cap, rate limit, timeout) gave no answer,
     // and an empty result from it is not "does not split". It used to be
@@ -2581,6 +2600,7 @@ function productionMachine(db: Db, nodeId: string) {
           tokens: result.usage.inputTokens + result.usage.outputTokens,
           reason: `in=${result.usage.inputTokens} out=${result.usage.outputTokens} cacheRead=${result.usage.cacheReadTokens} cacheWrite=${result.usage.cacheCreationTokens} turns=${result.usage.numTurns}`,
         });
+        recordVisibleContext(promptLedger, result.events as StructuredEvent[]);
         publishStepOutcome(db, nodeId, result);
         // What the run changed on disk that its Write/Edit calls did not say —
         // edits made through Bash, or by a runtime whose stream has no such
@@ -2607,16 +2627,7 @@ function productionMachine(db: Db, nodeId: string) {
         // whole, recorded once as a single revision. The trace says which
         // revision it produced, so a benchmark can follow the task's context
         // from one dispatch to the next.
-        const taskId = taskRootId(db, nodeId);
-        recordRunInManifest(db, taskId, indexed);
-        try {
-          const manifest = getManifest(db, taskId);
-          if (manifest) {
-            promptLedger.record('retain', {
-              reason: `manifest r${manifest.revision} workingSet=${manifest.workingSet.length} facts=${manifest.facts.length} artifacts=${manifest.artifacts.length} validation=${manifest.validation.length}`,
-            });
-          }
-        } catch { /* observability only */ }
+        recordRunInManifest(db, taskRootId(db, nodeId), indexed, promptLedger);
         flushDispatchLedger(db, nodeId, promptLedger);
         // What the projection predicted, against what the run actually read.
         // Free, because the run already told us both.

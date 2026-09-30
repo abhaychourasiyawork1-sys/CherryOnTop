@@ -36,8 +36,14 @@ export interface InvocationMetadata {
 
 export interface ExecutionMetadata {
   nodeId: string;
-  /** Index in the event stream. Orders observations without a clock. */
+  /** Index in the event stream of the *call*. Orders observations without a
+   *  clock. */
   sequence: number;
+  /** Index of the event that carries the call's *output*, which is a later
+   *  event than the call in every runtime that streams them separately. What a
+   *  reference to the raw output has to point at; absent for a call cut off
+   *  before it returned. */
+  resultSequence?: number;
   succeeded: boolean;
 }
 
@@ -93,7 +99,7 @@ export function operationOf(name: string, input: Record<string, unknown>): strin
  *  truncated run look like one that never tried. */
 export function observationsFromEvents(events: StructuredEvent[], nodeId: string): Observation[] {
   const calls: { block: ToolUseBlock; sequence: number }[] = [];
-  const results = new Map<string, { text: string; succeeded: boolean }>();
+  const results = new Map<string, { text: string; succeeded: boolean; sequence: number }>();
 
   events.forEach((event, sequence) => {
     for (const block of blocksOf(event, 'assistant')) {
@@ -105,6 +111,7 @@ export function observationsFromEvents(events: StructuredEvent[], nodeId: string
       results.set(block.tool_use_id, {
         text,
         succeeded: (block as { is_error?: boolean }).is_error !== true,
+        sequence,
       });
     }
   });
@@ -124,7 +131,10 @@ export function observationsFromEvents(events: StructuredEvent[], nodeId: string
       observationId: block.id ?? `${nodeId}:${sequence}`,
       tool: { name, operation: operationOf(name, input) },
       invocation: { callId: block.id, input },
-      execution: { nodeId, sequence, succeeded: result?.succeeded ?? false },
+      execution: {
+        nodeId, sequence, succeeded: result?.succeeded ?? false,
+        ...(result ? { resultSequence: result.sequence } : {}),
+      },
       raw,
       semanticId,
     };
