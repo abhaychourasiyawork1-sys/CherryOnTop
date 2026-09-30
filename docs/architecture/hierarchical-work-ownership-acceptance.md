@@ -152,3 +152,19 @@ The market may evaluate the cost of more rework versus escalation/reassignment, 
 - Replacing the Action Market
 - Replacing the XState node lifecycle
 - Automatic model-based arbitration of two conflicting child reports
+
+## Implementation map
+
+| Concern | Where |
+|---|---|
+| Statuses, legal transitions, record/report/feedback schemas | `src/schemas/delegation.ts` |
+| Durable rows, revision compare-and-swap, retained-workspace listing | `src/db/queries/delegations.ts`, `delegations` table (migration `0011`) |
+| Every status change, and its audit event, in one operation | `src/lifecycle/delegation-events.ts` (`transitionDelegation`) |
+| Bounded report, feedback and rework-context builders | `src/lifecycle/delegation-reports.ts` |
+| The parent's acceptance decision, from evidence | `src/lifecycle/delegation-review.ts` |
+| The assign → report → review → accept/rework/reassign → merge loop | `src/lifecycle/delegate-child.ts` (`driveAssignment`, `requestRework`, `requestReassignment`) |
+| The only path from a child's workspace to the parent's tree | `src/lifecycle/node-actor-manager.ts` (`mergeAcceptedDelegation`, over `integrateFork`) |
+
+`INTEGRATION_BLOCKED` leaves the parent's tree exactly as it was; the candidate
+is retained. `ESCALATED` is where an assignment goes when the rework limit is
+reached or a governor declines another revision — never a silent replacement.

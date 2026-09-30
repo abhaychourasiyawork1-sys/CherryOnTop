@@ -11,7 +11,7 @@ import { ZERO_USAGE, type DispatchUsage } from '../execution/tokens.js';
 import { claudeCodeAdapter } from '../adapters/claude-code.js';
 import { stopgapAdapter } from '../adapters/stopgap.js';
 import { assessUncertainty } from '../intelligence/coordinator.js';
-import { decideExecution } from '../engines/decide-execution.js';
+import { decideExecution, MIN_AGENT_BUDGET_USD } from '../engines/decide-execution.js';
 import { insertDecision, listDecisionsForNode } from '../db/queries/decisions.js';
 import { escalate } from '../approvals/escalation.js';
 import { insertApproval, getPendingApproval, resolveApproval } from '../db/queries/approvals.js';
@@ -298,6 +298,18 @@ export function dbDelegationLedger(db: Db): DelegationLedger {
   };
 }
 
+/** The event id at which the child's current revision began: its last rework, or
+ *  0 for a child on its first run. Assignment events are on the parent, and ids
+ *  are monotonic across the whole log, so anything the child did after this id
+ *  belongs to the revision now being reviewed. */
+function currentRevisionStart(db: Db, childId: string): number {
+  const parent = getNode(db, childId)?.parentId;
+  if (!parent) return 0;
+  return listEventsForNode(db, parent)
+    .filter((row) => row.type === 'delegation.reworking' && (row.payload as { childId?: string }).childId === childId)
+    .at(-1)?.id ?? 0;
+}
+
 /** What a finished child left behind, read back from the records — never from
  *  what the child says about itself. The child's verdict is its own validation;
  *  the parent's review, not this, decides what that is worth. */
@@ -309,7 +321,7 @@ export function childRunResult(
   const written = artifacts.filter((a) => (a.kind === 'file_edit' || a.kind === 'file_write') && a.path);
   const validationEvent = listEventsForNode(db, childId)
     .filter((row) => row.type === 'validation.result').sort((a, b) => b.id - a.id)[0];
-  const evidence = validationEvidenceFor(db, childId, completion.succeeded);
+  const evidence = validationEvidenceFor(db, childId, completion.succeeded, currentRevisionStart(db, childId));
   const stored = validationEvent?.payload as Partial<ValidationResult> | undefined;
   return {
     succeeded: completion.succeeded,
@@ -411,7 +423,11 @@ export function realDelegateDeps(db: Db, parentId?: string): DelegateChildDeps {
       // beyond what the runtime already had.
       let repoPath = parent.repoPath;
       if (!isReadOnly(authority) && parent.repoPath) {
-        const fork = forkWorkspace(parent.repoPath, 'HEAD', id);
+        // A parent that is itself a delegated child works in a fork, and its
+        // stored path is the container form of it. Forking that string would find
+        // nothing on the host and silently give *its* children no isolation, so
+        // the hierarchy would be isolated one level deep and shared below it.
+        const fork = forkWorkspace(fromContainerPath(parent.repoPath) ?? parent.repoPath, 'HEAD', id);
         if (fork) {
           // fork.path is a real host path (workspace-fork.ts anchors forks
           // under $HOME, outside any repo). node.repoPath must be the
@@ -511,6 +527,18 @@ export function realDelegateDeps(db: Db, parentId?: string): DelegateChildDeps {
       return granted === undefined ? undefined : Math.max(0, granted - getCostForNodes(db, [childId]));
     },
     // The candidate being checked is this assignment's own workspace.
+    // The governor after a failed review, built from the existing budget
+    // primitives rather than a second optimiser: another revision is a real
+    // dispatch, and a child that can no longer fund one is not sent back — the
+    // parent stops and asks. This can only ever say *less* (escalate); rework
+    // is the default and the acceptance verdict is not its to change.
+    decideRecovery: ({ assignment }) => {
+      const granted = getNode(db, assignment.childId)?.contract.authority.budget_usd;
+      const remaining = granted === undefined ? undefined : Math.max(0, granted - getCostForNodes(db, [assignment.childId]));
+      return remaining !== undefined && remaining < MIN_AGENT_BUDGET_USD
+        ? { action: 'escalate', reason: `the child has $${remaining.toFixed(2)} left, less than the $${MIN_AGENT_BUDGET_USD.toFixed(2)} another revision needs` }
+        : { action: 'rework' };
+    },
     verifyCheck: (check, assignment) =>
       fileCheckVerifier(assignment.workspace ?? workspaces.get(assignment.childId))(check),
     parentStopped: () => {
@@ -2883,7 +2911,11 @@ function subtreeExecEvents(db: Db, nodeId: string) {
     .filter((row) => row.type.startsWith('exec.'));
 }
 
-function validationEvidenceFor(db: Db, nodeId: string, succeeded: boolean): ValidationEvidence {
+/** `sinceEventId`, when set, reads only the run's own trace from that event on —
+ *  the parent's review of a reworked child, which must judge the revision in
+ *  front of it. Without it a check that failed once stays failed for ever
+ *  (failure signatures never clear), and no rework could converge. */
+function validationEvidenceFor(db: Db, nodeId: string, succeeded: boolean, sinceEventId = 0): ValidationEvidence {
   const all = subtreeArtifacts(db, nodeId);
   const artifacts = all.filter((a) => a.kind !== 'result');
   // An investigation's deliverable *is* its report: there is no file to point
@@ -2906,6 +2938,7 @@ function validationEvidenceFor(db: Db, nodeId: string, succeeded: boolean): Vali
     : taskEconomicsFor(getNode(db, nodeId)?.contract.goal ?? '').readOnly;
   const durableOutcomeIds = readOnly ? all.filter((a) => a.kind === 'result').map((a) => a.id) : [];
   const execEvents = subtreeExecEvents(db, nodeId)
+    .filter((row) => row.id > sinceEventId)
     .map((row) => ({ type: row.type.slice('exec.'.length), payload: row.payload } as StructuredEvent));
   const snapshot = executionSnapshot({
     events: execEvents,

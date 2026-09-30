@@ -7,6 +7,7 @@ import { createDb } from '../db/client.js';
 import { getNode, insertNode } from '../db/queries/nodes.js';
 import { realDelegateDeps, integrateFork, childRunResult } from './node-actor-manager.js';
 import { forkWorkspace } from '../execution/workspace-fork.js';
+import { fromContainerPath } from '../k8s/kind.js';
 
 // This file's forks live in a directory of their own: a server test running in
 // parallel sweeps orphaned forks out of the shared default root at startup, and
@@ -71,8 +72,10 @@ describe('delegated children and repository isolation', () => {
     expect(node1?.repoPath).not.toBe(base);
     expect(node2?.repoPath).not.toBe(base);
     expect(node1?.repoPath).not.toBe(node2?.repoPath);
-    expect(existsSync(node1!.repoPath!)).toBe(true);
-    expect(existsSync(node2!.repoPath!)).toBe(true);
+    // `repoPath` is the container form (`/host/...`, what the child's Job mounts);
+    // the fork itself lives at the host path that maps to it.
+    expect(existsSync(fromContainerPath(node1!.repoPath!)!)).toBe(true);
+    expect(existsSync(fromContainerPath(node2!.repoPath!)!)).toBe(true);
 
     // The base is untouched by fork creation alone — isolation, not a copy
     // that happens to diverge later.
