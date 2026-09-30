@@ -5,7 +5,7 @@ import { tmpdir, homedir } from 'node:os';
 import { join } from 'node:path';
 import { createDb } from '../db/client.js';
 import { getNode, insertNode } from '../db/queries/nodes.js';
-import { realDelegateDeps, integrateFork, settleFork } from './node-actor-manager.js';
+import { realDelegateDeps, integrateFork, childRunResult } from './node-actor-manager.js';
 import { forkWorkspace } from '../execution/workspace-fork.js';
 
 // This file's forks live in a directory of their own: a server test running in
@@ -79,7 +79,11 @@ describe('delegated children and repository isolation', () => {
     expect(readFileSync(join(base, 'a.ts'), 'utf8')).toBe('export const a = 1;\n');
   });
 
-  it('shares the parent path for a single child, where there is nothing to race with', () => {
+  // Replaces "shares the parent path for a single child, where there is nothing
+  // to race with". Racing was never the only reason to isolate: the parent now
+  // reviews a child's candidate before accepting it, and a lone child editing
+  // the parent's tree directly has already merged before anyone looked.
+  it('gives a lone write-capable child its own fork too, so its work is a candidate until accepted', () => {
     const db = createDb(TEST_DB);
     const base = repo();
     insertNode(db, {
@@ -89,7 +93,10 @@ describe('delegated children and repository isolation', () => {
 
     const deps = realDelegateDeps(db);
     const onlyChild = deps.createChildNode('parent', 'the whole thing', 1);
-    expect(getNode(db, onlyChild)?.repoPath).toBe(base);
+    expect(getNode(db, onlyChild)?.repoPath).not.toBe(base);
+    const workspace = deps.describeChild!(onlyChild)!.workspace!;
+    expect(existsSync(workspace.path)).toBe(true);
+    expect(workspace.basePath).toBe(base);
   });
 
   it('shares the parent path for a read-only sibling, which cannot corrupt anything', () => {
@@ -155,6 +162,35 @@ describe('integrating a fork back onto its base', () => {
     second.release();
   });
 
+  it('leaves the base exactly as it was when a real three-way conflict is refused', () => {
+    // A conflict that git *can* attempt (the base's copy is committed, so the
+    // 3-way merge runs) used to leave conflict markers and unmerged index
+    // entries in the authoritative tree while reporting only `false`. A blocked
+    // integration must not have touched what it was blocked from.
+    const base = repo();
+    const fork = forkWorkspace(base, 'HEAD', 'child-1')!;
+    writeFileSync(join(fork.path, 'a.ts'), 'export const a = "from the child";\n');
+    writeFileSync(join(fork.path, 'brand-new.ts'), 'export const fresh = true;\n');
+
+    const git = (...args: string[]) => execFileSync('git', args, { cwd: base, encoding: 'utf8' });
+    writeFileSync(join(base, 'a.ts'), 'export const a = "from the parent";\n');
+    git('add', '-A');
+    git('commit', '-qm', 'parent moved on');
+    const before = { status: git('status', '--porcelain'), a: readFileSync(join(base, 'a.ts'), 'utf8') };
+
+    expect(integrateFork(fork)).toBe(false);
+
+    expect(git('status', '--porcelain')).toBe(before.status);
+    expect(readFileSync(join(base, 'a.ts'), 'utf8')).toBe(before.a);
+    expect(readFileSync(join(base, 'a.ts'), 'utf8')).not.toContain('<<<<<<<');
+    // Nothing from the refused change leaked in beside the conflict either.
+    expect(existsSync(join(base, 'brand-new.ts'))).toBe(false);
+    expect(git('ls-files', '-u')).toBe('');
+    // The child's candidate is untouched, so it can still be reworked or retried.
+    expect(readFileSync(join(fork.path, 'a.ts'), 'utf8')).toContain('from the child');
+    fork.release();
+  });
+
   it('is a no-op when the fork wrote nothing', () => {
     const base = repo();
     const fork = forkWorkspace(base, 'HEAD', 'child-1')!;
@@ -163,15 +199,30 @@ describe('integrating a fork back onto its base', () => {
   });
 });
 
-describe('a child that did not pass', () => {
-  it('still hands its work back to the task tree, and stays failed', () => {
+// Replaces "a child that did not pass still hands its work back to the task
+// tree". That test asserted the old `settleFork` behaviour — integrate a fork the
+// moment its child finished, passed or not. That is intentionally gone: only work
+// the parent has *accepted* may reach the parent's tree (see
+// delegation-merge.test.ts), and a child finishing is only a report.
+describe('a child that finished', () => {
+  it('leaves its work in its own workspace until the parent accepts it', () => {
+    const db = createDb(TEST_DB);
     const base = repo();
-    const fork = forkWorkspace(base, 'HEAD', 'failed-child')!;
-    writeFileSync(join(fork.path, 'backend.py'), 'app = "built but not validated"\n');
-    const result = settleFork(fork, { succeeded: false, message: 'validation failed' });
+    insertNode(db, {
+      id: 'parent', parentId: null, goal: 'split this', contract: WRITE_CONTRACT('split this'),
+      state: 'CREATED', repoPath: base, createdAt: 't0', updatedAt: 't0',
+    });
+    const deps = realDelegateDeps(db, 'parent');
+    const childId = deps.createChildNode('parent', 'do part one', 2);
+    const workspace = deps.describeChild!(childId)!.workspace!;
+    writeFileSync(join(workspace.path, 'backend.py'), 'app = "built but not validated"\n');
+
+    // What waiting for the child reports: execution over, nothing integrated.
+    const result = childRunResult(db, childId, { succeeded: false });
+
     expect(result.succeeded).toBe(false);
-    expect(readFileSync(join(base, 'backend.py'), 'utf8')).toContain('built but not validated');
-    expect(existsSync(fork.path)).toBe(false);
+    expect(existsSync(join(base, 'backend.py'))).toBe(false);
+    expect(existsSync(workspace.path)).toBe(true);
   });
 });
 

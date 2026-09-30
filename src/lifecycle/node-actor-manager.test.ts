@@ -9,6 +9,7 @@ import { getNode, insertNode } from '../db/queries/nodes.js';
 import { listEventsForNode } from '../db/queries/events.js';
 import { repoHead } from '../execution/git-state.js';
 import { startNodeActor, sendToNode, honoursSystemPrompt } from './node-actor-manager.js';
+import { subscribeToNode } from '../events/bus.js';
 import { capabilitiesOf } from './execution-market.js';
 import { stopgapAdapter } from '../adapters/stopgap.js';
 import { claudeCodeAdapter } from '../adapters/claude-code.js';
@@ -67,6 +68,35 @@ describe('node-actor-manager', () => {
     // Whether the goal splits was System-1's call, and it left a receipt.
     const receipt = recordedEvents.find((e) => e.type === 'system1.judgment');
     expect(receipt?.payload).toMatchObject({ surface: 'execution.decomposable', source: 'harness', fallback: false });
+  });
+
+  it('keeps a re-entered node\'s actor registered when the finished run\'s deferred cleanup fires', async () => {
+    // Same-child rework re-enters a node that just reached a terminal state. The
+    // finished actor's cleanup is deferred a tick so anything awaiting its last
+    // transition still resolves; it must only ever remove *its own* entry, or it
+    // deletes the actor the rework just started and the parent's next wait
+    // fails with "no active actor".
+    const db = createDb(TEST_DB);
+    insertNode(db, { id: 'n1', parentId: null, goal: GOAL, contract: CONTRACT, state: 'CREATED', createdAt: 't0', updatedAt: 't0' });
+
+    let restarted = false;
+    const off = subscribeToNode('n1', (event) => {
+      const state = (event.payload as { state?: string } | undefined)?.state;
+      if (event.type === 'state.transition' && state === 'CANCELLED' && !restarted) {
+        restarted = true;
+        startNodeActor(db, 'n1', GOAL); // synchronously, as a rework does
+      }
+    });
+
+    startNodeActor(db, 'n1', GOAL);
+    await vi.waitFor(() => expect(getNode(db, 'n1')?.state).toBe('WAIT_APPROVAL'));
+    sendToNode('n1', { type: 'CANCEL' });
+    await vi.waitFor(() => expect(restarted).toBe(true));
+    await vi.waitFor(() => expect(getNode(db, 'n1')?.state).toBe('WAIT_APPROVAL'));
+    await new Promise((resolve) => setTimeout(resolve, 20)); // let the first run's deferred cleanup fire
+
+    expect(() => sendToNode('n1', { type: 'CANCEL' })).not.toThrow();
+    off();
   });
 
   it('throws when sending to a node with no active actor', () => {

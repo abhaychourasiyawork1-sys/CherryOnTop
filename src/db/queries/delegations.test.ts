@@ -3,7 +3,7 @@ import { existsSync, unlinkSync } from 'node:fs';
 import { createDb } from '../client.js';
 import {
   createDelegation, getDelegation, updateDelegation,
-  listDelegationsForParent, listDelegationsForChild,
+  listDelegationsForParent, listDelegationsForChild, listRetainedWorkspacePaths,
   DelegationNotFoundError, DelegationStaleError, IllegalDelegationTransitionError,
 } from './delegations.js';
 import { canTransitionDelegation, isTerminalDelegationStatus, DELEGATION_STATUSES } from '../../schemas/delegation.js';
@@ -144,5 +144,32 @@ describe('delegation transitions are the invariant', () => {
     expect(() => updateDelegation(db, 'a1', { acceptanceChecks: [] } as never, 't1')).toThrow();
     expect(() => updateDelegation(db, 'a1', { childId: 'c9' } as never, 't1')).toThrow();
     expect(getDelegation(db, 'a1')).toMatchObject({ budgetUsd: 1.5, acceptanceChecks: ['npm test'], childId: 'c1' });
+  });
+});
+
+describe('retained workspaces', () => {
+  const ws = (name: string) => ({ path: `/forks/${name}`, basePath: '/repo', revision: 'abc' });
+
+  it('names the workspace of every assignment whose work has not been merged, cancelled or handed on', () => {
+    const db = createDb(TEST_DB);
+    const open = (id: string, childId: string, name: string) =>
+      createDelegation(db, { ...base, id, childId, workspace: ws(name) }, 't0');
+    open('working', 'c1', 'working');
+    open('escalated', 'c2', 'escalated');
+    open('blocked-merge', 'c3', 'blocked-merge');
+    open('merged', 'c4', 'merged');
+    open('cancelled', 'c5', 'cancelled');
+    createDelegation(db, { ...base, id: 'shared-tree', childId: 'c6' }, 't0'); // no workspace of its own
+
+    const move = (id: string, ...path: Array<Parameters<typeof updateDelegation>[2]['status'] & string>) =>
+      path.forEach((status) => updateDelegation(db, id, { status }, 't1'));
+    move('escalated', 'ESCALATED');
+    move('blocked-merge', 'WORKING', 'REPORT_READY', 'UNDER_REVIEW', 'ACCEPTED', 'MERGING', 'INTEGRATION_BLOCKED');
+    move('merged', 'WORKING', 'REPORT_READY', 'UNDER_REVIEW', 'ACCEPTED', 'MERGING', 'MERGED');
+    move('cancelled', 'CANCELLED');
+
+    // A daemon restart must not sweep away the candidate an escalated or
+    // conflicted assignment is still waiting on a decision about.
+    expect(listRetainedWorkspacePaths(db).sort()).toEqual(['/forks/blocked-merge', '/forks/escalated', '/forks/working']);
   });
 });
