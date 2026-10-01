@@ -1,3 +1,4 @@
+import { useFakeLaya } from '../system1/fake-provider.js';
 /** The context, decision and observation systems, exercised through the real
  *  dispatch path rather than in isolation.
  *
@@ -202,6 +203,11 @@ describe('a real dispatch leaves the context graph behind it', () => {
 });
 
 describe('a real dispatch explains itself', () => {
+  // System-1 answers that this goal asks only for an answer (P(change)=0.1).
+  let restoreSystem1: () => void = () => {};
+  beforeEach(() => { restoreSystem1 = useFakeLaya(0.1).restore; });
+  afterEach(() => restoreSystem1());
+
   it('publishes a decision receipt naming what it did not do', () => {
     return (async () => {
       const db = createDb(TEST_DB);
@@ -226,14 +232,20 @@ describe('a real dispatch explains itself', () => {
       const plans = listEventsForNode(db, id).filter((e) => e.type === 'execution.plan');
       expect(plans).toHaveLength(1);
       const payload = plans[0].payload as { taskClass: string; steps: { name: string }[] };
-      // "Review ... and report" is an investigation, not an implementation.
-      expect(payload.taskClass).toBe('investigation');
+      // System-1 said this asks only for an answer — the template is named
+      // from what is known, never from the goal's wording.
+      expect(payload.taskClass).toBe('answer');
       expect(payload.steps.length).toBeGreaterThan(0);
     })();
   });
 });
 
 describe('a real dispatch scores its own projection', () => {
+  // System-1 answers that this goal asks only for an answer (P(change)=0.1).
+  let restoreSystem1: () => void = () => {};
+  beforeEach(() => { restoreSystem1 = useFakeLaya(0.1).restore; });
+  afterEach(() => restoreSystem1());
+
   it('records what selection predicted against what the run read', () => {
     return (async () => {
       const db = createDb(TEST_DB);
@@ -241,7 +253,7 @@ describe('a real dispatch scores its own projection', () => {
 
       const stats = contextUtilityByTaskClass(db);
       expect(stats).toHaveLength(1);
-      expect(stats[0].taskClass).toBe('investigation');
+      expect(stats[0].taskClass).toBe('answer');
       expect(stats[0].observations).toBe(1);
       // The run read README.md, which is the ground truth selection is scored
       // against.

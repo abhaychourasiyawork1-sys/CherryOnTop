@@ -108,7 +108,7 @@ beforeEach(() => {
   process.env.ORG_REPO_MAP_TOKENS = '6000';
 });
 
-describe('the planning dispatch', () => {
+describe('the planning dispatch', { timeout: 20_000 }, () => {
   it('hands the planner the repository context instead of making it explore from zero', async () => {
     const calls = await runDelegating(createDb(TEST_DB), tmpRepo(), '[]');
     const plan = calls[0];

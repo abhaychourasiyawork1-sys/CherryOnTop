@@ -135,8 +135,38 @@ export interface ActionDecision {
   pruned?: string[];
   /** True when nothing was feasible and the answer is the terminal stop. */
   blocked?: boolean;
+  /** Every candidate the market saw, compact: what it was, where it came
+   *  from, whether it was feasible, what it was priced at, and what became of
+   *  it. Bounded by the candidate count, never by prompt or context size — the
+   *  raw metadata (evidence bodies, file contents) is deliberately not copied.
+   *  The DecisionPacket is built from this, which is what lets a later miss be
+   *  told apart as never-generated, rejected, pruned or out-ranked. */
+  candidates?: CandidateSnapshot[];
   /** What deciding cost: the optimizer's own bill, measured. */
   overhead?: { candidateCount: number; estimatorCalls: number; cacheHits: number; cacheMisses: number; latencyMs: number };
+}
+
+export interface CandidateSnapshot {
+  id: string;
+  fingerprint: string;
+  kind: ActionKind;
+  capability: string;
+  /** The candidate source that proposed it (`metadata.candidateSource`), or
+   *  `caller` when it was handed straight to the market. */
+  source: string;
+  status: 'chosen' | 'ranked' | 'pruned' | 'rejected';
+  reasonCodes: string[];
+  expectedCostUsd: number;
+  conservativeCostUsd: number;
+  successLowerBound: number;
+  immediateTokens: number;
+  provenance: string;
+  confidence: number;
+  /** The rank among feasible, unpruned candidates, 1-based. Null when it never
+   *  reached the ranking. */
+  rank: number | null;
+  /** The doubt dimensions its provider said it addresses, when it said. */
+  addresses?: string[];
 }
 
 /** Absolute quantities: finite and non-negative, or zero. Not clamped above —

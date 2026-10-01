@@ -1,0 +1,52 @@
+{
+  "generation": "governor-bench-v1",
+  "usdPerToken": 0.000003,
+  "baseSeed": 20261002,
+  "bootstrap": { "resamples": 2000, "seed": 20261002 },
+  "passA": { "tasksPerBucket": 6, "reps": 3, "seed": 1001 },
+  "passB": { "tasksPerBucket": 30, "reps": 3, "seed": 2002 },
+  "learningSplit": { "train": 48, "adapt": 24, "heldOut": 48 },
+  "stress": { "tasks": 20, "reps": 3, "seed": 3003, "variants": ["H0", "H1", "H3", "H4"] },
+  "variants": ["H0", "H1", "H2", "H3a", "H3b", "H3+AH", "H4"],
+  "memoryStudy": [["H1", "M0"], ["H1", "M1"], ["H4", "M0"], ["H4", "M1"], ["H4", "M2"]],
+  "world": {
+    "tokensPerStepMedian": 7000,
+    "tokensPerStepSigma": 0.35,
+    "stepNoiseSigma": 0.4,
+    "stepLatencyMs": 20000,
+    "pProductive": 0.75,
+    "pFix": 0.35,
+    "giveUpLagMultiple": 3,
+    "budgetMultiple": 2.5,
+    "maxStepMultiple": 3,
+    "adviceFollow": 0.85,
+    "disruptionSteps": 0.2,
+    "longHorizonShare": 0.25,
+    "longHorizonFactor": 1.8,
+    "unavoidableShare": 0.04,
+    "repos": 6,
+    "buckets": {
+      "local":       { "steps": [6, 14],  "anchored": 0.9, "modeRate": 0.35, "maxModes": 1, "selfCatch": 0.25, "flail": 0.3,  "lag": [2, 5],  "hidden": 0.10, "special": 0.10,
+                       "dims": { "validation": 0.5, "structural": 0.2, "behavioral": 0.2, "target": 0.1 } },
+      "multi":       { "steps": [14, 28], "anchored": 0.6, "modeRate": 0.55, "maxModes": 2, "selfCatch": 0.15, "flail": 0.4,  "lag": [3, 8],  "hidden": 0.15, "special": 0.20,
+                       "dims": { "structural": 0.35, "behavioral": 0.35, "validation": 0.2, "target": 0.1 } },
+      "exploratory": { "steps": [18, 36], "anchored": 0.2, "modeRate": 0.6,  "maxModes": 2, "selfCatch": 0.12, "flail": 0.55, "lag": [3, 9],  "hidden": 0.15, "special": 0.30,
+                       "dims": { "structural": 0.45, "target": 0.2, "behavioral": 0.25, "validation": 0.1 } },
+      "risky":       { "steps": [14, 30], "anchored": 0.5, "modeRate": 0.8,  "maxModes": 3, "selfCatch": 0.10, "flail": 0.4,  "lag": [4, 12], "hidden": 0.25, "special": 0.25,
+                       "dims": { "behavioral": 0.45, "validation": 0.35, "structural": 0.15, "target": 0.05 } }
+    },
+    "trueEffects": {
+      "dormant:inspect-dependents": { "prevent": { "behavioral": 0.65 }, "special": 0.6, "cost": 0.8 },
+      "dormant:reproduce-first":    { "prevent": { "target": 0.5, "validation": 0.3 }, "detect": 0.5, "cost": 1.0 },
+      "dormant:read-design":        { "prevent": { "structural": 0.3 }, "cost": 0.4 },
+      "dormant:checkpoint":         { "reworkReduce": 0.3, "cost": 0.1 },
+      "dormant:narrow-check":       { "prevent": { "validation": 0.2 }, "detect": 0.75, "cost": 0.6 },
+      "context-read":               { "prevent": { "structural": 0.4 }, "saveSteps": 0.5, "cost": 0.3 },
+      "recover":                    { "fixBoost": 0.35, "cost": 0.5 },
+      "historical":                 { "saveSteps": 1.0, "relevant": 0.6, "stale": 0.15, "cost": 0.1 },
+      "proposal:special":           { "prevent": { "behavioral": 0.4 }, "special": 0.85, "cost": 0.7 },
+      "proposal:noise":             { "prevent": { "target": 0.15 }, "cost": 0.5 }
+    },
+    "proposals": { "knowSpecial": 0.6, "noise": 0.5 }
+  }
+}

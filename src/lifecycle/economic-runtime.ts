@@ -48,6 +48,16 @@ import { evaluateRecovery, recoveryCandidate, type RecoveryTombstone } from '../
 import { queryKnowledge } from '../evidence/store.js';
 import { evaluateHistoricalEvidence } from '../evidence/reuse.js';
 import { repoIdentity } from '../execution/git-state.js';
+import {
+  createGovernorContext, governorVariantFromEnv, newGovernorNodeState,
+  type GovernorContext, type GovernorNodeState, type GovernorFeatures,
+} from '../governor/governor.js';
+import { dbPacketStore } from '../governor/packet.js';
+import { loadGovernorMemory, saveGovernorMemory, type GovernorMemory } from '../governor/memory.js';
+import { learnFromTask, type LearningResult } from '../governor/governor.js';
+import type { TraceEvent } from '../governor/miss.js';
+import type { UncertaintyKind } from '../decision/state.js';
+import { createDormantPool, type DormantPool } from '../governor/coverage.js';
 
 /** What one turn of a dispatch costs, before any run has measured it.
  *
@@ -84,16 +94,61 @@ interface NodeMemory {
    *  pivot can describe the exact same state, and the pivot must get the turn
    *  it was priced for rather than the guard undoing it in the same breath. */
   recoveredThisTurn: boolean;
+  /** The Economic Governor's per-run state: the previous risk reading,
+   *  the autonomy horizon, proposals waiting for the next look. */
+  governor: GovernorNodeState;
 }
 
 const memory = new Map<string, NodeMemory>();
+
+/** What the governor has learned, loaded once per database and shared by every
+ *  node on it. Learning writes back after each task (`learnFromTask`). */
+const governorMemories = new WeakMap<Db, GovernorMemory>();
+/** The dormant pool is a property of the process, grown by learning. */
+let dormantPool: DormantPool | null = null;
+
+export function governorMemoryFor(db: Db): GovernorMemory {
+  let mem = governorMemories.get(db);
+  if (!mem) {
+    mem = loadGovernorMemory(db);
+    governorMemories.set(db, mem);
+  }
+  return mem;
+}
+
+export function governorPool(): DormantPool {
+  dormantPool ??= createDormantPool();
+  return dormantPool;
+}
+
+/** The variant this process runs. Production: the full governor (H4). */
+export function governorFeatures(): GovernorFeatures | null {
+  return governorVariantFromEnv().features;
+}
+
+/** The governor this node's boundaries consult, or null under H0. */
+export function governorFor(db: Db, nodeId: string): { ctx: GovernorContext; node: GovernorNodeState } | null {
+  const features = governorFeatures();
+  if (!features) return null;
+  return {
+    ctx: createGovernorContext({
+      taskId: nodeId, features, memory: governorMemoryFor(db), packets: dbPacketStore(db), pool: governorPool(),
+    }),
+    node: memoryFor(nodeId).governor,
+  };
+}
+
+/** The governor's per-run state, for the lifecycle's carry-out and learning. */
+export function governorNodeState(nodeId: string): GovernorNodeState {
+  return memoryFor(nodeId).governor;
+}
 
 function memoryFor(nodeId: string): NodeMemory {
   let entry = memory.get(nodeId);
   if (!entry) {
     entry = {
       cadence: INITIAL_CADENCE, previous: EMPTY_SNAPSHOT, sequence: 0, tombstones: [],
-      recoveredThisTurn: false,
+      recoveredThisTurn: false, governor: newGovernorNodeState(),
     };
     memory.set(nodeId, entry);
   }
@@ -389,7 +444,10 @@ export function evaluateBoundary(
     ...recoveryCandidates(unreserved, entry),
   ];
   const state = (options.view ?? ((s: EconomicState) => s))(withReserves(unreserved, additionalCandidates));
-  const cycle = runDecisionCycle(state, { cadence: entry.cadence, additionalCandidates });
+  const governor = governorFor(db, input.nodeId);
+  const cycle = runDecisionCycle(state, {
+    cadence: entry.cadence, additionalCandidates, ...(governor ? { governor } : {}),
+  });
   entry.cadence = cycle.cadence;
   return { decision: cycle.decision, state, cycle };
 }
@@ -536,4 +594,82 @@ export function createEconomicRuntime(db: Db): EconomicRuntime {
  *  rather than a hunt through call sites. */
 export function isIntervention(decision: ActionDecision | undefined): boolean {
   return decision !== undefined && decision.action.kind !== 'continue';
+}
+
+
+/** What the run did, as the miss engine reads it: failures located between
+ *  the boundaries that observed them, validation results, and the
+ *  interventions the market chose. Versions are the same exec-event counts the
+ *  packets were taken at.
+ *
+ *  ponytail: failures are located at boundary granularity (one snapshot per
+ *  packet, not per event); per-event location needs a running snapshot if
+ *  backtraces turn out to need finer timing. */
+export function productionTrace(db: Db, nodeId: string): { events: TraceEvent[]; totalEvents: number } {
+  const events = execEvents(db, nodeId);
+  const packets = dbPacketStore(db).list(nodeId);
+  const out: TraceEvent[] = [];
+  const cuts = [...new Set([...packets.map((p) => p.stateVersion), events.length])].sort((a, b) => a - b);
+  let failuresBefore = 0;
+  for (const cut of cuts) {
+    const snapshot = executionSnapshot({ events: events.slice(0, cut), sequence: 0, tokensConsumed: 0 });
+    if (snapshot.failureSignatures.length > failuresBefore) {
+      out.push({ version: cut, kind: 'failure', signature: snapshot.failureSignatures.at(-1), tokens: 0 });
+    }
+    failuresBefore = snapshot.failureSignatures.length;
+  }
+  // Only interventions actually carried out: a decision recorded and not acted
+  // on spent nothing.
+  const carried = new Map(listEventsForNode(db, nodeId).filter((row) => row.type === 'governor.intervention_carried')
+    .map((row) => [(row.payload as { decisionId: string }).decisionId, (row.payload as { tokens: number }).tokens]));
+  for (const p of packets) {
+    if (p.chosen.kind === 'continue' || p.chosen.kind === 'stop' || !carried.has(p.decisionId)) continue;
+    const chosen = p.candidates.find((c) => c.status === 'chosen');
+    out.push({
+      version: p.stateVersion, kind: p.chosen.kind === 'recover' ? 'recovery' : 'intervention',
+      fingerprint: p.chosen.fingerprint, capability: p.chosen.capability,
+      addresses: (chosen?.addresses ?? []) as UncertaintyKind[], tokens: Math.max(carried.get(p.decisionId) ?? 0, chosen?.immediateTokens ?? 0),
+    });
+  }
+  let seen = 0;
+  for (const row of listEventsForNode(db, nodeId)) {
+    if (row.type.startsWith('exec.')) seen += 1;
+    if (row.type === 'validation.result') {
+      out.push({ version: seen, kind: 'validation', passed: (row.payload as { passed?: boolean }).passed === true, tokens: 0 });
+    }
+  }
+  return { events: out.sort((a, b) => a.version - b.version), totalEvents: events.length };
+}
+
+/** Learning at the end of a node (H4): miss diagnosis and causal memory,
+ *  written back so the next task starts from it. Total — a failure to learn
+ *  costs the lesson, never the task. No replay executor is wired in
+ *  production: replaying a run would need a sandbox fork this runtime does not
+ *  offer, so the ladder stops at Level 1 here and says so. */
+export function learnFromNode(db: Db, nodeId: string, succeeded: boolean): LearningResult | null {
+  const features = governorFeatures();
+  if (!features?.learning) return null;
+  try {
+    const packets = dbPacketStore(db).list(nodeId);
+    if (packets.length === 0) return null;
+    const { events, totalEvents } = productionTrace(db, nodeId);
+    const totalTokens = tokensForNode(db, nodeId);
+    const detection = events.find((e) => e.kind === 'failure' || (e.kind === 'validation' && e.passed === false));
+    const reworkTokens = detection && totalEvents > 0
+      ? Math.round(totalTokens * Math.max(0, totalEvents - detection.version) / totalEvents) : 0;
+    const mem = governorMemoryFor(db);
+    const result = learnFromTask({
+      trace: {
+        taskId: nodeId, packets, events, pool: governorPool().entries(), motifs: mem.motifs,
+        outcome: { succeeded, totalTokens, reworkTokens },
+        sourceCapabilities: [...new Set(packets.flatMap((p) => p.candidates.map((c) => c.capability)))],
+      },
+      memory: mem, pool: governorPool(),
+    });
+    saveGovernorMemory(db, mem);
+    return result;
+  } catch (err) {
+    console.error(`Governor learning failed for node ${nodeId}; the lesson is lost, the task is not:`, err);
+    return null;
+  }
 }

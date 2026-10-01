@@ -114,12 +114,15 @@ import { estimateCostUsd } from '../execution/pricing.js';
 import { readOnlyPlanningGrant, investigativeExecuteGrant, needsProofOnly, unprovableWithoutChanges, PROOF_PASS_INSTRUCTION, PROOF_PASS_TURNS } from './dispatch-helpers.js';
 import {
   evaluateBoundary, currentBoundaryState, economicStateFor, forgetNode, isIntervention, registerEvidenceSources, observedStateVersion,
+  governorFeatures, governorNodeState, learnFromNode,
   markRecovered, consumeRecoveryFlag, recordRecoveryAttempt,
 } from './economic-runtime.js';
 import { tombstoneFor } from '../recovery/engine.js';
 import { validate, failureSignatureFor, type ValidationEvidence, type ValidationResult } from '../validation/engine.js';
 import { contractFor } from '../validation/contract.js';
 import { validationProfileFor, contractForProfile, meetsMinimumLevel } from '../validation/profile.js';
+import { adviceFor } from '../governor/governor.js';
+import { extractProposals, PROPOSAL_INVITATION } from '../governor/coverage.js';
 import { taskEconomicsFor } from '../efficiency/task-economics.js';
 import { requestEvidenceAtBoundary, renderAcquiredEvidence } from '../context/evidence-actions.js';
 import { actionCandidate, type ActionDecision } from '../decision/actions.js';
@@ -1113,6 +1116,8 @@ async function economicBoundary(
     onAcquired?: (a: { path: string; tokens: number; representation: 'full' | 'symbol' }) => void;
   },
 ): Promise<string> {
+  // H0 — no governor at all (benchmark only): the boundary never asks.
+  if (!governorFeatures()) return '';
   try {
     const revision = repoHead(input.worktreePath) ?? undefined;
     // Registered here rather than at import: the source needs a database, and
@@ -1168,10 +1173,16 @@ async function economicBoundary(
         console.error(`Failed to record the decision for node ${input.nodeId}:`, err);
       }
     }
+    // Discovery may have bought the agent-proposal tier: the next dispatch
+    // carries one optional line inviting proposals, once per run. Never
+    // otherwise — the lane costs prompt tokens only when the market paid.
+    const governed = governorNodeState(input.nodeId);
+    const invitation = governed.inviteProposals && !governed.invitationSent ? PROPOSAL_INVITATION : '';
+    if (invitation) governed.invitationSent = true;
     // Faults (missing telemetry, a stale graph) already made every
     // intervention infeasible inside the market, so a decision that reaches
     // here is one the market chose with them priced in.
-    if (!isIntervention(decision)) return '';
+    if (!isIntervention(decision)) return invitation;
 
     // Committed against the state as it is *now*: System-1 may have been
     // awaited since the decision, and a decision about a state that has moved
@@ -1182,7 +1193,15 @@ async function economicBoundary(
       return '';
     }
     const started = Date.now();
-    const text = await carryOut(db, decision!, state, input);
+    const carried = await carryOut(db, decision!, state, input);
+    const text = [carried, invitation].filter(Boolean).join('\n\n');
+    // What the governor's miss engine counts as an intervention that actually
+    // happened (and cost something), as opposed to one only recorded.
+    if (carried) {
+      const at = new Date().toISOString();
+      appendEvent(db, { nodeId: input.nodeId, type: 'governor.intervention_carried', createdAt: at,
+        payload: { decisionId: decision!.decisionId, tokens: Math.ceil(carried.length / 4) } });
+    }
     settleDecision(input.nodeId, committed.commitment.commitmentId, {
       // What the intervention actually added to the dispatch, in tokens.
       tokens: Math.ceil(text.length / 4), usd: Math.ceil(text.length / 4) * usdPerToken(state),
@@ -1275,6 +1294,12 @@ async function carryOut(
   const { action } = decision;
 
   if (action.kind === 'recover') return carryOutRecovery(db, decision, state, input.nodeId);
+
+  // Governor-originated interventions (dormant capabilities, the agent's own
+  // proposals, compositions of them) are carried out as advice the agent may
+  // ignore — the harness offers, the agent decides.
+  const advice = adviceFor(decision);
+  if (advice) return advice;
 
   const path = typeof action.metadata.path === 'string' ? action.metadata.path : null;
   if (action.kind !== 'acquire_evidence' || !path) return '';
@@ -2896,6 +2921,12 @@ function productionMachine(db: Db, nodeId: string) {
         });
         recordVisibleContext(promptLedger, result.events as StructuredEvent[]);
         publishStepOutcome(db, nodeId, result);
+        // Interventions the agent proposed (only if it chose to), held for the
+        // next boundary, where the market prices them like anything else.
+        try {
+          const proposals = extractProposals(finalResultText(result.events) ?? '');
+          if (proposals.length > 0) governorNodeState(nodeId).pendingProposals.push(...proposals);
+        } catch { /* a proposal that cannot be read is a proposal not made */ }
         // What the run changed on disk that its Write/Edit calls did not say —
         // edits made through Bash, or by a runtime whose stream has no such
         // calls — recorded with both sides so Files can show the diff.
@@ -3251,6 +3282,9 @@ function recordEfficiency(db: Db, nodeId: string, outcome: EfficiencyOutcome): v
     const validated = outcome !== 'success'
       ? outcome
       : recordValidation(db, nodeId) ? 'success' : 'partial';
+    // The governor learns from how this went (H4): misses, causal memory,
+    // calibration. Changes priors for future tasks only.
+    learnFromNode(db, nodeId, validated === 'success');
     const record = ledger.finishTask(nodeId, validated);
     insertMemoryRow(db, 'efficiency_record', nodeId, record, nodeId);
   } catch (err) {

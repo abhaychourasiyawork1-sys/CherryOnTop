@@ -91,7 +91,9 @@ describe('the estimation funnel', () => {
     });
     for (const id of ['throws', 'nonsense']) {
       const e = estimateTransition(exec(id, `fp-${id}`), state(), {}, levels, stats());
-      expect(e.provenance).toBe('deterministic');
+      // Fell through to the candidate's own signals — labelled as such, never
+      // as an exact answer, so calibration charges the right estimator.
+      expect(e.provenance).toBe('signal');
       expect(validEstimate(e)).toBe(true);
     }
   });

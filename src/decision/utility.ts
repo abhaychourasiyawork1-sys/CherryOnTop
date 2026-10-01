@@ -89,7 +89,10 @@ interface ValuePoint {
   credit: number;
 }
 
-function taskTokens(state: EconomicState): number {
+/** The token scale of the whole task: measured when something measured it,
+ *  else a share of the budget. Exported so the governor's risk model reads the
+ *  same scale V(s) does. */
+export function taskTokens(state: EconomicState): number {
   const measured = state.resources.expectedTaskTokens;
   if (Number.isFinite(measured) && (measured as number) > 0) return measured as number;
   const total = state.resources.totalTokenBudget;
@@ -147,7 +150,22 @@ export function reworkCostTokens(state: EconomicState): number {
   return (1 - progress) * work + REWORK_SHARE * progress * work;
 }
 
-function meanUncertainty(state: EconomicState): number {
+/** Probability the result, as it stands, is wrong and will be redone — the
+ *  `wrong` term of V(s). Exported so the risk model starts from the same
+ *  number rather than a second answer to it. */
+export function wrongProbability(state: EconomicState): number {
+  return pointOf(state).wrong;
+}
+
+/** The redo probability V(s) charges recovery at: failing, or wrong. */
+export function redoProbability(state: EconomicState): number {
+  const point = pointOf(state);
+  return 1 - (1 - clamp01(point.failurePressure)) * (1 - clamp01(point.wrong));
+}
+
+export { WRONG_PER_DOUBT, UNCERTAINTY_LOADING, FAILURE_STEP };
+
+export function meanUncertainty(state: EconomicState): number {
   const u = state.uncertainty;
   return (u.target + u.structural + u.behavioral + u.validation) / 4;
 }
@@ -260,7 +278,7 @@ export function signalEstimate(action: ActionCandidate, state: EconomicState): A
     expectedRemainingCost: { tokens: remaining, usd: remaining * price, latencyMs: 0 },
     bounds: { successLowerBound: lowerBound, costUpperBoundUsd: upperTokens * price },
     confidence: believed,
-    provenance: 'deterministic',
+    provenance: 'signal',
     evidenceIds: [],
   };
 }
@@ -376,7 +394,14 @@ export function hardConstraints(
 export function evaluateAction(
   action: ActionCandidate,
   state: EconomicState,
-  options: { estimate?: ActionTransitionEstimate; faults?: readonly DecisionFault[] } = {},
+  options: {
+    estimate?: ActionTransitionEstimate;
+    faults?: readonly DecisionFault[];
+    /** V(s) under the model that produced `estimate`, when that is not this
+     *  module's own (see `valuation` in engine.ts). Advantage is only
+     *  meaningful against the same model's V(s). */
+    baselineValueUsd?: number;
+  } = {},
 ): ActionEvaluation {
   const candidate = normalizeActionCandidate(action);
   const gates = hardConstraints(candidate, state, options.faults);
@@ -402,7 +427,8 @@ export function evaluateAction(
   const learningValueUsd = Number.isFinite(candidate.metadata.learningValueUsd)
     ? Math.max(0, candidate.metadata.learningValueUsd as number) : 0;
   const conservativeCostUsd = Math.max(expectedCostUsd, estimate.bounds.costUpperBoundUsd) - learningValueUsd;
-  const advantageUsd = stateValue(state).usd - expectedCostUsd;
+  const baseline = Number.isFinite(options.baselineValueUsd) ? options.baselineValueUsd as number : stateValue(state).usd;
+  const advantageUsd = baseline - expectedCostUsd;
   codes.push(advantageUsd > 1e-12 ? 'saves_cost' : advantageUsd < -1e-12 ? 'adds_cost' : 'cost_neutral');
   if (learningValueUsd > 0) codes.push('learning_value');
 

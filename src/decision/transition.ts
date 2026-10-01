@@ -31,7 +31,12 @@ import { createHash } from 'node:crypto';
 import type { ActionCandidate } from './actions.js';
 import type { EconomicState, UncertaintyState } from './state.js';
 
-export type EstimateProvenance = 'deterministic' | 'empirical' | 'semantic' | 'hybrid';
+/** Where an estimate came from, kept apart so calibration can say which
+ *  estimator is wrong. `signal` is the market's own read of a candidate's
+ *  claimed effects (`signalEstimate`) — a model, not a known answer, so it must
+ *  never be counted as `deterministic` or its errors would be charged to the
+ *  level that is exact. */
+export type EstimateProvenance = 'deterministic' | 'signal' | 'empirical' | 'semantic' | 'hybrid';
 
 export interface TransitionOutcome {
   probability: number;

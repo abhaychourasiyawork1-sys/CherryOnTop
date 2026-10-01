@@ -19,13 +19,19 @@
  *  lifecycle decides whether to carry it out. Keeping those apart is what lets
  *  the whole loop be tested without a sandbox, a database or a clock. */
 import { inspectFastPath, type FastPathResult } from './fast-path.js';
-import { evaluateDeepPath, deepPathInProgress } from './deep-path.js';
+import { evaluateDeepPathWithCoverage, deepPathInProgress } from './deep-path.js';
 import { chooseEconomicAction } from './engine.js';
 import { orchestrationCostOf, FREE_ORCHESTRATION, type OrchestrationCost } from './orchestration-cost.js';
 import type { ActionCandidate, ActionDecision } from './actions.js';
 import type { EconomicState } from './state.js';
 import { detectFaults } from './fallback.js';
 import type { DecisionFault } from './utility.js';
+import {
+  governDecision, concludeLook, observeRisk, lookDue,
+  type GovernorContext, type GovernorNodeState, type GovernedDecision,
+} from '../governor/governor.js';
+import { failureAt } from '../governor/risk.js';
+import { DEEP_EVALUATION_TOKEN_COST } from './fast-path.js';
 
 /** How often to look, and why.
  *
@@ -68,6 +74,8 @@ export interface OrchestrationCycleResult {
   candidates: ActionCandidate[];
   /** When to look next. Pass back into the following cycle. */
   cadence: OrchestrationCadence;
+  /** What the governor added, when one is running. */
+  governed?: GovernedDecision;
 }
 
 /** Re-entrancy guard. See `deep-path.ts` for the same pattern and the same
@@ -89,6 +97,9 @@ export interface DecisionCycleInput {
   additionalCandidates?: ActionCandidate[];
   /** Faults the caller observed; they make interventions infeasible. */
   faults?: readonly DecisionFault[];
+  /** The Economic Governor (`governor/governor.ts`), when one is running for
+   *  this run. Absent, the cycle is exactly the market this loop always ran. */
+  governor?: { ctx: GovernorContext; node: GovernorNodeState };
 }
 
 /** Runs one cycle.
@@ -120,22 +131,46 @@ export function runDecisionCycle(
   // system does.
   if (running || deepPathInProgress()) return skipped('reentrant');
 
-  // Not yet due. The one place the backoff is enforced, and it is enforced
-  // before anything is read — a skipped cycle has to be genuinely free or the
-  // backoff saves nothing.
-  if (state.version < cadence.lastEvaluatedVersion + cadence.interval) return skipped('not_due');
+  const governor = input.governor;
+  if (governor) governor.node.stats.boundaries += 1;
+
+  // Not yet due. The one place the backoff — or, with the governor's adaptive
+  // horizon, the priced horizon — is enforced, and it is enforced before
+  // anything is read: a skipped cycle has to be genuinely free or leaving the
+  // agent alone saves nothing.
+  const adaptive = governor?.ctx.features.adaptiveHorizon === true;
+  const due = adaptive
+    ? lookDue(state, governor!.node)
+    : state.version >= cadence.lastEvaluatedVersion + cadence.interval;
+  if (!due) {
+    if (governor) governor.node.stats.autonomousBoundaries += 1;
+    return skipped('not_due');
+  }
 
   running = true;
   const startedMs = now();
   try {
     const inspection = inspectFastPath(state);
+    const risk = governor ? observeRisk(state, governor.ctx, governor.node) : null;
+    // Rising risk is a reason to look the screen cannot see: it reads one
+    // state, and velocity is a difference between two. Held to the screen's
+    // own bar.
+    const rising = risk ? Math.max(0, failureAt(risk, governor!.node.horizon?.horizon ?? 1) - risk.immediateFailureProbability) : 0;
+    const opportunity = inspection.opportunity || rising > inspection.bar;
 
     // Nothing worth paying to look into. This is the common case and the whole
     // reason for the screen: the deep path — and every lookup in it — does not
     // happen. The decision is still made, from an empty candidate set, so the
     // run gets an explicit `continue` rather than silence.
-    if (!inspection.opportunity) {
+    if (!opportunity) {
       const decision = chooseEconomicAction({ state, candidates: [] });
+      const governed = governor ? concludeLook({
+        state, ctx: governor.ctx, node: governor.node, lookCostTokens: DEEP_EVALUATION_TOKEN_COST,
+        governed: {
+          decision, packet: null, risk, horizon: null, coverage: [], discovery: null, candidates: [],
+          prevention: {}, actionSpaceUncertainty: 0, compositions: 0,
+        },
+      }) : undefined;
       return {
         decision,
         cost: orchestrationCostOf({ fastPath: true, deepPath: false, candidates: 0, latencyMs: now() - startedMs }),
@@ -143,11 +178,27 @@ export function runDecisionCycle(
         inspection,
         candidates: [],
         cadence: advance(cadence, state.version, true),
+        ...(governed ? { governed } : {}),
       };
     }
 
-    const candidates = [...evaluateDeepPath(state), ...(input.additionalCandidates ?? [])];
-    const decision = chooseEconomicAction({ state, candidates, faults: [...detectFaults(state), ...(input.faults ?? [])] });
+    const deep = evaluateDeepPathWithCoverage(state);
+    const additional = (input.additionalCandidates ?? []).map((c) => (typeof c.metadata.candidateSource === 'string'
+      ? c : { ...c, metadata: { ...c.metadata, candidateSource: 'boundary' } }));
+    const candidates = [...deep.candidates, ...additional];
+    const coverage = [...deep.coverage, { source: 'boundary', version: '1', invoked: true, proposed: additional.length, feasible: 0, rejected: 0 }];
+    const faults = [...detectFaults(state), ...(input.faults ?? [])];
+    let governed: GovernedDecision | undefined;
+    let decision: ActionDecision;
+    if (governor) {
+      governed = concludeLook({
+        state, ctx: governor.ctx, node: governor.node, lookCostTokens: DEEP_EVALUATION_TOKEN_COST,
+        governed: governDecision({ state, candidates, coverage, faults, risk, ctx: governor.ctx, node: governor.node }),
+      });
+      decision = governed.decision;
+    } else {
+      decision = chooseEconomicAction({ state, candidates, faults });
+    }
     // A cycle that chose to continue found nothing actionable, whatever the
     // screen suspected — so it counts as quiet for the backoff. Otherwise a
     // run with one persistent weak signal would be screened deeply forever.
@@ -156,12 +207,13 @@ export function runDecisionCycle(
     return {
       decision,
       cost: orchestrationCostOf({
-        fastPath: true, deepPath: true, candidates: candidates.length, latencyMs: now() - startedMs,
+        fastPath: true, deepPath: true, candidates: (governed?.candidates ?? candidates).length, latencyMs: now() - startedMs,
       }),
       skippedDeepEvaluation: false,
       inspection,
-      candidates,
+      candidates: governed?.candidates ?? candidates,
       cadence: advance(cadence, state.version, quiet),
+      ...(governed ? { governed } : {}),
     };
   } catch (err) {
     console.error('The decision cycle failed; the run continues unoptimized:', err);

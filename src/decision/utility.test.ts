@@ -132,6 +132,10 @@ describe('stop is terminal, not cheap', () => {
     expect(evaluateAction(of({ kind: 'stop' }), done).allowed).toBe(true);
   });
 
+  it('labels a signal-derived estimate as signal, never deterministic', () => {
+    expect(signalEstimate(of({ kind: 'validate', expectedQualityBenefit: 0.3 }), state()).provenance).toBe('signal');
+  });
+
   it('is the only thing allowed under a hard stop', () => {
     const stopped = state({ constraints: { qualityFloor: 0.7, hardStop: true } });
     expect(evaluateAction(of({ kind: 'stop' }), stopped).allowed).toBe(true);

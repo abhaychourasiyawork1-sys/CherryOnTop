@@ -30,7 +30,9 @@ import type { DecisionOutcome } from '../schemas/decision.js';
 import { clamp01 } from '../efficiency/policy-types.js';
 import { SHRINKAGE_K } from '../learning/hierarchical.js';
 import { receipt, type DecisionReceipt, type DecisionEstimate } from './types.js';
-import { normalizeActionCandidate, actionCandidate, type ActionCandidate, type ActionDecision } from './actions.js';
+import {
+  normalizeActionCandidate, actionCandidate, type ActionCandidate, type ActionDecision, type CandidateSnapshot,
+} from './actions.js';
 import {
   evaluateAction, hardConstraints, deterministicEstimate, signalEstimate, isNullAction,
   stateValue, remainingWorkTokens, usdPerToken, isConstraintCode,
@@ -133,6 +135,18 @@ export interface EconomicDecisionInput {
    *  bucketed guess. Deterministic answers still win over them. */
   estimates?: Readonly<Record<string, ActionTransitionEstimate>>;
   estimation?: EstimationContext;
+  /** A different model of what finishing costs, priced at the funnel's signal
+   *  level and nowhere else — the governor's risk-aware valuation
+   *  (`governor/risk.ts`). Both halves must come from the *same* model: the
+   *  signal estimate prices each candidate, and `stateValueUsd` is V(s) under
+   *  that model, which every candidate's advantage is measured against. Hard
+   *  constraints, the deterministic level, provider estimates, the cache, the
+   *  quality floor and the ranking are untouched: this changes a price, never
+   *  who chooses. */
+  valuation?: {
+    signal: (candidate: ActionCandidate, state: EconomicState) => ActionTransitionEstimate;
+    stateValueUsd: number;
+  };
   /** Injected so a decision is reproducible in a test. Production never
    *  passes it. */
   decisionId?: string;
@@ -163,10 +177,16 @@ export function chooseEconomicAction(input: EconomicDecisionInput): ActionDecisi
     // Constraints first: a candidate a gate refuses is never estimated, so no
     // estimate — and no estimator's cost — is spent on something forbidden.
     const gate = hardConstraints(candidate, state, input.faults);
+    const signal = input.valuation?.signal ?? signalEstimate;
     const estimate = gate.allowed
       ? estimateFor(candidate, state, input, stats)
-      : (deterministicEstimate(candidate, state) ?? signalEstimate(candidate, state));
-    return { candidate, evaluation: evaluateAction(candidate, state, { estimate, faults: input.faults }) };
+      : (deterministicEstimate(candidate, state) ?? signal(candidate, state));
+    return {
+      candidate,
+      evaluation: evaluateAction(candidate, state, {
+        estimate, faults: input.faults, baselineValueUsd: input.valuation?.stateValueUsd,
+      }),
+    };
   };
 
   const priced = candidates.map(price);
@@ -210,6 +230,7 @@ export function chooseEconomicAction(input: EconomicDecisionInput): ActionDecisi
         id: p.candidate.id, reasonCodes: p.evaluation.reasonCodes,
       })),
       pruned: pruned.map((p) => p.candidate.id),
+      candidates: priced.map((p) => snapshotOf(p, chosen, ranked, pruned)),
       blocked,
       overhead: {
         candidateCount: candidates.length,
@@ -254,7 +275,7 @@ function estimateFor(
   const provided = input.estimates?.[candidate.id];
   return estimateTransition(candidate, state, input.estimation ?? {}, {
     deterministic: (c, s) => deterministicEstimate(c, s) ?? provided ?? null,
-    signals: signalEstimate,
+    signals: input.valuation?.signal ?? signalEstimate,
   }, stats);
 }
 
@@ -287,6 +308,29 @@ function compareCost(a: Priced, b: Priced): number {
   // The last tie-break is the candidate's own stable id, never its kind and
   // never anything read off the goal.
   return a.candidate.id < b.candidate.id ? -1 : a.candidate.id > b.candidate.id ? 1 : 0;
+}
+
+function snapshotOf(p: Priced, chosen: Priced, ranked: Priced[], pruned: Priced[]): CandidateSnapshot {
+  const rank = ranked.indexOf(p);
+  const source = p.candidate.metadata.candidateSource;
+  return {
+    id: p.candidate.id,
+    fingerprint: candidateFingerprint(p.candidate),
+    kind: p.candidate.kind,
+    capability: p.candidate.capability,
+    source: typeof source === 'string' ? source : 'caller',
+    status: p === chosen ? 'chosen' : !p.evaluation.allowed ? 'rejected' : pruned.includes(p) ? 'pruned' : 'ranked',
+    reasonCodes: p.evaluation.reasonCodes,
+    expectedCostUsd: p.evaluation.expectedCostUsd,
+    conservativeCostUsd: p.evaluation.conservativeCostUsd,
+    successLowerBound: p.evaluation.successLowerBound,
+    immediateTokens: p.evaluation.estimate.immediateCost.tokens,
+    provenance: p.evaluation.estimate.provenance,
+    confidence: p.candidate.confidence,
+    rank: rank >= 0 ? rank + 1 : null,
+    ...(Array.isArray(p.candidate.metadata.addresses)
+      ? { addresses: (p.candidate.metadata.addresses as unknown[]).filter((a): a is string => typeof a === 'string') } : {}),
+  };
 }
 
 export interface DecisionMargin {
