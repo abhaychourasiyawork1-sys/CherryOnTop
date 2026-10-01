@@ -26,7 +26,7 @@ import { publishContextVersion } from '../context/rpc.js';
 import { scopeOf, type ContextRef } from '../context/types.js';
 import { dependenciesFromEvents } from '../context/dependencies.js';
 import { recordContextUtility } from '../learning/context-utility.js';
-import type { TaskClass } from '../intelligence/task-judge.js';
+import type { TaskMode } from '../intelligence/task-understanding.js';
 import type { DispatchReceipt } from '../context/dispatch-context.js';
 import { applyManifestDelta, getManifest } from '../context/runtime/task-context-manifest.js';
 import type { DispatchLedger } from '../observability/context-ledger.js';
@@ -184,7 +184,7 @@ export function scoreProjection(
   db: Db,
   input: {
     nodeId: string;
-    taskClass: TaskClass;
+    taskClass: TaskMode;
     receipt?: DispatchReceipt;
     read: string[];
     outcome: 'success' | 'failure' | 'partial';

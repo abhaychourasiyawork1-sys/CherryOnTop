@@ -1,0 +1,21 @@
+{
+  "experiment": "context-runtime-real-pilot-2026-10-01",
+  "benchRoot": "~/Desktop/CherryOnTop-bench",
+  "arms": {
+    "baseline": { "ref": "1192048", "role": "delegation line immediately before the Context Runtime commits; origin/feat/economic-action-market minus 6019a1e+1bcb1f4" },
+    "candidate": { "ref": "9e5b177", "role": "origin/feat/economic-action-market tip (Context Runtime merged)" }
+  },
+  "model": { "alias": "haiku", "note": "all roles/tiers pinned to the same alias; the CLI reports the exact model id per call" },
+  "effort": "CLI default (not overridden; identical for both arms)",
+  "budgetUsd": 5,
+  "maxChildren": 3,
+  "maxTurnsExecute": 80,
+  "timeoutMinutes": 45,
+  "basePorts": { "daemon": 4300, "laya": 8800 },
+  "tasks": [
+    { "id": "T1", "instance": "pallets__flask-5014", "shape": "tiny: 195-char statement" },
+    { "id": "T2", "instance": "sympy__sympy-17139", "shape": "targeted evidence: traceback names fu.py / _TR56 / _f" },
+    { "id": "T3", "instance": "mwaskom__seaborn-3187", "shape": "medium multi-file (scales.py + utils.py)" },
+    { "id": "T4", "instance": "psf__requests-1142", "shape": "delegation-prone: 3-4 dispatches in 6/21 prior cherryontop runs" }
+  ]
+}

@@ -16,7 +16,6 @@ import { evidenceActions } from '../dist/execution/evidence-planner.js';
 import { updateFrontier, EMPTY_FRONTIER } from '../dist/context/frontier.js';
 import { authorizeExecution, chooseEconomicAction } from '../dist/decision/engine.js';
 import { decideExecution } from '../dist/engines/decide-execution.js';
-import { judgeTask } from '../dist/intelligence/task-judge.js';
 import { inspectFastPath } from '../dist/decision/fast-path.js';
 import { runDecisionCycle } from '../dist/decision/orchestration-loop.js';
 import { initialEconomicState, normalizeEconomicState } from '../dist/decision/state.js';
@@ -173,34 +172,30 @@ table('Structural planner vs lexical selector, same tree and ceiling', plannerGo
 const dispatch = { tokens: 1_772_218, latencyMs: 263_000, costUsd: 0.95 };
 const authority = { tools: [], spawn_children: true, max_child_count: 2, budget_usd: 5 };
 
-const goals = [
-  'Review the codebase and find bugs. Do not modify anything.',
-  'Fix authentication, optimise the DB query layer, and add API tests',
-  'Fix the typo in the README',
-  'Investigate the root cause of this bug',
+// Nothing reads the goal any more: whether work splits is System-1's calibrated
+// probability, and what each way of doing it costs is the market's price. So
+// the table is scenarios — (probability it splits, what the market prices) —
+// and the decision they lead to.
+const price = (expectedUsd) => ({ expectedUsd, conservativeUsd: expectedUsd * 1.2 });
+const pricing = (solo, plan, children, synth) => ({ solo: price(solo), plan: price(plan), children: price(children), synth: price(synth), childCount: 2 });
+const scenarios = [
+  ['coherent review, Laya says one unit', 0.02, pricing(1, 0.05, 0.3, 0.05)],
+  ['three deliverables, Laya says many', 0.85, pricing(1, 0.05, 0.3, 0.05)],
+  ['small edit, plan costs more than it saves', 0.9, pricing(0.2, 0.1, 0.15, 0.05)],
+  ['no judgment from Laya', undefined, pricing(1, 0.05, 0.3, 0.05)],
 ];
 
-table('Execution path, from the goal alone — no model consulted', goals.map((goal) => {
-  const verdict = judgeTask(goal);
-  // The delegation economics estimate; the Action Market decides.
-  const { outcome } = authorizeExecution({
-    state: initialEconomicState({ goal, totalTokenBudget: dispatch.tokens * 4 }),
-    economics: decideExecution({
-      goal, authority,
-      complexity: verdict.decomposition.complexity,
-      worthSplitting: verdict.decomposition.worthSplitting,
-      signals: verdict.decomposition.signals,
-    }),
-    dispatch,
-    plannedChildCount: authority.max_child_count,
-  });
-  return [
-    goal.length > 46 ? `${goal.slice(0, 43)}...` : goal,
-    verdict.taskClass, verdict.decomposition.complexity,
-    verdict.worthPlanning ? 'yes' : 'no',
-    outcome,
-  ];
-}), ['goal', 'class', 'complexity', 'plans?', 'decision']);
+table('Execution path — the market prices it, System-1 says whether it splits', scenarios.map(([label, splitProbability, scenarioPricing]) => {
+  // The delegation economics gate; the Action Market decides.
+  const { outcome } = splitProbability === undefined
+    ? { outcome: 'SELF_EXECUTE' }
+    : authorizeExecution({
+      state: initialEconomicState({ goal: label, totalTokenBudget: dispatch.tokens * 4 }),
+      economics: decideExecution({ goal: label, authority, splitProbability, pricing: scenarioPricing }),
+      pricing: scenarioPricing, splitProbability,
+    });
+  return [label, splitProbability === undefined ? 'none' : String(splitProbability), outcome];
+}), ['scenario', 'P(splits)', 'decision']);
 
 // -------------------------------------------------------------------- evidence
 const ref = (id) => ({ semanticId: id, version: 1, contentHash: `h-${id}` });
@@ -243,7 +238,7 @@ table('Evidence planning', [
 // arithmetic over data already in memory.
 const econState = (over) => {
   const base = initialEconomicState({
-    goal: goals[0], totalTokenBudget: 200_000, repository: 'bench', repositoryRevision: 'rev-1',
+    goal: 'Review the codebase and find bugs. Do not modify anything.', totalTokenBudget: 200_000, repository: 'bench', repositoryRevision: 'rev-1',
   });
   return normalizeEconomicState({ ...base, ...over });
 };

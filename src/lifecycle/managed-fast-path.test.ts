@@ -23,7 +23,6 @@ import { generateExecutionCandidates, executionEstimate } from '../intelligence/
 import { fitCapability } from '../intelligence/capability.js';
 import { chooseEconomicAction } from '../decision/engine.js';
 import { initialEconomicState } from '../decision/state.js';
-import { judgeTask } from '../intelligence/task-judge.js';
 import { isToolAllowed } from '../engines/enforce-tools.js';
 import type { Authority } from '../schemas/node-contract.js';
 
@@ -49,13 +48,8 @@ describe('managed fast path — the decision', () => {
     expect(decision.evidence.deterministic).toBe(true);
   });
 
-  it('does not buy a planner to be told the goal does not split', () => {
-    const verdict = judgeTask(TINY_GOAL);
-    expect(verdict.worthPlanning).toBe(false);
-    expect(decideExecution({
-      goal: TINY_GOAL, authority: AUTHORITY, complexity: verdict.decomposition.complexity,
-      worthSplitting: verdict.decomposition.worthSplitting,
-    }).outcome).toBe('SELF_EXECUTE');
+  it('does not buy a planner when nobody has said the goal splits', () => {
+    expect(decideExecution({ goal: TINY_GOAL, authority: AUTHORITY }).outcome).toBe('SELF_EXECUTE');
   });
 
   it('matches capability to the task: what has only done easy work is not sent to hard work, and vice versa', () => {
@@ -110,21 +104,16 @@ describe('managed fast path — the lifecycle', () => {
       })),
     };
 
-    const verdict = judgeTask(TINY_GOAL);
     const machine = nodeMachine.provide({
       actors: {
         assessUncertainty: fromPromise(async (): Promise<IntelligenceBundle> => ({
-          sufficientContext: true,
-          complexity: verdict.decomposition.complexity,
-          worthSplitting: verdict.decomposition.worthSplitting,
-          signals: verdict.decomposition.signals,
+          sufficientContext: true, difficulty: 0.1, signals: {},
         })),
         // The real economics, not a stub: the point of the test is that the
         // runtime's own rules keep this task managed.
         decideExecution: fromPromise(async ({ input }) => decideExecution({
           goal: TINY_GOAL, authority: AUTHORITY,
-          complexity: input.complexity ?? 'low',
-          worthSplitting: input.worthSplitting,
+          ...(input.splitProbability === undefined ? {} : { splitProbability: input.splitProbability }),
           signals: input.signals,
         })),
         executeStep: fromPromise(spies.executeStep),

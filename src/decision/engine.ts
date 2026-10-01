@@ -24,7 +24,7 @@
  *  what the task is *about*. System-1 is an estimate refiner the caller may buy
  *  when `semanticRefinementValue` says it pays; the market then runs again. */
 import { randomUUID } from 'node:crypto';
-import type { DecideExecutionResult } from '../engines/decide-execution.js';
+import type { DecideExecutionResult, DelegationPricing } from '../engines/decide-execution.js';
 import type { Authority } from '../schemas/node-contract.js';
 import type { DecisionOutcome } from '../schemas/decision.js';
 import { clamp01 } from '../efficiency/policy-types.js';
@@ -316,23 +316,15 @@ function summary(p: Priced): NonNullable<ActionDecision['ranked']>[number] {
 // Delegation: a candidate provider feeding the same market
 // ---------------------------------------------------------------------------
 
-export interface DelegationHistory {
-  /** Validated-success rate of doing tasks of this shape directly. */
-  direct?: { success: number; observations: number };
-  /** Validated-success rate of delegating them. */
-  delegated?: { success: number; observations: number };
-}
-
 export interface ExecutionAuthorizationInput {
   state: EconomicState;
-  /** The delegation economics, as an estimate source. Its breakdown prices the
-   *  delegate candidate; its verdict no longer decides anything. */
+  /** The delegation economics, as a gate: its breakdown says whether an
+   *  authority rule already decided, and its verdict no longer ranks anything. */
   economics: DecideExecutionResult;
-  /** One dispatch, as a unit of account both candidates are priced in. */
-  dispatch: DispatchEstimate;
-  plannedChildCount: number;
-  coordinationTokens?: number;
-  history?: DelegationHistory;
+  /** What each way of getting the work done costs, from the market. */
+  pricing: DelegationPricing;
+  /** System-1's calibrated P(the work splits). */
+  splitProbability: number;
 }
 
 export interface ExecutionAuthorization {
@@ -343,149 +335,73 @@ export interface ExecutionAuthorization {
   gate?: string;
 }
 
-/** What a planning or synthesis dispatch costs relative to an execute one.
- *  Both are bounded outputs — a JSON plan, a merged report — and measure at
- *  about an eighth of an open-ended execute dispatch (execution-market.ts's
- *  role defaults). Used only when the caller has no measurement of its own. */
-const NARROW_DISPATCH_SHARE = 0.125;
-
-/** Self vs delegate, priced at the margin.
+/** Self vs delegate, priced in dollars by the market.
  *
- *  Self-execution is the null option — it is what happens if nobody decides
- *  anything — and carries no extra cost, only the risk the delegation
- *  economics assign to one agent attempting the whole goal. Delegation carries
- *  only what splitting *adds*: the planning and synthesis dispatches. The wall
- *  clock it saves is carried too, and binds only when the task has a latency
- *  budget.
+ *  Self-execution costs the solo run. Delegation costs the planner (paid
+ *  whichever way it turns out), then with probability P the pieces and their
+ *  combination, otherwise the solo run after all. Each carries its expected and
+ *  its conservative cost, so a delegate the market is unsure of must save by
+ *  more than its doubt — the same rule every other candidate is held to.
  *
  *  Exported so a benchmark can price the choice offline from a recorded state. */
 export function executionCandidates(input: {
-  economics: DecideExecutionResult;
-  dispatch: DispatchEstimate;
-  plannedChildCount: number;
-  /** Measured tokens of the planning plus synthesis dispatches splitting adds.
-   *  Absent, two narrow dispatches priced from `dispatch`. */
-  coordinationTokens?: number;
-  /** What history says about tasks of this shape: how often doing them
-   *  directly, and how often delegating them, came back validated. Blended in
-   *  by how much evidence there is, so it overrides the economics' own
-   *  estimate exactly as fast as it earns the right to. */
-  history?: DelegationHistory;
-}): ActionCandidate[] {
-  const children = Math.max(1, Math.floor(input.plannedChildCount));
-  const breakdown = input.economics.breakdown;
-  const score = breakdown.score ?? 0;
-  const extraDispatches = 2;
-  const coordinationTokens = Math.max(0, input.coordinationTokens
-    ?? input.dispatch.tokens * NARROW_DISPATCH_SHARE * extraDispatches);
-  const latencySaved = Math.max(0, input.dispatch.latencyMs) * (children - (extraDispatches + 1));
+  state: EconomicState;
+  pricing: DelegationPricing;
+  splitProbability: number;
+}): { candidates: ActionCandidate[]; estimates: Record<string, ActionTransitionEstimate> } {
+  const { pricing } = input;
+  const p = clamp01(input.splitProbability);
+  const price = usdPerToken(input.state);
+  const tokensFor = (usd: number) => (Number.isFinite(usd) ? Math.ceil(usd / price) : Number.MAX_SAFE_INTEGER);
 
-  // The delegation economics' net value, read as what it measures: a goal too
-  // broad for one agent is likelier to fail in one agent's hands. So it is the
-  // *self* candidate's failure risk — a retry the fan-out avoids. The net
-  // score, not its distance from the old threshold: that threshold was a
-  // safety margin for a rule, and the market carries its own doubt in its
-  // bounds. The score already has the risk of a child coming back wrong
-  // (`riskPenalty`) subtracted, so the delegate carries none of its own on
-  // top. A goal whose net value is nothing leaves self risk-free and the
-  // fan-out as pure coordination cost: dominated.
-  const economicsRisk = clamp01(score);
-  const learned = (prior: number, observed?: { success: number; observations: number }) => {
-    if (!observed || observed.observations <= 0) return prior;
-    const w = observed.observations / (observed.observations + SHRINKAGE_K);
-    return clamp01(prior * (1 - w) + (1 - observed.success) * w);
-  };
-  const margin = learned(economicsRisk, input.history?.direct);
-  const delegatedRisk = learned(0, input.history?.delegated);
+  const selfUsd = pricing.solo.expectedUsd;
+  const selfUpper = Math.max(selfUsd, pricing.solo.conservativeUsd);
+  const delegateUsd = pricing.plan.expectedUsd
+    + p * (pricing.children.expectedUsd + pricing.synth.expectedUsd) + (1 - p) * selfUsd;
+  const delegateUpper = Math.max(delegateUsd, pricing.plan.conservativeUsd
+    + p * (pricing.children.conservativeUsd + pricing.synth.conservativeUsd) + (1 - p) * pricing.solo.conservativeUsd);
+  // Children run side by side, so the pieces cost one dispatch of wall clock.
+  const selfLatency = pricing.solo.latencyMs ?? 0;
+  const delegateLatency = (pricing.plan.latencyMs ?? 0) + (pricing.children.latencyMs ?? 0) + (pricing.synth.latencyMs ?? 0);
 
   const self = actionCandidate({
-    id: 'execution:self',
-    kind: 'continue',
-    capability: 'execution.self',
-    failureRisk: margin,
-    confidence: 1,
-    // What doing k pieces serially costs in wall clock, so a latency budget
-    // can rule self-execution out.
-    latencyCost: Math.max(0, input.dispatch.latencyMs) * children,
-    metadata: { children, source: 'decide-execution' },
+    id: 'execution:self', kind: 'continue', capability: 'execution.self',
+    tokenCost: tokensFor(selfUsd), latencyCost: selfLatency, confidence: 1,
+    metadata: { children: pricing.childCount, source: 'decide-execution' },
   });
-
   const delegate = actionCandidate({
-    id: 'execution:delegate',
-    kind: 'parallelize',
-    capability: 'execution.delegate',
-    coordinationCost: coordinationTokens,
-    latencyCost: Math.max(0, input.dispatch.latencyMs) * (extraDispatches + 1),
-    expectedLatencyBenefit: Math.max(0, latencySaved),
-    failureRisk: delegatedRisk,
-    confidence: clamp01(0.5 + Math.abs(margin - delegatedRisk)),
-    metadata: {
-      children, source: 'decide-execution',
-      estimate: delegationEstimate(input.dispatch, children),
-    },
+    id: 'execution:delegate', kind: 'parallelize', capability: 'execution.delegate',
+    tokenCost: tokensFor(delegateUsd), latencyCost: delegateLatency,
+    confidence: clamp01(delegateUpper > 0 ? delegateUsd / delegateUpper : 1),
+    metadata: { children: pricing.childCount, source: 'decide-execution' },
   });
 
-  return [self, delegate];
-}
-
-/** The delegation provider's transition estimates for self and delegate.
- *
- *  A failed attempt at the whole goal is not a nudge towards a retry — it *is*
- *  the retry: the remaining work, done again. So self-execution is priced as
- *  V(s) plus its failure risk times the remaining work, and delegation as V(s)
- *  plus the coordination it adds. The fan-out wins exactly when the retry it
- *  avoids is worth more than the planner and synthesizer it buys. */
-export function delegationEstimates(
-  state: EconomicState,
-  candidates: ActionCandidate[],
-): Record<string, ActionTransitionEstimate> {
-  const price = usdPerToken(state);
-  const value = stateValue(state).tokens;
-  const redo = remainingWorkTokens(state);
-  // The same uncertainty loading the market puts on carrying on, so both
-  // candidates carry the same band on the part of the cost they share.
-  const carryOn = signalEstimate(continueAction(), state);
-  const loading = carryOn.expectedRemainingCost.usd > 0
-    ? carryOn.bounds.costUpperBoundUsd / carryOn.expectedRemainingCost.usd
-    : 1;
-  const worstFailure = Math.max(0, ...candidates.map((c) => c.failureRisk));
-  const out: Record<string, ActionTransitionEstimate> = {};
-  for (const candidate of candidates) {
-    const immediate = candidate.tokenCost + candidate.coordinationCost;
-    const failure = candidate.failureRisk;
-    const remaining = value + failure * redo;
-    // Doubt about the retry this avoids, against the riskiest alternative: a
-    // delegate the estimator was unsure of is believed to save only as much as
-    // its confidence allows.
-    const claimed = Math.max(0, (worstFailure - failure) * redo);
-    out[candidate.id] = {
-      actionId: candidate.id,
-      immediateCost: { tokens: immediate, usd: immediate * price, latencyMs: candidate.latencyCost },
-      outcomes: [
-        { probability: 1 - failure, completed: false, succeeded: true, nextStateDelta: {} },
-        ...(failure > 0 ? [{ probability: failure, completed: false, succeeded: false, nextStateDelta: { failurePressure: 0.25 } }] : []),
-      ],
-      expectedRemainingCost: { tokens: remaining, usd: remaining * price, latencyMs: 0 },
-      bounds: {
-        successLowerBound: 1,
-        costUpperBoundUsd: (immediate + value * loading + failure * redo + (1 - candidate.confidence) * claimed) * price,
-      },
-      confidence: candidate.confidence,
-      provenance: 'hybrid',
-      evidenceIds: [],
-    };
-  }
-  return out;
+  const estimate = (candidate: ActionCandidate, usd: number, upper: number): ActionTransitionEstimate => ({
+    actionId: candidate.id,
+    immediateCost: { tokens: candidate.tokenCost, usd, latencyMs: candidate.latencyCost },
+    outcomes: [{ probability: 1, completed: false, succeeded: true, nextStateDelta: {} }],
+    expectedRemainingCost: { tokens: 0, usd: 0, latencyMs: 0 },
+    bounds: { successLowerBound: 1, costUpperBoundUsd: upper },
+    confidence: candidate.confidence,
+    provenance: 'hybrid',
+    evidenceIds: [],
+  });
+  return {
+    candidates: [self, delegate],
+    estimates: {
+      [self.id]: estimate(self, selfUsd, selfUpper),
+      [delegate.id]: estimate(delegate, delegateUsd, delegateUpper),
+    },
+  };
 }
 
 /** Whether to do the work or split it — decided by the market.
  *
  *  Authority gates run first and cannot be bought past: no spawn authority, no
- *  agent allowance, not enough budget to fund a child and this node's own
- *  planning (an escalation to a person), or a goal that is one unit of work.
- *  Everything past them is a cost-to-go comparison between the two candidates
- *  `executionCandidates` builds — the delegation economics estimate, the
- *  market chooses. */
+ *  agent allowance, not enough budget to fund the plan, the pieces and the
+ *  synthesis (an escalation to a person), or a goal nobody judged to split.
+ *  Everything past them is a cost comparison between the two candidates
+ *  `executionCandidates` prices, and the market chooses. */
 export function authorizeExecution(input: ExecutionAuthorizationInput): ExecutionAuthorization {
   const breakdown = input.economics.breakdown;
 
@@ -494,10 +410,8 @@ export function authorizeExecution(input: ExecutionAuthorizationInput): Executio
   if (breakdown.reason_no_agent_allowance) return { outcome: 'SELF_EXECUTE', decision: null, gate: 'no-agent-allowance' };
   if (breakdown.reason_single_unit_of_work) return { outcome: 'SELF_EXECUTE', decision: null, gate: 'single-unit-of-work' };
 
-  const candidates = executionCandidates(input);
-  const decision = chooseEconomicAction({
-    state: input.state, candidates, estimates: delegationEstimates(input.state, candidates),
-  });
+  const { candidates, estimates } = executionCandidates(input);
+  const decision = chooseEconomicAction({ state: input.state, candidates, estimates });
   if (decision.action.id === 'execution:delegate') return { outcome: 'DELEGATE', decision };
 
   const delegateRejection = decision.rejected?.find((r) => r.id === 'execution:delegate');

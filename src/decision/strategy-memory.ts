@@ -26,7 +26,7 @@ import type { PolicyVersion } from '../efficiency/policy-version.js';
 export function learningKeysFor(preparation: DispatchPreparation): Partial<Record<LearningLevel, string>> {
   return {
     GLOBAL: 'all',
-    TASK_CLASS: preparation.taskClass,
+    TASK_CLASS: preparation.mode,
     TASK_SHAPE: preparation.taskShape,
     ...(preparation.repository ? { REPOSITORY: preparation.repository } : {}),
     // The narrowest key: this shape, in this repository, at this revision. Two

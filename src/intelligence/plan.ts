@@ -14,9 +14,9 @@ import { isVerifyingCommand } from '../execution/observation.js';
 export const MAX_SUBGOALS = (): number => maxChildJobs();
 
 export interface PlanPromptOptions {
-  /** The decision to split has already been made by two independent judges
-   *  (System-1 and the deterministic split score). The planner is asked *how*
-   *  to split, not *whether* — see `planVetoOverridden` in config/efficiency. */
+  /** The decision to split is already taken and the planner is asked *how*, not
+   *  *whether*. Off by default: the planner is the one judge that has looked at
+   *  the repository, so it keeps its veto. */
   mustSplit?: boolean;
 }
 

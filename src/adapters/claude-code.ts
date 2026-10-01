@@ -58,8 +58,9 @@ export const claudeCodeAdapter: RuntimeAdapter = {
     // Nothing is registered as a tool: the private decision capability lives in
     // the conversation, not in the runtime's tool or permission surface.
     const input = opts.session ? ['--input-format', 'stream-json'] : [];
+    const settings = opts.settings ? ['--settings', opts.settings] : [];
     return ['claude', '--print', ...input, '--output-format', 'stream-json', '--verbose',
-      ...permission, ...model, ...effort, ...maxTurns, ...systemPrompt,
+      ...permission, ...model, ...effort, ...maxTurns, ...systemPrompt, ...settings,
       '--dangerously-skip-permissions', ...(opts.session ? [] : [goal])];
   },
 

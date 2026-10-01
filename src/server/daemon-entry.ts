@@ -4,6 +4,7 @@ import { mkdirSync } from 'node:fs';
 import { buildServer } from './app.js';
 import { ensureClusterDns } from '../k8s/kind.js';
 import { installSystem1 } from '../system1/runtime.js';
+import { icEnv, startHookListener } from '../infocontrol/endpoint.js';
 
 const DAEMON_PORT = Number(process.env.ORG_DAEMON_PORT ?? 4177);
 const DB_PATH = process.env.ORG_DB_PATH ?? path.join(os.homedir(), '.org', 'state.db');
@@ -49,6 +50,15 @@ for (const signal of ['SIGINT', 'SIGTERM'] as const) {
 // The sandbox cluster's DNS, fixed once per daemon start (see kind.ts). In
 // the background: it must never delay the API or fail the daemon.
 if (process.env.NODE_ENV !== 'test') void ensureClusterDns();
+
+// Information control's hook listener, on the one address sandboxes can reach.
+// Without it every dispatch runs as baseline, so a failure here is logged, not fatal.
+if (process.env.NODE_ENV !== 'test' && icEnv().mode !== 'off') {
+  void startHookListener(Number(process.env.ORG_IC_HOOK_PORT ?? DAEMON_PORT + 100), process.env.ORG_IC_HOOK_HOST)
+    .then((address) => {
+      if (address) console.error(`Information control (${icEnv().mode}): hooks at ${address.host}:${address.port}`);
+    });
+}
 
 app.listen({ port: DAEMON_PORT, host: '127.0.0.1' }).catch((err) => {
   app.log.error(err);

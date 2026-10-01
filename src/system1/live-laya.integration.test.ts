@@ -11,6 +11,10 @@ import { createHttpProvider } from './laya-client.js';
 import { createSystem1, type System1 } from './guard.js';
 import { assessDecomposability } from './decomposability.js';
 import { createModelGateway } from './model-gateway.js';
+import { SPLITTABLE_PRICING } from '../architecture/fixtures.js';
+import { decompositionBoundary } from './economic-mapping.js';
+
+const SPLIT_BOUNDARY = decompositionBoundary(SPLITTABLE_PRICING);
 
 const live = process.env.SYSTEM1_LIVE_TESTS === '1';
 const authority = { budget_usd: 5, spawn_children: true, max_child_count: 4, tools: [] as string[] };
@@ -33,9 +37,9 @@ describe.skipIf(!live)('live Laya', () => {
   afterAll(async () => { await laya?.stop(); });
 
   it('judges decomposability, and tells a coherent investigation from independent workstreams', async () => {
-    const coherent = await assessDecomposability({ scope: 'a', goal: 'Review the codebase and check for bugs, no edits', authority, existingChildren: 0 }, s1);
+    const coherent = await assessDecomposability({ scope: 'a', goal: 'Review the codebase and check for bugs, no edits', authority, existingChildren: 0, boundary: SPLIT_BOUNDARY }, s1);
     const parallel = await assessDecomposability({
-      scope: 'b', authority, existingChildren: 0,
+      scope: 'b', authority, existingChildren: 0, boundary: SPLIT_BOUNDARY,
       goal: 'Add input validation to the billing service, write a README for the auth package, and upgrade the logging library in the reporting service',
     }, s1);
     const pc = coherent.bundle.signals.system1_p_decomposable;
@@ -45,8 +49,8 @@ describe.skipIf(!live)('live Laya', () => {
     expect(pp).toBeTypeOf('number');
     expect(pp!).toBeGreaterThan(pc!);
     // The case this whole surface exists for: broad, coherent, not split.
-    expect(coherent.bundle.worthSplitting).toBe(false);
-    expect(parallel.bundle.worthSplitting).toBe(true);
+    expect(coherent.bundle.signals.system1_worth_splitting).toBe(0);
+    expect(parallel.bundle.signals.system1_worth_splitting).toBe(1);
   }, 120_000);
 
   it('answers a model-initiated choice through the gateway', async () => {

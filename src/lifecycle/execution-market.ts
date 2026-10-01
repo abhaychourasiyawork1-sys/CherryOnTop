@@ -42,6 +42,7 @@ import {
 } from '../intelligence/difficulty.js';
 import { fitCapability, type CapabilityObservation } from '../intelligence/capability.js';
 import { LEVEL_MODEL } from '../validation/contract.js';
+import { MIN_SPLIT, type DelegationPricing, type RolePrice } from '../engines/decide-execution.js';
 import { dispatchOptionsFor, modelForTier } from '../config/efficiency.js';
 import { usdPerTokenFor } from '../execution/pricing.js';
 import { availableTokens } from '../decision/transition.js';
@@ -503,6 +504,12 @@ export interface ExecutionSelection {
 
 /** The node's state as the market should see it: rebuilt from storage, with
  *  the node's dollar authority and this book's reservations folded in. */
+/** The success probability this node's work is held to: how sure any
+ *  risk-bearing decision about it must be. */
+export function qualityFloorFor(db: Db, nodeId: string, goal: string): number {
+  return marketState(db, nodeId, goal).constraints.qualityFloor;
+}
+
 function marketState(db: Db, nodeId: string, goal: string): EconomicState {
   const node = getNode(db, nodeId);
   const observed = economicStateFor(db, { nodeId, goal }, { commit: false });
@@ -539,8 +546,7 @@ function spentShare(state: EconomicState): number {
 function prepareMarket(db: Db, input: ExecutionSelectionInput) {
   const harnesses = input.adapters.map((adapter) => capabilitiesOf(adapter));
   const observedState = marketState(db, input.nodeId, input.goal);
-  const difficulty = input.difficulty
-    ?? withObservedFailures(uninformedDifficulty(), observedState.trajectory.failurePressure);
+  const difficulty = input.difficulty ?? beliefFor(db, input.nodeId, input.goal);
   const openness = roleOpennessFor(input.role);
   const dispatchD = dispatchDifficulty(difficulty, openness);
   // What the work might need at the confidence its contract demands: doubt and
@@ -888,6 +894,19 @@ function recordSelection(db: Db, input: ExecutionSelectionInput, selection: Exec
  *  failures keep moving the estimate after the question was answered. */
 const semanticDifficulty = new Map<string, { value: number; confidence: number }>();
 
+/** What is believed about how hard this node's work is, right now: what its own
+ *  failures have shown, and what System-1 has said about it once asked. Read at
+ *  every decision, so a belief moved by a failure moves the next dispatch and
+ *  the next delegation price with it. */
+export function beliefFor(
+  db: Db, nodeId: string, goal: string, options: { withoutSemantic?: boolean } = {},
+): Difficulty {
+  const observed = marketState(db, nodeId, goal);
+  const base = withObservedFailures(uninformedDifficulty(), observed.trajectory.failurePressure);
+  const known = options.withoutSemantic ? undefined : semanticDifficulty.get(nodeId);
+  return known ? withSemanticEstimate(base, known.value, known.confidence) : base;
+}
+
 export interface DifficultyRefinement {
   difficulty: Difficulty;
   /** Expected dollars the answer could save, before paying for it. */
@@ -924,8 +943,8 @@ export async function refineDifficulty(
   callCostUsd: number = DEFAULT_SYSTEM1_CALL_USD,
 ): Promise<DifficultyRefinement> {
   const observed = marketState(db, input.nodeId, input.goal);
-  const base = withObservedFailures(uninformedDifficulty(), observed.trajectory.failurePressure);
   const known = semanticDifficulty.get(input.nodeId);
+  const base = beliefFor(db, input.nodeId, input.goal, { withoutSemantic: true });
   if (known) {
     return { difficulty: withSemanticEstimate(base, known.value, known.confidence), valueUsd: 0, asked: false };
   }
@@ -962,4 +981,53 @@ export function costCalibration(db: Db) {
     }
   }
   return coverageOf(records);
+}
+
+// ---------------------------------------------------------------------------
+// Delegation, priced by the same market
+// ---------------------------------------------------------------------------
+
+/** What each way of getting the node's work done would cost, asked of the
+ *  market and committed to nothing.
+ *
+ *  Every price is a preview of the decision the market would make for that
+ *  dispatch — the same candidates, learned capability and detection pricing that
+ *  choose every real execution — so delegation and execution can never disagree
+ *  about what the same work costs.
+ *
+ *  Doubt is priced the way the market prices it everywhere: the solo run is
+ *  costed at the difficulty the belief cannot rule out at the contract's
+ *  confidence. A piece of a split is a narrower job, so it is costed at that
+ *  difficulty divided by the number of pieces; `MIN_SPLIT` pieces each do their
+ *  share, which together come to one whole dispatch at the narrower difficulty.
+ *  A dispatch that cannot be priced (blocked) costs infinity, which is what
+ *  keeps a split the market cannot fund from looking free. */
+export function priceDelegation(
+  db: Db,
+  input: {
+    nodeId: string; goal: string; adapters: RuntimeAdapter[]; belief: Difficulty; repository?: string;
+  },
+): DelegationPricing {
+  const floor = marketState(db, input.nodeId, input.goal).constraints.qualityFloor;
+  const pessimistic = upperDifficulty(input.belief, floor);
+  const price = (role: DispatchRole, value: number): RolePrice => {
+    const { decision } = prepareMarket(db, {
+      nodeId: input.nodeId, role, goal: input.goal, adapters: input.adapters,
+      difficulty: { ...input.belief, value },
+      ...(input.repository ? { repository: input.repository } : {}),
+    }).decide();
+    const expectedUsd = decision.blocked ? Number.POSITIVE_INFINITY : decision.expectedCostUsd ?? Number.POSITIVE_INFINITY;
+    const conservativeUsd = decision.blocked ? Number.POSITIVE_INFINITY : decision.conservativeCostUsd ?? expectedUsd;
+    return {
+      expectedUsd, conservativeUsd: Math.max(expectedUsd, conservativeUsd),
+      latencyMs: decision.estimate?.immediateCost.latencyMs ?? 0,
+    };
+  };
+  return {
+    solo: price('execute', pessimistic),
+    plan: price('plan', pessimistic),
+    children: price('execute', pessimistic / MIN_SPLIT),
+    synth: price('synthesize', pessimistic / MIN_SPLIT),
+    childCount: MIN_SPLIT,
+  };
 }

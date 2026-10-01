@@ -10,8 +10,10 @@ import { SpendGuardStop } from '../efficiency/spend-guard.js';
 export interface NodeMachineContext {
   nodeId: string;
   goal: string;
-  complexity?: 'low' | 'medium' | 'high';
-  worthSplitting?: boolean;
+  /** [0,1]: how hard the work is believed to be. */
+  difficulty?: number;
+  /** System-1's calibrated P(the work splits). Absent: nobody has said. */
+  splitProbability?: number;
   signals?: Record<string, number>;
   gateAttempts?: number;
   executionAttempts?: number;
@@ -81,8 +83,8 @@ export const nodeMachine = setup({
     }),
     decideExecution: fromPromise<DecideExecutionResult, {
       goal: string;
-      complexity: NodeMachineContext['complexity'];
-      worthSplitting?: boolean;
+      difficulty?: number;
+      splitProbability?: number;
       signals?: Record<string, number>;
     }>(async () => {
       throw new Error('decideExecution actor not provided');
@@ -122,8 +124,8 @@ export const nodeMachine = setup({
             target: 'EXECUTION_DECISION',
             guard: ({ event }) => event.output.sufficientContext,
             actions: assign({
-              complexity: ({ event }) => event.output.complexity,
-              worthSplitting: ({ event }) => event.output.worthSplitting,
+              difficulty: ({ event }) => event.output.difficulty,
+              splitProbability: ({ event }) => event.output.splitProbability,
               signals: ({ event }) => event.output.signals,
             }),
           },
@@ -136,8 +138,8 @@ export const nodeMachine = setup({
             target: 'PLAN',
             guard: ({ context }) => (context.gateAttempts ?? 0) < MAX_GATE_ATTEMPTS,
             actions: assign({
-              complexity: ({ event }) => event.output.complexity,
-              worthSplitting: ({ event }) => event.output.worthSplitting,
+              difficulty: ({ event }) => event.output.difficulty,
+              splitProbability: ({ event }) => event.output.splitProbability,
               signals: ({ event }) => event.output.signals,
               gateAttempts: ({ context }) => (context.gateAttempts ?? 0) + 1,
             }),
@@ -145,8 +147,8 @@ export const nodeMachine = setup({
           {
             target: 'EXECUTION_DECISION',
             actions: assign({
-              complexity: ({ event }) => event.output.complexity,
-              worthSplitting: ({ event }) => event.output.worthSplitting,
+              difficulty: ({ event }) => event.output.difficulty,
+              splitProbability: ({ event }) => event.output.splitProbability,
               signals: ({ event }) => event.output.signals,
             }),
           },
@@ -158,8 +160,8 @@ export const nodeMachine = setup({
         src: 'decideExecution',
         input: ({ context }) => ({
           goal: context.goal,
-          complexity: context.complexity,
-          worthSplitting: context.worthSplitting,
+          difficulty: context.difficulty,
+          splitProbability: context.splitProbability,
           signals: context.signals,
         }),
         onDone: [
@@ -179,14 +181,21 @@ export const nodeMachine = setup({
         onError: {
           target: 'VALIDATE',
           actions: assign({
-            lastResult: ({ event }) => ({
+            lastResult: ({ event, context }) => {
+              // Otherwise invisible: the snapshot holding this message is cleared
+              // at the terminal state, and nothing else records why no sandbox ran.
+              if (!(event.error instanceof SpendGuardStop)) {
+                console.error(`Execution failed before or during dispatch for node ${context.nodeId}:`, event.error);
+              }
+              return {
               succeeded: false, message: String(event.error), events: [], usage: { ...ZERO_USAGE },
               // The guard refusing to open a sandbox is not the work failing —
               // it is the daemon's own resource ceiling, and VALIDATE needs to
               // tell the two apart before it decides whether a retry is worth
               // refusing.
               guardStopped: event.error instanceof SpendGuardStop,
-            }),
+              };
+            },
           }),
         },
       },

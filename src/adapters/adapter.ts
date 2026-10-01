@@ -30,6 +30,10 @@ export interface BuildCommandOptions {
    *  The goal is then *not* in argv; the caller sends it as the first message.
    *  Only honoured by an adapter that declares `supportsSession`. */
   session?: boolean;
+  /** Runtime settings JSON (Claude Code `--settings`): how information
+   *  control attaches its hooks to one dispatch. Ignored by a runtime without
+   *  a settings flag. */
+  settings?: string;
 }
 
 /** What a harness can do right now, separate from what the market chooses.

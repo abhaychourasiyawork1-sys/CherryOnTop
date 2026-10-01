@@ -115,3 +115,15 @@ export function sameLabelDifferentOpportunity(): { early: EconomicState; late: E
     }),
   };
 }
+
+/** What the market says each way of getting some work done costs, for tests that
+ *  need a delegation decision without a database: doing it whole costs 1; the
+ *  plan, the pieces and the synthesis cost .4 when it splits. */
+const dollars = (expectedUsd: number) => ({ expectedUsd, conservativeUsd: expectedUsd * 1.2 });
+export const SPLITTABLE_PRICING = {
+  solo: dollars(1), plan: dollars(0.05), children: dollars(0.3), synth: dollars(0.05), childCount: 2,
+};
+/** Work not worth splitting: the plan alone costs more than a split could save. */
+export const UNSPLITTABLE_PRICING = {
+  solo: dollars(0.2), plan: dollars(0.1), children: dollars(0.15), synth: dollars(0.05), childCount: 2,
+};

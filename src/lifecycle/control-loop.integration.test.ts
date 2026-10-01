@@ -27,7 +27,7 @@ import { allocateChildAuthority, delegationTopology, workstreamNodesFor } from '
 import { planWorkstreams } from '../execution/workstreams.js';
 import { validateDelegatedOutcome } from '../validation/delegated.js';
 import { validationProfileFor } from '../validation/profile.js';
-import { judgeTask } from '../intelligence/task-judge.js';
+import { SPLITTABLE_PRICING } from '../architecture/fixtures.js';
 import { decideExecution, type DecideExecutionResult } from '../engines/decide-execution.js';
 import { authorizeExecution } from '../decision/engine.js';
 import { initialEconomicState } from '../decision/state.js';
@@ -68,20 +68,22 @@ interface LoopOptions {
   verdicts?: ValidationVerdict[];
   /** Simulates a broken optimizer: the strategy gate throws. */
   breakStrategyGate?: boolean;
+  /** What System-1 says about whether the work splits. Absent: nobody has said. */
+  splitProbability?: number;
 }
 
 /** Self vs delegate the way production decides it: the delegation economics
  *  estimate, the Action Market chooses. */
-function marketDecision(goal: string, authority: Authority, input: { complexity?: 'low' | 'medium' | 'high'; worthSplitting?: boolean; signals?: Record<string, number> }): DecideExecutionResult {
+function marketDecision(goal: string, authority: Authority, input: { splitProbability?: number; signals?: Record<string, number> }): DecideExecutionResult {
   const economics = decideExecution({
-    goal, authority, complexity: input.complexity ?? 'low',
-    worthSplitting: input.worthSplitting, signals: input.signals,
+    goal, authority, pricing: SPLITTABLE_PRICING,
+    ...(input.splitProbability === undefined ? {} : { splitProbability: input.splitProbability }),
+    signals: input.signals,
   });
+  if (input.splitProbability === undefined) return economics;
   const { outcome } = authorizeExecution({
     state: initialEconomicState({ goal, totalTokenBudget: 480_000 }),
-    economics,
-    dispatch: { tokens: 480_000 / (authority.max_child_count + 2), latencyMs: 120_000, costUsd: 0 },
-    plannedChildCount: authority.max_child_count,
+    economics, pricing: SPLITTABLE_PRICING, splitProbability: input.splitProbability,
   });
   return { ...economics, outcome };
 }
@@ -101,11 +103,11 @@ async function runControlLoop(goal: string, options: LoopOptions): Promise<Contr
   if (!options.breakStrategyGate) {
     const preparation = prepareDispatch({
       goal, authority, toolGrant: { allowedTools: authority.tools, readOnly: false },
+      understanding: { readOnly: false, anchors: [], ...(options.splitProbability === undefined ? {} : { splitProbability: options.splitProbability }) },
     });
-    const judged = judgeTask(goal);
     strategy = decideStrategy({
       preparation, spentUsd: 0,
-      outcome: marketDecision(goal, authority, judged.decomposition).outcome,
+      outcome: marketDecision(goal, authority, { splitProbability: options.splitProbability }).outcome,
       dispatch: { tokens: 100_000, latencyMs: 120_000, costUsd: 0.5 },
       ...(options.mode === 'full' ? { classify } : {}),
     }).strategy;
@@ -117,15 +119,10 @@ async function runControlLoop(goal: string, options: LoopOptions): Promise<Contr
 
   const machine = nodeMachine.provide({
     actors: {
-      assessUncertainty: fromPromise(async (): Promise<IntelligenceBundle> => {
-        const judged = judgeTask(goal);
-        return {
-          sufficientContext: true,
-          complexity: judged.decomposition.complexity,
-          worthSplitting: judged.decomposition.worthSplitting,
-          signals: judged.decomposition.signals,
-        };
-      }),
+      assessUncertainty: fromPromise(async (): Promise<IntelligenceBundle> => ({
+        sufficientContext: true, difficulty: 0.5, signals: {},
+        ...(options.splitProbability === undefined ? {} : { splitProbability: options.splitProbability }),
+      })),
       decideExecution: fromPromise(async ({ input }): Promise<DecideExecutionResult> => marketDecision(goal, authority, input)),
       executeStep: fromPromise(async (): Promise<ExecuteStepResult> => {
         bought.push('execute');
@@ -217,7 +214,7 @@ describe('the delegated path', () => {
   const goal = 'Fix the auth bug; also add parser tests';
 
   it('reaches delegation for a genuinely multi-workstream goal', async () => {
-    const trace = await runControlLoop(goal, { mode: 'full', validation: 'required' });
+    const trace = await runControlLoop(goal, { mode: 'full', validation: 'required', splitProbability: 0.9 });
     expect(trace.strategy).not.toBe('MANAGED');
     expect(trace.states).toContain('DELEGATE');
   });

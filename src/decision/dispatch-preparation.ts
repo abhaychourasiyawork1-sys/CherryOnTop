@@ -1,17 +1,19 @@
 /** Everything the control plane believes at the moment a dispatch starts,
  *  decided once.
  *
- *  The manager used to derive the same semantic facts several times over on one
- *  dispatch: what kind of task this is, how it decomposes, how much it needs
- *  verifying, which revision it runs against. That is two problems wearing one
- *  coat. The cheap one is cost — judging a goal twice pays twice for the same
- *  answer. The expensive one is *disagreement*: the context selector and the
- *  strategy gate reasoning from derivations taken microseconds apart, on inputs
- *  that shifted in between, produce a run nobody can reconstruct afterwards.
+ *  The manager used to derive the same facts several times over on one
+ *  dispatch: what the task asks for, how much it needs verifying, which
+ *  revision it runs against. That is two problems wearing one coat. The cheap
+ *  one is cost. The expensive one is *disagreement*: the context selector and
+ *  the strategy gate reasoning from derivations taken microseconds apart, on
+ *  inputs that shifted in between, produce a run nobody can reconstruct
+ *  afterwards.
  *
- *  So this is a snapshot, not a brain. It combines answers the existing modules
- *  own — `judgeTask`, `taskEconomicsFor`, `contextPolicyFor`,
- *  `executionPolicyFor`, `contractFor` — and adds no scoring of its own. Every
+ *  So this is a snapshot, not a brain. What is known about the task arrives as
+ *  a `TaskUnderstanding` — System-1's typed answers and what the goal literally
+ *  names, never a reading of its wording — and this combines it with the answers
+ *  the existing modules own (`taskEconomicsFor`, `contextPolicyFor`,
+ *  `executionPolicyFor`, `contractFor`), adding no scoring of its own. Every
  *  dependency is injected so the whole thing is unit-testable and so a test can
  *  prove each derivation happens exactly once.
  *
@@ -19,7 +21,7 @@
 import type { Authority } from '../schemas/node-contract.js';
 import type { ToolGrant } from '../adapters/adapter.js';
 import { scopeOf, type SecurityScope } from '../context/types.js';
-import { judgeTask, type TaskVerdict } from '../intelligence/task-judge.js';
+import { modeOf, UNKNOWN_UNDERSTANDING, type TaskMode, type TaskUnderstanding } from '../intelligence/task-understanding.js';
 import { taskEconomicsFor } from '../efficiency/task-economics.js';
 import { contextPolicyFor, executionPolicyFor, currentPolicyVersions } from '../efficiency/policy.js';
 import { contractFor, type ValidationContract } from '../validation/contract.js';
@@ -27,14 +29,16 @@ import type { ContextPolicy, ExecutionPolicy, TaskEconomicsSignals } from '../ef
 
 export interface DispatchPreparation {
   goal: string;
-  taskClass: string;
-  /** A stable fingerprint of *what shape of work this is*, built from the
-   *  deterministic signals rather than from the goal's words. Two goals that
-   *  read nothing alike but decompose identically share a shape, which is what
-   *  makes it a usable learning key — raw goal text never repeats. */
+  /** Whether the work answers, changes, or was handed out in pieces — from what
+   *  is known, not from a reading of the goal. */
+  mode: TaskMode;
+  /** A stable fingerprint of *what shape of work this is*, built from what is
+   *  known about it rather than from the goal's words. Two goals that read
+   *  nothing alike but are known alike share a shape, which is what makes it a
+   *  usable learning key — raw goal text never repeats. */
   taskShape: string;
-  complexity: 'low' | 'medium' | 'high';
-  decompositionSignals: Record<string, number>;
+  /** What is known about the task. */
+  understanding: TaskUnderstanding;
   verificationNeed: number;
   /** The full economics read, carried rather than re-derived downstream. */
   economics: TaskEconomicsSignals;
@@ -47,15 +51,17 @@ export interface DispatchPreparation {
   executionPolicy: ExecutionPolicy;
   validationContract: ValidationContract;
   policyVersions: ReturnType<typeof currentPolicyVersions>;
-  /** The whole verdict, so a consumer that needs `worthPlanning` or `direct`
-   *  reads it here instead of judging the goal a second time. */
-  verdict: TaskVerdict;
 }
 
 export interface PrepareDispatchInput {
   goal: string;
   authority: Authority;
   toolGrant: ToolGrant;
+  /** What System-1 has answered about the task. Absent means nothing is known:
+   *  the task is assumed to write and nobody has said it splits. */
+  understanding?: TaskUnderstanding;
+  /** The work was handed out in pieces rather than done by this node. */
+  delegated?: boolean;
   repository?: string;
   repositoryRevision?: string;
   /** Definition-of-done items a person named. They raise the validation floor
@@ -67,7 +73,6 @@ export interface PrepareDispatchInput {
  *  test can count the calls, and so this module owns no imports it could be
  *  tempted to re-derive from. */
 export interface PrepareDispatchDeps {
-  judgeTask: typeof judgeTask;
   taskEconomicsFor: typeof taskEconomicsFor;
   contextPolicyFor: typeof contextPolicyFor;
   executionPolicyFor: typeof executionPolicyFor;
@@ -76,7 +81,7 @@ export interface PrepareDispatchDeps {
 }
 
 export const REAL_PREPARE_DEPS: PrepareDispatchDeps = {
-  judgeTask, taskEconomicsFor, contextPolicyFor, executionPolicyFor, currentPolicyVersions, contractFor,
+  taskEconomicsFor, contextPolicyFor, executionPolicyFor, currentPolicyVersions, contractFor,
 };
 
 /** Buckets, not values. A fingerprint that moves whenever a float moves is a
@@ -86,20 +91,18 @@ function band(value: number): 'lo' | 'mid' | 'hi' {
 }
 
 export function taskShapeFingerprint(input: {
-  taskClass: string;
-  complexity: string;
+  mode: TaskMode;
   economics: Pick<TaskEconomicsSignals, 'complexityBand' | 'hasExplicitAnchors' | 'breadth' | 'verificationNeed' | 'readOnly'>;
-  worthSplitting: boolean;
+  splitProbability?: number;
 }): string {
   return [
-    input.taskClass,
-    input.complexity,
+    input.mode,
     input.economics.complexityBand,
     input.economics.hasExplicitAnchors ? 'anchored' : 'unanchored',
     `breadth-${band(input.economics.breadth)}`,
     `verify-${band(input.economics.verificationNeed)}`,
     input.economics.readOnly ? 'read-only' : 'writes',
-    input.worthSplitting ? 'splittable' : 'unit',
+    input.splitProbability === undefined ? 'split-unknown' : `split-${band(input.splitProbability)}`,
   ].join('/');
 }
 
@@ -112,22 +115,18 @@ export function prepareDispatch(
   input: PrepareDispatchInput,
   deps: PrepareDispatchDeps = REAL_PREPARE_DEPS,
 ): DispatchPreparation {
-  const verdict = deps.judgeTask(input.goal);
-  // The verdict carries the decomposition it already computed, so nothing here
-  // asks for it a second time.
-  const economics = deps.taskEconomicsFor(input.goal, verdict);
+  const understanding = input.understanding ?? UNKNOWN_UNDERSTANDING(input.goal);
+  const economics = deps.taskEconomicsFor(input.goal, understanding);
+  const mode = modeOf(understanding, input.delegated === true);
 
   return Object.freeze({
     goal: input.goal,
-    taskClass: verdict.taskClass,
+    mode,
     taskShape: taskShapeFingerprint({
-      taskClass: verdict.taskClass,
-      complexity: verdict.decomposition.complexity,
-      economics,
-      worthSplitting: verdict.decomposition.worthSplitting,
+      mode, economics,
+      ...(understanding.splitProbability === undefined ? {} : { splitProbability: understanding.splitProbability }),
     }),
-    complexity: verdict.decomposition.complexity,
-    decompositionSignals: verdict.decomposition.signals,
+    understanding,
     verificationNeed: economics.verificationNeed,
     economics,
     ...(input.repository === undefined ? {} : { repository: input.repository }),
@@ -142,6 +141,5 @@ export function prepareDispatch(
       requiredChecks: input.requiredChecks ?? [],
     }),
     policyVersions: deps.currentPolicyVersions(),
-    verdict,
   });
 }

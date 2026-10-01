@@ -37,8 +37,11 @@ const REPO: RepoEntry[] = [
 
 const BUDGET = 6000;
 
-function plan(goal: string) {
-  const signals = taskEconomicsFor(goal);
+/** Read-only is System-1's typed answer (`execution.change_requested`), never
+ *  a reading of the goal's words — so a test that wants a read-only task says
+ *  that System-1 answered so. */
+function plan(goal: string, readOnly = false) {
+  const signals = taskEconomicsFor(goal, readOnly ? { readOnly: true, anchors: [] } : undefined);
   const context = selectDispatchContext({ goal, entries: REPO, tokenBudget: BUDGET, signals });
   return {
     signals,
@@ -130,7 +133,7 @@ describe('golden task families — the properties, not a file list', () => {
   });
 
   it('a read-only investigation is judged to modify nothing and tolerates more searching', () => {
-    const investigation = plan(FAMILIES.investigation);
+    const investigation = plan(FAMILIES.investigation, true);
     const edit = plan(FAMILIES['tiny edit']);
     expect(investigation.signals.readOnly).toBe(true);
     expect(investigation.signals.expectedModificationScope).toBe(0);
@@ -139,9 +142,11 @@ describe('golden task families — the properties, not a file list', () => {
 
   it('a tiny anchored edit is given less of everything than a broad investigation', () => {
     const tiny = plan(FAMILIES['tiny edit']);
-    const broad = plan(FAMILIES.investigation);
+    const broad = plan(FAMILIES.investigation, true);
     expect(tiny.policy.tokenBudget).toBeLessThan(broad.policy.tokenBudget);
-    expect(tiny.execution.hardTurnCap).toBeLessThan(broad.execution.hardTurnCap);
+    // The operator's configured breaker clips both; the anchored edit is never
+    // given *more* turns than the broad question.
+    expect(tiny.execution.hardTurnCap).toBeLessThanOrEqual(broad.execution.hardTurnCap);
   });
 });
 

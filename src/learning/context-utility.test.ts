@@ -43,7 +43,7 @@ describe('scoring a projection against what the run actually read', () => {
 describe('aggregating by task class', () => {
   const observe = (db: ReturnType<typeof createDb>, over: Partial<Parameters<typeof recordContextUtility>[1]> = {}) =>
     recordContextUtility(db, {
-      taskClass: 'investigation', nodeId: 'n1',
+      taskClass: 'answer', nodeId: 'n1',
       selected: ['a.ts'], excluded: ['config.ts'], read: ['a.ts', 'config.ts'],
       outcome: 'success', tokensSelected: 400, tokensAvoided: 0, executionAvoided: false,
       ...over,
@@ -53,14 +53,14 @@ describe('aggregating by task class', () => {
     const db = createDb(TEST_DB);
     observe(db);
     observe(db, { outcome: 'failure' });
-    observe(db, { taskClass: 'implementation' });
+    observe(db, { taskClass: 'change' });
 
     const stats = contextUtilityByTaskClass(db);
-    expect(stats.map((s) => s.taskClass)).toEqual(['implementation', 'investigation']);
-    const investigation = stats.find((s) => s.taskClass === 'investigation')!;
-    expect(investigation.observations).toBe(2);
-    expect(investigation.successRate).toBe(0.5);
-    expect(investigation.meanRecall).toBeCloseTo(0.5);
+    expect(stats.map((s) => s.taskClass)).toEqual(['answer', 'change']);
+    const answers = stats.find((s) => s.taskClass === 'answer')!;
+    expect(answers.observations).toBe(2);
+    expect(answers.successRate).toBe(0.5);
+    expect(answers.meanRecall).toBeCloseTo(0.5);
   });
 
   it('ranks what a class of task keeps having to go and find', () => {
@@ -83,7 +83,7 @@ describe('aggregating by task class', () => {
 describe('promotion hints', () => {
   const observe = (db: ReturnType<typeof createDb>) =>
     recordContextUtility(db, {
-      taskClass: 'investigation', nodeId: 'n1',
+      taskClass: 'answer', nodeId: 'n1',
       selected: ['a.ts'], excluded: ['config.ts'], read: ['a.ts', 'config.ts'],
       outcome: 'success', tokensSelected: 400, tokensAvoided: 0, executionAvoided: false,
     });
@@ -93,17 +93,17 @@ describe('promotion hints', () => {
     // carry it into every future projection.
     const db = createDb(TEST_DB);
     observe(db);
-    expect(promotionHints(db, 'investigation')).toEqual([]);
+    expect(promotionHints(db, 'answer')).toEqual([]);
     expect(MIN_OBSERVATIONS).toBe(3);
   });
 
   it('promotes what a class keeps needing, once it is a pattern', () => {
     const db = createDb(TEST_DB);
     for (let i = 0; i < MIN_OBSERVATIONS; i++) observe(db);
-    expect(promotionHints(db, 'investigation')).toEqual(['config.ts']);
+    expect(promotionHints(db, 'answer')).toEqual(['config.ts']);
   });
 
   it('says nothing about a class it has never seen', () => {
-    expect(promotionHints(createDb(TEST_DB), 'debugging')).toEqual([]);
+    expect(promotionHints(createDb(TEST_DB), 'split')).toEqual([]);
   });
 });

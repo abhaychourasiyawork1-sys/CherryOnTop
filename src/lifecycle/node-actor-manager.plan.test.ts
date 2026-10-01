@@ -259,8 +259,10 @@ describe('the planning dispatch', () => {
     const root = listNodes(db).find((node) => node.parentId === null)!;
     const judged = listEventsForNode(db, root.id).find((e) => e.type === 'system1.judgment');
     expect((judged?.payload as { economicResult: { worthSplitting: boolean } }).economicResult.worthSplitting).toBe(false);
-    expect(calls).toHaveLength(1);
-    expect(calls[0].goal).not.toContain('Split this goal');
+    // Only the node's own work dispatches (its validation may retry them): no
+    // planner, and — below — no children and no synthesis.
+    expect(calls.length).toBeGreaterThan(0);
+    expect(calls.every((call) => !call.goal.includes('Split this goal') && !call.goal.startsWith('THE ORIGINAL GOAL'))).toBe(true);
     // Not splitting must not silently change how the work runs: the single
     // dispatch is exactly what the market chose for it, with no override. Which
     // model that is comes from learned capability and difficulty, not from a
@@ -326,18 +328,17 @@ describe('the planning dispatch', () => {
     expect(calls[0].goal).not.toContain('unrelated.ts');
   });
 
-  describe('when System-1 and the split score have settled that the goal splits', () => {
-    // Measured live: a "research, then redesign the site" goal reached DELEGATE
-    // (Laya 0.78, split score 5), and one fast-tier planner turn answering []
-    // threw it away. The planner now decides how, not whether.
+  describe('when the market chose to split and the planner disagrees', () => {
+    // The planner keeps its veto: it is the one judge that has looked at the
+    // repository, and P(splits) is a judgment about the words (a single seaborn
+    // bug report once scored 0.91). Its dispatch is priced either way.
     const isPlanning = (input: ExecuteStepInput) => input.goal.includes('Split this goal');
 
-    it('asks how to split, on the standard model, with [] off the table', async () => {
+    it('honours [] and records that the delegation was not carried out', async () => {
       const db = createDb(TEST_DB);
       const calls = await runDelegating(db, tmpRepo(), '[]');
       const plan = calls.find(isPlanning)!;
-      expect(plan.goal).toContain('how, not whether');
-      expect(plan.goal).not.toContain('Reply with exactly []');
+      expect(plan).toBeDefined();
       // The planner's model is the market's decision, nothing else's: the
       // receipt for the plan dispatch names the model that ran.
       const receipt = listEventsForNode(db, listNodes(db).find((node) => node.parentId === null)!.id)
@@ -360,14 +361,14 @@ describe('the planning dispatch', () => {
       expect(steps).not.toContain('SPAWN_AGENT');
     });
 
-    it('never caches a planner that answered [] anyway as "does not split"', async () => {
+    it('pins "does not split" so the same goal on the same tree does not buy a second planner', async () => {
       const db = createDb(TEST_DB);
       const repoPath = tmpRepo();
       const first = await runDelegating(db, repoPath, '[]');
       // Once per node: its validation retries do not re-plan either.
       expect(first.filter(isPlanning)).toHaveLength(1);
       const second = await runDelegating(db, repoPath, '[]');
-      expect(second.filter(isPlanning)).toHaveLength(1);
+      expect(second.filter(isPlanning)).toHaveLength(0);
     });
 
     it('runs an ordered plan in order, handing the later piece what the earlier one reported', async () => {

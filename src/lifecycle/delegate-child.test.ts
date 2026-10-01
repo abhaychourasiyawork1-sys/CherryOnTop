@@ -261,8 +261,13 @@ describe('childAuthority', () => {
   it('withholds spawn authority the child could never afford to use', () => {
     // Below two shares of the floor a child could only ESCALATE, asking a human
     // to approve the same delegation one generation down.
-    const poor = childAuthority({ ...parent, budget_usd: 1 }, 2);
+    // What a split costs is the market's price, passed in — not a constant.
+    const poor = childAuthority({ ...parent, budget_usd: 1 }, 2, undefined, undefined, 2);
     expect(poor.spawn_children).toBe(false);
+    const funded = childAuthority({ ...parent, budget_usd: 100 }, 2, undefined, undefined, 2);
+    expect(funded.spawn_children).toBe(true);
+    // Nothing priced it: the child's own delegation decision is the check.
+    expect(childAuthority({ ...parent, budget_usd: 1 }, 2).spawn_children).toBe(true);
   });
 
   it('lets a human approval lift the child budget above its share', () => {
@@ -343,10 +348,12 @@ describe('delegateToChildren scheduling', () => {
         recordSchedule: (s) => { schedules.push(s); },
       },
     );
-    // Read-only siblings are not a write conflict — they run together, and the
-    // module they both need is named as shared rather than rediscovered twice.
+    // Nothing said these pieces only read, and the word "review" is not
+    // evidence that they do — so two pieces naming one file are assumed to
+    // write it and are ordered rather than raced. The module they both need is
+    // still named as shared rather than rediscovered twice.
     const first = schedules[0] as { plan: { parallelGroups: string[][]; sharedEvidenceIds: string[] } };
-    expect(first.plan.parallelGroups).toEqual([['0', '1']]);
+    expect(first.plan.parallelGroups).toEqual([['0'], ['1']]);
     expect(first.plan.sharedEvidenceIds).toContain('src/a.ts');
   });
 });

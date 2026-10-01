@@ -65,9 +65,9 @@ import { sandboxNotes } from '../k8s/sandbox-env.js';
 import type { ToolGrant, RuntimeAdapter, StructuredEvent } from '../adapters/adapter.js';
 import { setNodeSnapshot, clearNodeSnapshot } from '../db/queries/nodes.js';
 import { insertDodItems, listDodForNode, setDodState } from '../db/queries/dod.js';
-import { executeTimeoutMs, dispatchOptionsFor, planCacheTtlHours, planVetoOverridden, repoMapTokenBudget, rolePromptsEnabled, resultCacheTtlHours, type DispatchRole } from '../config/efficiency.js';
-import { assessDecomposition } from '../intelligence/decompose.js';
+import { executeTimeoutMs, dispatchOptionsFor, planCacheTtlHours, repoMapTokenBudget, rolePromptsEnabled, resultCacheTtlHours, type DispatchRole } from '../config/efficiency.js';
 import { repoHead, repoDirty, repoIdentity } from '../execution/git-state.js';
+import { openSession as openInfoControl, settleFinish } from '../infocontrol/endpoint.js';
 import { autoCommitAndPush, autoCommitEnabled, hostRepoPath, isDisposableFork } from './auto-commit.js';
 import { putKnowledge } from '../evidence/store.js';
 import { extractAnchors } from '../efficiency/task-economics.js';
@@ -80,7 +80,6 @@ import { assembleExecutePrompt, assemblePlanPrompt, assembleSynthesisPrompt, pro
 import { buildAgentEnvelope, renderEnvelope, EnvelopeError } from '../intelligence/agent-envelope.js';
 import { putAgentEnvelope, getAgentEnvelope } from '../db/queries/envelopes.js';
 import { scopeOf } from '../context/types.js';
-import { judgeTask } from '../intelligence/task-judge.js';
 import { prepareDispatch, type DispatchPreparation } from '../decision/dispatch-preparation.js';
 import { decideStrategy } from '../decision/strategy-gate.js';
 import { strategyPriorFor } from '../decision/strategy-memory.js';
@@ -93,17 +92,20 @@ import { summarizeExecutionTrajectory, executionSnapshot, UNKNOWN_PROGRESS } fro
 import { executionPolicyForGoal, calibrate, effectiveTurnCap, currentPolicyVersions, EXECUTION_POLICY_VERSION } from '../efficiency/policy.js';
 import { activePolicyChanges } from '../learning/policy-experiments.js';
 import { templateFor, pruneTemplate } from '../intelligence/execution-templates.js';
-import type { TaskClass } from '../intelligence/task-judge.js';
-import { authorizeExecution, receipt, type DecisionReceipt, type DelegationHistory } from '../decision/engine.js';
+import type { TaskMode } from '../intelligence/task-understanding.js';
+import { authorizeExecution, receipt, type DecisionReceipt } from '../decision/engine.js';
+import { MIN_SPLIT, requiredBudgetUsd, type DelegationPricing } from '../engines/decide-execution.js';
+import { decompositionBoundary } from '../system1/economic-mapping.js';
 import { candidateFingerprint } from '../decision/transition.js';
 import { modelCapabilities, currentAccount, classifyRuntimeFailure, ALL_MODELS } from '../execution/model-capability.js';
 import {
   selectExecution, settleExecution, cancelExecution, refuseModel, forgetExecutionNode, recordCandidateOutcomes,
   observeHarnessHealth, measuredDispatchTokens, marketViewOf, commitDecision, settleDecision, refineDifficulty,
-  type ExecutionSelection,
+  beliefFor, priceDelegation, qualityFloorFor, type ExecutionSelection,
 } from './execution-market.js';
 import { usdPerToken, isConstraintCode } from '../decision/utility.js';
-import { uninformedDifficulty, withSemanticEstimate } from '../intelligence/difficulty.js';
+import { uninformedDifficulty, withSemanticEstimate, type Difficulty } from '../intelligence/difficulty.js';
+import { understandingFor, READ_ONLY_GRANT, WRITABLE_GRANT, modeOf } from '../intelligence/task-understanding.js';
 import { rateLimitFromEvents } from '../execution/rate-limit.js';
 import { dispatchContextFor, warmRepoInventory } from '../context/dispatch-context-cache.js';
 import { recordDispatchUsage, turnsForNode } from '../db/queries/tokens.js';
@@ -391,7 +393,15 @@ export function realDelegateDeps(db: Db, parentId?: string): DelegateChildDeps {
       if (!parent) throw new Error(`Parent node ${parentId} not found`);
       const id = randomUUID();
       const now = new Date().toISOString();
-      const authority = childAuthority(parent.contract.authority, siblingCount, approvedBudgetUsd, budgetCapUsd);
+      // What a child needs to afford splitting its own piece, priced by the same
+      // market as everything else: a piece is a narrower job than the whole.
+      const belief = beliefFor(db, parentId, parent.contract.goal);
+      const pieceBelief = { ...belief, value: belief.value / MIN_SPLIT };
+      const piecePricing = priceDelegationSafely(db, parentId, parent.contract.goal, pieceBelief, parent.repoPath ?? undefined);
+      const authority = childAuthority(
+        parent.contract.authority, siblingCount, approvedBudgetUsd, budgetCapUsd,
+        piecePricing ? requiredBudgetUsd(piecePricing) : undefined,
+      );
       // A child that can write must not work in the parent's own tree, whether it
       // has siblings or not. Two siblings sharing a checkout race, and the last
       // to finish wins silently — that was the original reason. The stronger one
@@ -958,7 +968,7 @@ function indexedKnowledge(db: Db, nodeId: string): Set<string> {
  *  from it. Instrumentation, not instruction — the agent is never handed a step
  *  list, because that would cost tokens on every dispatch to say something the
  *  runtime is already deciding. */
-function publishExecutionPlan(db: Db, nodeId: string, taskClass: TaskClass, known: Set<string>, declined?: string): void {
+function publishExecutionPlan(db: Db, nodeId: string, taskClass: TaskMode, known: Set<string>, declined?: string): void {
   try {
     const pruned = pruneTemplate(templateFor(taskClass), known);
     // A multi_workstream template names delegation steps; after a declined
@@ -1847,7 +1857,6 @@ function finalResultText(events: { type: string; payload: unknown }[]): string {
 const pendingResults = new Map<string, { key: string; value: CachedResult }>();
 
 /** The receipt action that marks an execute dispatch as having run read-only. */
-const READ_ONLY_GRANT = 'read-only-grant';
 
 /** The key this dispatch's answer may be stored under and served from, or null
  *  when it may not be reused at all.
@@ -1923,7 +1932,8 @@ function trajectorySignals(db: Db, nodeId: string): {
 export function evaluateTaskSpend(db: Db, nodeId: string, node: ReturnType<typeof getNode>): SpendGuardState {
   try {
     const budgetUsd = node?.contract.authority.budget_usd ?? 0;
-    const policy = executionPolicyForGoal(node?.contract.goal ?? '', undefined, activePolicyChanges(db));
+    const policy = executionPolicyForGoal(
+      node?.contract.goal ?? '', understandingFor(db, nodeId, node?.contract.goal ?? ''), activePolicyChanges(db));
     const trajectory = trajectorySignals(db, nodeId);
     // Spend is counted over the *tree*, not the node. A child's budget is
     // carved out of its parent's, so a node's own budget covers everything
@@ -2079,24 +2089,6 @@ function sessionPrefaceRungs(db: Db, nodeId: string): string[] {
   return sessionMemoryLadder(db, node.sessionId, nodeId);
 }
 
-
-/** Whether this node's DELEGATE was backed strongly enough that the planner
- *  may not overturn it. Read off the decision row, so it is the same numbers
- *  the receipt already shows. */
-function delegationIsSettled(db: Db, nodeId: string): { settled: boolean; p?: number; split?: number } {
-  try {
-    const decision = listDecisionsForNode(db, nodeId)
-      .filter((row) => row.type === 'execution_decision').at(-1);
-    if (decision?.outcome !== 'DELEGATE') return { settled: false };
-    const breakdown = decision.breakdown as Record<string, number | undefined>;
-    const p = breakdown.system1_p_decomposable;
-    const split = breakdown.split_score;
-    return { settled: planVetoOverridden(p, split), p, split };
-  } catch {
-    return { settled: false };
-  }
-}
-
 const NO_PLAN: ParsedPlan = { subgoals: [], after: [], definitionOfDone: [], acceptanceChecks: [] };
 
 async function planSubgoals(db: Db, nodeId: string, goal: string, maxChildren: number): Promise<ParsedPlan> {
@@ -2107,11 +2099,11 @@ async function planSubgoals(db: Db, nodeId: string, goal: string, maxChildren: n
   // sandbox run to be told what we already know.
   if (!worktreePath || maxChildren < 2) return NO_PLAN;
 
-  // The planner used to hold an absolute veto: one fast-tier turn answering []
-  // discarded a DELEGATE that System-1 (P=0.78) and the split score (5) had
-  // both reached — measured on a "research, then redesign the site" goal. When
-  // both judges agree, "whether" is settled; the planner only decides "how".
-  const settled = delegationIsSettled(db, nodeId);
+  // The planner keeps its veto. It is the one judge that has looked at the
+  // repository, and System-1's probability that a goal splits is a judgment about
+  // the words: a single seaborn bug report once scored 0.91, above the redesign
+  // that really did split. What the market already accounts for is the price of
+  // being told "no" — the planner's dispatch is paid either way.
 
   // The same goal against the same committed tree splits the same way. Only a
   // clean tree with a readable HEAD is keyable — repoDirty says true when it
@@ -2126,9 +2118,7 @@ async function planSubgoals(db: Db, nodeId: string, goal: string, maxChildren: n
   if (cacheKey) {
     try {
       const cached = getCachedPlan(db, cacheKey, ttl);
-      // A cached "does not split" is a veto too, and a settled delegation does
-      // not take one.
-      if (cached && (cached.subgoals.length > 0 || !settled.settled)) {
+      if (cached) {
         publishProgress(db, nodeId, cached.subgoals.length === 0
           ? 'This goal was already found not to split on this repo state — doing it directly'
           : 'Reusing a plan computed earlier for this goal and repo state');
@@ -2154,36 +2144,17 @@ async function planSubgoals(db: Db, nodeId: string, goal: string, maxChildren: n
     }
   }
 
-  // Asked before a sandbox is opened, not after: planning's only possible
-  // product is a split, so on a goal with no seam it buys a dispatch to be told
-  // what the classification already knows.
-  const verdict = judgeTask(goal);
-  if (!verdict.worthPlanning && !settled.settled) {
-    publishProgress(db, nodeId, `${verdict.reason} — doing it directly`);
-    return NO_PLAN;
-  }
-
   const credentials = checkCredentials(os.homedir(), process.env.ANTHROPIC_API_KEY);
   if (!credentials.ok) return NO_PLAN;
 
-  publishProgress(db, nodeId, settled.settled
-    ? `System-1 (P=${settled.p?.toFixed(2)}) and the split score (${settled.split}) agree this splits — working out how`
-    : 'Working out how to split this across agents');
+  publishProgress(db, nodeId, 'Working out how to split this across agents');
   try {
     // Inside the try, like everything else here: the market writes a decision
     // row and publishes an event, and any failure in planning has to mean "do
     // not delegate" rather than taking the node down with it.
-    // A settled split is a harder planning question than "does this split?":
-    // the planner has to name every independent piece correctly. System-1's own
-    // confidence that the work comes apart is that evidence, folded into the
-    // difficulty the candidates are priced against rather than a rule.
     refuseIfSpent(db, nodeId);
-    const planDifficulty = settled.settled && settled.p !== undefined
-      ? withSemanticEstimate(uninformedDifficulty(), settled.p, settled.p)
-      : undefined;
     const selection = selectExecution(db, {
       nodeId, role: 'plan', goal, adapters: availableAdapters(),
-      ...(planDifficulty ? { difficulty: planDifficulty } : {}),
     });
     const adapter = selection.adapter;
     if (!adapter) return NO_PLAN;
@@ -2196,7 +2167,7 @@ async function planSubgoals(db: Db, nodeId: string, goal: string, maxChildren: n
       ? buildRolePromptParts('plan')
       : undefined;
     const prefaceRungs = sessionPrefaceRungs(db, nodeId);
-    const planPrompt0 = buildPlanPrompt(goal, maxChildren, { mustSplit: settled.settled });
+    const planPrompt0 = buildPlanPrompt(goal, maxChildren);
     // The planner used to start from nothing and spend its turns discovering
     // the repository — the single most expensive coordination dispatch there
     // is, and it re-derives what the scan already knows. It splits the goal, so
@@ -2292,12 +2263,6 @@ async function planSubgoals(db: Db, nodeId: string, goal: string, maxChildren: n
       publishProgress(db, nodeId, `Could not plan a split (the planner stopped: ${why}) — doing it directly`);
       return NO_PLAN;
     }
-    // Told the goal must split and it still returned nothing usable: that is
-    // a planner that broke its contract, not a verdict — never cached as one.
-    if (settled.settled && subgoals.length === 0) {
-      publishProgress(db, nodeId, 'The planner was told this goal splits but returned no usable plan — doing it directly');
-      return NO_PLAN;
-    }
     // Both answers are worth pinning, including "does not split". That one used
     // to be dropped as "cheap to recompute", which it is not: recomputing it
     // buys another whole planning sandbox to be told the same thing, and it is
@@ -2365,25 +2330,16 @@ function unitDispatchFor(db: Db, nodeId: string, goal: string, maxChildren: numb
  *  weakest term. */
 const ASSUMED_DISPATCH_LATENCY_MS = 120_000;
 
-/** What the organization has seen happen to tasks of this shape, done
- *  directly and delegated — validated successes, shrunk across levels. The
- *  market weighs it against the delegation economics by how much of it there
- *  is. Total: no history is an answer, not an error. */
-function delegationHistoryFor(db: Db, node: NonNullable<ReturnType<typeof getNode>>, goal: string): DelegationHistory | undefined {
+/** Prices delegation, or says it could not. Total: a market that cannot be
+ *  asked is a delegation nobody can price, which is a node that does the work
+ *  itself — never a crash. */
+function priceDelegationSafely(
+  db: Db, nodeId: string, goal: string, belief: Difficulty, repository?: string,
+): DelegationPricing | undefined {
   try {
-    const preparation = prepareDispatch({
-      goal, authority: node.contract.authority, toolGrant: grantOf(node.contract.authority),
-      ...(node.repoPath ? { repository: node.repoPath } : {}),
-    });
-    const of = (strategy: ExecutionStrategy) => {
-      const prior = strategyPriorFor(db, { preparation, strategy, policyVersion: policyVersion() });
-      return { success: prior.expectedSuccess, observations: prior.effectiveObservations };
-    };
-    const serial = of('SERIAL_DELEGATED');
-    const parallel = of('PARALLEL_DELEGATED');
-    return { direct: of('MANAGED'), delegated: serial.observations >= parallel.observations ? serial : parallel };
+    return priceDelegation(db, { nodeId, goal, adapters: availableAdapters(), belief, ...(repository ? { repository } : {}) });
   } catch (err) {
-    console.error(`Could not read delegation history for ${node.id}:`, err);
+    console.error(`Could not price delegation for node ${nodeId}:`, err);
     return undefined;
   }
 }
@@ -2397,21 +2353,29 @@ function productionMachine(db: Db, nodeId: string) {
       assessUncertainty: fromPromise(async ({ input }: { input: { goal: string } }) => {
         const node = getNode(db, nodeId);
         if (!node) return assessUncertainty(input);
+        // What delegating would cost, from the same market that prices every
+        // execution: it sets the probability at which asking System-1 could
+        // change anything. Unpriceable means nothing to ask.
+        const belief = beliefFor(db, nodeId, input.goal);
+        const pricing = priceDelegationSafely(db, nodeId, input.goal, belief, node.repoPath ?? undefined);
         const result = await assessDecomposability({
           scope: nodeId,
           goal: input.goal,
           authority: node.contract.authority,
           existingChildren: listNodes(db).filter((child) => child.parentId === nodeId).length,
+          boundary: pricing ? decompositionBoundary(pricing) : null,
+          difficulty: belief.value,
         });
         if (result.outcome) {
+          const worthSplitting = result.bundle.signals.system1_worth_splitting === 1;
           recordSystem1(db, nodeId, [result.outcome], [{
             provider: system1().provider,
             economicResult: {
-              worthSplitting: result.bundle.worthSplitting,
+              worthSplitting,
               threshold: result.bundle.signals.system1_threshold ?? 0,
-              complexity: result.bundle.complexity,
+              difficulty: result.bundle.difficulty,
             },
-            finalRuntimeAction: result.bundle.worthSplitting ? 'offer-delegation-to-economics' : 'single-unit-of-work',
+            finalRuntimeAction: worthSplitting ? 'offer-delegation-to-economics' : 'single-unit-of-work',
             ...(result.fallbackReason ? { fallbackReason: result.fallbackReason } : {}),
           }]);
           if (result.fallbackReason) {
@@ -2420,36 +2384,33 @@ function productionMachine(db: Db, nodeId: string) {
         }
         return result.bundle;
       }),
-      decideExecution: fromPromise(async ({ input }: { input: { goal: string; complexity: NodeMachineContext['complexity']; worthSplitting?: boolean; signals?: Record<string, number> } }) => {
+      decideExecution: fromPromise(async ({ input }: { input: { goal: string; difficulty?: number; splitProbability?: number; signals?: Record<string, number> } }) => {
         const node = getNode(db, nodeId);
         if (!node) throw new Error(`Node ${nodeId} not found when deciding execution`);
+        // Priced fresh at every decision: a failure moves the belief about how
+        // hard the work is, and with it what doing it whole and splitting it
+        // each cost. A recovery attempt is decided against what has been
+        // learned, not against what was believed before the first try.
+        const belief = beliefFor(db, nodeId, input.goal);
+        const pricing = priceDelegationSafely(db, nodeId, input.goal, belief, node.repoPath ?? undefined);
         const economics = decideExecution({
           goal: input.goal,
           authority: node.contract.authority,
-          complexity: input.complexity ?? 'low',
-          worthSplitting: input.worthSplitting,
+          ...(input.splitProbability === undefined ? {} : { splitProbability: input.splitProbability }),
+          ...(pricing ? { pricing } : {}),
           signals: input.signals,
         });
         // Delegation is decided by the Action Market. `decideExecution` is the
         // estimate source (and its authority gates stay hard); self vs delegate
-        // is a cost-to-go comparison, so a fan-out cannot start on a run the
+        // is a cost comparison, so a fan-out cannot start on a run the
         // economic state already knows is out of budget, under a hard stop, or
         // holding a recovery reserve it would consume.
-        const authorized = authorizeExecution({
-          state: economicStateFor(db, { nodeId, goal: input.goal }),
-          economics,
-          plannedChildCount: node.contract.authority.max_child_count,
-          // A unit of account, not a forecast. Both candidates are multiples of
-          // it, so the comparison depends on it being the *same* for both
-          // rather than on it being right — and dividing the task's own budget
-          // by the widest plan it could fund keeps it proportional to what this
-          // node may actually spend.
-          dispatch: unitDispatchFor(db, nodeId, input.goal, node.contract.authority.max_child_count),
-          // What splitting actually adds, measured: one planning and one
-          // synthesis dispatch, both narrow roles.
-          coordinationTokens: measuredDispatchTokens(db, 'plan') + measuredDispatchTokens(db, 'synthesize'),
-          history: delegationHistoryFor(db, node, input.goal),
-        });
+        const authorized = pricing && input.splitProbability !== undefined
+          ? authorizeExecution({
+            state: economicStateFor(db, { nodeId, goal: input.goal }),
+            economics, pricing, splitProbability: input.splitProbability,
+          })
+          : { outcome: economics.outcome, decision: null, gate: 'single-unit-of-work' };
         const result = { ...economics, outcome: authorized.outcome };
 
         // The named strategy for this dispatch, from the same snapshot and the
@@ -2575,29 +2536,14 @@ function productionMachine(db: Db, nodeId: string) {
           return result;
         }
 
-        // `judgeTask` is the cheap, dispatch-free classification the template,
-        // the utility record and the grant below all key on — computed once,
-        // up front, so nothing here can disagree about what kind of goal this is.
-        // One snapshot, built here at the safe execution boundary, and read
-        // everywhere below. Before this, the goal was judged here, judged again
-        // inside `executionPolicyForGoal`, and judged a third time inside the
-        // context selector — three derivations that could disagree about what
-        // kind of task this is.
-        const prep: DispatchPreparation = prepareDispatch({
-          goal: input.goal,
-          authority: node!.contract.authority,
-          toolGrant: grantOf(node!.contract.authority),
-          ...(node?.repoPath ? { repository: node.repoPath } : {}),
-          requiredChecks: node?.contract.definition_of_done ?? [],
-        });
-        const verdict = prep.verdict;
         // Explaining is reading, not editing — and an unrestricted grant
         // does not just permit editing, it also keeps the Task tool, which is
         // how a single dispatch spawns its own background subagents. Narrowed
         // to read-only only when nobody configured a grant of their own; see
         // dispatch-helpers.ts for the measured run this closes off. Whether the
-        // goal asks for a change is System-1's question (change-request.ts);
-        // a keyword used to decide it and took a bug fix's edit tools away.
+        // goal asks for a change is System-1's question (change-request.ts) and
+        // only System-1's: a keyword used to decide it and took a bug fix's edit
+        // tools away. Asked first, because everything below is built from it.
         const change = await assessChangeRequest(nodeId, input.goal);
         const grant = investigativeExecuteGrant(grantOf(node!.contract.authority), change.readOnly);
         // Once per node: a retry replays the same judgment from the guard's
@@ -2608,10 +2554,24 @@ function productionMachine(db: Db, nodeId: string) {
           recordSystem1(db, nodeId, [change.outcome], [{
             provider: system1().provider,
             ...(change.pExplain === undefined ? {} : { economicResult: { threshold: EXPLAIN_THRESHOLD } }),
-            finalRuntimeAction: grant.readOnly ? READ_ONLY_GRANT : 'writable-grant',
+            finalRuntimeAction: grant.readOnly ? READ_ONLY_GRANT : WRITABLE_GRANT,
             ...(change.fallbackReason ? { fallbackReason: change.fallbackReason } : {}),
           }]);
         }
+        // One snapshot, built here at the safe execution boundary from what is
+        // known — System-1's answers on this node's own chain and what the goal
+        // literally names — and read everywhere below. Before this, the goal was
+        // interpreted here, again inside `executionPolicyForGoal`, and a third
+        // time inside the context selector: three derivations that could
+        // disagree about what kind of task this is.
+        const prep: DispatchPreparation = prepareDispatch({
+          goal: input.goal,
+          authority: node!.contract.authority,
+          toolGrant: grantOf(node!.contract.authority),
+          understanding: { ...understandingFor(db, nodeId, input.goal), readOnly: change.readOnly },
+          ...(node?.repoPath ? { repository: node.repoPath } : {}),
+          requiredChecks: node?.contract.definition_of_done ?? [],
+        });
         // A follow-up in a chat means something only against the turns before
         // it — "what did you change?" — so the conversation is part of the key.
         const conversationRungs = sessionPrefaceRungs(db, nodeId);
@@ -2646,7 +2606,7 @@ function productionMachine(db: Db, nodeId: string) {
         }
         const selection = selectExecution(db, {
           nodeId, role: 'execute', goal: input.goal, adapters: availableAdapters(),
-          difficulty: refined.difficulty, taskClass: verdict.taskClass,
+          difficulty: refined.difficulty, taskClass: prep.mode,
           ...(node?.repoPath ? { repository: node.repoPath } : {}),
           reusable: (candidate) => {
             if (failedBefore) return null;
@@ -2675,7 +2635,7 @@ function productionMachine(db: Db, nodeId: string) {
         // already holds the product of. Published rather than prompted: a step
         // list in the argv would cost tokens on every dispatch to tell the agent
         // something the runtime is deciding for it.
-        publishExecutionPlan(db, nodeId, verdict.taskClass, indexedKnowledge(db, nodeId), declined);
+        publishExecutionPlan(db, nodeId, prep.mode, indexedKnowledge(db, nodeId), declined);
 
         if (selection.blocked && !cached) {
           const result = blockedStep(selection);
@@ -2707,7 +2667,7 @@ function productionMachine(db: Db, nodeId: string) {
           const result = { succeeded: true, message: cached.text, events: [], usage: { ...ZERO_USAGE } };
           publishStepOutcome(db, nodeId, result);
           scoreProjection(db, {
-            nodeId, taskClass: verdict.taskClass, read: [], outcome: 'success',
+            nodeId, taskClass: prep.mode, read: [], outcome: 'success',
             tokensAvoided: cached.tokens, executionAvoided: true,
           });
           return result;
@@ -2847,7 +2807,16 @@ function productionMachine(db: Db, nodeId: string) {
           // guard only runs between dispatches; this is what stops one inside.
           const spend = evaluateTaskSpend(db, nodeId, getNode(db, nodeId));
           const spendLimitUsd = spend.spendCapUsd > 0 ? Math.max(0, spend.spendCapUsd - spend.spentUsd) : undefined;
+          // Information control for this attempt: null when it is off or has no
+          // listener, and the dispatch then runs exactly as baseline.
+          const infoControl = openInfoControl({
+            db, nodeId, taskRootId: taskRootId(db, nodeId), role: 'execute', goal: input.goal, model,
+            confidence: qualityFloorFor(db, nodeId, input.goal),
+            taskValueUsd: node?.contract.authority.budget_usd ?? 0,
+            revision: repoHead(worktreePath),
+          });
           return dispatch(db, nodeId, () => executeStep({
+          ...(infoControl ? { infoControl } : {}),
           nodeId,
           goal: goalForDispatch,
           timeoutMs: executeTimeoutMs(),
@@ -2893,7 +2862,7 @@ function productionMachine(db: Db, nodeId: string) {
               insertArtifact(db, { id: randomUUID(), nodeId, eventId: id, createdAt: now, ...artifact });
             }
           },
-        }));
+        })).finally(() => infoControl?.close());
         };
 
         // The committed candidate — and if the runtime then refuses its model,
@@ -2919,7 +2888,7 @@ function productionMachine(db: Db, nodeId: string) {
           usage: result.usage, costUsd: costFromEvents(result.events),
           startupMs: result.startupMs,
           ...(ran.selection.effort ? { effort: ran.selection.effort } : {}),
-          taskClass: verdict.taskClass,
+          taskClass: prep.mode,
         });
         promptLedger.record('model', {
           tokens: result.usage.inputTokens + result.usage.outputTokens,
@@ -2958,7 +2927,7 @@ function productionMachine(db: Db, nodeId: string) {
         // Free, because the run already told us both.
         scoreProjection(db, {
           nodeId,
-          taskClass: verdict.taskClass,
+          taskClass: prep.mode,
           receipt: repoContext?.receipt,
           read: indexed.read,
           outcome: result.succeeded ? 'success' : 'failure',
@@ -3103,7 +3072,7 @@ function recordStrategyLearning(db: Db, nodeId: string, completed: boolean, now:
       id: randomUUID(), nodeId, createdAt: now,
       observation: observationFrom({
         strategy: delegated ? 'SERIAL_DELEGATED' : 'MANAGED',
-        taskClass: prep.taskClass,
+        taskClass: prep.mode,
         taskShape: prep.taskShape,
         ...(node.repoPath ? { repository: node.repoPath } : {}),
         ...(node.repoPath ? { exactPattern: `${node.repoPath}@${prep.taskShape}` } : {}),
@@ -3314,7 +3283,10 @@ function runValidation(db: Db, nodeId: string, succeeded: boolean, guardStopped 
   const delegated = listNodes(db).some((child) => child.parentId === nodeId);
   const profile = validationProfileFor({
     strategy: delegated ? 'SERIAL_DELEGATED' : 'MANAGED',
-    economics: taskEconomicsFor(goal),
+    // What is *known* about the task — the grant it actually ran under, on its
+    // own event chain — not the bare goal, which since the wording rules went
+    // says nothing and would hold every read-only answer to a change's rung.
+    economics: taskEconomicsFor(goal, understandingFor(db, nodeId, goal)),
     requiredChecks: node?.contract.definition_of_done ?? [],
     // No fresh verifier: re-running a repository's suite from inside the daemon
     // is a capability this runtime does not have. Recorded as `V3:no_verifier`
@@ -3347,6 +3319,7 @@ function runValidation(db: Db, nodeId: string, succeeded: boolean, guardStopped 
   };
   const id = appendEvent(db, { nodeId, type: 'validation.result', payload, createdAt: now });
   publish({ id, nodeId, type: 'validation.result', payload, createdAt: now });
+  settleFinish(db, nodeId, !gated.passed);
   if (gated.passed) rememberVerifiedCommands(db, nodeId, evidence.observedChecks, now);
 
   const pending = pendingResults.get(nodeId);

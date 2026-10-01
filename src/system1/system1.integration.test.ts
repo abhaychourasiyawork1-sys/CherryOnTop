@@ -17,6 +17,10 @@ import { initialEconomicState, normalizeEconomicState, type EconomicState } from
 import { decideExecution } from '../engines/decide-execution.js';
 import { compileHarnessRequest } from './compiler.js';
 import { nextAfterValidation } from '../validation/engine.js';
+import { SPLITTABLE_PRICING } from '../architecture/fixtures.js';
+import { decompositionBoundary } from './economic-mapping.js';
+
+const SPLIT_BOUNDARY = decompositionBoundary(SPLITTABLE_PRICING);
 
 type Behaviour = 'ok' | 'slow' | 'down';
 let behaviour: Behaviour = 'ok';
@@ -90,9 +94,9 @@ describe('System-1 integration', () => {
   it('Laya timeout: deterministic fallback inside the latency budget', async () => {
     reset('slow');
     const started = Date.now();
-    const r = await assessDecomposability({ scope: 'n', goal: AMBIGUOUS, authority, existingChildren: 0 }, s1({ timeoutMs: 150 }));
+    const r = await assessDecomposability({ scope: 'n', goal: AMBIGUOUS, authority, existingChildren: 0, boundary: SPLIT_BOUNDARY }, s1({ timeoutMs: 150 }));
     expect(Date.now() - started).toBeLessThan(400);
-    expect(r.bundle.worthSplitting).toBe(false);
+    expect(r.bundle.splitProbability).toBeUndefined();
     expect(r.outcome?.failure?.kind).toBe('timeout');
   });
 
@@ -118,8 +122,8 @@ describe('System-1 integration', () => {
   it('budget exhaustion: retries spend the same budget, then questions fail over', async () => {
     reset('down');
     const sys = s1({ maxCalls: 3 });
-    await assessDecomposability({ scope: 'n', goal: AMBIGUOUS, authority, existingChildren: 0 }, sys);
-    const second = await assessDecomposability({ scope: 'n', goal: `${AMBIGUOUS} again`, authority, existingChildren: 0 }, sys);
+    await assessDecomposability({ scope: 'n', goal: AMBIGUOUS, authority, existingChildren: 0, boundary: SPLIT_BOUNDARY }, sys);
+    const second = await assessDecomposability({ scope: 'n', goal: `${AMBIGUOUS} again`, authority, existingChildren: 0, boundary: SPLIT_BOUNDARY }, sys);
     expect(requests).toBe(3);
     expect(second.outcome?.failure?.kind).toBe('budget');
   });
@@ -135,7 +139,7 @@ describe('System-1 integration', () => {
 
   it('no-spawn short-circuit: no question reaches Laya', async () => {
     reset();
-    await assessDecomposability({ scope: 'n', goal: AMBIGUOUS, authority: { ...authority, spawn_children: false }, existingChildren: 0 }, s1());
+    await assessDecomposability({ scope: 'n', goal: AMBIGUOUS, authority: { ...authority, spawn_children: false }, existingChildren: 0, boundary: SPLIT_BOUNDARY }, s1());
     expect(requests).toBe(0);
   });
 
@@ -162,8 +166,8 @@ describe('System-1 integration', () => {
 
   it('a live yes still has to clear deterministic economics', async () => {
     reset('ok', 0.9);
-    const r = await assessDecomposability({ scope: 'n', goal: AMBIGUOUS, authority, existingChildren: 0 }, s1());
+    const r = await assessDecomposability({ scope: 'n', goal: AMBIGUOUS, authority, existingChildren: 0, boundary: SPLIT_BOUNDARY }, s1());
     expect(r.bundle.signals.system1_p_decomposable).toBeGreaterThan(0.9);
-    expect(decideExecution({ goal: AMBIGUOUS, authority, complexity: r.bundle.complexity, worthSplitting: r.bundle.worthSplitting }).outcome).toBe('DELEGATE');
+    expect(decideExecution({ goal: AMBIGUOUS, authority, splitProbability: r.bundle.splitProbability, pricing: SPLITTABLE_PRICING }).outcome).toBe('DELEGATE');
   });
 });

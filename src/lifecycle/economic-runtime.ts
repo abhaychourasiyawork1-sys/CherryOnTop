@@ -33,7 +33,7 @@ import { compareTrajectory, EMPTY_SNAPSHOT, type ExecutionSnapshot } from '../de
 import { executionPolicyForGoal } from '../efficiency/policy.js';
 import { activePolicyChanges } from '../learning/policy-experiments.js';
 import { taskEconomicsFor } from '../efficiency/task-economics.js';
-import { judgeTask } from '../intelligence/task-judge.js';
+import { understandingFor } from '../intelligence/task-understanding.js';
 import {
   initialEconomicState, normalizeEconomicState, type EconomicState, type EvidenceRef,
 } from '../decision/state.js';
@@ -252,11 +252,14 @@ export function observedStateVersion(db: Db, nodeId: string): number {
 export function economicStateFor(db: Db, input: ExecutionBoundaryInput, options: { commit?: boolean } = {}): EconomicState {
   const commit = options.commit ?? true;
   const entry = memoryFor(input.nodeId);
-  const signals = taskEconomicsFor(input.goal, judgeTask(input.goal));
+  // What System-1 has answered about this node, read from its own events: the
+  // task is a write until something said otherwise.
+  const understanding = understandingFor(db, input.nodeId, input.goal);
+  const signals = taskEconomicsFor(input.goal, understanding);
   // Validated learning, applied to the economic inputs and nothing else. Empty
   // until a policy candidate has actually cleared its promotion gate, which is
   // the deterministic fallback this whole subsystem is built around.
-  const policy = executionPolicyForGoal(input.goal, undefined, activePolicyChanges(db));
+  const policy = executionPolicyForGoal(input.goal, understanding, activePolicyChanges(db));
 
   const consumedTokens = tokensForNode(db, input.nodeId);
   const turns = turnsForNode(db, input.nodeId);

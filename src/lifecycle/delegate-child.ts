@@ -6,7 +6,6 @@ import { effectiveAuthority } from '../engines/authority.js';
 import { MIN_AGENT_BUDGET_USD } from '../engines/decide-execution.js';
 import { planWorkstreams, dependentsOf, type WorkstreamNode, type WorkstreamPlan } from '../execution/workstreams.js';
 import { extractAnchors } from '../efficiency/task-economics.js';
-import { assessDecomposition } from '../intelligence/decompose.js';
 import { validateDelegationPlan, type DelegationValidationResult } from '../decision/delegation-validator.js';
 import {
   canTransitionDelegation, IllegalDelegationTransitionError, DelegationStaleError, DelegationNotFoundError,
@@ -106,6 +105,10 @@ export function childAuthority(
    *  what the previous owner had left, so handing work to a different child can
    *  never mint budget the split did not allocate. */
   budgetCapUsd?: number,
+  /** What a child would need to afford a split of its own piece, priced by the
+   *  market. Absent means nothing has priced it, and the child's own delegation
+   *  decision (which escalates when the authority is short) is the check. */
+  minSplitBudgetUsd?: number,
 ): Authority {
   const siblings = Math.max(1, Math.floor(siblingCount));
 
@@ -140,8 +143,10 @@ export function childAuthority(
     ...capped,
     // Spawn authority a child could never afford to use only sends it straight
     // to ESCALATE, asking a human to approve the same delegation one generation
-    // down. It needs enough for itself and at least one child.
-    spawn_children: capped.spawn_children && capped.budget_usd >= MIN_AGENT_BUDGET_USD * 2,
+    // down. It needs enough for its own plan, a piece of work and the
+    // synthesis — as the market prices them, not as a constant guesses.
+    spawn_children: capped.spawn_children
+      && (minSplitBudgetUsd === undefined || capped.budget_usd >= minSplitBudgetUsd),
   };
 }
 
@@ -417,16 +422,15 @@ export interface DelegateChildDeps {
  *  stays in one group and runs together, which is what a fan-out was already
  *  doing.
  *
- *  Read-only subgoals ("review X", "audit Y") contribute their anchors as
- *  *information* dependencies instead — two branches reading one module is not
- *  a conflict, it is the duplication `sharedEvidenceIds` exists to name.
+ *  Every named path is an information dependency too — two branches reading one
+ *  module is not a conflict, it is the duplication `sharedEvidenceIds` exists to
+ *  name.
  *
  *  ponytail: anchors are a heuristic for write paths; a planner that emitted
  *  explicit file claims per subgoal would replace this whole function. */
 export function workstreamNodesFor(subgoals: string[], after: number[][] = []): WorkstreamNode[] {
   return subgoals.map((goal, index) => {
     const anchors = extractAnchors(goal);
-    const readOnly = assessDecomposition(goal).explanationOnly;
     return {
       id: String(index),
       // The planner's own ordering, when it gave one: "build the site after
@@ -436,7 +440,10 @@ export function workstreamNodesFor(subgoals: string[], after: number[][] = []): 
       informationDependencies: anchors,
       outputDependencies: [],
       validationDependencies: [],
-      writePaths: readOnly ? [] : anchors,
+      // Unless something says a piece only reads, it is assumed to write what it
+      // names: assuming it writes nothing is the assumption that costs a race
+      // between siblings, where assuming it writes costs a little parallelism.
+      writePaths: anchors,
     };
   });
 }

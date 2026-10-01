@@ -9,9 +9,9 @@
  *
  *  Three stages, and stage two only runs when stage one cannot answer:
  *
- *   1. **Deterministic gate.** Free. Handles the obvious managed cases and the
- *      obvious delegation candidates from signals `assessDecomposition` already
- *      computes. Most tasks stop here, which is the saving.
+ *   1. **Typed evidence.** Free. System-1's calibrated P(splits), already
+ *      asked for the delegation decision, settles partitionability; nothing is
+ *      read off the goal's wording. Most tasks stop here, which is the saving.
  *   2. **Cheap classifier.** A model call, bought *only* for a goal whose
  *      partitionability is genuinely ambiguous. Its scope is deliberately tiny:
  *      it answers whether the work comes apart and how parallel it looks. It
@@ -70,7 +70,7 @@ export interface StrategyClassification {
   reasonCodes?: string[];
 }
 
-export type StrategyClassifier = (input: { goal: string; taskClass: string }) => StrategyClassification;
+export type StrategyClassifier = (input: { goal: string; mode: string }) => StrategyClassification;
 
 export interface DecideStrategyInput {
   preparation: DispatchPreparation;
@@ -122,73 +122,30 @@ export function sanitizeClassification(raw: unknown): StrategyClassification | n
   };
 }
 
-/** Stage one. What the free signals already settle. */
+/** Stage one. What System-1's typed answer already settles.
+ *
+ *  Nothing here reads the goal: breadth words, conjunctions and "in parallel"
+ *  are guesses about whether work comes apart, and the answer to that question
+ *  is System-1's calibrated P(splits) (`execution.decomposable`). A probability
+ *  past even odds is a "yes" and the doubt it carries is its confidence, so the
+ *  stage needs no threshold of its own. No answer is `UNCERTAIN`, the one shape
+ *  worth buying a classifier's opinion about. */
 export function deterministicEvidence(preparation: DispatchPreparation): StrategyEvidence {
-  const signals = preparation.decompositionSignals;
-  const reasonCodes: string[] = [];
-  const explicit = (signals.explicit_split_request ?? 0) > 0;
-  const workTypes = signals.distinct_work_types ?? 0;
-  const separate = signals.separate_items ?? 0;
-  const anchored = (signals.named_single_targets ?? 0) > 0;
-  const breadth = signals.breadth_terms ?? 0;
-
-  // A person asking for a fan-out outranks every inference about whether the
-  // work comes apart. It is not a heuristic call any more.
-  if (explicit) {
-    reasonCodes.push('explicit_split_request');
-    return { partitionability: 'YES', parallelism: 'HIGH', confidence: 0.95, reasonCodes, deterministic: true };
-  }
-
-  // Several named deliverables in one sentence: a real split, and the case the
-  // economics should be allowed to price.
-  if (workTypes >= 2 && separate >= 1) {
-    reasonCodes.push('multiple_work_types_and_items');
+  const p = preparation.understanding.splitProbability;
+  if (p === undefined) {
     return {
-      partitionability: 'YES',
-      parallelism: separate >= 2 ? 'HIGH' : 'MEDIUM',
-      confidence: 0.8, reasonCodes, deterministic: true,
+      partitionability: 'UNCERTAIN', parallelism: 'LOW', confidence: 0,
+      reasonCodes: ['no_split_judgment'], deterministic: true,
     };
   }
-
-  // One named target, and the decomposition already concluded the goal does
-  // not come apart. The tiny-task case, and the one that must never pay for a
-  // classifier to be told what it already knows. `coherent_single_task` is not
-  // the test here on purpose: "fix the typo in README.md" names two *work
-  // types* (a fix, and a documentation file) and is still one job — which is
-  // exactly why `assessDecomposition` weighs a named target against them.
-  const splittable = preparation.verdict.decomposition.worthSplitting;
-  if (anchored && !splittable) {
-    reasonCodes.push('single_named_target');
-    if (preparation.economics.complexityBand === 'tiny') reasonCodes.push('tiny_task');
-    return { partitionability: 'NO', parallelism: 'LOW', confidence: 0.9, reasonCodes, deterministic: true };
-  }
-
-  // Read-only investigation of one coherent question. Broad, but broad is not
-  // a seam — this is the goal shape that used to be split five ways.
-  if (preparation.economics.readOnly && !splittable) {
-    reasonCodes.push('coherent_investigation');
-    return { partitionability: 'NO', parallelism: 'LOW', confidence: 0.75, reasonCodes, deterministic: true };
-  }
-
-  // The decomposition says it splits and nothing above disagreed. Lower
-  // confidence than the two rules that named their evidence outright, because
-  // this one is a score clearing a threshold.
-  if (splittable) {
-    reasonCodes.push('decomposition_scores_splittable');
-    return {
-      partitionability: 'YES',
-      parallelism: breadth >= 2 ? 'HIGH' : 'MEDIUM',
-      confidence: 0.6, reasonCodes, deterministic: true,
-    };
-  }
-
-  // Broad, coherent, unanchored. Genuinely ambiguous, and the only shape worth
-  // buying an opinion about.
-  reasonCodes.push(breadth > 0 ? 'broad_but_coherent' : 'no_decisive_signal');
+  const splits = p >= 0.5;
   return {
-    partitionability: 'UNCERTAIN',
-    parallelism: breadth >= 2 ? 'MEDIUM' : 'LOW',
-    confidence: 0.4, reasonCodes, deterministic: true,
+    partitionability: splits ? 'YES' : 'NO',
+    // How many pieces can run at once is not something a probability says.
+    parallelism: splits ? 'MEDIUM' : 'LOW',
+    confidence: Math.abs(2 * p - 1),
+    reasonCodes: [splits ? 'system1_says_splits' : 'system1_says_single_unit'],
+    deterministic: true,
   };
 }
 
@@ -214,12 +171,14 @@ export function decideStrategy(input: DecideStrategyInput): StrategyDecision {
     };
   }
 
-  // Stage two. Bought only for a goal the free signals could not settle, and
-  // only when a classifier was actually wired in.
-  if (evidence.partitionability === 'UNCERTAIN' && input.classify) {
+  // Stage two. Bought only for a goal the free signals could not settle, only
+  // when the market actually chose to split it (a model call is not bought to
+  // name a strategy nobody is taking), and only when a classifier was actually
+  // wired in.
+  if (evidence.partitionability === 'UNCERTAIN' && input.outcome === 'DELEGATE' && input.classify) {
     try {
       const classification = sanitizeClassification(
-        input.classify({ goal: preparation.goal, taskClass: preparation.taskClass }),
+        input.classify({ goal: preparation.goal, mode: preparation.mode }),
       );
       evidence = classification
         ? {
