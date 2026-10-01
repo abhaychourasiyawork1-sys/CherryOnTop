@@ -71,6 +71,8 @@ const HARNESS_PRIMITIVE: Record<keyof typeof HARNESS_QUESTIONS, DecisionPrimitiv
   'execution.change_requested': 'choice',
   'execution.difficulty': 'choice',
   'action.helpful': 'noul',
+  'info.finish': 'noul',
+  'info.elide': 'noul',
   'runtime.next_action': 'choice',
 };
 

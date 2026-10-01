@@ -39,6 +39,20 @@ export function estimateCostUsd(usage: TokenCounts, model: string | undefined): 
     + usage.outputTokens * rate.output) / 1_000_000;
 }
 
+/** USD per single token, by traffic class, as a Claude Code session is billed.
+ *  The CLI writes its prompt cache with the 1-hour TTL, billed at 2x input
+ *  (measured: the 2026-10-01 pilot's recorded costs reproduce to the digit at
+ *  2x), not the 5-minute 1.25x `estimateCostUsd` uses for spend caps. */
+export function perTokenRates(model: string | undefined): { read: number; write: number; output: number; input: number } {
+  const rate = rateFor(model);
+  return {
+    input: rate.input / 1_000_000,
+    read: (rate.input * 0.1) / 1_000_000,
+    write: (rate.input * 2) / 1_000_000,
+    output: rate.output / 1_000_000,
+  };
+}
+
 /** The price of one input+output token of agent work on this model, with the
  *  cache traffic an agentic dispatch carries amortized in.
  *

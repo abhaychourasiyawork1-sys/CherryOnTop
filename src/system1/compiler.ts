@@ -72,6 +72,16 @@ export const HARNESS_QUESTIONS = {
     // candidate's own failure risk instead of counting failure a second time.
     text: 'Assuming this action is carried out as described, would it materially improve the expected outcome of the task compared with continuing without it?',
   },
+  // Information control (src/infocontrol). Both are yes-probabilities that feed
+  // an expected-loss comparison; neither decides on its own.
+  'info.finish': {
+    version: 'info.finish@1',
+    text: 'If the agent stops now, without running anything after its last edit, is the task likely to fail its hidden checks?',
+  },
+  'info.elide': {
+    version: 'info.elide@1',
+    text: 'Will the agent likely need the omitted middle part of this tool output for its next steps on the task?',
+  },
   'runtime.next_action': {
     version: 'runtime.next_action@1',
     text: 'Which available action is most justified as the next intervention, given the task, its unresolved uncertainty, the evidence so far and the remaining resources?',
@@ -165,6 +175,8 @@ export function compileRequest(input: CompileInput): DecisionRequest {
   return request;
 }
 
+const NOUL_SURFACES: ReadonlySet<DecisionSurface> = new Set(['action.helpful', 'info.finish', 'info.elide']);
+
 /** A harness surface, with its versioned question. */
 export function compileHarnessRequest(input: Omit<CompileInput, 'source' | 'question' | 'questionVersion' | 'primitive'> & {
   surface: keyof typeof HARNESS_QUESTIONS;
@@ -179,7 +191,7 @@ export function compileHarnessRequest(input: Omit<CompileInput, 'source' | 'ques
     ...rest,
     ...(q.options ? { candidates: [...q.options], fixedOrder: true } : {}),
     source: 'harness',
-    primitive: input.surface === 'action.helpful' ? 'noul' : 'choice',
+    primitive: NOUL_SURFACES.has(input.surface) ? 'noul' : 'choice',
     question: subject ? `${q.text} Action: ${subject.slice(0, 200)}` : q.text,
     questionVersion: q.version,
   });

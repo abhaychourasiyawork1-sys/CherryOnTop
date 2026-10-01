@@ -72,7 +72,7 @@ export function resolveContent(db: Db, object: ContextObject, worktreePath?: str
 
 /** Exported top-level names. The same regex `repo-map.ts` scans with — one
  *  definition of "what counts as a symbol here", not two that can disagree. */
-const SYMBOL = /^\s*(?:export\s+)?(?:default\s+)?(?:async\s+)?(?:function|class|interface|type|const\s+[A-Za-z_$][\w$]*\s*=\s*(?:async\s*)?\(|def|func)\s+([A-Za-z_$][\w$]*)/;
+export const SYMBOL = /^\s*(?:export\s+)?(?:default\s+)?(?:async\s+)?(?:function|class|interface|type|const\s+[A-Za-z_$][\w$]*\s*=\s*(?:async\s*)?\(|def|func)\s+([A-Za-z_$][\w$]*)/;
 
 function signatureOf(content: string): string[] {
   const names: string[] = [];

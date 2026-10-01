@@ -68,6 +68,7 @@ import { insertDodItems, listDodForNode, setDodState } from '../db/queries/dod.j
 import { executeTimeoutMs, dispatchOptionsFor, planCacheTtlHours, planVetoOverridden, repoMapTokenBudget, rolePromptsEnabled, resultCacheTtlHours, type DispatchRole } from '../config/efficiency.js';
 import { assessDecomposition } from '../intelligence/decompose.js';
 import { repoHead, repoDirty, repoIdentity } from '../execution/git-state.js';
+import { openSession as openInfoControl, settleFinish } from '../infocontrol/endpoint.js';
 import { autoCommitAndPush, autoCommitEnabled, hostRepoPath, isDisposableFork } from './auto-commit.js';
 import { putKnowledge } from '../evidence/store.js';
 import { extractAnchors } from '../efficiency/task-economics.js';
@@ -100,7 +101,7 @@ import { modelCapabilities, currentAccount, classifyRuntimeFailure, ALL_MODELS }
 import {
   selectExecution, settleExecution, cancelExecution, refuseModel, forgetExecutionNode, recordCandidateOutcomes,
   observeHarnessHealth, measuredDispatchTokens, marketViewOf, commitDecision, settleDecision, refineDifficulty,
-  type ExecutionSelection,
+  qualityFloorFor, type ExecutionSelection,
 } from './execution-market.js';
 import { usdPerToken, isConstraintCode } from '../decision/utility.js';
 import { uninformedDifficulty, withSemanticEstimate } from '../intelligence/difficulty.js';
@@ -2847,7 +2848,16 @@ function productionMachine(db: Db, nodeId: string) {
           // guard only runs between dispatches; this is what stops one inside.
           const spend = evaluateTaskSpend(db, nodeId, getNode(db, nodeId));
           const spendLimitUsd = spend.spendCapUsd > 0 ? Math.max(0, spend.spendCapUsd - spend.spentUsd) : undefined;
+          // Information control for this attempt: null when it is off or has no
+          // listener, and the dispatch then runs exactly as baseline.
+          const infoControl = openInfoControl({
+            db, nodeId, taskRootId: taskRootId(db, nodeId), role: 'execute', goal: input.goal, model,
+            confidence: qualityFloorFor(db, nodeId, input.goal),
+            taskValueUsd: node?.contract.authority.budget_usd ?? 0,
+            revision: repoHead(worktreePath),
+          });
           return dispatch(db, nodeId, () => executeStep({
+          ...(infoControl ? { infoControl } : {}),
           nodeId,
           goal: goalForDispatch,
           timeoutMs: executeTimeoutMs(),
@@ -2893,7 +2903,7 @@ function productionMachine(db: Db, nodeId: string) {
               insertArtifact(db, { id: randomUUID(), nodeId, eventId: id, createdAt: now, ...artifact });
             }
           },
-        }));
+        })).finally(() => infoControl?.close());
         };
 
         // The committed candidate — and if the runtime then refuses its model,
@@ -3347,6 +3357,7 @@ function runValidation(db: Db, nodeId: string, succeeded: boolean, guardStopped 
   };
   const id = appendEvent(db, { nodeId, type: 'validation.result', payload, createdAt: now });
   publish({ id, nodeId, type: 'validation.result', payload, createdAt: now });
+  settleFinish(db, nodeId, !gated.passed);
   if (gated.passed) rememberVerifiedCommands(db, nodeId, evidence.observedChecks, now);
 
   const pending = pendingResults.get(nodeId);

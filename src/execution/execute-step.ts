@@ -12,6 +12,7 @@ import { isToolAllowed } from '../engines/enforce-tools.js';
 import { rateLimitFromEvents, describeRateLimit } from './rate-limit.js';
 import { usageFromEvents, recoveredUsage } from './tokens.js';
 import { estimateCostUsd } from './pricing.js';
+import { containerTarget, runInContainer } from './container-exec.js';
 
 export interface ExecuteStepInput {
   nodeId: string;
@@ -56,6 +57,14 @@ export interface ExecuteStepInput {
   /** Run as a stdin-fed session so the model can ask CherryOnTop for a private
    *  decision (`<cto_decide>`) and continue in the same process. Ignored by an
    *  adapter that cannot hold a session. */
+  /** Information control for this dispatch (src/infocontrol): the runtime's
+   *  hook settings, the daemon address its egress must allow, and the live
+   *  usage feed the controller prices carrying cost from. Absent = baseline. */
+  infoControl?: {
+    settings: string;
+    egress: { host: string; port: number };
+    observeEvent(event: StructuredEvent): void;
+  };
   session?: {
     gateway: ModelGateway;
     maxDecisionTurns: number;
@@ -151,7 +160,7 @@ const DEFAULT_EGRESS_ALLOWLIST = [
  *  generic result text: the runtime reports an exhausted quota as "Request timed
  *  out", which is both wrong and the kind of wrong that sends you to debug the
  *  network. */
-function runtimeError(events: StructuredEvent[]): string | null {
+export function runtimeError(events: StructuredEvent[]): string | null {
   const limited = rateLimitFromEvents(events);
   if (limited) return describeRateLimit(limited);
 
@@ -195,6 +204,12 @@ async function runStep(
   input: ExecuteStepInput,
   deps: Partial<ExecuteStepDeps>,
 ): Promise<ExecuteStepResult> {
+  // A daemon dedicated to an existing container (a benchmark's task
+  // environment) runs the same command there instead of in a Job.
+  const container = containerTarget();
+  if (container) return runInContainer(input, container);
+  if (process.env.ORG_EXEC_CONTAINER !== undefined) console.error('ORG_EXEC_CONTAINER is set but empty; dispatching to Kubernetes');
+
   const d = { ...defaultDeps, ...deps };
   const sessionMode = input.session !== undefined && input.adapter.supportsSession === true;
 
@@ -221,6 +236,12 @@ async function runStep(
         ],
         ports: [{ port: 53, protocol: 'UDP' }, { port: 53, protocol: 'TCP' }],
       },
+      // The one private address a sandbox may reach: the daemon's hook
+      // listener, one port, and only when this dispatch has a controller.
+      ...(input.infoControl ? [{
+        to: [{ ipBlock: { cidr: `${input.infoControl.egress.host}/32` } }],
+        ports: [{ port: input.infoControl.egress.port, protocol: 'TCP' }],
+      }] : []),
     ]);
     await d.applyNetworkPolicy(policy, input.namespace);
 
@@ -242,6 +263,7 @@ async function runStep(
         maxTurns: input.maxTurns,
         systemPrompt: input.systemPrompt,
         ...(sessionMode ? { session: true } : {}),
+        ...(input.infoControl ? { settings: input.infoControl.settings } : {}),
       }),
       worktreePath: input.worktreePath,
       secretName,
@@ -317,6 +339,7 @@ async function runStep(
         const event = controller ? controller.process(parsed) : parsed;
         firstEventAt ??= Date.now();
         collected.push(event);
+        input.infoControl?.observeEvent(event);
         if (input.grant?.allowedTools) {
           for (const tool of toolNamesFromEvent(event)) {
             if (isToolAllowed({ tools: input.grant.allowedTools }, tool) || reported.has(tool)) continue;

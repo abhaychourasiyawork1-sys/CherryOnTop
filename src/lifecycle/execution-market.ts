@@ -503,6 +503,12 @@ export interface ExecutionSelection {
 
 /** The node's state as the market should see it: rebuilt from storage, with
  *  the node's dollar authority and this book's reservations folded in. */
+/** The success probability this node's work is held to: how sure any
+ *  risk-bearing decision about it must be. */
+export function qualityFloorFor(db: Db, nodeId: string, goal: string): number {
+  return marketState(db, nodeId, goal).constraints.qualityFloor;
+}
+
 function marketState(db: Db, nodeId: string, goal: string): EconomicState {
   const node = getNode(db, nodeId);
   const observed = economicStateFor(db, { nodeId, goal }, { commit: false });

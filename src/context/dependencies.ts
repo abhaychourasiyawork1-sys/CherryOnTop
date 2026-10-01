@@ -29,7 +29,9 @@ import { repoHead, repoDirty } from '../execution/git-state.js';
 
 /** Where the worktree is mounted inside the sandbox (see k8s/job-manifest.ts).
  *  Tool calls report paths as the agent saw them. */
-const MOUNT = '/workspace';
+/** Where the repository is mounted in the sandbox: the K8s Job's `/workspace`,
+ *  or a container substrate's own work directory (`ORG_SANDBOX_WORKDIR`). */
+const MOUNT = process.env.ORG_SANDBOX_WORKDIR ?? '/workspace';
 
 /** Tools whose arguments name what was read. Anything not listed here and not
  *  in INERT_TOOLS makes the run opaque — the safe default is that we do not

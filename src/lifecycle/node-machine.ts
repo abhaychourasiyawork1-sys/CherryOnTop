@@ -179,14 +179,21 @@ export const nodeMachine = setup({
         onError: {
           target: 'VALIDATE',
           actions: assign({
-            lastResult: ({ event }) => ({
+            lastResult: ({ event, context }) => {
+              // Otherwise invisible: the snapshot holding this message is cleared
+              // at the terminal state, and nothing else records why no sandbox ran.
+              if (!(event.error instanceof SpendGuardStop)) {
+                console.error(`Execution failed before or during dispatch for node ${context.nodeId}:`, event.error);
+              }
+              return {
               succeeded: false, message: String(event.error), events: [], usage: { ...ZERO_USAGE },
               // The guard refusing to open a sandbox is not the work failing —
               // it is the daemon's own resource ceiling, and VALIDATE needs to
               // tell the two apart before it decides whether a retry is worth
               // refusing.
               guardStopped: event.error instanceof SpendGuardStop,
-            }),
+              };
+            },
           }),
         },
       },
