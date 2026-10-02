@@ -43,9 +43,29 @@ mkdirSync(join(ROOT, 'runs'), { recursive: true });
 const file = join(ROOT, 'schedule.json');
 if (!existsSync(file)) writeFileSync(file, JSON.stringify({ frozenAt: new Date().toISOString(), schedule }, null, 2));
 
+// The sandbox cannot refresh the Claude login, and the host CLI refreshes only
+// an expired one. A run (≤ 45 min + start-up) starts only with ≥ 55 min left;
+// otherwise the lanes wait for expiry and one host call refreshes it.
+const AUTH_MIN_MS = 55 * 60_000;
+let authGate = Promise.resolve();
+const expiresAt = () => { try { return JSON.parse(readFileSync(join(homedir(), '.claude', '.credentials.json'), 'utf8')).claudeAiOauth?.expiresAt; } catch { return undefined; } };
+function ensureAuth() {
+  authGate = authGate.then(async () => {
+    const exp = expiresAt();
+    if (typeof exp !== 'number' || exp - Date.now() >= AUTH_MIN_MS) return;
+    console.log(`[${new Date().toISOString()}] login expires in ${Math.round((exp - Date.now()) / 60000)} min: waiting for expiry, then refreshing`);
+    await new Promise((r) => setTimeout(r, Math.max(0, exp - Date.now()) + 60_000));
+    execFileSync('claude', ['-p', 'Reply with just: ok', '--model', 'haiku'], { stdio: 'ignore', timeout: 180_000 });
+    const after = expiresAt();
+    if (typeof after === 'number' && after - Date.now() < AUTH_MIN_MS) throw new Error('Claude login did not refresh');
+  });
+  return authGate;
+}
+
 async function lane(n) {
   for (const s of schedule.filter((x) => x.lane === n)) {
     if (existsSync(join(ROOT, 'runs', s.runId, 'meta.json'))) { console.log(`skip ${s.runId}`); continue; }
+    if (H26) await ensureAuth();
     console.log(`[${new Date().toISOString()}] RUN ${s.runId} (lane ${n})`);
     const code = await new Promise((resolve) => spawn('node', [join(import.meta.dirname, 'run-real.mjs'), s.runId, s.task, s.arm, String(s.rep), String(n)], { stdio: ['ignore', 'inherit', 'inherit'] }).on('exit', resolve));
     console.log(`[${new Date().toISOString()}] END ${s.runId} exit=${code}`);
