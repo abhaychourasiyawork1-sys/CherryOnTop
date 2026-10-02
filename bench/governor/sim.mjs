@@ -8,7 +8,7 @@
 import { createHash } from 'node:crypto';
 import { initialEconomicState, normalizeEconomicState } from '../../dist/decision/state.js';
 import { compareTrajectory, EMPTY_SNAPSHOT } from '../../dist/decision/trajectory.js';
-import { runDecisionCycle, INITIAL_CADENCE } from '../../dist/decision/orchestration-loop.js';
+import { runDecisionCycle, INITIAL_CADENCE, MAX_CADENCE_INTERVAL } from '../../dist/decision/orchestration-loop.js';
 import { actionCandidate } from '../../dist/decision/actions.js';
 import { allocateBudget } from '../../dist/decision/budget.js';
 import { stateDerivedCandidates, registerCandidateSource } from '../../dist/decision/deep-path.js';
@@ -327,13 +327,16 @@ export function runTask(task, cfg, opts) {
   const W = cfg.world;
   const salt = opts.salt ?? `rep${opts.rep ?? 0}`;
   const w = freshWorld(task);
-  const features = opts.variant === 'H0' ? null : VARIANTS[opts.variant];
+  const features = opts.features ?? (opts.variant === 'H0' ? null : VARIANTS[opts.variant]);
   const packets = memoryPacketStore();
   const node = newGovernorNodeState();
+  // opts.poolFor(node): the offline evaluator's discovery gate wraps the pool;
+  // it sees the node (prevRisk) and the state, never the world.
+  const pool = opts.poolFor ? opts.poolFor(node, opts.pool) : opts.pool;
   const ctx = features ? createGovernorContext({
     taskId: task.id, features, packets,
     ...(opts.memory ? { memory: opts.memory } : {}),
-    ...(opts.pool ? { pool: opts.pool } : {}),
+    ...(pool ? { pool } : {}),
   }) : null;
   const expected = task.steps * task.tps;
   const budget = W.budgetMultiple * expected;
@@ -363,11 +366,18 @@ export function runTask(task, cfg, opts) {
         const { candidates, state } = boundaryCandidates(w, task, raw);
         if (w.invited && !node.invitationSent) node.invitationSent = true;
         const t0 = performance.now();
-        const cycle = runDecisionCycle(state, { cadence: w.cadence, additionalCandidates: candidates, governor: { ctx, node } });
+        const cycle = runDecisionCycle(state, { cadence: w.cadence, additionalCandidates: candidates, governor: { ctx, node }, ...(opts.executable ? { executable: opts.executable } : {}) });
         w.marketMs += performance.now() - t0;
+        const cadenceBefore = w.cadence;
         w.cadence = cycle.cadence;
-        if (node.inviteProposals && !w.invited) w.invited = true;
+        if (node.inviteProposals && !w.invited) {
+          w.invited = true;
+          // A gated invitation is never sent: no proposal round, no tokens.
+          if (opts.inviteGate && !opts.inviteGate({ state, node })) w.proposed = true;
+        }
         const decision = cycle.decision;
+        // opts.observe: every evaluated boundary, runtime-visible view only.
+        if (opts.observe && decision) opts.observe({ state, decision });
         if (cycle.cost.reason !== 'not_due' && decision) {
           boundaries.push({
             version: w.step, decision, deep: !cycle.skippedDeepEvaluation, considered: cycle.candidates,
@@ -382,6 +392,20 @@ export function runTask(task, cfg, opts) {
           w.discoveryTokens += d.tier === 'agent_proposal' ? 400 : d.tier === 'semantic' ? 667 : 0;
         }
         let act = decision && decision.action.kind !== 'continue' && decision.action.kind !== 'stop' ? decision : null;
+        // opts.gate: the offline evaluator's alternate gate. It gets only what
+        // the runtime sees at this boundary and returns the candidate to carry
+        // out (the market's choice over the gated set) or null to abstain.
+        if (act && opts.gate) {
+          w.selected = (w.selected ?? 0) + 1;
+          const chosen = opts.gate({ state, decision, considered: cycle.candidates, risk: cycle.governed?.risk ?? null });
+          act = chosen ? { ...decision, action: chosen } : null;
+          if (!act) {
+            w.abstained = (w.abstained ?? 0) + 1;
+            // Abstaining is the market choosing continue: a quiet cycle, so
+            // the backoff advances as orchestration-loop's advance() would.
+            w.cadence = { lastEvaluatedVersion: w.step, interval: Math.min(MAX_CADENCE_INTERVAL, cadenceBefore.interval * 2), consecutiveNoOps: cadenceBefore.consecutiveNoOps + 1 };
+          }
+        }
         if (opts.force && opts.force.version === w.step) act = { ...decision, action: opts.force.candidate };
         if (act) {
           const index = interventionIndex++;

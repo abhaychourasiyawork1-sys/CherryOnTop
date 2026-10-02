@@ -1,0 +1,4090 @@
+{
+ "configs": [
+  {
+   "name": "H0",
+   "fit": {
+    "runs": 216,
+    "success": 0.8935185185185185,
+    "tokensPerTask": 302226.1701985472,
+    "tokensPerSuccess": 338242.7604294622,
+    "looksPerTask": 0,
+    "selectedPerTask": 0,
+    "abstainedPerTask": 0,
+    "interventionsPerTask": 0,
+    "autonomy": 1,
+    "zeroInterventionTasks": 1,
+    "interventionPrecision": null,
+    "interventionROI": null,
+    "netSavingPerLabelled": null,
+    "interventionTokensPerTask": 0,
+    "controlFrictionPerTask": 0,
+    "discoveryTokensPerTask": 0,
+    "replayTokensPerTask": 0,
+    "candidateRecall3": null,
+    "generationMissRate": null,
+    "preventionDebtPerTask": 0,
+    "unavoidableInterventions": 0,
+    "brier": null,
+    "meanP": null,
+    "meanY": null
+   },
+   "held": {
+    "runs": 144,
+    "success": 0.9097222222222222,
+    "tokensPerTask": 290423.28864711657,
+    "tokensPerSuccess": 319243.92034492205,
+    "looksPerTask": 0,
+    "selectedPerTask": 0,
+    "abstainedPerTask": 0,
+    "interventionsPerTask": 0,
+    "autonomy": 1,
+    "zeroInterventionTasks": 1,
+    "interventionPrecision": null,
+    "interventionROI": null,
+    "netSavingPerLabelled": null,
+    "interventionTokensPerTask": 0,
+    "controlFrictionPerTask": 0,
+    "discoveryTokensPerTask": 0,
+    "replayTokensPerTask": 0,
+    "candidateRecall3": null,
+    "generationMissRate": null,
+    "preventionDebtPerTask": 0,
+    "unavoidableInterventions": 0,
+    "brier": null,
+    "meanP": null,
+    "meanY": null
+   },
+   "all": {
+    "runs": 360,
+    "success": 0.9,
+    "tokensPerTask": 297505.0175779754,
+    "tokensPerSuccess": 330561.1306421949,
+    "looksPerTask": 0,
+    "selectedPerTask": 0,
+    "abstainedPerTask": 0,
+    "interventionsPerTask": 0,
+    "autonomy": 1,
+    "zeroInterventionTasks": 1,
+    "interventionPrecision": null,
+    "interventionROI": null,
+    "netSavingPerLabelled": null,
+    "interventionTokensPerTask": 0,
+    "controlFrictionPerTask": 0,
+    "discoveryTokensPerTask": 0,
+    "replayTokensPerTask": 0,
+    "candidateRecall3": null,
+    "generationMissRate": null,
+    "preventionDebtPerTask": 0,
+    "unavoidableInterventions": 0,
+    "brier": null,
+    "meanP": null,
+    "meanY": null
+   },
+   "vsH2": {
+    "all": {
+     "cps": 0.016841850708237294,
+     "cpsCI": [
+      -0.003704682113577773,
+      0.03947233035825204
+     ],
+     "success": -0.002777777777777778,
+     "successCI": [
+      -0.019444444444444445,
+      0.011111111111111112
+     ],
+     "tasks": 120
+    },
+    "held": {
+     "cps": -0.005583321876173608,
+     "cpsCI": [
+      -0.026254572591639325,
+      0.011757822434893539
+     ],
+     "success": 0.006944444444444444,
+     "successCI": [
+      0,
+      0.020833333333333332
+     ],
+     "tasks": 48
+    }
+   },
+   "vsH25": {
+    "all": {
+     "cps": 0.030378298777243185,
+     "cpsCI": [
+      0.010426632831868954,
+      0.05296844923028221
+     ],
+     "success": -0.005555555555555556,
+     "successCI": [
+      -0.019444444444444445,
+      0.005555555555555556
+     ],
+     "tasks": 120
+    },
+    "held": {
+     "cps": 0.011324731968544999,
+     "cpsCI": [
+      0.004252188833383075,
+      0.019594863031679566
+     ],
+     "success": 0,
+     "successCI": [
+      0,
+      0
+     ],
+     "tasks": 48
+    }
+   },
+   "vsH0": {
+    "all": {
+     "cps": 0,
+     "cpsCI": [
+      0,
+      0
+     ],
+     "success": 0,
+     "successCI": [
+      0,
+      0
+     ],
+     "tasks": 120
+    },
+    "held": {
+     "cps": 0,
+     "cpsCI": [
+      0,
+      0
+     ],
+     "success": 0,
+     "successCI": [
+      0,
+      0
+     ],
+     "tasks": 48
+    }
+   },
+   "recovered": {
+    "all": -0.6045972548663762,
+    "held": 0.19943095105318936
+   },
+   "byBucketHeld": {
+    "local": {
+     "cps": -0.0023626970562594662,
+     "cpsCI": [
+      -0.0073422578515260906,
+      0
+     ],
+     "success": 0,
+     "successCI": [
+      0,
+      0
+     ],
+     "tasks": 14
+    },
+    "multi": {
+     "cps": -0.010082591240252792,
+     "cpsCI": [
+      -0.06977369816296275,
+      0.029555659514237664
+     ],
+     "success": 0.023809523809523808,
+     "successCI": [
+      0,
+      0.07142857142857142
+     ],
+     "tasks": 14
+    },
+    "exploratory": {
+     "cps": -0.012682537647076497,
+     "cpsCI": [
+      -0.03387157913945782,
+      0.009457622201505256
+     ],
+     "success": 0,
+     "successCI": [
+      0,
+      0
+     ],
+     "tasks": 11
+    },
+    "risky": {
+     "cps": 0.004471301332205524,
+     "cpsCI": [
+      -0.004356383081418169,
+      0.020812262389673597
+     ],
+     "success": 0,
+     "successCI": [
+      0,
+      0
+     ],
+     "tasks": 9
+    }
+   },
+   "kinds": {
+    "fit": {},
+    "held": {}
+   },
+   "value": null
+  },
+  {
+   "name": "H2",
+   "fit": {
+    "runs": 216,
+    "success": 0.9027777777777778,
+    "tokensPerTask": 295917.8136488191,
+    "tokensPerSuccess": 327785.8858879227,
+    "looksPerTask": 20.828703703703702,
+    "selectedPerTask": 15.328703703703704,
+    "abstainedPerTask": 0,
+    "interventionsPerTask": 3.7824074074074074,
+    "autonomy": 0.9014950566674704,
+    "zeroInterventionTasks": 0.3333333333333333,
+    "interventionPrecision": 0.15,
+    "interventionROI": 0.3020465318942509,
+    "netSavingPerLabelled": 784.1883264175127,
+    "interventionTokensPerTask": 11373.286416927873,
+    "controlFrictionPerTask": 2743.074074074074,
+    "discoveryTokensPerTask": 0,
+    "replayTokensPerTask": 0,
+    "candidateRecall3": null,
+    "generationMissRate": null,
+    "preventionDebtPerTask": 0,
+    "unavoidableInterventions": 5.333333333333333,
+    "brier": null,
+    "meanP": null,
+    "meanY": null
+   },
+   "held": {
+    "runs": 144,
+    "success": 0.9027777777777778,
+    "tokensPerTask": 289824.50045167754,
+    "tokensPerSuccess": 321036.369731089,
+    "looksPerTask": 18.97222222222222,
+    "selectedPerTask": 13.270833333333334,
+    "abstainedPerTask": 0,
+    "interventionsPerTask": 3.2152777777777777,
+    "autonomy": 0.9123106060606061,
+    "zeroInterventionTasks": 0.4444444444444444,
+    "interventionPrecision": 0.13247863247863248,
+    "interventionROI": -0.1229747335292475,
+    "netSavingPerLabelled": -317.6881206564761,
+    "interventionTokensPerTask": 9322.559895960814,
+    "controlFrictionPerTask": 2503.2083333333335,
+    "discoveryTokensPerTask": 0,
+    "replayTokensPerTask": 0,
+    "candidateRecall3": null,
+    "generationMissRate": null,
+    "preventionDebtPerTask": 0,
+    "unavoidableInterventions": 3,
+    "brier": null,
+    "meanP": null,
+    "meanY": null
+   },
+   "all": {
+    "runs": 360,
+    "success": 0.9027777777777778,
+    "tokensPerTask": 293480.4883699627,
+    "tokensPerSuccess": 325086.07942518947,
+    "looksPerTask": 20.086111111111112,
+    "selectedPerTask": 14.505555555555556,
+    "abstainedPerTask": 0,
+    "interventionsPerTask": 3.5555555555555554,
+    "autonomy": 0.9057020775011051,
+    "zeroInterventionTasks": 0.37777777777777777,
+    "interventionPrecision": 0.1437308868501529,
+    "interventionROI": 0.15046040495029095,
+    "netSavingPerLabelled": 389.9389554460854,
+    "interventionTokensPerTask": 10552.995808541056,
+    "controlFrictionPerTask": 2647.1277777777777,
+    "discoveryTokensPerTask": 0,
+    "replayTokensPerTask": 0,
+    "candidateRecall3": null,
+    "generationMissRate": null,
+    "preventionDebtPerTask": 0,
+    "unavoidableInterventions": 4.166666666666667,
+    "brier": null,
+    "meanP": null,
+    "meanY": null
+   },
+   "vsH2": {
+    "all": {
+     "cps": 0,
+     "cpsCI": [
+      0,
+      0
+     ],
+     "success": 0,
+     "successCI": [
+      0,
+      0
+     ],
+     "tasks": 120
+    },
+    "held": {
+     "cps": 0,
+     "cpsCI": [
+      0,
+      0
+     ],
+     "success": 0,
+     "successCI": [
+      0,
+      0
+     ],
+     "tasks": 48
+    }
+   },
+   "vsH25": {
+    "all": {
+     "cps": 0.01331224522237906,
+     "cpsCI": [
+      0.007343664593544741,
+      0.021395738684037546
+     ],
+     "success": -0.002777777777777778,
+     "successCI": [
+      -0.008333333333333333,
+      0
+     ],
+     "tasks": 120
+    },
+    "held": {
+     "cps": 0.0170029869939623,
+     "cpsCI": [
+      0.0037117221186768745,
+      0.03699685888846793
+     ],
+     "success": -0.006944444444444444,
+     "successCI": [
+      -0.020833333333333332,
+      0
+     ],
+     "tasks": 48
+    }
+   },
+   "vsH0": {
+    "all": {
+     "cps": -0.016562900805574432,
+     "cpsCI": [
+      -0.03807884154050645,
+      0.0037026180756818405
+     ],
+     "success": 0.002777777777777778,
+     "successCI": [
+      -0.011111111111111112,
+      0.016666666666666666
+     ],
+     "tasks": 120
+    },
+    "held": {
+     "cps": 0.005614670388179421,
+     "cpsCI": [
+      -0.011668786321535896,
+      0.02692768783060151
+     ],
+     "success": -0.006944444444444444,
+     "successCI": [
+      -0.020833333333333332,
+      0
+     ],
+     "tasks": 48
+    }
+   },
+   "recovered": {
+    "all": 0,
+    "held": 0
+   },
+   "byBucketHeld": {
+    "local": {
+     "cps": 0,
+     "cpsCI": [
+      0,
+      0
+     ],
+     "success": 0,
+     "successCI": [
+      0,
+      0
+     ],
+     "tasks": 14
+    },
+    "multi": {
+     "cps": 0,
+     "cpsCI": [
+      0,
+      0
+     ],
+     "success": 0,
+     "successCI": [
+      0,
+      0
+     ],
+     "tasks": 14
+    },
+    "exploratory": {
+     "cps": 0,
+     "cpsCI": [
+      0,
+      0
+     ],
+     "success": 0,
+     "successCI": [
+      0,
+      0
+     ],
+     "tasks": 11
+    },
+    "risky": {
+     "cps": 0,
+     "cpsCI": [
+      0,
+      0
+     ],
+     "success": 0,
+     "successCI": [
+      0,
+      0
+     ],
+     "tasks": 9
+    }
+   },
+   "kinds": {
+    "fit": {
+     "acquire_evidence": 2.435,
+     "recover": 1.347
+    },
+    "held": {
+     "acquire_evidence": 2.09,
+     "recover": 1.125
+    }
+   },
+   "value": null
+  },
+  {
+   "name": "H2.5",
+   "fit": {
+    "runs": 216,
+    "success": 0.9027777777777778,
+    "tokensPerTask": 292746.0383000491,
+    "tokensPerSuccess": 324272.5347323621,
+    "looksPerTask": 9.291666666666666,
+    "selectedPerTask": 3.064814814814815,
+    "abstainedPerTask": 0,
+    "interventionsPerTask": 3.064814814814815,
+    "autonomy": 0.9200772666908125,
+    "zeroInterventionTasks": 0.3472222222222222,
+    "interventionPrecision": 0.1707920792079208,
+    "interventionROI": -0.1469249421673044,
+    "netSavingPerLabelled": -361.06296035468046,
+    "interventionTokensPerTask": 8498.406370992901,
+    "controlFrictionPerTask": 1220.1851851851852,
+    "discoveryTokensPerTask": 0,
+    "replayTokensPerTask": 0,
+    "candidateRecall3": null,
+    "generationMissRate": null,
+    "preventionDebtPerTask": 0,
+    "unavoidableInterventions": 3.8333333333333335,
+    "brier": null,
+    "meanP": null,
+    "meanY": null
+   },
+   "held": {
+    "runs": 144,
+    "success": 0.9097222222222222,
+    "tokensPerTask": 287171.15231801686,
+    "tokensPerSuccess": 315669.05292972847,
+    "looksPerTask": 8.208333333333334,
+    "selectedPerTask": 2.5277777777777777,
+    "abstainedPerTask": 0,
+    "interventionsPerTask": 2.5277777777777777,
+    "autonomy": 0.9310475468838795,
+    "zeroInterventionTasks": 0.4652777777777778,
+    "interventionPrecision": 0.13333333333333333,
+    "interventionROI": -0.8669550255556708,
+    "netSavingPerLabelled": -2133.8398746522016,
+    "interventionTokensPerTask": 6642.0329701241435,
+    "controlFrictionPerTask": 1081.4722222222222,
+    "discoveryTokensPerTask": 0,
+    "replayTokensPerTask": 0,
+    "candidateRecall3": null,
+    "generationMissRate": null,
+    "preventionDebtPerTask": 0,
+    "unavoidableInterventions": 3,
+    "brier": null,
+    "meanP": null,
+    "meanY": null
+   },
+   "all": {
+    "runs": 360,
+    "success": 0.9055555555555556,
+    "tokensPerTask": 290516.08390723646,
+    "tokensPerSuccess": 320815.3073822243,
+    "looksPerTask": 8.858333333333333,
+    "selectedPerTask": 2.85,
+    "abstainedPerTask": 0,
+    "interventionsPerTask": 2.85,
+    "autonomy": 0.9243474413803274,
+    "zeroInterventionTasks": 0.39444444444444443,
+    "interventionPrecision": 0.1573926868044515,
+    "interventionROI": -0.4047456328409318,
+    "netSavingPerLabelled": -995.2041459142072,
+    "interventionTokensPerTask": 7755.857010645406,
+    "controlFrictionPerTask": 1164.7,
+    "discoveryTokensPerTask": 0,
+    "replayTokensPerTask": 0,
+    "candidateRecall3": null,
+    "generationMissRate": null,
+    "preventionDebtPerTask": 0,
+    "unavoidableInterventions": 3.4166666666666665,
+    "brier": null,
+    "meanP": null,
+    "meanY": null
+   },
+   "vsH2": {
+    "all": {
+     "cps": -0.013137357497794433,
+     "cpsCI": [
+      -0.0209578587601148,
+      -0.007294917777372234
+     ],
+     "success": 0.002777777777777778,
+     "successCI": [
+      0,
+      0.008333333333333333
+     ],
+     "tasks": 120
+    },
+    "held": {
+     "cps": -0.016718718835054158,
+     "cpsCI": [
+      -0.03590358352948275,
+      -0.0037007042402372736
+     ],
+     "success": 0.006944444444444444,
+     "successCI": [
+      0,
+      0.020833333333333332
+     ],
+     "tasks": 48
+    }
+   },
+   "vsH25": {
+    "all": {
+     "cps": 0,
+     "cpsCI": [
+      0,
+      0
+     ],
+     "success": 0,
+     "successCI": [
+      0,
+      0
+     ],
+     "tasks": 120
+    },
+    "held": {
+     "cps": 0,
+     "cpsCI": [
+      0,
+      0
+     ],
+     "success": 0,
+     "successCI": [
+      0,
+      0
+     ],
+     "tasks": 48
+    }
+   },
+   "vsH0": {
+    "all": {
+     "cps": -0.02948266555428547,
+     "cpsCI": [
+      -0.05032842289616313,
+      -0.010497111907226797
+     ],
+     "success": 0.005555555555555556,
+     "successCI": [
+      -0.005555555555555556,
+      0.019444444444444445
+     ],
+     "tasks": 120
+    },
+    "held": {
+     "cps": -0.011197918542446228,
+     "cpsCI": [
+      -0.01926169381100873,
+      -0.004257090093123583
+     ],
+     "success": 0,
+     "successCI": [
+      0,
+      0
+     ],
+     "tasks": 48
+    }
+   },
+   "recovered": {
+    "all": 0.4716114883668881,
+    "held": 0.5971767473937493
+   },
+   "byBucketHeld": {
+    "local": {
+     "cps": 0.0018901576450074398,
+     "cpsCI": [
+      0,
+      0.005767717960542429
+     ],
+     "success": 0,
+     "successCI": [
+      0,
+      0
+     ],
+     "tasks": 14
+    },
+    "multi": {
+     "cps": -0.02926351005873118,
+     "cpsCI": [
+      -0.0879169058348247,
+      0
+     ],
+     "success": 0.023809523809523808,
+     "successCI": [
+      0,
+      0.07142857142857142
+     ],
+     "tasks": 14
+    },
+    "exploratory": {
+     "cps": -0.023434374141283132,
+     "cpsCI": [
+      -0.03770886047759281,
+      -0.008433830073424131
+     ],
+     "success": 0,
+     "successCI": [
+      0,
+      0
+     ],
+     "tasks": 11
+    },
+    "risky": {
+     "cps": -0.003896287653846864,
+     "cpsCI": [
+      -0.009263153470916441,
+      0.000356278443715885
+     ],
+     "success": 0,
+     "successCI": [
+      0,
+      0
+     ],
+     "tasks": 9
+    }
+   },
+   "kinds": {
+    "fit": {
+     "acquire_evidence": 2.509,
+     "recover": 0.556
+    },
+    "held": {
+     "acquire_evidence": 2.174,
+     "recover": 0.354
+    }
+   },
+   "value": null
+  },
+  {
+   "name": "oracle never-recover",
+   "fit": {
+    "runs": 216,
+    "success": 0.9120370370370371,
+    "tokensPerTask": 290664.75127606216,
+    "tokensPerSuccess": 318698.4074905047,
+    "looksPerTask": 8.37037037037037,
+    "selectedPerTask": 2.7731481481481484,
+    "abstainedPerTask": 0,
+    "interventionsPerTask": 2.560185185185185,
+    "autonomy": 0.9332609220371711,
+    "zeroInterventionTasks": 0.3472222222222222,
+    "interventionPrecision": 0.09137055837563451,
+    "interventionROI": 0.23067667158255759,
+    "netSavingPerLabelled": 554.1407259054641,
+    "interventionTokensPerTask": 6232.795399659216,
+    "controlFrictionPerTask": 1098.7777777777778,
+    "discoveryTokensPerTask": 0,
+    "replayTokensPerTask": 0,
+    "candidateRecall3": null,
+    "generationMissRate": null,
+    "preventionDebtPerTask": 0,
+    "unavoidableInterventions": 3.6666666666666665,
+    "brier": null,
+    "meanP": null,
+    "meanY": null
+   },
+   "held": {
+    "runs": 144,
+    "success": 0.9166666666666666,
+    "tokensPerTask": 286044.5043996989,
+    "tokensPerSuccess": 312048.550254217,
+    "looksPerTask": 7.618055555555555,
+    "selectedPerTask": 2.3402777777777777,
+    "abstainedPerTask": 0,
+    "interventionsPerTask": 2.1875,
+    "autonomy": 0.9403860711582135,
+    "zeroInterventionTasks": 0.4722222222222222,
+    "interventionPrecision": 0.0273972602739726,
+    "interventionROI": 0.02568934510092763,
+    "netSavingPerLabelled": 61.17107978251632,
+    "interventionTokensPerTask": 5227.405062395439,
+    "controlFrictionPerTask": 1003.5833333333334,
+    "discoveryTokensPerTask": 0,
+    "replayTokensPerTask": 0,
+    "candidateRecall3": null,
+    "generationMissRate": null,
+    "preventionDebtPerTask": 0,
+    "unavoidableInterventions": 3,
+    "brier": null,
+    "meanP": null,
+    "meanY": null
+   },
+   "all": {
+    "runs": 360,
+    "success": 0.9138888888888889,
+    "tokensPerTask": 288816.65252551716,
+    "tokensPerSuccess": 316030.37966317986,
+    "looksPerTask": 8.069444444444445,
+    "selectedPerTask": 2.6,
+    "abstainedPerTask": 0,
+    "interventionsPerTask": 2.411111111111111,
+    "autonomy": 0.9360353721444362,
+    "zeroInterventionTasks": 0.3972222222222222,
+    "interventionPrecision": 0.06851549755301795,
+    "interventionROI": 0.15785688301145076,
+    "netSavingPerLabelled": 378.02269572450894,
+    "interventionTokensPerTask": 5830.639264753704,
+    "controlFrictionPerTask": 1060.7,
+    "discoveryTokensPerTask": 0,
+    "replayTokensPerTask": 0,
+    "candidateRecall3": null,
+    "generationMissRate": null,
+    "preventionDebtPerTask": 0,
+    "unavoidableInterventions": 3.3333333333333335,
+    "brier": null,
+    "meanP": null,
+    "meanY": null
+   },
+   "vsH2": {
+    "all": {
+     "cps": -0.02785631355861773,
+     "cpsCI": [
+      -0.04202571015169665,
+      -0.016085558086007645
+     ],
+     "success": 0.011111111111111112,
+     "successCI": [
+      0.002777777777777778,
+      0.022222222222222223
+     ],
+     "tasks": 120
+    },
+    "held": {
+     "cps": -0.027996265608162818,
+     "cpsCI": [
+      -0.05389306989151432,
+      -0.008294874931419005
+     ],
+     "success": 0.013888888888888888,
+     "successCI": [
+      0,
+      0.034722222222222224
+     ],
+     "tasks": 48
+    }
+   },
+   "vsH25": {
+    "all": {
+     "cps": -0.014914898413322386,
+     "cpsCI": [
+      -0.027076681346614673,
+      -0.005259061395138098
+     ],
+     "success": 0.008333333333333333,
+     "successCI": [
+      0,
+      0.019444444444444445
+     ],
+     "tasks": 120
+    },
+    "held": {
+     "cps": -0.01146929875421554,
+     "cpsCI": [
+      -0.02819018376737692,
+      -0.0022427943640354053
+     ],
+     "success": 0.006944444444444444,
+     "successCI": [
+      0,
+      0.020833333333333332
+     ],
+     "tasks": 48
+    }
+   },
+   "vsH0": {
+    "all": {
+     "cps": -0.04395783300591172,
+     "cpsCI": [
+      -0.06528234914078124,
+      -0.025737360112231378
+     ],
+     "success": 0.013888888888888888,
+     "successCI": [
+      0.002777777777777778,
+      0.030555555555555555
+     ],
+     "tasks": 120
+    },
+    "held": {
+     "cps": -0.022538785023473173,
+     "cpsCI": [
+      -0.04137699588497834,
+      -0.009861066112111239
+     ],
+     "success": 0.006944444444444444,
+     "successCI": [
+      0,
+      0.020833333333333332
+     ],
+     "tasks": 48
+    }
+   },
+   "recovered": {
+    "all": 1,
+    "held": 1
+   },
+   "byBucketHeld": {
+    "local": {
+     "cps": -0.001653887939381593,
+     "cpsCI": [
+      -0.005139580496068552,
+      0
+     ],
+     "success": 0,
+     "successCI": [
+      0,
+      0
+     ],
+     "tasks": 14
+    },
+    "multi": {
+     "cps": -0.031315596761592235,
+     "cpsCI": [
+      -0.0901912678990554,
+      0
+     ],
+     "success": 0.023809523809523808,
+     "successCI": [
+      0,
+      0.07142857142857142
+     ],
+     "tasks": 14
+    },
+    "exploratory": {
+     "cps": -0.030674555841635587,
+     "cpsCI": [
+      -0.048425381999893546,
+      -0.011921336815773675
+     ],
+     "success": 0,
+     "successCI": [
+      0,
+      0
+     ],
+     "tasks": 11
+    },
+    "risky": {
+     "cps": -0.0533903482937802,
+     "cpsCI": [
+      -0.16304317993788264,
+      -0.002000436715705267
+     ],
+     "success": 0.037037037037037035,
+     "successCI": [
+      0,
+      0.1111111111111111
+     ],
+     "tasks": 9
+    }
+   },
+   "kinds": {
+    "fit": {
+     "acquire_evidence": 2.56
+    },
+    "held": {
+     "acquire_evidence": 2.188
+    }
+   },
+   "value": null
+  },
+  {
+   "name": "learned (k20 z1 3-level)",
+   "fit": {
+    "runs": 216,
+    "success": 0.8981481481481481,
+    "tokensPerTask": 299529.3168074857,
+    "tokensPerSuccess": 333496.55891967483,
+    "looksPerTask": 6.111111111111111,
+    "selectedPerTask": 2.3518518518518516,
+    "abstainedPerTask": 0,
+    "interventionsPerTask": 0.6296296296296297,
+    "autonomy": 0.984313725490196,
+    "zeroInterventionTasks": 0.8425925925925926,
+    "interventionPrecision": 0.1724137931034483,
+    "interventionROI": 0.13713037650902146,
+    "netSavingPerLabelled": 403.90437295317923,
+    "interventionTokensPerTask": 1926.2139925310735,
+    "controlFrictionPerTask": 803.7407407407408,
+    "discoveryTokensPerTask": 0,
+    "replayTokensPerTask": 0,
+    "candidateRecall3": null,
+    "generationMissRate": null,
+    "preventionDebtPerTask": 0,
+    "unavoidableInterventions": 0.3333333333333333,
+    "brier": null,
+    "meanP": null,
+    "meanY": null
+   },
+   "held": {
+    "runs": 144,
+    "success": 0.9097222222222222,
+    "tokensPerTask": 290569.9184109228,
+    "tokensPerSuccess": 319405.1011539915,
+    "looksPerTask": 5.104166666666667,
+    "selectedPerTask": 1.9513888888888888,
+    "abstainedPerTask": 0,
+    "interventionsPerTask": 0.04861111111111111,
+    "autonomy": 0.9987191216834401,
+    "zeroInterventionTasks": 0.9583333333333334,
+    "interventionPrecision": 0,
+    "interventionROI": -1.0613540753307453,
+    "netSavingPerLabelled": -4853.386859932424,
+    "interventionTokensPerTask": 222.29012296378124,
+    "controlFrictionPerTask": 674.6805555555555,
+    "discoveryTokensPerTask": 0,
+    "replayTokensPerTask": 0,
+    "candidateRecall3": null,
+    "generationMissRate": null,
+    "preventionDebtPerTask": 0,
+    "unavoidableInterventions": 0,
+    "brier": null,
+    "meanP": null,
+    "meanY": null
+   },
+   "all": {
+    "runs": 360,
+    "success": 0.9027777777777778,
+    "tokensPerTask": 295945.5574488611,
+    "tokensPerSuccess": 327816.61748181534,
+    "looksPerTask": 5.708333333333333,
+    "selectedPerTask": 2.191666666666667,
+    "abstainedPerTask": 0,
+    "interventionsPerTask": 0.3972222222222222,
+    "autonomy": 0.9898832684824903,
+    "zeroInterventionTasks": 0.8888888888888888,
+    "interventionPrecision": 0.1595744680851064,
+    "interventionROI": 0.004044864682437779,
+    "netSavingPerLabelled": 12.403961993613034,
+    "interventionTokensPerTask": 1244.6444447041565,
+    "controlFrictionPerTask": 752.1166666666667,
+    "discoveryTokensPerTask": 0,
+    "replayTokensPerTask": 0,
+    "candidateRecall3": null,
+    "generationMissRate": null,
+    "preventionDebtPerTask": 0,
+    "unavoidableInterventions": 0.16666666666666666,
+    "brier": null,
+    "meanP": null,
+    "meanY": null
+   },
+   "vsH2": {
+    "all": {
+     "cps": 0.008399430887516823,
+     "cpsCI": [
+      -0.008101790824500354,
+      0.025523876221213992
+     ],
+     "success": 0,
+     "successCI": [
+      -0.011111111111111112,
+      0.011111111111111112
+     ],
+     "tasks": 120
+    },
+    "held": {
+     "cps": -0.005081257860172994,
+     "cpsCI": [
+      -0.02582380614439328,
+      0.012281525360231749
+     ],
+     "success": 0.006944444444444444,
+     "successCI": [
+      0,
+      0.020833333333333332
+     ],
+     "tasks": 48
+    }
+   },
+   "vsH25": {
+    "all": {
+     "cps": 0.02182349139359907,
+     "cpsCI": [
+      0.006433733693162358,
+      0.03827582840422328
+     ],
+     "success": -0.002777777777777778,
+     "successCI": [
+      -0.011111111111111112,
+      0.005555555555555556
+     ],
+     "tasks": 120
+    },
+    "held": {
+     "cps": 0.011835332572479818,
+     "cpsCI": [
+      0.004878502131627771,
+      0.02000619000864945
+     ],
+     "success": 0,
+     "successCI": [
+      0,
+      0
+     ],
+     "tasks": 48
+    }
+   },
+   "vsH0": {
+    "all": {
+     "cps": -0.008302588858670745,
+     "cpsCI": [
+      -0.018125700991197924,
+      -0.0007206623711786264
+     ],
+     "success": 0.002777777777777778,
+     "successCI": [
+      0,
+      0.008333333333333333
+     ],
+     "tasks": 120
+    },
+    "held": {
+     "cps": 0.0005048829399640908,
+     "cpsCI": [
+      -0.00009913038482134429,
+      0.0012481435598281632
+     ],
+     "success": 0,
+     "successCI": [
+      0,
+      0
+     ],
+     "tasks": 48
+    }
+   },
+   "recovered": {
+    "all": -0.30152700822533446,
+    "held": 0.1814977015610061
+   },
+   "byBucketHeld": {
+    "local": {
+     "cps": 0,
+     "cpsCI": [
+      0,
+      0
+     ],
+     "success": 0,
+     "successCI": [
+      0,
+      0
+     ],
+     "tasks": 14
+    },
+    "multi": {
+     "cps": -0.010082591240252792,
+     "cpsCI": [
+      -0.06977369816296275,
+      0.029555659514237664
+     ],
+     "success": 0.023809523809523808,
+     "successCI": [
+      0,
+      0.07142857142857142
+     ],
+     "tasks": 14
+    },
+    "exploratory": {
+     "cps": -0.01264131706357019,
+     "cpsCI": [
+      -0.03388807026021612,
+      0.009457622201505256
+     ],
+     "success": 0,
+     "successCI": [
+      0,
+      0
+     ],
+     "tasks": 11
+    },
+    "risky": {
+     "cps": 0.0052971494965707855,
+     "cpsCI": [
+      -0.003081434907482472,
+      0.021715234193968813
+     ],
+     "success": 0,
+     "successCI": [
+      0,
+      0
+     ],
+     "tasks": 9
+    }
+   },
+   "kinds": {
+    "fit": {
+     "acquire_evidence": 0.398,
+     "recover": 0.231
+    },
+    "held": {
+     "recover": 0.042,
+     "acquire_evidence": 0.007
+    }
+   },
+   "value": {
+    "fit": {
+     "n": 87,
+     "aucUsed": 0.462037037037037,
+     "aucLearned": 0.2601851851851852,
+     "aucPredicted": 0.5268518518518519,
+     "calibration": [
+      {
+       "n": 17,
+       "used": 5274.661033638476,
+       "realized": -982.5422868056921
+      },
+      {
+       "n": 17,
+       "used": 20434.795450940757,
+       "realized": 736.0664692263338
+      },
+      {
+       "n": 18,
+       "used": 39106.8210432644,
+       "realized": 6050.897083359051
+      },
+      {
+       "n": 17,
+       "used": 85005.32754979984,
+       "realized": -1446.578217194371
+      },
+      {
+       "n": 18,
+       "used": 177889.4173338381,
+       "realized": -2499.6971367990513
+      }
+     ]
+    },
+    "held": {
+     "n": 7,
+     "aucUsed": null,
+     "aucLearned": null,
+     "aucPredicted": null,
+     "calibration": [
+      {
+       "n": 1,
+       "used": 6486.622222042368,
+       "realized": -2519.3621280713705
+      },
+      {
+       "n": 1,
+       "used": 28477.446220546124,
+       "realized": -6171.794275880005
+      },
+      {
+       "n": 2,
+       "used": 97123.34159647994,
+       "realized": -4541.1518187118345
+      },
+      {
+       "n": 1,
+       "used": 114174.62469011445,
+       "realized": -7963.0989343584515
+      },
+      {
+       "n": 2,
+       "used": 143729.5244732779,
+       "realized": -4118.574521896735
+      }
+     ]
+    }
+   }
+  },
+  {
+   "name": "learned frozen@72",
+   "fit": {
+    "runs": 216,
+    "success": 0.8981481481481481,
+    "tokensPerTask": 299529.3168074857,
+    "tokensPerSuccess": 333496.55891967483,
+    "looksPerTask": 6.111111111111111,
+    "selectedPerTask": 2.3518518518518516,
+    "abstainedPerTask": 0,
+    "interventionsPerTask": 0.6296296296296297,
+    "autonomy": 0.984313725490196,
+    "zeroInterventionTasks": 0.8425925925925926,
+    "interventionPrecision": 0.1724137931034483,
+    "interventionROI": 0.13713037650902146,
+    "netSavingPerLabelled": 403.90437295317923,
+    "interventionTokensPerTask": 1926.2139925310735,
+    "controlFrictionPerTask": 803.7407407407408,
+    "discoveryTokensPerTask": 0,
+    "replayTokensPerTask": 0,
+    "candidateRecall3": null,
+    "generationMissRate": null,
+    "preventionDebtPerTask": 0,
+    "unavoidableInterventions": 0.3333333333333333,
+    "brier": null,
+    "meanP": null,
+    "meanY": null
+   },
+   "held": {
+    "runs": 144,
+    "success": 0.9097222222222222,
+    "tokensPerTask": 290602.61795912054,
+    "tokensPerSuccess": 319441.0456955218,
+    "looksPerTask": 5.131944444444445,
+    "selectedPerTask": 1.9652777777777777,
+    "abstainedPerTask": 0,
+    "interventionsPerTask": 0.05555555555555555,
+    "autonomy": 0.9985361390667886,
+    "zeroInterventionTasks": 0.9513888888888888,
+    "interventionPrecision": 0,
+    "interventionROI": -0.9252473907617498,
+    "netSavingPerLabelled": -4246.713502440871,
+    "interventionTokensPerTask": 254.98967116150783,
+    "controlFrictionPerTask": 678.4166666666666,
+    "discoveryTokensPerTask": 0,
+    "replayTokensPerTask": 0,
+    "candidateRecall3": null,
+    "generationMissRate": null,
+    "preventionDebtPerTask": 0,
+    "unavoidableInterventions": 0,
+    "brier": null,
+    "meanP": null,
+    "meanY": null
+   },
+   "all": {
+    "runs": 360,
+    "success": 0.9027777777777778,
+    "tokensPerTask": 295958.6372681401,
+    "tokensPerSuccess": 327831.10589701677,
+    "looksPerTask": 5.719444444444444,
+    "selectedPerTask": 2.1972222222222224,
+    "abstainedPerTask": 0,
+    "interventionsPerTask": 0.4,
+    "autonomy": 0.989812522108242,
+    "zeroInterventionTasks": 0.8861111111111111,
+    "interventionPrecision": 0.15789473684210525,
+    "interventionROI": 0.003979853649986875,
+    "netSavingPerLabelled": 12.273393972627634,
+    "interventionTokensPerTask": 1257.7242639832473,
+    "controlFrictionPerTask": 753.6111111111111,
+    "discoveryTokensPerTask": 0,
+    "replayTokensPerTask": 0,
+    "candidateRecall3": null,
+    "generationMissRate": null,
+    "preventionDebtPerTask": 0,
+    "unavoidableInterventions": 0.16666666666666666,
+    "brier": null,
+    "meanP": null,
+    "meanY": null
+   },
+   "vsH2": {
+    "all": {
+     "cps": 0.008443998822345478,
+     "cpsCI": [
+      -0.00805442205643514,
+      0.02553342055328467
+     ],
+     "success": 0,
+     "successCI": [
+      -0.011111111111111112,
+      0.011111111111111112
+     ],
+     "tasks": 120
+    },
+    "held": {
+     "cps": -0.004969293780961559,
+     "cpsCI": [
+      -0.025714607323334304,
+      0.012281525360231749
+     ],
+     "success": 0.006944444444444444,
+     "successCI": [
+      0,
+      0.020833333333333332
+     ],
+     "tasks": 48
+    }
+   },
+   "vsH25": {
+    "all": {
+     "cps": 0.021868652627704988,
+     "cpsCI": [
+      0.006475408382431658,
+      0.03832155903273904
+     ],
+     "success": -0.002777777777777778,
+     "successCI": [
+      -0.011111111111111112,
+      0.005555555555555556
+     ],
+     "tasks": 120
+    },
+    "held": {
+     "cps": 0.011949200375473978,
+     "cpsCI": [
+      0.00509563539885205,
+      0.02000619000864945
+     ],
+     "success": 0,
+     "successCI": [
+      0,
+      0
+     ],
+     "tasks": 48
+    }
+   },
+   "vsH0": {
+    "all": {
+     "cps": -0.0082587590981259,
+     "cpsCI": [
+      -0.018085157488829218,
+      -0.0006529308054388228
+     ],
+     "success": 0.002777777777777778,
+     "successCI": [
+      0,
+      0.008333333333333333
+     ],
+     "tasks": 120
+    },
+    "held": {
+     "cps": 0.0006174756605756837,
+     "cpsCI": [
+      -0.00009154751907625158,
+      0.0014292394641821637
+     ],
+     "success": 0,
+     "successCI": [
+      0,
+      0
+     ],
+     "tasks": 48
+    }
+   },
+   "recovered": {
+    "all": -0.3031269304381165,
+    "held": 0.17749845106172557
+   },
+   "byBucketHeld": {
+    "local": {
+     "cps": 0,
+     "cpsCI": [
+      0,
+      0
+     ],
+     "success": 0,
+     "successCI": [
+      0,
+      0
+     ],
+     "tasks": 14
+    },
+    "multi": {
+     "cps": -0.010082591240252792,
+     "cpsCI": [
+      -0.06977369816296275,
+      0.029555659514237664
+     ],
+     "success": 0.023809523809523808,
+     "successCI": [
+      0,
+      0.07142857142857142
+     ],
+     "tasks": 14
+    },
+    "exploratory": {
+     "cps": -0.012276433828353972,
+     "cpsCI": [
+      -0.03379839817812613,
+      0.00978470316059088
+     ],
+     "success": 0,
+     "successCI": [
+      0,
+      0
+     ],
+     "tasks": 11
+    },
+    "risky": {
+     "cps": 0.0052971494965707855,
+     "cpsCI": [
+      -0.003081434907482472,
+      0.021715234193968813
+     ],
+     "success": 0,
+     "successCI": [
+      0,
+      0
+     ],
+     "tasks": 9
+    }
+   },
+   "kinds": {
+    "fit": {
+     "acquire_evidence": 0.398,
+     "recover": 0.231
+    },
+    "held": {
+     "recover": 0.049,
+     "acquire_evidence": 0.007
+    }
+   },
+   "value": {
+    "fit": {
+     "n": 87,
+     "aucUsed": 0.462037037037037,
+     "aucLearned": 0.2601851851851852,
+     "aucPredicted": 0.5268518518518519,
+     "calibration": [
+      {
+       "n": 17,
+       "used": 5274.661033638476,
+       "realized": -982.5422868056921
+      },
+      {
+       "n": 17,
+       "used": 20434.795450940757,
+       "realized": 736.0664692263338
+      },
+      {
+       "n": 18,
+       "used": 39106.8210432644,
+       "realized": 6050.897083359051
+      },
+      {
+       "n": 17,
+       "used": 85005.32754979984,
+       "realized": -1446.578217194371
+      },
+      {
+       "n": 18,
+       "used": 177889.4173338381,
+       "realized": -2499.6971367990513
+      }
+     ]
+    },
+    "held": {
+     "n": 8,
+     "aucUsed": null,
+     "aucLearned": null,
+     "aucPredicted": null,
+     "calibration": [
+      {
+       "n": 1,
+       "used": 4790.884063498261,
+       "realized": -2519.3621280713705
+      },
+      {
+       "n": 2,
+       "used": 59006.99497518063,
+       "realized": -5272.681486415575
+      },
+      {
+       "n": 1,
+       "used": 98061.59726322783,
+       "realized": 0
+      },
+      {
+       "n": 2,
+       "used": 111194.68904021854,
+       "realized": -5440.264608176265
+      },
+      {
+       "n": 2,
+       "used": 148400.2716623697,
+       "realized": -5014.226851135958
+      }
+     ]
+    }
+   }
+  },
+  {
+   "name": "learned global-only",
+   "fit": {
+    "runs": 216,
+    "success": 0.8935185185185185,
+    "tokensPerTask": 300320.3269832102,
+    "tokensPerSuccess": 336109.79600193474,
+    "looksPerTask": 6.194444444444445,
+    "selectedPerTask": 2.337962962962963,
+    "abstainedPerTask": 0,
+    "interventionsPerTask": 0.6944444444444444,
+    "autonomy": 0.9827348066298343,
+    "zeroInterventionTasks": 0.8287037037037037,
+    "interventionPrecision": 0.12244897959183673,
+    "interventionROI": 0.20302029011520528,
+    "netSavingPerLabelled": 581.2460956695791,
+    "interventionTokensPerTask": 1936.930706306317,
+    "controlFrictionPerTask": 814.6574074074074,
+    "discoveryTokensPerTask": 0,
+    "replayTokensPerTask": 0,
+    "candidateRecall3": null,
+    "generationMissRate": null,
+    "preventionDebtPerTask": 0,
+    "unavoidableInterventions": 1.1666666666666667,
+    "brier": null,
+    "meanP": null,
+    "meanY": null
+   },
+   "held": {
+    "runs": 144,
+    "success": 0.9097222222222222,
+    "tokensPerTask": 290658.3895291211,
+    "tokensPerSuccess": 319502.35184880486,
+    "looksPerTask": 5.118055555555555,
+    "selectedPerTask": 1.9513888888888888,
+    "abstainedPerTask": 0,
+    "interventionsPerTask": 0.06944444444444445,
+    "autonomy": 0.9981701738334858,
+    "zeroInterventionTasks": 0.9722222222222222,
+    "interventionPrecision": 0,
+    "interventionROI": -1.1170710204861833,
+    "netSavingPerLabelled": -5130.995734460236,
+    "interventionTokensPerTask": 310.76124116207876,
+    "controlFrictionPerTask": 676.4027777777778,
+    "discoveryTokensPerTask": 0,
+    "replayTokensPerTask": 0,
+    "candidateRecall3": null,
+    "generationMissRate": null,
+    "preventionDebtPerTask": 0,
+    "unavoidableInterventions": 0,
+    "brier": null,
+    "meanP": null,
+    "meanY": null
+   },
+   "all": {
+    "runs": 360,
+    "success": 0.9,
+    "tokensPerTask": 296455.55200157483,
+    "tokensPerSuccess": 329395.0577795276,
+    "looksPerTask": 5.763888888888889,
+    "selectedPerTask": 2.183333333333333,
+    "abstainedPerTask": 0,
+    "interventionsPerTask": 0.4444444444444444,
+    "autonomy": 0.9886949763301067,
+    "zeroInterventionTasks": 0.8861111111111111,
+    "interventionPrecision": 0.11428571428571428,
+    "interventionROI": 0.0672957322808226,
+    "netSavingPerLabelled": 200.42997366092473,
+    "interventionTokensPerTask": 1286.4629202486217,
+    "controlFrictionPerTask": 759.3555555555556,
+    "discoveryTokensPerTask": 0,
+    "replayTokensPerTask": 0,
+    "candidateRecall3": null,
+    "generationMissRate": null,
+    "preventionDebtPerTask": 0,
+    "unavoidableInterventions": 0.5833333333333334,
+    "brier": null,
+    "meanP": null,
+    "meanY": null
+   },
+   "vsH2": {
+    "all": {
+     "cps": 0.013254884250833543,
+     "cpsCI": [
+      -0.006090299868693028,
+      0.034585018492927944
+     ],
+     "success": -0.002777777777777778,
+     "successCI": [
+      -0.019444444444444445,
+      0.011111111111111112
+     ],
+     "tasks": 120
+    },
+    "held": {
+     "cps": -0.00477833051616261,
+     "cpsCI": [
+      -0.025652744017578222,
+      0.012366736411702606
+     ],
+     "success": 0.006944444444444444,
+     "successCI": [
+      0,
+      0.020833333333333332
+     ],
+     "tasks": 48
+    }
+   },
+   "vsH25": {
+    "all": {
+     "cps": 0.02674358174275393,
+     "cpsCI": [
+      0.008448282095400828,
+      0.04905058577416921
+     ],
+     "success": -0.005555555555555556,
+     "successCI": [
+      -0.019444444444444445,
+      0.005555555555555556
+     ],
+     "tasks": 120
+    },
+    "held": {
+     "cps": 0.012143410586180625,
+     "cpsCI": [
+      0.005032880905611048,
+      0.0202354386056538
+     ],
+     "success": 0,
+     "successCI": [
+      0,
+      0
+     ],
+     "tasks": 48
+    }
+   },
+   "vsH0": {
+    "all": {
+     "cps": -0.0035275558877767565,
+     "cpsCI": [
+      -0.009516266197104328,
+      0.00024217711533336406
+     ],
+     "success": 0,
+     "successCI": [
+      0,
+      0
+     ],
+     "tasks": 120
+    },
+    "held": {
+     "cps": 0.000809511121162787,
+     "cpsCI": [
+      0,
+      0.0020038132438680023
+     ],
+     "success": 0,
+     "successCI": [
+      0,
+      0
+     ],
+     "tasks": 48
+    }
+   },
+   "recovered": {
+    "all": -0.4758305230497007,
+    "held": 0.17067742473372596
+   },
+   "byBucketHeld": {
+    "local": {
+     "cps": 0,
+     "cpsCI": [
+      0,
+      0
+     ],
+     "success": 0,
+     "successCI": [
+      0,
+      0
+     ],
+     "tasks": 14
+    },
+    "multi": {
+     "cps": -0.010082591240252792,
+     "cpsCI": [
+      -0.06977369816296275,
+      0.029555659514237664
+     ],
+     "success": 0.023809523809523808,
+     "successCI": [
+      0,
+      0.07142857142857142
+     ],
+     "tasks": 14
+    },
+    "exploratory": {
+     "cps": -0.011015639655171716,
+     "cpsCI": [
+      -0.03228096593441088,
+      0.010768424706504964
+     ],
+     "success": 0,
+     "successCI": [
+      0,
+      0
+     ],
+     "tasks": 11
+    },
+    "risky": {
+     "cps": 0.004471301332205524,
+     "cpsCI": [
+      -0.004356383081418169,
+      0.020812262389673597
+     ],
+     "success": 0,
+     "successCI": [
+      0,
+      0
+     ],
+     "tasks": 9
+    }
+   },
+   "kinds": {
+    "fit": {
+     "acquire_evidence": 0.477,
+     "recover": 0.218
+    },
+    "held": {
+     "recover": 0.069
+    }
+   },
+   "value": {
+    "fit": {
+     "n": 98,
+     "aucUsed": 0.5881782945736435,
+     "aucLearned": 0.4496124031007752,
+     "aucPredicted": 0.6656976744186046,
+     "calibration": [
+      {
+       "n": 19,
+       "used": 11484.502519760465,
+       "realized": -1909.1060726934475
+      },
+      {
+       "n": 20,
+       "used": 27711.096241342177,
+       "realized": 4369.637538237876
+      },
+      {
+       "n": 19,
+       "used": 38580.81733990992,
+       "realized": 5073.426011256869
+      },
+      {
+       "n": 20,
+       "used": 84221.56468373683,
+       "realized": -636.8102460682276
+      },
+      {
+       "n": 20,
+       "used": 155051.21127414334,
+       "realized": -3890.8253650239612
+      }
+     ]
+    },
+    "held": {
+     "n": 7,
+     "aucUsed": null,
+     "aucLearned": null,
+     "aucPredicted": null,
+     "calibration": [
+      {
+       "n": 1,
+       "used": 37638.08244088634,
+       "realized": -6171.794275880005
+      },
+      {
+       "n": 1,
+       "used": 55139.66477292965,
+       "realized": -7963.0989343584515
+      },
+      {
+       "n": 2,
+       "used": 91605.86852942107,
+       "realized": -4592.633145313055
+      },
+      {
+       "n": 1,
+       "used": 114879.76350965947,
+       "realized": -4198.9368801190285
+      },
+      {
+       "n": 2,
+       "used": 117927.83874253368,
+       "realized": -4198.9368801190285
+      }
+     ]
+    }
+   }
+  },
+  {
+   "name": "learned 2-level",
+   "fit": {
+    "runs": 216,
+    "success": 0.8935185185185185,
+    "tokensPerTask": 300598.6803109774,
+    "tokensPerSuccess": 336421.32096979854,
+    "looksPerTask": 6.199074074074074,
+    "selectedPerTask": 2.314814814814815,
+    "abstainedPerTask": 0,
+    "interventionsPerTask": 0.7268518518518519,
+    "autonomy": 0.9818957564575646,
+    "zeroInterventionTasks": 0.8148148148148148,
+    "interventionPrecision": 0.12380952380952381,
+    "interventionROI": 0.6412913375401829,
+    "netSavingPerLabelled": 1639.359101393048,
+    "interventionTokensPerTask": 1877.4194060926025,
+    "controlFrictionPerTask": 814.9629629629629,
+    "discoveryTokensPerTask": 0,
+    "replayTokensPerTask": 0,
+    "candidateRecall3": null,
+    "generationMissRate": null,
+    "preventionDebtPerTask": 0,
+    "unavoidableInterventions": 1.1666666666666667,
+    "brier": null,
+    "meanP": null,
+    "meanY": null
+   },
+   "held": {
+    "runs": 144,
+    "success": 0.9097222222222222,
+    "tokensPerTask": 290745.36704596016,
+    "tokensPerSuccess": 319597.96072227677,
+    "looksPerTask": 5.1875,
+    "selectedPerTask": 1.9791666666666667,
+    "abstainedPerTask": 0,
+    "interventionsPerTask": 0.09722222222222222,
+    "autonomy": 0.9974382433668801,
+    "zeroInterventionTasks": 0.9375,
+    "interventionPrecision": 0.14285714285714285,
+    "interventionROI": -0.7563887109127667,
+    "netSavingPerLabelled": -3094.4068091438594,
+    "interventionTokensPerTask": 397.7387580011595,
+    "controlFrictionPerTask": 685.8611111111111,
+    "discoveryTokensPerTask": 0,
+    "replayTokensPerTask": 0,
+    "candidateRecall3": null,
+    "generationMissRate": null,
+    "preventionDebtPerTask": 0,
+    "unavoidableInterventions": 0,
+    "brier": null,
+    "meanP": null,
+    "meanY": null
+   },
+   "all": {
+    "runs": 360,
+    "success": 0.9,
+    "tokensPerTask": 296657.35500497086,
+    "tokensPerSuccess": 329619.2833388565,
+    "looksPerTask": 5.794444444444444,
+    "selectedPerTask": 2.1805555555555554,
+    "abstainedPerTask": 0,
+    "interventionsPerTask": 0.475,
+    "autonomy": 0.9879040814882931,
+    "zeroInterventionTasks": 0.8638888888888889,
+    "interventionPrecision": 0.12605042016806722,
+    "interventionROI": 0.3955017104845422,
+    "netSavingPerLabelled": 1082.4454648592941,
+    "interventionTokensPerTask": 1285.5471468560256,
+    "controlFrictionPerTask": 763.3222222222222,
+    "discoveryTokensPerTask": 0,
+    "replayTokensPerTask": 0,
+    "candidateRecall3": null,
+    "generationMissRate": null,
+    "preventionDebtPerTask": 0,
+    "unavoidableInterventions": 0.5833333333333334,
+    "brier": null,
+    "meanP": null,
+    "meanY": null
+   },
+   "vsH2": {
+    "all": {
+     "cps": 0.013944626363831203,
+     "cpsCI": [
+      -0.006173141593839415,
+      0.03602960739332861
+     ],
+     "success": -0.002777777777777778,
+     "successCI": [
+      -0.019444444444444445,
+      0.011111111111111112
+     ],
+     "tasks": 120
+    },
+    "held": {
+     "cps": -0.004480517300943232,
+     "cpsCI": [
+      -0.025111267729625353,
+      0.012641034137673257
+     ],
+     "success": 0.006944444444444444,
+     "successCI": [
+      0,
+      0.020833333333333332
+     ],
+     "tasks": 48
+    }
+   },
+   "vsH25": {
+    "all": {
+     "cps": 0.027442505871900114,
+     "cpsCI": [
+      0.00862997403769028,
+      0.0495348534167146
+     ],
+     "success": -0.005555555555555556,
+     "successCI": [
+      -0.019444444444444445,
+      0.005555555555555556
+     ],
+     "tasks": 120
+    },
+    "held": {
+     "cps": 0.012446287515624821,
+     "cpsCI": [
+      0.00548174512179056,
+      0.020463652822064304
+     ],
+     "success": 0,
+     "successCI": [
+      0,
+      0
+     ],
+     "tasks": 48
+    }
+   },
+   "vsH0": {
+    "all": {
+     "cps": -0.0028492379049781524,
+     "cpsCI": [
+      -0.006199696317685244,
+      -0.00016867223144456656
+     ],
+     "success": 0,
+     "successCI": [
+      0,
+      0
+     ],
+     "tasks": 120
+    },
+    "held": {
+     "cps": 0.0011089964594228618,
+     "cpsCI": [
+      0.00016415791406432234,
+      0.0021860918905451943
+     ],
+     "success": 0,
+     "successCI": [
+      0,
+      0
+     ],
+     "tasks": 48
+    }
+   },
+   "recovered": {
+    "all": -0.5005912334554851,
+    "held": 0.1600398197264158
+   },
+   "byBucketHeld": {
+    "local": {
+     "cps": 0,
+     "cpsCI": [
+      0,
+      0
+     ],
+     "success": 0,
+     "successCI": [
+      0,
+      0
+     ],
+     "tasks": 14
+    },
+    "multi": {
+     "cps": -0.009790438982772875,
+     "cpsCI": [
+      -0.06881104997732956,
+      0.029555659514237664
+     ],
+     "success": 0.023809523809523808,
+     "successCI": [
+      0,
+      0.07142857142857142
+     ],
+     "tasks": 14
+    },
+    "exploratory": {
+     "cps": -0.011678034493405431,
+     "cpsCI": [
+      -0.03314176035605643,
+      0.009982912328317495
+     ],
+     "success": 0,
+     "successCI": [
+      0,
+      0
+     ],
+     "tasks": 11
+    },
+    "risky": {
+     "cps": 0.006173915036152833,
+     "cpsCI": [
+      -0.0020731793332454673,
+      0.021920346300709603
+     ],
+     "success": 0,
+     "successCI": [
+      0,
+      0
+     ],
+     "tasks": 9
+    }
+   },
+   "kinds": {
+    "fit": {
+     "acquire_evidence": 0.532,
+     "recover": 0.194
+    },
+    "held": {
+     "recover": 0.09,
+     "acquire_evidence": 0.007
+    }
+   },
+   "value": {
+    "fit": {
+     "n": 105,
+     "aucUsed": 0.5894648829431438,
+     "aucLearned": 0.42725752508361203,
+     "aucPredicted": 0.6513377926421404,
+     "calibration": [
+      {
+       "n": 21,
+       "used": 7246.274666400357,
+       "realized": -1737.9588394636867
+      },
+      {
+       "n": 21,
+       "used": 28129.41240997676,
+       "realized": -471.28790074455486
+      },
+      {
+       "n": 21,
+       "used": 37409.97900904681,
+       "realized": 8916.211828444822
+      },
+      {
+       "n": 21,
+       "used": 75517.51588975971,
+       "realized": 2781.7132701775836
+      },
+      {
+       "n": 21,
+       "used": 137956.6086188887,
+       "realized": -1291.8828514489246
+      }
+     ]
+    },
+    "held": {
+     "n": 14,
+     "aucUsed": 0.4583333333333333,
+     "aucLearned": 0.5833333333333334,
+     "aucPredicted": 0.4166666666666667,
+     "calibration": [
+      {
+       "n": 2,
+       "used": 29574.739267870114,
+       "realized": -2281.3121029828326
+      },
+      {
+       "n": 3,
+       "used": 58682.92893270598,
+       "realized": -1016.3068176129697
+      },
+      {
+       "n": 3,
+       "used": 105051.27058909771,
+       "realized": -4031.9252173899245
+      },
+      {
+       "n": 3,
+       "used": 127556.2791187727,
+       "realized": -2989.585769767689
+      },
+      {
+       "n": 3,
+       "used": 182120.3388010267,
+       "realized": -4881.872569245538
+      }
+     ]
+    }
+   }
+  },
+  {
+   "name": "learned z0",
+   "fit": {
+    "runs": 216,
+    "success": 0.8935185185185185,
+    "tokensPerTask": 300301.6977151394,
+    "tokensPerSuccess": 336088.94666564825,
+    "looksPerTask": 7.078703703703703,
+    "selectedPerTask": 2.763888888888889,
+    "abstainedPerTask": 0,
+    "interventionsPerTask": 1.2175925925925926,
+    "autonomy": 0.9695143155210386,
+    "zeroInterventionTasks": 0.6712962962962963,
+    "interventionPrecision": 0.20652173913043478,
+    "interventionROI": 0.41484349978624785,
+    "netSavingPerLabelled": 1000.6198169111489,
+    "interventionTokensPerTask": 3080.753794102229,
+    "controlFrictionPerTask": 931.4074074074074,
+    "discoveryTokensPerTask": 0,
+    "replayTokensPerTask": 0,
+    "candidateRecall3": null,
+    "generationMissRate": null,
+    "preventionDebtPerTask": 0,
+    "unavoidableInterventions": 1.5,
+    "brier": null,
+    "meanP": null,
+    "meanY": null
+   },
+   "held": {
+    "runs": 144,
+    "success": 0.9097222222222222,
+    "tokensPerTask": 290063.1591888413,
+    "tokensPerSuccess": 318848.05284880265,
+    "looksPerTask": 5.798611111111111,
+    "selectedPerTask": 2.1944444444444446,
+    "abstainedPerTask": 0,
+    "interventionsPerTask": 0.4444444444444444,
+    "autonomy": 0.9882266372332598,
+    "zeroInterventionTasks": 0.8680555555555556,
+    "interventionPrecision": 0.20408163265306123,
+    "interventionROI": -0.24537234529967417,
+    "netSavingPerLabelled": -632.3352088285752,
+    "interventionTokensPerTask": 1146.505160537321,
+    "controlFrictionPerTask": 766.7083333333334,
+    "discoveryTokensPerTask": 0,
+    "replayTokensPerTask": 0,
+    "candidateRecall3": null,
+    "generationMissRate": null,
+    "preventionDebtPerTask": 0,
+    "unavoidableInterventions": 0,
+    "brier": null,
+    "meanP": null,
+    "meanY": null
+   },
+   "all": {
+    "runs": 360,
+    "success": 0.9,
+    "tokensPerTask": 296206.2823046203,
+    "tokensPerSuccess": 329118.0914495781,
+    "looksPerTask": 6.566666666666666,
+    "selectedPerTask": 2.536111111111111,
+    "abstainedPerTask": 0,
+    "interventionsPerTask": 0.9083333333333333,
+    "autonomy": 0.976747493422456,
+    "zeroInterventionTasks": 0.75,
+    "interventionPrecision": 0.20600858369098712,
+    "interventionROI": 0.26860566821500853,
+    "netSavingPerLabelled": 657.208674159018,
+    "interventionTokensPerTask": 2307.0543406762654,
+    "controlFrictionPerTask": 865.5277777777778,
+    "discoveryTokensPerTask": 0,
+    "replayTokensPerTask": 0,
+    "candidateRecall3": null,
+    "generationMissRate": null,
+    "preventionDebtPerTask": 0,
+    "unavoidableInterventions": 0.75,
+    "brier": null,
+    "meanP": null,
+    "meanY": null
+   },
+   "vsH2": {
+    "all": {
+     "cps": 0.012402905813493792,
+     "cpsCI": [
+      -0.007792229986368859,
+      0.03447029335754981
+     ],
+     "success": -0.002777777777777778,
+     "successCI": [
+      -0.019444444444444445,
+      0.011111111111111112
+     ],
+     "tasks": 120
+    },
+    "held": {
+     "cps": -0.006816414240291224,
+     "cpsCI": [
+      -0.02866737898596161,
+      0.010947698762742375
+     ],
+     "success": 0.006944444444444444,
+     "successCI": [
+      0,
+      0.020833333333333332
+     ],
+     "tasks": 48
+    }
+   },
+   "vsH25": {
+    "all": {
+     "cps": 0.02588026155953216,
+     "cpsCI": [
+      0.0071736824922070674,
+      0.04837171442121968
+     ],
+     "success": -0.005555555555555556,
+     "successCI": [
+      -0.019444444444444445,
+      0.005555555555555556
+     ],
+     "tasks": 120
+    },
+    "held": {
+     "cps": 0.010070673350997872,
+     "cpsCI": [
+      0.0032523719728732026,
+      0.018280171552931934
+     ],
+     "success": 0,
+     "successCI": [
+      0,
+      0
+     ],
+     "tasks": 48
+    }
+   },
+   "vsH0": {
+    "all": {
+     "cps": -0.004365423090770371,
+     "cpsCI": [
+      -0.006792012771487332,
+      -0.0021151503088903123
+     ],
+     "success": 0,
+     "successCI": [
+      0,
+      0
+     ],
+     "tasks": 120
+    },
+    "held": {
+     "cps": -0.0012400157713003956,
+     "cpsCI": [
+      -0.003087671997824337,
+      0.000720657441533934
+     ],
+     "success": 0,
+     "successCI": [
+      0,
+      0
+     ],
+     "tasks": 48
+    }
+   },
+   "recovered": {
+    "all": -0.44524577121069864,
+    "held": 0.24347583837409284
+   },
+   "byBucketHeld": {
+    "local": {
+     "cps": 0.0018901576450074398,
+     "cpsCI": [
+      0,
+      0.005767717960542429
+     ],
+     "success": 0,
+     "successCI": [
+      0,
+      0
+     ],
+     "tasks": 14
+    },
+    "multi": {
+     "cps": -0.010998864297182331,
+     "cpsCI": [
+      -0.07227557843108612,
+      0.029555659514237664
+     ],
+     "success": 0.023809523809523808,
+     "successCI": [
+      0,
+      0.07142857142857142
+     ],
+     "tasks": 14
+    },
+    "exploratory": {
+     "cps": -0.016531042594810197,
+     "cpsCI": [
+      -0.03734954400232149,
+      0.006858748374974022
+     ],
+     "success": 0,
+     "successCI": [
+      0,
+      0
+     ],
+     "tasks": 11
+    },
+    "risky": {
+     "cps": 0.0033089297725823474,
+     "cpsCI": [
+      -0.006799671122344364,
+      0.02075756555437569
+     ],
+     "success": 0,
+     "successCI": [
+      0,
+      0
+     ],
+     "tasks": 9
+    }
+   },
+   "kinds": {
+    "fit": {
+     "acquire_evidence": 0.963,
+     "recover": 0.255
+    },
+    "held": {
+     "acquire_evidence": 0.382,
+     "recover": 0.063
+    }
+   },
+   "value": {
+    "fit": {
+     "n": 184,
+     "aucUsed": 0.5079307858687816,
+     "aucLearned": 0.48125450612833454,
+     "aucPredicted": 0.5856164383561644,
+     "calibration": [
+      {
+       "n": 36,
+       "used": 3419.5953071388317,
+       "realized": 1093.2940951612263
+      },
+      {
+       "n": 37,
+       "used": 9316.466020412445,
+       "realized": 1524.1566102042561
+      },
+      {
+       "n": 37,
+       "used": 15862.551578088727,
+       "realized": 941.2360328231211
+      },
+      {
+       "n": 37,
+       "used": 28863.98521987975,
+       "realized": 2976.378240794641
+      },
+      {
+       "n": 37,
+       "used": 107361.14551866012,
+       "realized": -1529.4611842045254
+      }
+     ]
+    },
+    "held": {
+     "n": 49,
+     "aucUsed": 0.6512820512820513,
+     "aucLearned": 0.6435897435897436,
+     "aucPredicted": 0.6051282051282051,
+     "calibration": [
+      {
+       "n": 9,
+       "used": 4798.561354049536,
+       "realized": -411.45295172533304
+      },
+      {
+       "n": 10,
+       "used": 10278.233458405017,
+       "realized": -483.8714033717406
+      },
+      {
+       "n": 10,
+       "used": 15288.046418769412,
+       "realized": 1639.0025968167058
+      },
+      {
+       "n": 10,
+       "used": 20702.604534996462,
+       "realized": -553.8597604061885
+      },
+      {
+       "n": 10,
+       "used": 69767.93735097887,
+       "realized": -3329.406299745996
+      }
+     ]
+    }
+   }
+  },
+  {
+   "name": "learned k5",
+   "fit": {
+    "runs": 216,
+    "success": 0.8935185185185185,
+    "tokensPerTask": 299501.2408062214,
+    "tokensPerSuccess": 335193.0985188799,
+    "looksPerTask": 6.050925925925926,
+    "selectedPerTask": 2.365740740740741,
+    "abstainedPerTask": 0,
+    "interventionsPerTask": 0.5740740740740741,
+    "autonomy": 0.9857142857142858,
+    "zeroInterventionTasks": 0.8518518518518519,
+    "interventionPrecision": 0.20987654320987653,
+    "interventionROI": 0.2844120442897456,
+    "netSavingPerLabelled": 817.3971322350658,
+    "interventionTokensPerTask": 1721.614795326395,
+    "controlFrictionPerTask": 796.074074074074,
+    "discoveryTokensPerTask": 0,
+    "replayTokensPerTask": 0,
+    "candidateRecall3": null,
+    "generationMissRate": null,
+    "preventionDebtPerTask": 0,
+    "unavoidableInterventions": 0,
+    "brier": null,
+    "meanP": null,
+    "meanY": null
+   },
+   "held": {
+    "runs": 144,
+    "success": 0.9097222222222222,
+    "tokensPerTask": 290359.96999451215,
+    "tokensPerSuccess": 319174.31816190644,
+    "looksPerTask": 5.125,
+    "selectedPerTask": 1.9722222222222223,
+    "abstainedPerTask": 0,
+    "interventionsPerTask": 0.0625,
+    "autonomy": 0.9983522519223728,
+    "zeroInterventionTasks": 0.9791666666666666,
+    "interventionPrecision": 0,
+    "interventionROI": -0.15473125228997806,
+    "netSavingPerLabelled": -403.60585204049545,
+    "interventionTokensPerTask": 166.0382048794424,
+    "controlFrictionPerTask": 677.4027777777778,
+    "discoveryTokensPerTask": 0,
+    "replayTokensPerTask": 0,
+    "candidateRecall3": null,
+    "generationMissRate": null,
+    "preventionDebtPerTask": 0,
+    "unavoidableInterventions": 0,
+    "brier": null,
+    "meanP": null,
+    "meanY": null
+   },
+   "all": {
+    "runs": 360,
+    "success": 0.9,
+    "tokensPerTask": 295844.7324815382,
+    "tokensPerSuccess": 328716.3694239313,
+    "looksPerTask": 5.680555555555555,
+    "selectedPerTask": 2.2083333333333335,
+    "abstainedPerTask": 0,
+    "interventionsPerTask": 0.36944444444444446,
+    "autonomy": 0.9905953896195729,
+    "zeroInterventionTasks": 0.9027777777777778,
+    "interventionPrecision": 0.19318181818181818,
+    "interventionROI": 0.25247315701588324,
+    "netSavingPerLabelled": 720.2718948495097,
+    "interventionTokensPerTask": 1099.384159147614,
+    "controlFrictionPerTask": 748.6055555555556,
+    "discoveryTokensPerTask": 0,
+    "replayTokensPerTask": 0,
+    "candidateRecall3": null,
+    "generationMissRate": null,
+    "preventionDebtPerTask": 0,
+    "unavoidableInterventions": 0,
+    "brier": null,
+    "meanP": null,
+    "meanY": null
+   },
+   "vsH2": {
+    "all": {
+     "cps": 0.011167165340209673,
+     "cpsCI": [
+      -0.008763738277850819,
+      0.0328331308333869
+     ],
+     "success": -0.002777777777777778,
+     "successCI": [
+      -0.019444444444444445,
+      0.011111111111111112
+     ],
+     "tasks": 120
+    },
+    "held": {
+     "cps": -0.005800126542492068,
+     "cpsCI": [
+      -0.02640537079456784,
+      0.011655411135523375
+     ],
+     "success": 0.006944444444444444,
+     "successCI": [
+      0,
+      0.020833333333333332
+     ],
+     "tasks": 48
+    }
+   },
+   "vsH25": {
+    "all": {
+     "cps": 0.024628070606036667,
+     "cpsCI": [
+      0.005751007345466075,
+      0.047310971167753735
+     ],
+     "success": -0.005555555555555556,
+     "successCI": [
+      -0.019444444444444445,
+      0.005555555555555556
+     ],
+     "tasks": 120
+    },
+    "held": {
+     "cps": 0.011104240975304824,
+     "cpsCI": [
+      0.003911139601205704,
+      0.019448270807309154
+     ],
+     "success": 0,
+     "successCI": [
+      0,
+      0
+     ],
+     "tasks": 48
+    }
+   },
+   "vsH0": {
+    "all": {
+     "cps": -0.005580696117173933,
+     "cpsCI": [
+      -0.012021079651631239,
+      -0.00104082344706935
+     ],
+     "success": 0,
+     "successCI": [
+      0,
+      0
+     ],
+     "tasks": 120
+    },
+    "held": {
+     "cps": -0.00021802195305853367,
+     "cpsCI": [
+      -0.0006269085557484289,
+      0
+     ],
+     "success": 0,
+     "successCI": [
+      0,
+      0
+     ],
+     "tasks": 48
+    }
+   },
+   "recovered": {
+    "all": -0.4008845361648709,
+    "held": 0.2071750076839154
+   },
+   "byBucketHeld": {
+    "local": {
+     "cps": -0.0023626970562594662,
+     "cpsCI": [
+      -0.0073422578515260906,
+      0
+     ],
+     "success": 0,
+     "successCI": [
+      0,
+      0
+     ],
+     "tasks": 14
+    },
+    "multi": {
+     "cps": -0.010082591240252792,
+     "cpsCI": [
+      -0.06977369816296275,
+      0.029555659514237664
+     ],
+     "success": 0.023809523809523808,
+     "successCI": [
+      0,
+      0.07142857142857142
+     ],
+     "tasks": 14
+    },
+    "exploratory": {
+     "cps": -0.013288952741943527,
+     "cpsCI": [
+      -0.034391105079017326,
+      0.009247673938881151
+     ],
+     "success": 0,
+     "successCI": [
+      0,
+      0
+     ],
+     "tasks": 11
+    },
+    "risky": {
+     "cps": 0.004341774467798043,
+     "cpsCI": [
+      -0.004616462317679426,
+      0.02062398514202246
+     ],
+     "success": 0,
+     "successCI": [
+      0,
+      0
+     ],
+     "tasks": 9
+    }
+   },
+   "kinds": {
+    "fit": {
+     "acquire_evidence": 0.431,
+     "recover": 0.144
+    },
+    "held": {
+     "acquire_evidence": 0.063
+    }
+   },
+   "value": {
+    "fit": {
+     "n": 81,
+     "aucUsed": 0.4099264705882353,
+     "aucLearned": 0.4742647058823529,
+     "aucPredicted": 0.6204044117647058,
+     "calibration": [
+      {
+       "n": 16,
+       "used": 4105.854487057168,
+       "realized": -915.7938315253559
+      },
+      {
+       "n": 16,
+       "used": 35560.81848811446,
+       "realized": 531.8338982120003
+      },
+      {
+       "n": 16,
+       "used": 64326.35477682362,
+       "realized": 2017.4288687075496
+      },
+      {
+       "n": 16,
+       "used": 101786.41878275725,
+       "realized": 4696.418334786898
+      },
+      {
+       "n": 17,
+       "used": 218327.9271483131,
+       "realized": -2062.884035991597
+      }
+     ]
+    },
+    "held": {
+     "n": 7,
+     "aucUsed": null,
+     "aucLearned": null,
+     "aucPredicted": null,
+     "calibration": [
+      {
+       "n": 1,
+       "used": 3865.586509410083,
+       "realized": 0
+      },
+      {
+       "n": 1,
+       "used": 3865.58650941012,
+       "realized": 0
+      },
+      {
+       "n": 2,
+       "used": 4287.160724941396,
+       "realized": -1412.620482141734
+      },
+      {
+       "n": 1,
+       "used": 104372.82153291303,
+       "realized": 0
+      },
+      {
+       "n": 2,
+       "used": 114488.99141305796,
+       "realized": 0
+      }
+     ]
+    }
+   }
+  },
+  {
+   "name": "learned k80",
+   "fit": {
+    "runs": 216,
+    "success": 0.8981481481481481,
+    "tokensPerTask": 301633.4264578665,
+    "tokensPerSuccess": 335839.27894277923,
+    "looksPerTask": 6.833333333333333,
+    "selectedPerTask": 2.7083333333333335,
+    "abstainedPerTask": 0,
+    "interventionsPerTask": 1,
+    "autonomy": 0.9751066036648611,
+    "zeroInterventionTasks": 0.7453703703703703,
+    "interventionPrecision": 0.2647058823529412,
+    "interventionROI": 0.08835805280565298,
+    "netSavingPerLabelled": 255.35789635974288,
+    "interventionTokensPerTask": 3163.984199243893,
+    "controlFrictionPerTask": 899.8333333333334,
+    "discoveryTokensPerTask": 0,
+    "replayTokensPerTask": 0,
+    "candidateRecall3": null,
+    "generationMissRate": null,
+    "preventionDebtPerTask": 0,
+    "unavoidableInterventions": 1.3333333333333333,
+    "brier": null,
+    "meanP": null,
+    "meanY": null
+   },
+   "held": {
+    "runs": 144,
+    "success": 0.9027777777777778,
+    "tokensPerTask": 291116.52657740447,
+    "tokensPerSuccess": 322467.53713189415,
+    "looksPerTask": 6.006944444444445,
+    "selectedPerTask": 2.451388888888889,
+    "abstainedPerTask": 0,
+    "interventionsPerTask": 0.5763888888888888,
+    "autonomy": 0.9847566574839303,
+    "zeroInterventionTasks": 0.8333333333333334,
+    "interventionPrecision": 0.23728813559322035,
+    "interventionROI": -1.7427971298278782,
+    "netSavingPerLabelled": -5361.9780765263195,
+    "interventionTokensPerTask": 1834.7037720211176,
+    "controlFrictionPerTask": 794.6944444444445,
+    "discoveryTokensPerTask": 0,
+    "replayTokensPerTask": 0,
+    "candidateRecall3": null,
+    "generationMissRate": null,
+    "preventionDebtPerTask": 0,
+    "unavoidableInterventions": 0,
+    "brier": null,
+    "meanP": null,
+    "meanY": null
+   },
+   "all": {
+    "runs": 360,
+    "success": 0.9,
+    "tokensPerTask": 297426.66650568217,
+    "tokensPerSuccess": 330474.07389520237,
+    "looksPerTask": 6.502777777777778,
+    "selectedPerTask": 2.6055555555555556,
+    "abstainedPerTask": 0,
+    "interventionsPerTask": 0.8305555555555556,
+    "autonomy": 0.9788273615635179,
+    "zeroInterventionTasks": 0.7805555555555556,
+    "interventionPrecision": 0.2564102564102564,
+    "interventionROI": -0.4901568203234698,
+    "netSavingPerLabelled": -1444.2463210775788,
+    "interventionTokensPerTask": 2632.272028354783,
+    "controlFrictionPerTask": 857.7777777777778,
+    "discoveryTokensPerTask": 0,
+    "replayTokensPerTask": 0,
+    "candidateRecall3": null,
+    "generationMissRate": null,
+    "preventionDebtPerTask": 0,
+    "unavoidableInterventions": 0.6666666666666666,
+    "brier": null,
+    "meanP": null,
+    "meanY": null
+   },
+   "vsH2": {
+    "all": {
+     "cps": 0.01657405472279705,
+     "cpsCI": [
+      0.0008957360673864656,
+      0.032669915792364
+     ],
+     "success": -0.002777777777777778,
+     "successCI": [
+      -0.011111111111111112,
+      0.005555555555555556
+     ],
+     "tasks": 120
+    },
+    "held": {
+     "cps": 0.004457960330176869,
+     "cpsCI": [
+      -0.005189826689471877,
+      0.014587644166361935
+     ],
+     "success": 0,
+     "successCI": [
+      0,
+      0
+     ],
+     "tasks": 48
+    }
+   },
+   "vsH25": {
+    "all": {
+     "cps": 0.030106937825975066,
+     "cpsCI": [
+      0.013875075030442163,
+      0.048370640825740496
+     ],
+     "success": -0.005555555555555556,
+     "successCI": [
+      -0.016666666666666666,
+      0.005555555555555556
+     ],
+     "tasks": 120
+    },
+    "held": {
+     "cps": 0.021536745965652804,
+     "cpsCI": [
+      0.008133799877827697,
+      0.04255447482411423
+     ],
+     "success": -0.006944444444444444,
+     "successCI": [
+      -0.020833333333333332,
+      0
+     ],
+     "tasks": 48
+    }
+   },
+   "vsH0": {
+    "all": {
+     "cps": -0.00026336050709729886,
+     "cpsCI": [
+      -0.010314781222990455,
+      0.009304388772968908
+     ],
+     "success": 0,
+     "successCI": [
+      -0.008333333333333333,
+      0.008333333333333333
+     ],
+     "tasks": 120
+    },
+    "held": {
+     "cps": 0.010097660696213762,
+     "cpsCI": [
+      -0.0002181310175590756,
+      0.029031497975133602
+     ],
+     "success": -0.006944444444444444,
+     "successCI": [
+      -0.020833333333333332,
+      0
+     ],
+     "tasks": 48
+    }
+   },
+   "recovered": {
+    "all": -0.5949837794552553,
+    "held": -0.1592341061686838
+   },
+   "byBucketHeld": {
+    "local": {
+     "cps": 0.0018901576450074398,
+     "cpsCI": [
+      0,
+      0.005767717960542429
+     ],
+     "success": 0,
+     "successCI": [
+      0,
+      0
+     ],
+     "tasks": 14
+    },
+    "multi": {
+     "cps": 0.016444415814842017,
+     "cpsCI": [
+      0.0021821191870445844,
+      0.03196719050673513
+     ],
+     "success": 0,
+     "successCI": [
+      0,
+      0
+     ],
+     "tasks": 14
+    },
+    "exploratory": {
+     "cps": -0.00892532380935418,
+     "cpsCI": [
+      -0.030253942051643556,
+      0.010687420624184929
+     ],
+     "success": 0,
+     "successCI": [
+      0,
+      0
+     ],
+     "tasks": 11
+    },
+    "risky": {
+     "cps": 0.006739302101300915,
+     "cpsCI": [
+      -0.0010207109806323889,
+      0.02217063692743504
+     ],
+     "success": 0,
+     "successCI": [
+      0,
+      0
+     ],
+     "tasks": 9
+    }
+   },
+   "kinds": {
+    "fit": {
+     "acquire_evidence": 0.546,
+     "recover": 0.454
+    },
+    "held": {
+     "acquire_evidence": 0.292,
+     "recover": 0.285
+    }
+   },
+   "value": {
+    "fit": {
+     "n": 136,
+     "aucUsed": 0.4222222222222222,
+     "aucLearned": 0.5686111111111111,
+     "aucPredicted": 0.43972222222222224,
+     "calibration": [
+      {
+       "n": 27,
+       "used": 3966.638710358227,
+       "realized": 611.9326820145642
+      },
+      {
+       "n": 27,
+       "used": 8275.838733255117,
+       "realized": 1757.6832070886492
+      },
+      {
+       "n": 27,
+       "used": 19224.374179012328,
+       "realized": 1557.266783807626
+      },
+      {
+       "n": 27,
+       "used": 90630.43964219397,
+       "realized": 1207.9411817713137
+      },
+      {
+       "n": 28,
+       "used": 186306.569327914,
+       "realized": -3711.127506124754
+      }
+     ]
+    },
+    "held": {
+     "n": 59,
+     "aucUsed": 0.4222222222222222,
+     "aucLearned": 0.6206349206349207,
+     "aucPredicted": 0.39206349206349206,
+     "calibration": [
+      {
+       "n": 11,
+       "used": 11245.461394043865,
+       "realized": 331.67667207410506
+      },
+      {
+       "n": 12,
+       "used": 21034.64851367917,
+       "realized": -1034.297646471224
+      },
+      {
+       "n": 12,
+       "used": 35873.35819041389,
+       "realized": 943.2388079665931
+      },
+      {
+       "n": 12,
+       "used": 90948.89559301174,
+       "realized": -24763.079413862404
+      },
+      {
+       "n": 12,
+       "used": 163765.87242117632,
+       "realized": -1812.9575732886394
+      }
+     ]
+    }
+   }
+  },
+  {
+   "name": "learned adjusted",
+   "fit": {
+    "runs": 216,
+    "success": 0.8935185185185185,
+    "tokensPerTask": 301322.0051978185,
+    "tokensPerSuccess": 337230.84519548604,
+    "looksPerTask": 5.819444444444445,
+    "selectedPerTask": 2.25,
+    "abstainedPerTask": 0,
+    "interventionsPerTask": 0.4027777777777778,
+    "autonomy": 0.9900423486322536,
+    "zeroInterventionTasks": 0.8935185185185185,
+    "interventionPrecision": 0.12727272727272726,
+    "interventionROI": -0.7175239218985513,
+    "netSavingPerLabelled": -2311.0522049819106,
+    "interventionTokensPerTask": 1294.8219206691501,
+    "controlFrictionPerTask": 765.6944444444445,
+    "discoveryTokensPerTask": 0,
+    "replayTokensPerTask": 0,
+    "candidateRecall3": null,
+    "generationMissRate": null,
+    "preventionDebtPerTask": 0,
+    "unavoidableInterventions": 0.16666666666666666,
+    "brier": null,
+    "meanP": null,
+    "meanY": null
+   },
+   "held": {
+    "runs": 144,
+    "success": 0.9097222222222222,
+    "tokensPerTask": 290667.9081098654,
+    "tokensPerSuccess": 319512.8150215314,
+    "looksPerTask": 5.152777777777778,
+    "selectedPerTask": 1.9791666666666667,
+    "abstainedPerTask": 0,
+    "interventionsPerTask": 0.06944444444444445,
+    "autonomy": 0.9981701738334858,
+    "zeroInterventionTasks": 0.9444444444444444,
+    "interventionPrecision": 0,
+    "interventionROI": -1.0425827792347977,
+    "netSavingPerLabelled": -4808.422466726601,
+    "interventionTokensPerTask": 320.2798219064129,
+    "controlFrictionPerTask": 681.1944444444445,
+    "discoveryTokensPerTask": 0,
+    "replayTokensPerTask": 0,
+    "candidateRecall3": null,
+    "generationMissRate": null,
+    "preventionDebtPerTask": 0,
+    "unavoidableInterventions": 0,
+    "brier": null,
+    "meanP": null,
+    "meanY": null
+   },
+   "all": {
+    "runs": 360,
+    "success": 0.9,
+    "tokensPerTask": 297060.3663626377,
+    "tokensPerSuccess": 330067.07373626414,
+    "looksPerTask": 5.552777777777778,
+    "selectedPerTask": 2.1416666666666666,
+    "abstainedPerTask": 0,
+    "interventionsPerTask": 0.26944444444444443,
+    "autonomy": 0.9931699760597099,
+    "zeroInterventionTasks": 0.9138888888888889,
+    "interventionPrecision": 0.1076923076923077,
+    "interventionROI": -0.7846710083588838,
+    "netSavingPerLabelled": -2695.2630144810937,
+    "interventionTokensPerTask": 905.0050811640555,
+    "controlFrictionPerTask": 731.8944444444444,
+    "discoveryTokensPerTask": 0,
+    "replayTokensPerTask": 0,
+    "candidateRecall3": null,
+    "generationMissRate": null,
+    "preventionDebtPerTask": 0,
+    "unavoidableInterventions": 0.08333333333333333,
+    "brier": null,
+    "meanP": null,
+    "meanY": null
+   },
+   "vsH2": {
+    "all": {
+     "cps": 0.015322078139678785,
+     "cpsCI": [
+      -0.004873621140025319,
+      0.03766501468298444
+     ],
+     "success": -0.002777777777777778,
+     "successCI": [
+      -0.019444444444444445,
+      0.011111111111111112
+     ],
+     "tasks": 120
+    },
+    "held": {
+     "cps": -0.0047457386551991165,
+     "cpsCI": [
+      -0.02544326251334661,
+      0.012503870716074061
+     ],
+     "success": 0.006944444444444444,
+     "successCI": [
+      0,
+      0.020833333333333332
+     ],
+     "tasks": 48
+    }
+   },
+   "vsH25": {
+    "all": {
+     "cps": 0.028838294623569682,
+     "cpsCI": [
+      0.009878322832465924,
+      0.05212511915918028
+     ],
+     "success": -0.005555555555555556,
+     "successCI": [
+      -0.019444444444444445,
+      0.005555555555555556
+     ],
+     "tasks": 120
+    },
+    "held": {
+     "cps": 0.012176556606132038,
+     "cpsCI": [
+      0.0053588798756376566,
+      0.020285658896861847
+     ],
+     "success": 0,
+     "successCI": [
+      0,
+      0
+     ],
+     "tasks": 48
+    }
+   },
+   "vsH0": {
+    "all": {
+     "cps": -0.0014946007262583993,
+     "cpsCI": [
+      -0.00698797453273714,
+      0.001751238789902132
+     ],
+     "success": 0,
+     "successCI": [
+      0,
+      0
+     ],
+     "tasks": 120
+    },
+    "held": {
+     "cps": 0.0008422859746828326,
+     "cpsCI": [
+      0.0000801394819842649,
+      0.0017676319028359089
+     ],
+     "success": 0,
+     "successCI": [
+      0,
+      0
+     ],
+     "tasks": 48
+    }
+   },
+   "recovered": {
+    "all": -0.5500396923461071,
+    "held": 0.16951327443526648
+   },
+   "byBucketHeld": {
+    "local": {
+     "cps": 0,
+     "cpsCI": [
+      0,
+      0
+     ],
+     "success": 0,
+     "successCI": [
+      0,
+      0
+     ],
+     "tasks": 14
+    },
+    "multi": {
+     "cps": -0.010082591240252792,
+     "cpsCI": [
+      -0.06977369816296275,
+      0.029555659514237664
+     ],
+     "success": 0.023809523809523808,
+     "successCI": [
+      0,
+      0.07142857142857142
+     ],
+     "tasks": 14
+    },
+    "exploratory": {
+     "cps": -0.011547883045710305,
+     "cpsCI": [
+      -0.03312012656063279,
+      0.009982912328317495
+     ],
+     "success": 0,
+     "successCI": [
+      0,
+      0
+     ],
+     "tasks": 11
+    },
+    "risky": {
+     "cps": 0.0052971494965707855,
+     "cpsCI": [
+      -0.003081434907482472,
+      0.021715234193968813
+     ],
+     "success": 0,
+     "successCI": [
+      0,
+      0
+     ],
+     "tasks": 9
+    }
+   },
+   "kinds": {
+    "fit": {
+     "acquire_evidence": 0.167,
+     "recover": 0.236
+    },
+    "held": {
+     "recover": 0.069
+    }
+   },
+   "value": {
+    "fit": {
+     "n": 55,
+     "aucUsed": 0.49404761904761907,
+     "aucLearned": 0.2261904761904762,
+     "aucPredicted": 0.5357142857142857,
+     "calibration": [
+      {
+       "n": 11,
+       "used": 3879.8830004172905,
+       "realized": -346.6300258193832
+      },
+      {
+       "n": 11,
+       "used": 12347.335854705654,
+       "realized": -2029.6572493628535
+      },
+      {
+       "n": 11,
+       "used": 73507.19115837921,
+       "realized": -2965.8047578071632
+      },
+      {
+       "n": 11,
+       "used": 128010.04959478286,
+       "realized": -2071.872877584421
+      },
+      {
+       "n": 11,
+       "used": 205737.536141761,
+       "realized": -4141.296114335731
+      }
+     ]
+    },
+    "held": {
+     "n": 10,
+     "aucUsed": null,
+     "aucLearned": null,
+     "aucPredicted": null,
+     "calibration": [
+      {
+       "n": 2,
+       "used": 70279.26815346813,
+       "realized": -5440.264608176323
+      },
+      {
+       "n": 2,
+       "used": 93059.9174172557,
+       "realized": -3606.2044474325667
+      },
+      {
+       "n": 2,
+       "used": 115773.20330281515,
+       "realized": -4541.1518187118345
+      },
+      {
+       "n": 2,
+       "used": 126798.52094139713,
+       "realized": -6335.916937415546
+      },
+      {
+       "n": 2,
+       "used": 163208.92078849103,
+       "realized": -4118.574521896735
+      }
+     ]
+    }
+   }
+  },
+  {
+   "name": "learned adjusted frozen@72",
+   "fit": {
+    "runs": 216,
+    "success": 0.8935185185185185,
+    "tokensPerTask": 301322.0051978185,
+    "tokensPerSuccess": 337230.84519548604,
+    "looksPerTask": 5.819444444444445,
+    "selectedPerTask": 2.25,
+    "abstainedPerTask": 0,
+    "interventionsPerTask": 0.4027777777777778,
+    "autonomy": 0.9900423486322536,
+    "zeroInterventionTasks": 0.8935185185185185,
+    "interventionPrecision": 0.12727272727272726,
+    "interventionROI": -0.7175239218985513,
+    "netSavingPerLabelled": -2311.0522049819106,
+    "interventionTokensPerTask": 1294.8219206691501,
+    "controlFrictionPerTask": 765.6944444444445,
+    "discoveryTokensPerTask": 0,
+    "replayTokensPerTask": 0,
+    "candidateRecall3": null,
+    "generationMissRate": null,
+    "preventionDebtPerTask": 0,
+    "unavoidableInterventions": 0.16666666666666666,
+    "brier": null,
+    "meanP": null,
+    "meanY": null
+   },
+   "held": {
+    "runs": 144,
+    "success": 0.9097222222222222,
+    "tokensPerTask": 290667.9081098654,
+    "tokensPerSuccess": 319512.8150215314,
+    "looksPerTask": 5.152777777777778,
+    "selectedPerTask": 1.9791666666666667,
+    "abstainedPerTask": 0,
+    "interventionsPerTask": 0.06944444444444445,
+    "autonomy": 0.9981701738334858,
+    "zeroInterventionTasks": 0.9444444444444444,
+    "interventionPrecision": 0,
+    "interventionROI": -1.0425827792347977,
+    "netSavingPerLabelled": -4808.422466726601,
+    "interventionTokensPerTask": 320.2798219064129,
+    "controlFrictionPerTask": 681.1944444444445,
+    "discoveryTokensPerTask": 0,
+    "replayTokensPerTask": 0,
+    "candidateRecall3": null,
+    "generationMissRate": null,
+    "preventionDebtPerTask": 0,
+    "unavoidableInterventions": 0,
+    "brier": null,
+    "meanP": null,
+    "meanY": null
+   },
+   "all": {
+    "runs": 360,
+    "success": 0.9,
+    "tokensPerTask": 297060.3663626377,
+    "tokensPerSuccess": 330067.07373626414,
+    "looksPerTask": 5.552777777777778,
+    "selectedPerTask": 2.1416666666666666,
+    "abstainedPerTask": 0,
+    "interventionsPerTask": 0.26944444444444443,
+    "autonomy": 0.9931699760597099,
+    "zeroInterventionTasks": 0.9138888888888889,
+    "interventionPrecision": 0.1076923076923077,
+    "interventionROI": -0.7846710083588838,
+    "netSavingPerLabelled": -2695.2630144810937,
+    "interventionTokensPerTask": 905.0050811640555,
+    "controlFrictionPerTask": 731.8944444444444,
+    "discoveryTokensPerTask": 0,
+    "replayTokensPerTask": 0,
+    "candidateRecall3": null,
+    "generationMissRate": null,
+    "preventionDebtPerTask": 0,
+    "unavoidableInterventions": 0.08333333333333333,
+    "brier": null,
+    "meanP": null,
+    "meanY": null
+   },
+   "vsH2": {
+    "all": {
+     "cps": 0.015322078139678785,
+     "cpsCI": [
+      -0.004873621140025319,
+      0.03766501468298444
+     ],
+     "success": -0.002777777777777778,
+     "successCI": [
+      -0.019444444444444445,
+      0.011111111111111112
+     ],
+     "tasks": 120
+    },
+    "held": {
+     "cps": -0.0047457386551991165,
+     "cpsCI": [
+      -0.02544326251334661,
+      0.012503870716074061
+     ],
+     "success": 0.006944444444444444,
+     "successCI": [
+      0,
+      0.020833333333333332
+     ],
+     "tasks": 48
+    }
+   },
+   "vsH25": {
+    "all": {
+     "cps": 0.028838294623569682,
+     "cpsCI": [
+      0.009878322832465924,
+      0.05212511915918028
+     ],
+     "success": -0.005555555555555556,
+     "successCI": [
+      -0.019444444444444445,
+      0.005555555555555556
+     ],
+     "tasks": 120
+    },
+    "held": {
+     "cps": 0.012176556606132038,
+     "cpsCI": [
+      0.0053588798756376566,
+      0.020285658896861847
+     ],
+     "success": 0,
+     "successCI": [
+      0,
+      0
+     ],
+     "tasks": 48
+    }
+   },
+   "vsH0": {
+    "all": {
+     "cps": -0.0014946007262583993,
+     "cpsCI": [
+      -0.00698797453273714,
+      0.001751238789902132
+     ],
+     "success": 0,
+     "successCI": [
+      0,
+      0
+     ],
+     "tasks": 120
+    },
+    "held": {
+     "cps": 0.0008422859746828326,
+     "cpsCI": [
+      0.0000801394819842649,
+      0.0017676319028359089
+     ],
+     "success": 0,
+     "successCI": [
+      0,
+      0
+     ],
+     "tasks": 48
+    }
+   },
+   "recovered": {
+    "all": -0.5500396923461071,
+    "held": 0.16951327443526648
+   },
+   "byBucketHeld": {
+    "local": {
+     "cps": 0,
+     "cpsCI": [
+      0,
+      0
+     ],
+     "success": 0,
+     "successCI": [
+      0,
+      0
+     ],
+     "tasks": 14
+    },
+    "multi": {
+     "cps": -0.010082591240252792,
+     "cpsCI": [
+      -0.06977369816296275,
+      0.029555659514237664
+     ],
+     "success": 0.023809523809523808,
+     "successCI": [
+      0,
+      0.07142857142857142
+     ],
+     "tasks": 14
+    },
+    "exploratory": {
+     "cps": -0.011547883045710305,
+     "cpsCI": [
+      -0.03312012656063279,
+      0.009982912328317495
+     ],
+     "success": 0,
+     "successCI": [
+      0,
+      0
+     ],
+     "tasks": 11
+    },
+    "risky": {
+     "cps": 0.0052971494965707855,
+     "cpsCI": [
+      -0.003081434907482472,
+      0.021715234193968813
+     ],
+     "success": 0,
+     "successCI": [
+      0,
+      0
+     ],
+     "tasks": 9
+    }
+   },
+   "kinds": {
+    "fit": {
+     "acquire_evidence": 0.167,
+     "recover": 0.236
+    },
+    "held": {
+     "recover": 0.069
+    }
+   },
+   "value": {
+    "fit": {
+     "n": 55,
+     "aucUsed": 0.49404761904761907,
+     "aucLearned": 0.2261904761904762,
+     "aucPredicted": 0.5357142857142857,
+     "calibration": [
+      {
+       "n": 11,
+       "used": 3879.8830004172905,
+       "realized": -346.6300258193832
+      },
+      {
+       "n": 11,
+       "used": 12347.335854705654,
+       "realized": -2029.6572493628535
+      },
+      {
+       "n": 11,
+       "used": 73507.19115837921,
+       "realized": -2965.8047578071632
+      },
+      {
+       "n": 11,
+       "used": 128010.04959478286,
+       "realized": -2071.872877584421
+      },
+      {
+       "n": 11,
+       "used": 205737.536141761,
+       "realized": -4141.296114335731
+      }
+     ]
+    },
+    "held": {
+     "n": 10,
+     "aucUsed": null,
+     "aucLearned": null,
+     "aucPredicted": null,
+     "calibration": [
+      {
+       "n": 2,
+       "used": 64191.01490673163,
+       "realized": -5440.264608176323
+      },
+      {
+       "n": 2,
+       "used": 97661.51151318991,
+       "realized": -3606.2044474325667
+      },
+      {
+       "n": 2,
+       "used": 112858.2386346552,
+       "realized": -4541.1518187118345
+      },
+      {
+       "n": 2,
+       "used": 126395.88762831228,
+       "realized": -6335.916937415546
+      },
+      {
+       "n": 2,
+       "used": 163097.77645556035,
+       "realized": -4118.574521896735
+      }
+     ]
+    }
+   }
+  },
+  {
+   "name": "learned adjusted z0",
+   "fit": {
+    "runs": 216,
+    "success": 0.8935185185185185,
+    "tokensPerTask": 302380.2686681382,
+    "tokensPerSuccess": 338415.2229653775,
+    "looksPerTask": 5.962962962962963,
+    "selectedPerTask": 2.236111111111111,
+    "abstainedPerTask": 0,
+    "interventionsPerTask": 0.49074074074074076,
+    "autonomy": 0.9878690775921264,
+    "zeroInterventionTasks": 0.875,
+    "interventionPrecision": 0.13043478260869565,
+    "interventionROI": -0.8282815196534857,
+    "netSavingPerLabelled": -2285.8304720335527,
+    "interventionTokensPerTask": 1347.9307340967991,
+    "controlFrictionPerTask": 784.8148148148148,
+    "discoveryTokensPerTask": 0,
+    "replayTokensPerTask": 0,
+    "candidateRecall3": null,
+    "generationMissRate": null,
+    "preventionDebtPerTask": 0,
+    "unavoidableInterventions": 0.5,
+    "brier": null,
+    "meanP": null,
+    "meanY": null
+   },
+   "held": {
+    "runs": 144,
+    "success": 0.9097222222222222,
+    "tokensPerTask": 290536.69511116203,
+    "tokensPerSuccess": 319368.58088555216,
+    "looksPerTask": 5.340277777777778,
+    "selectedPerTask": 2.0208333333333335,
+    "abstainedPerTask": 0,
+    "interventionsPerTask": 0.18055555555555555,
+    "autonomy": 0.9952337305224565,
+    "zeroInterventionTasks": 0.9236111111111112,
+    "interventionPrecision": 0.30434782608695654,
+    "interventionROI": -0.22836657214317782,
+    "netSavingPerLabelled": -764.0888091790004,
+    "interventionTokensPerTask": 571.3047838160469,
+    "controlFrictionPerTask": 706.0138888888889,
+    "discoveryTokensPerTask": 0,
+    "replayTokensPerTask": 0,
+    "candidateRecall3": null,
+    "generationMissRate": null,
+    "preventionDebtPerTask": 0,
+    "unavoidableInterventions": 0,
+    "brier": null,
+    "meanP": null,
+    "meanY": null
+   },
+   "all": {
+    "runs": 360,
+    "success": 0.9,
+    "tokensPerTask": 297642.83924534824,
+    "tokensPerSuccess": 330714.26582816476,
+    "looksPerTask": 5.713888888888889,
+    "selectedPerTask": 2.15,
+    "abstainedPerTask": 0,
+    "interventionsPerTask": 0.36666666666666664,
+    "autonomy": 0.9906996406679349,
+    "zeroInterventionTasks": 0.8944444444444445,
+    "interventionPrecision": 0.17391304347826086,
+    "interventionROI": -0.6556160354503944,
+    "netSavingPerLabelled": -1905.3950563199146,
+    "interventionTokensPerTask": 1037.2803539844986,
+    "controlFrictionPerTask": 753.2944444444445,
+    "discoveryTokensPerTask": 0,
+    "replayTokensPerTask": 0,
+    "candidateRecall3": null,
+    "generationMissRate": null,
+    "preventionDebtPerTask": 0,
+    "unavoidableInterventions": 0.25,
+    "brier": null,
+    "meanP": null,
+    "meanY": null
+   },
+   "vsH2": {
+    "all": {
+     "cps": 0.017312911130881625,
+     "cpsCI": [
+      -0.0038053711165845217,
+      0.04000855323119468
+     ],
+     "success": -0.002777777777777778,
+     "successCI": [
+      -0.019444444444444445,
+      0.011111111111111112
+     ],
+     "tasks": 120
+    },
+    "held": {
+     "cps": -0.005195015277969395,
+     "cpsCI": [
+      -0.026888277458784304,
+      0.012454484038087577
+     ],
+     "success": 0.006944444444444444,
+     "successCI": [
+      0,
+      0.020833333333333332
+     ],
+     "tasks": 48
+    }
+   },
+   "vsH25": {
+    "all": {
+     "cps": 0.030855630071748186,
+     "cpsCI": [
+      0.011017285044421676,
+      0.05337828036728154
+     ],
+     "success": -0.005555555555555556,
+     "successCI": [
+      -0.019444444444444445,
+      0.005555555555555556
+     ],
+     "tasks": 120
+    },
+    "held": {
+     "cps": 0.0117196409387883,
+     "cpsCI": [
+      0.00467034138778244,
+      0.019957561317198058
+     ],
+     "success": 0,
+     "successCI": [
+      0,
+      0
+     ],
+     "tasks": 48
+    }
+   },
+   "vsH0": {
+    "all": {
+     "cps": 0.00046325829559057397,
+     "cpsCI": [
+      -0.0005650980776332748,
+      0.0014632260439690903
+     ],
+     "success": 0,
+     "successCI": [
+      0,
+      0
+     ],
+     "tasks": 120
+    },
+    "held": {
+     "cps": 0.0003904868117627913,
+     "cpsCI": [
+      -0.0008013883965651836,
+      0.0014741008529530752
+     ],
+     "success": 0,
+     "successCI": [
+      0,
+      0
+     ],
+     "tasks": 48
+    }
+   },
+   "recovered": {
+    "all": -0.6215076196083972,
+    "held": 0.18556100841016074
+   },
+   "byBucketHeld": {
+    "local": {
+     "cps": 0,
+     "cpsCI": [
+      0,
+      0
+     ],
+     "success": 0,
+     "successCI": [
+      0,
+      0
+     ],
+     "tasks": 14
+    },
+    "multi": {
+     "cps": -0.011102399003063534,
+     "cpsCI": [
+      -0.07254708896654671,
+      0.029555659514237664
+     ],
+     "success": 0.023809523809523808,
+     "successCI": [
+      0,
+      0.07142857142857142
+     ],
+     "tasks": 14
+    },
+    "exploratory": {
+     "cps": -0.012584483537119495,
+     "cpsCI": [
+      -0.03403715698152632,
+      0.009320808473964215
+     ],
+     "success": 0,
+     "successCI": [
+      0,
+      0
+     ],
+     "tasks": 11
+    },
+    "risky": {
+     "cps": 0.006173915036152833,
+     "cpsCI": [
+      -0.0020731793332454673,
+      0.021920346300709603
+     ],
+     "success": 0,
+     "successCI": [
+      0,
+      0
+     ],
+     "tasks": 9
+    }
+   },
+   "kinds": {
+    "fit": {
+     "acquire_evidence": 0.245,
+     "recover": 0.245
+    },
+    "held": {
+     "acquire_evidence": 0.076,
+     "recover": 0.104
+    }
+   },
+   "value": {
+    "fit": {
+     "n": 69,
+     "aucUsed": 0.48148148148148145,
+     "aucLearned": 0.4981481481481482,
+     "aucPredicted": 0.40555555555555556,
+     "calibration": [
+      {
+       "n": 13,
+       "used": 2996.9785423403155,
+       "realized": -82.5879828635639
+      },
+      {
+       "n": 14,
+       "used": 5756.143063606985,
+       "realized": -1670.3583170008246
+      },
+      {
+       "n": 14,
+       "used": 33448.49045474728,
+       "realized": -1355.4457431593244
+      },
+      {
+       "n": 14,
+       "used": 106593.01830543949,
+       "realized": -3440.2201772565813
+      },
+      {
+       "n": 14,
+       "used": 176600.17061722363,
+       "realized": -4723.165676375327
+      }
+     ]
+    },
+    "held": {
+     "n": 23,
+     "aucUsed": 0.10714285714285714,
+     "aucLearned": 0.7767857142857143,
+     "aucPredicted": 0.10714285714285714,
+     "calibration": [
+      {
+       "n": 4,
+       "used": 17991.683269447185,
+       "realized": 2665.349626308758
+      },
+      {
+       "n": 5,
+       "used": 36638.239909127486,
+       "realized": 3318.431599499949
+      },
+      {
+       "n": 4,
+       "used": 68242.10200002143,
+       "realized": -660.2320808187724
+      },
+      {
+       "n": 5,
+       "used": 108635.37426646272,
+       "realized": -4098.729882481613
+      },
+      {
+       "n": 5,
+       "used": 150868.76225974783,
+       "realized": -4338.6042756337265
+      }
+     ]
+    }
+   }
+  }
+ ],
+ "capabilityCells": [
+  {
+   "continue|agent.continue": {
+    "n": 644,
+    "meanCtg": 0.6737
+   },
+   "continue|agent.continue#steady|unknown": {
+    "n": 551,
+    "meanCtg": 0.6692
+   },
+   "acquire_evidence|evidence.read-file": {
+    "n": 8,
+    "meanCtg": 1.0059
+   },
+   "acquire_evidence|evidence.read-file#steady|unknown": {
+    "n": 6,
+    "meanCtg": 1.0562
+   },
+   "continue|agent.continue#failing|pending": {
+    "n": 93,
+    "meanCtg": 0.7003
+   },
+   "recover|recovery.evidence-preserving": {
+    "n": 16,
+    "meanCtg": 1.047
+   },
+   "recover|recovery.evidence-preserving#failing|pending": {
+    "n": 11,
+    "meanCtg": 1.1185
+   },
+   "acquire_evidence|evidence.read-file#steady|pending": {
+    "n": 1,
+    "meanCtg": 0.6156
+   },
+   "recover|recovery.evidence-preserving#failing|failed": {
+    "n": 4,
+    "meanCtg": 0.9214
+   },
+   "acquire_evidence|evidence.read-file#failing|pending": {
+    "n": 1,
+    "meanCtg": 1.0947
+   },
+   "recover|recovery.evidence-preserving#steady|failed": {
+    "n": 1,
+    "meanCtg": 0.763
+   }
+  },
+  {
+   "continue|agent.continue": {
+    "n": 639,
+    "meanCtg": 0.5663
+   },
+   "continue|agent.continue#steady|unknown": {
+    "n": 562,
+    "meanCtg": 0.5666
+   },
+   "acquire_evidence|evidence.read-file": {
+    "n": 62,
+    "meanCtg": 0.5302
+   },
+   "acquire_evidence|evidence.read-file#steady|unknown": {
+    "n": 60,
+    "meanCtg": 0.5254
+   },
+   "continue|agent.continue#failing|pending": {
+    "n": 77,
+    "meanCtg": 0.564
+   },
+   "recover|recovery.evidence-preserving": {
+    "n": 17,
+    "meanCtg": 0.5743
+   },
+   "recover|recovery.evidence-preserving#failing|failed": {
+    "n": 5,
+    "meanCtg": 0.7013
+   },
+   "acquire_evidence|evidence.read-file#failing|pending": {
+    "n": 2,
+    "meanCtg": 0.6746
+   },
+   "recover|recovery.evidence-preserving#failing|pending": {
+    "n": 11,
+    "meanCtg": 0.4989
+   },
+   "recover|recovery.evidence-preserving#steady|failed": {
+    "n": 1,
+    "meanCtg": 0.7678
+   }
+  },
+  {
+   "continue|agent.continue": {
+    "n": 629,
+    "meanCtg": 0.5926
+   },
+   "continue|agent.continue#steady|unknown": {
+    "n": 547,
+    "meanCtg": 0.5995
+   },
+   "acquire_evidence|evidence.read-file": {
+    "n": 17,
+    "meanCtg": 0.661
+   },
+   "acquire_evidence|evidence.read-file#steady|unknown": {
+    "n": 14,
+    "meanCtg": 0.5606
+   },
+   "recover|recovery.evidence-preserving": {
+    "n": 23,
+    "meanCtg": 0.7464
+   },
+   "recover|recovery.evidence-preserving#failing|pending": {
+    "n": 16,
+    "meanCtg": 0.7291
+   },
+   "continue|agent.continue#failing|pending": {
+    "n": 81,
+    "meanCtg": 0.5448
+   },
+   "acquire_evidence|evidence.read-file#steady|pending": {
+    "n": 1,
+    "meanCtg": 1.2666
+   },
+   "recover|recovery.evidence-preserving#failing|failed": {
+    "n": 7,
+    "meanCtg": 0.7861
+   },
+   "acquire_evidence|evidence.read-file#failing|pending": {
+    "n": 1,
+    "meanCtg": 1.455
+   },
+   "acquire_evidence|evidence.read-file#failing|failed": {
+    "n": 1,
+    "meanCtg": 0.6667
+   },
+   "continue|agent.continue#failing|failed": {
+    "n": 1,
+    "meanCtg": 0.7212
+   }
+  }
+ ],
+ "oracleRealizedH25": {
+  "acquire_evidence": {
+   "n": 602,
+   "s": -523704.18299254467,
+   "pos": 96
+  },
+  "recover": {
+   "n": 27,
+   "s": -102279.22478749149,
+   "pos": 3
+  }
+ }
+}
