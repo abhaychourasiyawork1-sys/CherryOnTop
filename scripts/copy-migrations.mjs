@@ -1,7 +1,10 @@
 // tsc emits .js only; the Drizzle migrator needs the .sql/.json files at runtime.
-import { chmodSync, cpSync, existsSync } from 'node:fs';
+import { chmodSync, cpSync, existsSync, rmSync } from 'node:fs';
 
 if (existsSync('src/db/migrations')) {
+  // Replaced, never merged: a migration left in dist/ by another branch's build
+  // would otherwise run against every fresh database this build creates.
+  rmSync('dist/db/migrations', { recursive: true, force: true });
   cpSync('src/db/migrations', 'dist/db/migrations', { recursive: true });
 }
 
