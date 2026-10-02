@@ -147,6 +147,11 @@ export interface EconomicDecisionInput {
     signal: (candidate: ActionCandidate, state: EconomicState) => ActionTransitionEstimate;
     stateValueUsd: number;
   };
+  /** What the runtime can carry out. A candidate it cannot is refused as
+   *  `unavailable:not_carried_out` — priced and kept in the receipt, never
+   *  chosen. The null action is always executable. Absent, nothing is refused
+   *  for this reason (the diagnosis ladder and tests price abstract menus). */
+  executable?: (candidate: ActionCandidate) => boolean;
   /** Injected so a decision is reproducible in a test. Production never
    *  passes it. */
   decisionId?: string;
@@ -167,7 +172,9 @@ export function chooseEconomicAction(input: EconomicDecisionInput): ActionDecisi
   const startedMs = now();
   const stats: FunnelStats = { cacheHits: 0, cacheMisses: 0, estimatorCalls: 0 };
 
-  const supplied = (input.candidates ?? []).map(normalizeActionCandidate);
+  const supplied = (input.candidates ?? []).map(normalizeActionCandidate).map((c) => (
+    input.executable && !isNullAction(c) && !input.executable(c)
+      ? { ...c, metadata: { ...c.metadata, infeasible: 'not_carried_out' } } : c));
   // The null action is always on the menu unless a provider supplied its own
   // version of it (the execution market's candidates are all "carry on, on
   // this candidate").

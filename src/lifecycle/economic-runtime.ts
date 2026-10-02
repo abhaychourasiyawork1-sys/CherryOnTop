@@ -58,6 +58,7 @@ import { learnFromTask, type LearningResult } from '../governor/governor.js';
 import type { TraceEvent } from '../governor/miss.js';
 import type { UncertaintyKind } from '../decision/state.js';
 import { createDormantPool, type DormantPool } from '../governor/coverage.js';
+import { isExecutable } from './executable.js';
 
 /** What one turn of a dispatch costs, before any run has measured it.
  *
@@ -446,7 +447,7 @@ export function evaluateBoundary(
   const state = (options.view ?? ((s: EconomicState) => s))(withReserves(unreserved, additionalCandidates));
   const governor = governorFor(db, input.nodeId);
   const cycle = runDecisionCycle(state, {
-    cadence: entry.cadence, additionalCandidates, ...(governor ? { governor } : {}),
+    cadence: entry.cadence, additionalCandidates, executable: isExecutable, ...(governor ? { governor } : {}),
   });
   entry.cadence = cycle.cadence;
   return { decision: cycle.decision, state, cycle };

@@ -100,6 +100,8 @@ export interface DecisionCycleInput {
   /** The Economic Governor (`governor/governor.ts`), when one is running for
    *  this run. Absent, the cycle is exactly the market this loop always ran. */
   governor?: { ctx: GovernorContext; node: GovernorNodeState };
+  /** What the runtime can carry out; see `EconomicDecisionInput.executable`. */
+  executable?: (candidate: ActionCandidate) => boolean;
 }
 
 /** Runs one cycle.
@@ -193,11 +195,11 @@ export function runDecisionCycle(
     if (governor) {
       governed = concludeLook({
         state, ctx: governor.ctx, node: governor.node, lookCostTokens: DEEP_EVALUATION_TOKEN_COST,
-        governed: governDecision({ state, candidates, coverage, faults, risk, ctx: governor.ctx, node: governor.node }),
+        governed: governDecision({ state, candidates, coverage, faults, risk, ctx: governor.ctx, node: governor.node, executable: input.executable }),
       });
       decision = governed.decision;
     } else {
-      decision = chooseEconomicAction({ state, candidates, faults });
+      decision = chooseEconomicAction({ state, candidates, faults, executable: input.executable });
     }
     // A cycle that chose to continue found nothing actionable, whatever the
     // screen suspected — so it counts as quiet for the backoff. Otherwise a
