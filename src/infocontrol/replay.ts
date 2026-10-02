@@ -139,6 +139,11 @@ export interface ReplayReport {
   candidateLabels: ElisionLabel[];
   /** The run ended with edits after its last executed command. */
   unverifiedFinish: boolean;
+  /** Calls the controller would have refused before they ran. Offline the
+   *  recorded call still happened, so these are counted, not re-priced. */
+  refusals: Array<{ action: string; tokens: number; context: number }>;
+  /** Repeat-gate labels the recorded future yields (see SessionResult.repeats). */
+  repeats: Array<{ differed: boolean; again: boolean }>;
 }
 
 const specificTerms = codeIdentifiers;
@@ -175,6 +180,7 @@ export async function replay(steps: readonly TrajectoryStep[], options: ReplayOp
   // trained here is trained on what the runtime will actually know.
   const runtimeSeen = specificTerms(options.goal);
   let reportedOutput: number | null = null;
+  const refusals: ReplayReport['refusals'] = [];
   for (const [stepIndex, step] of steps.entries()) {
     if (step.kind === 'result') {
       reportedOutput = (reportedOutput ?? 0) + (step.usage.output_tokens ?? 0);
@@ -197,9 +203,15 @@ export async function replay(steps: readonly TrajectoryStep[], options: ReplayOp
     toolCalls++;
     for (const t of specificTerms(JSON.stringify(step.input))) runtimeSeen.add(t);
     const base = { tool_name: step.name, tool_input: step.input, tool_use_id: step.toolUseId };
-    await session.handle({ hook_event_name: 'PreToolUse', ...base });
+    const pre = await session.handle({ hook_event_name: 'PreToolUse', ...base });
+    if ((pre.hookSpecificOutput as { permissionDecision?: string } | undefined)?.permissionDecision === 'deny') {
+      refusals.push({ action: String((lastDecision as Record<string, unknown> | null)?.action ?? 'deny'), tokens: estimateTokens(step.output), context: turnContext.at(-1) ?? 0 });
+    }
     lastDecision = null;
-    const post: HookPayload = { hook_event_name: 'PostToolUse', ...base, tool_response: step.isError ? { is_error: true, text: step.output } : { type: 'text', text: step.output } };
+    // As the live runtime reports it: a failed call on its own event.
+    const post: HookPayload = step.isError
+      ? { hook_event_name: 'PostToolUseFailure', ...base, error: step.output }
+      : { hook_event_name: 'PostToolUse', ...base, tool_response: { type: 'text', text: step.output } };
     const response = await session.handle(post);
     const shaped = (response.hookSpecificOutput as { updatedToolOutput?: string } | undefined)?.updatedToolOutput;
     const outputTerms = specificTerms(step.output);
@@ -224,10 +236,10 @@ export async function replay(steps: readonly TrajectoryStep[], options: ReplayOp
     if (shaped !== undefined) {
       const kept = specificTerms(shaped);
       const d = lastDecision as Record<string, unknown> | null;
-      const isDedup = d?.action === 'dedup';
+      const isDedup = d?.action === 'dedup' || d?.action === 'subsume';
       elisions.push({
         afterTurn: turnIndex, stepIndex, tokens: Math.max(0, estimateTokens(step.output) - estimateTokens(shaped)),
-        cell: isDedup ? 'dedup' : String(d?.cell ?? 'unknown'), context: turnContext.at(-1) ?? 0,
+        cell: isDedup ? String(d?.action) : String(d?.cell ?? 'unknown'), context: turnContext.at(-1) ?? 0,
         // A duplicate's content is still in context, so nothing only it held exists.
         onlyElided: isDedup ? new Set() : new Set([...outputTerms].filter((t) => !kept.has(t) && !seenBefore.has(t))),
       });
@@ -294,5 +306,7 @@ export async function replay(steps: readonly TrajectoryStep[], options: ReplayOp
     elisions: labels,
     candidateLabels,
     unverifiedFinish: result.unverifiedFinish || decisions['block-finish'] !== undefined,
+    refusals,
+    repeats: result.repeats,
   };
 }

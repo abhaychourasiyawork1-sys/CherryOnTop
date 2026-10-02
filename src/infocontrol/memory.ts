@@ -10,12 +10,14 @@
  *   - `ic_turns`    (key: role)       how many turns a dispatch took (the survival estimate's data)
  *   - `ic_finish`   (key: 'finish')   unverified finishes and whether validation then failed
  *   - `ic_negative` (key: task root)  searches that found nothing, with provenance
+ *   - `ic_repeat`   (key: 'repeat')   an identical repeat of a failed call into an unchanged world that
+ *                                     was allowed to run: did it come out differently, did the agent repeat it again
  */
 import { randomUUID } from 'node:crypto';
 import { and, desc, eq } from 'drizzle-orm';
 import type { Db } from '../db/client.js';
 import { memory } from '../db/schema.js';
-import type { RefetchBelief } from './economics.js';
+import type { RefetchBelief, RepeatBelief } from './economics.js';
 import type { RefetchFeatures } from './refetch-model.js';
 
 export const KIND = {
@@ -24,6 +26,7 @@ export const KIND = {
   turns: 'ic_turns',
   finish: 'ic_finish',
   negative: 'ic_negative',
+  repeat: 'ic_repeat',
 } as const;
 
 function insert(db: Db, kind: string, key: string, value: unknown, nodeId: string | null): void {
@@ -105,4 +108,21 @@ export function negativeFindings(db: Db, taskRootId: string): NegativeFinding[] 
 
 export function admitNegative(db: Db, taskRootId: string, finding: NegativeFinding): void {
   insert(db, KIND.negative, taskRootId, finding, finding.nodeId);
+}
+
+/** What identical repeats into an unchanged world have done, across dispatches. */
+export function repeatBelief(db: Db): RepeatBelief {
+  let repeats = 0;
+  let differed = 0;
+  let again = 0;
+  for (const r of rows<{ differed: boolean; again: boolean }>(db, KIND.repeat, 'repeat')) {
+    repeats++;
+    if (r.differed) differed++;
+    if (r.again) again++;
+  }
+  return { repeats, differed, again };
+}
+
+export function recordRepeat(db: Db, row: { differed: boolean; again: boolean }, nodeId: string): void {
+  insert(db, KIND.repeat, 'repeat', row, nodeId);
 }

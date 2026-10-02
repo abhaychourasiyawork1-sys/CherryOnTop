@@ -9,6 +9,13 @@
  *    3. System-1, only where the evidence cannot decide (`ambiguous`), through
  *       the guarded door every System-1 question goes through.
  *
+ *  Both directions of the agent–environment interface pass through here (the
+ *  HarnessBridge split): observations are projected on the way in (shape,
+ *  dedup, subsume), actions on the way out (a search that found nothing, an
+ *  identical repeat of a call that just failed into an unchanged world). A
+ *  refused action always says why, from this dispatch's own trajectory, and
+ *  never twice for the same call in the same world: insisting is evidence.
+ *
  *  `shadow` computes and records every decision and changes nothing. A
  *  disabled component is recorded the same way, so an ablation still yields
  *  labelled decisions. Anything unexpected returns `{}`: the hook's no-op,
@@ -17,7 +24,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { estimateTokens } from '../context/candidates.js';
 import type { Fact } from '../system1/compiler.js';
 import {
-  expectedRemainingTurns, carryingUsd, elisionValue, betaProbability, type Prices, type RefetchBelief,
+  expectedRemainingTurns, carryingUsd, elisionValue, betaProbability, repeatValue, type Prices, type RefetchBelief, type RepeatBelief,
 } from './economics.js';
 import { predictRefetch, type RefetchFeatures, type RefetchModel } from './refetch-model.js';
 import { classifyShell } from './shell.js';
@@ -25,8 +32,14 @@ import { codeIdentifiers, extractText, shapeCandidates, termsOf } from './shape.
 import type { NegativeFinding } from './memory.js';
 
 export type Mode = 'off' | 'shadow' | 'active';
-export type Component = 'shape' | 'dedup' | 'finish' | 'memory' | 'system1';
-export const COMPONENTS: readonly Component[] = ['shape', 'dedup', 'finish', 'memory', 'system1'];
+export type Component = 'shape' | 'dedup' | 'finish' | 'memory' | 'system1' | 'repeat' | 'recite';
+export const COMPONENTS: readonly Component[] = ['shape', 'dedup', 'finish', 'memory', 'system1', 'repeat', 'recite'];
+
+/** Which kind of authority refused an action. Kept apart in every receipt:
+ *  a trajectory refusal is this controller's (the call cannot do anything new
+ *  here), an economic veto is the Action Market's, a permission denial is the
+ *  mandate's. One must never be recorded as another. */
+export type Refusal = 'trajectory' | 'economic' | 'authority';
 
 /** Where a shaped observation's full text is kept inside the sandbox. */
 export const SPILL_DIR = '/tmp/cto-ic';
@@ -38,6 +51,10 @@ export interface HookPayload {
   tool_response?: unknown;
   tool_use_id?: string;
   last_assistant_message?: string;
+  /** PostToolUseFailure: what the failed call returned. */
+  error?: string;
+  /** SessionStart: why the session (re)started; `compact` after a compaction. */
+  source?: string;
 }
 
 export interface SessionConfig {
@@ -59,6 +76,8 @@ export interface SessionConfig {
   finish: { failed: number; finished: number };
   negatives: readonly NegativeFinding[];
   revision: string | null;
+  /** Identical repeats into an unchanged world, from earlier dispatches. Absent: uniform. */
+  repeat?: RepeatBelief;
 }
 
 export interface Judge {
@@ -91,10 +110,30 @@ export interface SessionResult {
   /** An unverified finish was allowed through (by policy or by mode): its
    *  validation verdict is the finish gate's training label. */
   unverifiedFinish: boolean;
+  /** One row per identical repeat that was allowed to run: the repeat gate's training labels. */
+  repeats: Array<{ differed: boolean; again: boolean }>;
   summary: Record<string, number>;
 }
 
+/** The last thing a call did, for the repeat gate. */
+interface CallRecord {
+  step: number;
+  /** `world` right after the call ran: equal to the current one means nothing
+   *  that could change its result has happened since. */
+  world: number;
+  failed: boolean;
+  digest: string;
+  tokens: number;
+  tail: string;
+  /** Identical repeats already allowed in this world. */
+  repeats: number;
+  /** The world a refusal was issued in: a second identical request there is let through. */
+  refusedAt?: number;
+}
+
 const SHAPEABLE = new Set(['Bash', 'Read', 'Grep', 'Glob', 'WebFetch']);
+/** Calls the repeat gate may refuse: the ones Claude Code runs a PreToolUse hook for here. */
+const GATED = new Set(['Bash', 'Read', 'Grep', 'Glob', 'Edit', 'MultiEdit']);
 const EDITORS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit']);
 const SEARCHERS = new Set(['grep', 'egrep', 'fgrep', 'rg', 'ag', 'find', 'fd']);
 
@@ -106,7 +145,18 @@ export class InfoSession {
   private lastExecStep = -1;
   private edits = 0;
   private execs = 0;
-  private seen = new Map<string, { step: number; tool: string }>();
+  private seen = new Map<string, { step: number; tool: string; decisionId?: string }>();
+  /** Bumped by every edit and every command that may write: what makes a
+   *  repeated call able to come out differently. Reads never bump it. */
+  private world = 0;
+  private calls = new Map<string, CallRecord>();
+  private repeatLabels: Array<{ signature: string; differed?: boolean; again: boolean }> = [];
+  /** Read lines in context, per file: line number → its text and the step that showed it. */
+  private lines = new Map<string, Map<number, { text: string; step: number }>>();
+  /** Duplicate/subsumed views already replaced once: the next identical request passes. */
+  private struck = new Map<string, string>();
+  private readonly filesEdited = new Set<string>();
+  private lastFailure: { step: number; call: string; tail: string } | null = null;
   private elisions: Elision[] = [];
   private refetchCalls = new Set<string>();
   private negatives = new Map<string, { step: number; epoch: number; query: string }>();
@@ -157,13 +207,14 @@ export class InfoSession {
     switch (payload.hook_event_name) {
       case 'PreToolUse': return this.preToolUse(payload);
       case 'PostToolUse': return this.postToolUse(payload);
+      case 'PostToolUseFailure': return this.postToolFailure(payload);
       case 'Stop': return this.stop(payload);
       case 'PostCompact':
       case 'PreCompact':
-        // The earlier copies a dedupe would point at are gone from context.
-        this.seen.clear();
+        this.forgetContext();
         this.count('compactions');
         return {};
+      case 'SessionStart': return payload.source === 'compact' ? this.recite() : {};
       default: return {};
     }
   }
@@ -212,13 +263,16 @@ export class InfoSession {
       this.count('refetches');
     }
 
+    const gated = this.repeatGate(tool, input);
+    if (gated) return gated;
+
     const search = this.searchSignature(tool, input);
     if (!search) return {};
     const known = this.negatives.get(search.signature);
     if (known && known.epoch === this.epoch) {
       // Nothing has been edited or run since this exact search found nothing.
       const applied = this.applies('memory');
-      this.decision('PreToolUse', tool, 'deny-negative', applied, { signature: search.signature, sinceStep: known.step });
+      this.decision('PreToolUse', tool, 'deny-negative', applied, { signature: search.signature, sinceStep: known.step, refusal: 'trajectory' satisfies Refusal });
       if (!applied) return {};
       return {
         hookSpecificOutput: {
@@ -250,11 +304,20 @@ export class InfoSession {
     this.step++;
     const tool = p.tool_name ?? '';
     const input = p.tool_input ?? {};
-    if (EDITORS.has(tool)) { this.edits++; this.lastEditStep = this.step; return {}; }
+    if (EDITORS.has(tool)) {
+      this.edits++;
+      this.lastEditStep = this.step;
+      this.world++;
+      const path = String(input.file_path ?? input.notebook_path ?? '');
+      if (path) this.filesEdited.add(path);
+      this.recordCall(tool, input, false, '');
+      return {};
+    }
     const shell = tool === 'Bash' ? classifyShell(String(input.command ?? '')) : null;
-    if (shell?.kind === 'exec') { this.execs++; this.lastExecStep = this.step; }
+    if (shell?.kind === 'exec') { this.execs++; this.lastExecStep = this.step; this.world++; }
 
     const text = extractText(p.tool_response);
+    if (GATED.has(tool)) this.recordCall(tool, input, false, text ?? '');
     if (text === null || !SHAPEABLE.has(tool)) return {};
     const tokens = estimateTokens(text);
     this.observations++;
@@ -267,31 +330,219 @@ export class InfoSession {
       return {};
     }
 
-    // Hard guards.
+    // Hard guards: what the agent explicitly asked to see again, or nothing at all.
     const isRefetch = p.tool_use_id !== undefined && this.refetchCalls.has(p.tool_use_id);
     const ranged = tool === 'Read' ? input.offset !== undefined || input.limit !== undefined : shell?.ranged === true;
     const readsSpill = JSON.stringify(input).includes(SPILL_DIR);
-    if (isRefetch || ranged || readsSpill || text.trim() === '') return {};
-
-    // Exact duplicate of an observation still in context.
+    const numbered = tool === 'Read' ? numberedLines(p.tool_response, text) : null;
     const digest = hash(`${tool}\u0000${text}`);
+    // Only what reaches the agent whole is "still above in this conversation":
+    // a shaped or replaced view is not, so nothing may later point at it as if it were.
+    const delivered = () => {
+      this.seen.set(digest, { step: this.step, tool });
+      if (numbered) this.rememberLines(String(input.file_path ?? ''), numbered);
+      return {};
+    };
+    if (isRefetch || readsSpill || text.trim() === '') return delivered();
+
+    // Exact duplicate of an observation still in context. Not shaping, so a
+    // slice the agent ranged itself is deduped too: its copy is already there.
     const earlier = this.seen.get(digest);
     if (earlier) {
+      const struck = this.struck.get(`dedup:${digest}`);
+      if (struck !== undefined) {
+        // Replaced once and asked for again: the agent wants it here. Give it.
+        this.struck.delete(`dedup:${digest}`);
+        this.deps.emit('ic.outcome', { decisionId: struck, nodeId: this.config.nodeId, refetched: true, atStep: this.step, cell: 'dedup' });
+        this.count('refetches');
+        return delivered();
+      }
       const savedUsd = carryingUsd(tokens, this.remaining(), this.config.prices);
       const applied = this.applies('dedup');
-      this.decision('PostToolUse', tool, 'dedup', applied, { originalTokens: tokens, sameAsStep: earlier.step, savedUsd });
+      const decisionId = this.decision('PostToolUse', tool, 'dedup', applied, { originalTokens: tokens, sameAsStep: earlier.step, savedUsd });
       if (applied) {
-        return { hookSpecificOutput: { hookEventName: 'PostToolUse', updatedToolOutput: `[information control: identical to the output of step ${earlier.step} (${earlier.tool}), which is still above in this conversation]` } };
+        this.struck.set(`dedup:${digest}`, decisionId);
+        return { hookSpecificOutput: { hookEventName: 'PostToolUse', updatedToolOutput: `[information control: identical to the output of step ${earlier.step} (${earlier.tool}), which is still above in this conversation. Run the same call again if you need it repeated here.]` } };
       }
-      return {};
+      return delivered();
     }
-    this.seen.set(digest, { step: this.step, tool });
+    if (numbered) {
+      const subsumed = this.subsume(String(input.file_path ?? ''), input, numbered, tokens);
+      if (subsumed === 'deliver') return delivered();
+      if (subsumed) return subsumed;
+    }
+    if (ranged) return delivered();
     const outputIds = codeIdentifiers(text);
     try {
-      return await this.shape(tool, input, text, tokens, outputIds, p.tool_use_id);
+      const shaped = await this.shape(tool, input, text, tokens, outputIds, p.tool_use_id);
+      // Only what reaches the agent counts as in context.
+      if (shaped.hookSpecificOutput === undefined) delivered();
+      return shaped;
     } finally {
       for (const t of outputIds) this.identifiers.add(t);
     }
+  }
+
+  /** A failed call (Claude Code reports these on their own event, never on
+   *  PostToolUse). The output passes through untouched; what the controller
+   *  learns is that it ran, what it returned, and that the agent saw it. */
+  private postToolFailure(p: HookPayload): Record<string, unknown> {
+    this.step++;
+    const tool = p.tool_name ?? '';
+    const input = p.tool_input ?? {};
+    const text = typeof p.error === 'string' ? p.error : extractText(p.tool_response) ?? '';
+    for (const t of codeIdentifiers(text)) this.identifiers.add(t);
+    if (tool === 'Bash' && classifyShell(String(input.command ?? '')).kind === 'exec') {
+      // A command that ran and failed is still a check that ran.
+      this.execs++;
+      this.lastExecStep = this.step;
+      this.world++;
+    }
+    if (!EDITORS.has(tool) && SHAPEABLE.has(tool)) {
+      this.observations++;
+      this.observationTokens += estimateTokens(text);
+    }
+    if (GATED.has(tool)) this.recordCall(tool, input, true, text);
+    this.lastFailure = { step: this.step, call: describeCall(tool, input), tail: tail(text, 300) };
+    this.count('failures');
+    return {};
+  }
+
+  /** The repeat gate's notion of "the same call": what it does, not how it was
+   *  described (a Bash `description` or `timeout` changes nothing it runs). */
+  private callSignature(tool: string, input: Record<string, unknown>): string {
+    if (tool === 'Bash') return hash(`Bash\u0000${String(input.command ?? '').replace(/\s+/g, ' ').trim()}`);
+    const { description: _d, timeout: _t, ...rest } = input;
+    return hash(`${tool}\u0000${JSON.stringify(rest, Object.keys(rest).sort())}`);
+  }
+
+  /** What a call did, for the repeat gate; also settles the label of a repeat
+   *  that was allowed to run. Called after `world` has moved for the call itself. */
+  private recordCall(tool: string, input: Record<string, unknown>, failed: boolean, text: string): void {
+    const signature = this.callSignature(tool, input);
+    const digest = hash(text);
+    const prev = this.calls.get(signature);
+    const label = [...this.repeatLabels].reverse().find((l) => l.signature === signature && l.differed === undefined);
+    if (label) label.differed = !(failed && prev?.failed === true && prev.digest === digest);
+    const same = prev !== undefined && failed && prev.failed && prev.digest === digest && label !== undefined && !label.differed;
+    this.calls.set(signature, {
+      step: this.step, world: this.world, failed, digest, tokens: estimateTokens(text), tail: tail(text, 300),
+      repeats: same ? prev.repeats + 1 : 0,
+    });
+  }
+
+  /** Action projection for a call that just failed and that nothing since
+   *  could have changed: priced, grounded, and never refused twice in one world. */
+  private repeatGate(tool: string, input: Record<string, unknown>): Record<string, unknown> | null {
+    if (!GATED.has(tool)) return null;
+    const signature = this.callSignature(tool, input);
+    const prev = this.calls.get(signature);
+    if (!prev || !prev.failed || prev.world !== this.world) return null;
+    // The loop goes on: an allowed identical repeat is being issued yet again.
+    const open = [...this.repeatLabels].reverse().find((l) => l.signature === signature);
+    if (open && open.differed === false) open.again = true;
+    const allow = (): null => {
+      this.repeatLabels.push({ signature, again: false });
+      return null;
+    };
+    if (prev.refusedAt === this.world) {
+      this.decision('PreToolUse', tool, 'allow-repeat', false, { signature, sinceStep: prev.step, insisted: true });
+      return allow();
+    }
+    const feedback = `Information control: this exact call failed at step ${prev.step}, and nothing that could change its result has happened since — no file was edited and no other command was run. It would fail the same way again. What it returned:\n${prev.tail}\nChange something first (edit the code, fix the environment, or run a different command), or ask for something else. If you are sure it is worth repeating unchanged, issue it once more and it will run.`;
+    const R = this.remaining();
+    const outputPerTurn = this.turns > 0 ? this.outputTokens / this.turns : 0;
+    const value = repeatValue({
+      belief: this.config.repeat ?? { repeats: 0, differed: 0, again: 0 }, sessionRepeats: prev.repeats,
+      duplicateTokens: prev.tokens, feedbackTokens: estimateTokens(feedback), remainingTurns: R,
+      turnUsd: this.contextTokens * this.config.prices.read + outputPerTurn * this.config.prices.output,
+    }, this.config.prices, this.config.confidence);
+    const deny = value.verdict === 'deny';
+    const applied = deny && this.applies('repeat');
+    this.decision('PreToolUse', tool, deny ? 'deny-repeat' : 'allow-repeat', applied, {
+      signature, sinceStep: prev.step, sessionRepeats: prev.repeats, ...value, ...(deny ? { refusal: 'trajectory' satisfies Refusal } : {}),
+    });
+    if (!applied) return allow();
+    prev.refusedAt = this.world;
+    return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: feedback } };
+  }
+
+  private rememberLines(path: string, numbered: ReadonlyMap<number, string>): void {
+    if (!path) return;
+    const known = this.lines.get(path) ?? new Map<number, { text: string; step: number }>();
+    for (const [n, text] of numbered) known.set(n, { text, step: this.step });
+    this.lines.set(path, known);
+  }
+
+  /** A Read whose every line, with its line number, this conversation already
+   *  shows: nothing new was read, which the match itself proves. Replaced once
+   *  by a pointer to where those lines are; asked again, it passes. */
+  private subsume(path: string, input: Record<string, unknown>, numbered: ReadonlyMap<number, string>, tokens: number): Record<string, unknown> | 'deliver' | null {
+    const key = `subsume:${path}:${String(input.offset ?? '')}:${String(input.limit ?? '')}`;
+    const struck = this.struck.get(key);
+    if (struck !== undefined) {
+      this.struck.delete(key);
+      this.deps.emit('ic.outcome', { decisionId: struck, nodeId: this.config.nodeId, refetched: true, atStep: this.step, cell: 'subsume' });
+      this.count('refetches');
+      return 'deliver';
+    }
+    const known = this.lines.get(path);
+    if (!known || numbered.size === 0) return null;
+    const steps = new Set<number>();
+    for (const [n, text] of numbered) {
+      const k = known.get(n);
+      if (!k || k.text !== text) return null;
+      steps.add(k.step);
+    }
+    const numbers = [...numbered.keys()];
+    const from = Math.min(...numbers);
+    const to = Math.max(...numbers);
+    const pointer = `[information control: lines ${from}–${to} of ${path} are identical, line for line, to what step ${[...steps].sort((a, b) => a - b).join(', ')} already showed, which is still above in this conversation. Nothing new was read. Run this same Read again if you need them repeated here.]`;
+    if (estimateTokens(pointer) >= tokens) return null;
+    const applied = this.applies('dedup');
+    const decisionId = this.decision('PostToolUse', 'Read', 'subsume', applied, {
+      originalTokens: tokens, shapedTokens: estimateTokens(pointer), sameAsSteps: [...steps], savedUsd: carryingUsd(tokens - estimateTokens(pointer), this.remaining(), this.config.prices),
+    });
+    if (!applied) return null;
+    this.struck.set(key, decisionId);
+    return { hookSpecificOutput: { hookEventName: 'PostToolUse', updatedToolOutput: pointer } };
+  }
+
+  /** Everything a pointer could point at has left the context. */
+  private forgetContext(): void {
+    this.seen.clear();
+    this.lines.clear();
+    this.struck.clear();
+  }
+
+  /** The active state, compact: what the agent needs not to lose when its
+   *  history is summarized (HarnessBridge's active-state index; the Harness
+   *  Effect's objective recitation). Built only from this dispatch's own
+   *  trajectory, so nothing in it is a guess. */
+  activeState(): string {
+    const lines = [`Goal: ${this.config.goal.trim().slice(0, 600)}`];
+    if (this.filesEdited.size > 0) {
+      const files = [...this.filesEdited];
+      lines.push(`Files you have edited (${files.length}): ${files.slice(0, 15).join(', ')}${files.length > 15 ? ', …' : ''}`);
+    }
+    if (this.edits > 0) {
+      lines.push(this.lastEditStep > this.lastExecStep
+        ? `Verification: nothing has run since your last edit (step ${this.lastEditStep}); the current version is unchecked.`
+        : `Verification: a command ran at step ${this.lastExecStep}, after your last edit (step ${this.lastEditStep}).`);
+    }
+    if (this.lastFailure) lines.push(`Last failure (step ${this.lastFailure.step}): ${this.lastFailure.call}\n${this.lastFailure.tail}`);
+    const negatives = [...this.negatives.values()].filter((n) => n.epoch === this.epoch).slice(-5);
+    if (negatives.length > 0) lines.push(`Searches that found nothing, with nothing changed since: ${negatives.map((n) => n.query).join('; ')}`);
+    return lines.join('\n');
+  }
+
+  private recite(): Record<string, unknown> {
+    this.forgetContext();
+    const text = `[information control: where this task stands, from its own record before the compaction]\n${this.activeState()}`;
+    const applied = this.applies('recite');
+    this.decision('SessionStart', undefined, 'recite', applied, { recitedTokens: estimateTokens(text) });
+    if (!applied) return {};
+    return { hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: text } };
   }
 
   private async shape(tool: string, input: Record<string, unknown>, text: string, tokens: number, outputIds: Set<string>, toolUseId?: string): Promise<Record<string, unknown>> {
@@ -406,6 +657,41 @@ export class InfoSession {
       elidedTokens: this.elisions.reduce((s, e) => s + e.elidedTokens, 0),
     };
     const observations = this.elisions.map((e) => ({ features: e.features, used: e.refetchedAt !== undefined }));
-    return { refetch, observations, turns: Math.max(this.turns, this.step), unverifiedFinish: this.unverifiedFinish, summary };
+    const repeats = this.repeatLabels.filter((l): l is { signature: string; differed: boolean; again: boolean } => l.differed !== undefined)
+      .map((l) => ({ differed: l.differed, again: l.again }));
+    return { refetch, observations, turns: Math.max(this.turns, this.step), unverifiedFinish: this.unverifiedFinish, repeats, summary };
   }
+}
+
+function tail(text: string, chars: number): string {
+  const t = text.trim();
+  return t.length <= chars ? t : `…${t.slice(-chars)}`;
+}
+
+function describeCall(tool: string, input: Record<string, unknown>): string {
+  if (tool === 'Bash') return `\`${String(input.command ?? '').slice(0, 200)}\``;
+  const target = input.file_path ?? input.path ?? input.pattern;
+  return target === undefined ? tool : `${tool} ${String(target).slice(0, 200)}`;
+}
+
+/** A Read's lines keyed by their line numbers, or null when they cannot be
+ *  known exactly. Claude Code hands the hook the file slice with its first
+ *  line number; a transcript shows `N<tab>text` per line. */
+export function numberedLines(response: unknown, text: string): Map<number, string> | null {
+  const file = (response as { file?: { content?: unknown; startLine?: unknown } } | null)?.file;
+  const out = new Map<number, string>();
+  if (file && typeof file.content === 'string' && typeof file.startLine === 'number') {
+    file.content.split('\n').forEach((line, i) => out.set((file.startLine as number) + i, line));
+    if (file.content.endsWith('\n')) out.delete((file.startLine as number) + file.content.split('\n').length - 1);
+    return out.size > 0 ? out : null;
+  }
+  for (const line of text.split('\n')) {
+    const m = /^\s*(\d+)\t(.*)$/.exec(line);
+    if (!m) {
+      if (line.trim() === '') continue;
+      return null;
+    }
+    out.set(Number(m[1]), m[2]);
+  }
+  return out.size > 0 ? out : null;
 }
