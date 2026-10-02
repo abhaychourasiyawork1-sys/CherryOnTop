@@ -226,7 +226,8 @@ async function main() {
   try {
     status = execFileSync('git', ['status', '--porcelain'], { cwd: worktree.path, encoding: 'utf8' });
     execFileSync('git', ['add', '-A'], { cwd: worktree.path });
-    patch = execFileSync('git', ['diff', '--cached'], { cwd: worktree.path, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 });
+    // Against the base commit, not HEAD: a commit made in the run is still the run's change.
+    patch = execFileSync('git', ['diff', '--cached', instance.base_commit], { cwd: worktree.path, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 });
   } catch (e) { log(`git capture failed: ${e}`); }
   writeFileSync(join(RUN_DIR, 'model.patch'), patch);
   writeFileSync(join(RUN_DIR, 'git-status.txt'), status);
@@ -243,20 +244,23 @@ async function main() {
     driver_wall_ms: Date.now() - wallStart,
   };
   writeFileSync(join(RUN_DIR, 'meta.json'), JSON.stringify(meta, null, 2));
-  if (H26) rmSync(worktree.path, { recursive: true, force: true }); else releaseGoalWorktree(base, worktree.path);
+  if (H26) { rmSync(worktree.path, { recursive: true, force: true }); rmSync(worktree.store, { recursive: true, force: true }); } else releaseGoalWorktree(base, worktree.path);
   console.log(JSON.stringify({ runId, arm, taskId, state: outcome.state, files: files.length }));
 }
 
+/** An ancestor-only bare store and a linked worktree of it: the sandbox mounts
+ *  the store read-only (sandbox-env.ts), as with a worktree of the cache, but
+ *  the store holds no commit after `revision`. */
 function isolatedRepo(base, revision) {
+  const store = join(RUN_DIR, 'store.git');
   const path = join(RUN_DIR, 'repo');
-  const g = (...a) => execFileSync('git', a, { cwd: path, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
-  mkdirSync(path, { recursive: true });
-  g('init', '-q');
-  g('fetch', '-q', '--no-tags', `file://${base}`, revision);
-  g('checkout', '-q', '--detach', revision);
-  rmSync(join(path, '.git', 'FETCH_HEAD'), { force: true });
-  g('config', 'user.email', 'bench@localhost'); g('config', 'user.name', 'bench');
-  return { path, revision: g('rev-parse', 'HEAD').trim() };
+  const g = (cwd, ...a) => execFileSync('git', a, { cwd, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+  mkdirSync(store, { recursive: true });
+  g(store, 'init', '-q', '--bare');
+  g(store, 'fetch', '-q', '--no-tags', `file://${base}`, revision);
+  g(store, 'worktree', 'add', '-q', '--detach', path, revision);
+  rmSync(join(store, 'FETCH_HEAD'), { force: true });
+  return { path, store, revision: g(path, 'rev-parse', 'HEAD').trim() };
 }
 
 function tryRun(cmd, args) { try { return execFileSync(cmd, args, { encoding: 'utf8' }).trim(); } catch { return null; } }
