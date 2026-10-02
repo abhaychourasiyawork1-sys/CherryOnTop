@@ -148,6 +148,42 @@ export function effectiveTurnCap(configured: number | undefined, policy: Executi
   return configured === undefined ? undefined : Math.min(configured, policy.hardTurnCap);
 }
 
+/** The share of the task turn budget reserved for a retry (H2.6 D2,
+ *  bench/governor/h26/DESIGN.md §2). Fixed by the design, not a knob. */
+export const RETRY_RESERVATION_SHARE = 0.25;
+
+/** D2 is an environment parameter of a benchmark generation: on for every arm
+ *  of that generation, off (today's behaviour) everywhere else. */
+export function retryReservationEnabled(): boolean {
+  return process.env.ORG_TURN_RETRY_RESERVATION === 'on';
+}
+
+/** R = ⌈0.25 · T⌉. */
+export function retryReservation(taskTurnBudget: number): number {
+  return Math.ceil(RETRY_RESERVATION_SHARE * taskTurnBudget);
+}
+
+/** The turn cap of one execute dispatch under D2.
+ *
+ *  The first dispatch may spend the task budget T less the retry reservation
+ *  R; every later one may spend whatever is left of T. Turns already spent
+ *  before the first dispatch (a plan pass on the same node) come out of the
+ *  first dispatch's share, never out of R — otherwise the reservation would
+ *  not survive to the retry it exists for. `undefined` T is the documented
+ *  "uncapped" and stays uncapped. A result of 0 means no turns are left; the
+ *  spend guard, which checks the task total against T, stops the dispatch. */
+export function dispatchTurnCap(input: {
+  taskTurnBudget: number | undefined;
+  turnsUsed: number;
+  priorExecuteDispatches: number;
+}): number | undefined {
+  const T = input.taskTurnBudget;
+  if (T === undefined) return undefined;
+  const used = Math.max(0, input.turnsUsed);
+  if (input.priorExecuteDispatches <= 0) return Math.max(0, T - retryReservation(T) - used);
+  return Math.max(0, T - used);
+}
+
 /** Fields a learned calibration may move, and nothing else.
  *
  *  Deliberately a list of *economic inputs*. `hardTurnCap` and `spendCapUsd`

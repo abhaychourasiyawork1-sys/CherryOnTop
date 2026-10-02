@@ -23,24 +23,34 @@ import { join, resolve } from 'node:path';
 import { materializeGoalWorktree, releaseGoalWorktree } from '../../lib/isolation.mjs';
 
 const [, , runId, taskId, arm, repArg, slotArg] = process.argv;
-if (!runId || !taskId || !['H0', 'H4'].includes(arm) || !repArg || !slotArg) {
-  console.error('usage: run-real.mjs <runId> <taskId> <H0|H4> <rep> <slot>');
+if (!runId || !taskId || !['H0', 'H4', 'h26', 'h26ctl'].includes(arm) || !repArg || !slotArg) {
+  console.error('usage: run-real.mjs <runId> <taskId> <H0|H4|h26|h26ctl> <rep> <slot>');
   process.exit(2);
 }
 const CONFIG = JSON.parse(readFileSync(join(import.meta.dirname, 'config.json'), 'utf8'));
+// h26: one arm, the frozen H2.6 configuration (bench/governor/h26/DESIGN.md
+// §8). Both experiment arms run in it; the HMAC coin assigns Z at b*.
+// `h26ctl` is the H2.5 control of the engineering validation: the same
+// governor variant and bench root, the experiment and D2 both off.
+// H26_CONFIG names another config (the validation one); default the pilot's.
+const H26_CONFIG_PATH = resolve(process.env.H26_CONFIG ?? join(import.meta.dirname, '..', 'h26', 'config.json'));
+const H26 = arm.startsWith('h26') ? JSON.parse(readFileSync(H26_CONFIG_PATH, 'utf8')) : null;
+const H26_ON = arm === 'h26';
 const task = CONFIG.tasks.find((t) => t.id === taskId || t.instance === taskId);
 const instanceId = task?.instance ?? taskId; // an id outside the config is a harness smoke
 const slot = Number(slotArg);
 
-const BENCH_ROOT = CONFIG.benchRoot.replace('~', homedir());
+const BENCH_ROOT = (H26 ? H26.pilot.benchRoot : CONFIG.benchRoot).replace('~', homedir());
 // One build for both arms: only the governor variant differs.
 const ARM_DIR = resolve(import.meta.dirname, '..', '..', '..');
 const RUN_DIR = join(BENCH_ROOT, 'runs', runId);
 const REPO_CACHE = join(homedir(), '.swebench-repos');
 
 const CLI = join(ARM_DIR, 'dist', 'cli', 'index.js');
-const DAEMON_PORT = CONFIG.basePorts.daemon + slot;
-const LAYA_PORT = CONFIG.basePorts.laya + slot;
+// H2.6 runs on their own ports, so they never collide with an Arm B run.
+const PORT_OFFSET = H26 ? 20 : 0;
+const DAEMON_PORT = CONFIG.basePorts.daemon + PORT_OFFSET + slot;
+const LAYA_PORT = CONFIG.basePorts.laya + PORT_OFFSET + slot;
 
 if (existsSync(RUN_DIR)) { console.error(`${RUN_DIR} already exists — a run id is used once`); process.exit(2); }
 mkdirSync(join(RUN_DIR, 'jobs'), { recursive: true });
@@ -55,7 +65,7 @@ function runEnv() {
     ...process.env,
     ORG_DB_PATH: join(RUN_DIR, 'state.db'),
     ORG_DAEMON_PORT: String(DAEMON_PORT),
-    ORG_DAEMON_NAME: `govreal-${slot}`,
+    ORG_DAEMON_NAME: `govreal-${H26 ? 'h26-' : ''}${slot}`,
     ORG_LAYA_PORT: String(LAYA_PORT),
     // One model for every role, tier and routing outcome: the comparison is of the
     // context runtime, not of what the market would have routed to.
@@ -67,7 +77,20 @@ function runEnv() {
     ORG_RESULT_CACHE_TTL_HOURS: '0',
     ORG_PLAN_CACHE_TTL_HOURS: '0',
     ORG_SANDBOX_TOOLCHAIN: hostToolchain(),
-    ORG_GOVERNOR_ABLATION: arm,
+    ORG_GOVERNOR_ABLATION: H26 ? H26.governorVariant : arm,
+    ...(H26 ? {
+      ORG_TASK_SPEND_CAP_USD: String(H26.perTaskCapUsd),
+      ORG_MAX_TURNS_EXECUTE: String(H26.turnBudget.T),
+    } : {}),
+    ...(H26_ON ? {
+      ...H26.turnBudget.env,
+      ORG_EXPERIMENT_CONFIG: H26_CONFIG_PATH,
+      // One ledger per experiment, shared by every run (DESIGN.md §4).
+      ORG_EXPERIMENT_LEDGER: join(BENCH_ROOT, 'ledger.db'),
+      // The key stays outside git; the operator points at it.
+      ...(process.env.ORG_EXPERIMENT_KEY_FILE ? { ORG_EXPERIMENT_KEY_FILE: process.env.ORG_EXPERIMENT_KEY_FILE } : {}),
+      ...(process.env.ORG_EXPERIMENT ? { ORG_EXPERIMENT: process.env.ORG_EXPERIMENT } : {}),
+    } : {}),
   };
 }
 
@@ -80,6 +103,8 @@ function hostToolchain() {
 }
 
 const env = runEnv();
+// Off means off: nothing experiment-related leaks in from the operator's shell.
+if (!H26_ON) for (const k of ['ORG_EXPERIMENT_CONFIG', 'ORG_EXPERIMENT_KEY_FILE', 'ORG_EXPERIMENT_LEDGER', 'ORG_EXPERIMENT', 'ORG_TURN_RETRY_RESERVATION']) delete env[k];
 const org = (args, opts = {}) => execFileSync('node', [CLI, ...args], { encoding: 'utf8', env, maxBuffer: 256 * 1024 * 1024, ...opts });
 const ping = async () => {
   try {
@@ -127,7 +152,10 @@ async function main() {
   if (!existsSync(instanceFile)) throw new Error(`instance cache missing: ${instanceFile} (scheduler fetches it)`);
   const instance = JSON.parse(readFileSync(instanceFile, 'utf8'));
   const base = join(REPO_CACHE, instance.repo.replace('/', '_'));
-  const worktree = materializeGoalWorktree(base, instance.base_commit, runId);
+  // H2.6: a per-run repository holding only base_commit and its ancestors.
+  // A worktree of the cache would share its refs, and the sandbox mounts the
+  // shared git dir, so origin/main (with the upstream fix) would be reachable.
+  const worktree = H26 ? isolatedRepo(base, instance.base_commit) : materializeGoalWorktree(base, instance.base_commit, runId);
   log(`worktree ${worktree.path} @ ${worktree.revision}`);
 
   const armSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: ARM_DIR, encoding: 'utf8' }).trim();
@@ -205,18 +233,30 @@ async function main() {
   const files = [...patch.matchAll(/^diff --git a\/(.+?) b\//gm)].map((m) => m[1]);
 
   const meta = {
-    experiment: CONFIG.experiment, run_id: runId, task_id: taskId, instance_id: instance.instance_id, arm, rep: Number(repArg), slot,
+    experiment: H26 ? H26.experimentId : CONFIG.experiment, run_id: runId, task_id: taskId, instance_id: instance.instance_id, arm, rep: Number(repArg), slot,
     commit_sha: armSha, worktree_revision: worktree.revision, base_commit: instance.base_commit,
     model_alias: CONFIG.model.alias, model_note: CONFIG.model.note, effort: CONFIG.effort, credential_kind: 'claude-subscription-oauth',
-    env_pins: Object.fromEntries(Object.entries(env).filter(([k]) => /^ORG_(MODEL|TASK|MAX|RESULT|PLAN|LAYA_PORT|DAEMON_PORT|DAEMON_NAME|GOVERNOR)/.test(k))),
+    env_pins: Object.fromEntries(Object.entries(env).filter(([k]) => /^ORG_(MODEL|TASK|MAX|RESULT|PLAN|LAYA_PORT|DAEMON_PORT|DAEMON_NAME|GOVERNOR|TURN_RETRY|EXPERIMENT)/.test(k))),
     ...times, outcome, changed_files: files, patch_bytes: Buffer.byteLength(patch),
     problem_statement_chars: instance.problem_statement.length,
     host: { node: process.version, claude_host: tryRun('claude', ['--version']) },
     driver_wall_ms: Date.now() - wallStart,
   };
   writeFileSync(join(RUN_DIR, 'meta.json'), JSON.stringify(meta, null, 2));
-  releaseGoalWorktree(base, worktree.path);
+  if (H26) rmSync(worktree.path, { recursive: true, force: true }); else releaseGoalWorktree(base, worktree.path);
   console.log(JSON.stringify({ runId, arm, taskId, state: outcome.state, files: files.length }));
+}
+
+function isolatedRepo(base, revision) {
+  const path = join(RUN_DIR, 'repo');
+  const g = (...a) => execFileSync('git', a, { cwd: path, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+  mkdirSync(path, { recursive: true });
+  g('init', '-q');
+  g('fetch', '-q', '--no-tags', `file://${base}`, revision);
+  g('checkout', '-q', '--detach', revision);
+  rmSync(join(path, '.git', 'FETCH_HEAD'), { force: true });
+  g('config', 'user.email', 'bench@localhost'); g('config', 'user.name', 'bench');
+  return { path, revision: g('rev-parse', 'HEAD').trim() };
 }
 
 function tryRun(cmd, args) { try { return execFileSync(cmd, args, { encoding: 'utf8' }).trim(); } catch { return null; } }

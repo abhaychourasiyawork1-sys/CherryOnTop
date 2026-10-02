@@ -20,7 +20,7 @@
  *  the whole loop be tested without a sandbox, a database or a clock. */
 import { inspectFastPath, type FastPathResult } from './fast-path.js';
 import { evaluateDeepPathWithCoverage, deepPathInProgress } from './deep-path.js';
-import { chooseEconomicAction } from './engine.js';
+import { chooseEconomicAction, type EconomicDecisionInput } from './engine.js';
 import { orchestrationCostOf, FREE_ORCHESTRATION, type OrchestrationCost } from './orchestration-cost.js';
 import type { ActionCandidate, ActionDecision } from './actions.js';
 import type { EconomicState } from './state.js';
@@ -102,6 +102,8 @@ export interface DecisionCycleInput {
   governor?: { ctx: GovernorContext; node: GovernorNodeState };
   /** What the runtime can carry out; see `EconomicDecisionInput.executable`. */
   executable?: (candidate: ActionCandidate) => boolean;
+  /** A randomized experiment's mask; see `EconomicDecisionInput.experimentMask`. */
+  experimentMask?: EconomicDecisionInput['experimentMask'];
 }
 
 /** Runs one cycle.
@@ -195,11 +197,11 @@ export function runDecisionCycle(
     if (governor) {
       governed = concludeLook({
         state, ctx: governor.ctx, node: governor.node, lookCostTokens: DEEP_EVALUATION_TOKEN_COST,
-        governed: governDecision({ state, candidates, coverage, faults, risk, ctx: governor.ctx, node: governor.node, executable: input.executable }),
+        governed: governDecision({ state, candidates, coverage, faults, risk, ctx: governor.ctx, node: governor.node, executable: input.executable, experimentMask: input.experimentMask }),
       });
       decision = governed.decision;
     } else {
-      decision = chooseEconomicAction({ state, candidates, faults, executable: input.executable });
+      decision = chooseEconomicAction({ state, candidates, faults, executable: input.executable, experimentMask: input.experimentMask });
     }
     // A cycle that chose to continue found nothing actionable, whatever the
     // screen suspected — so it counts as quiet for the backoff. Otherwise a

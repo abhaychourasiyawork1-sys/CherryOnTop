@@ -25,7 +25,9 @@
  *  optimize is worse than no optimizer. */
 import type { Db } from '../db/client.js';
 import { listEventsForNode } from '../db/queries/events.js';
-import { turnsForNode, tokensForNode } from '../db/queries/tokens.js';
+import { turnsForNode, tokensForNode, executeDispatchesForNode } from '../db/queries/tokens.js';
+import { appendEvent } from '../db/queries/events.js';
+import { getNode } from '../db/queries/nodes.js';
 import { listDodForNode } from '../db/queries/dod.js';
 import type { StructuredEvent } from '../adapters/adapter.js';
 import { executionSnapshot } from '../efficiency/progress-signals.js';
@@ -59,6 +61,8 @@ import type { TraceEvent } from '../governor/miss.js';
 import type { UncertaintyKind } from '../decision/state.js';
 import { createDormantPool, type DormantPool } from '../governor/coverage.js';
 import { isExecutable } from './executable.js';
+import { interventionEligible, observable, INELIGIBLE_NO_TELEMETRY } from './boundary-eligibility.js';
+import { boundaryMask, experimentFromEnv, carriesRecover, type BoundaryRole, type ActiveExperiment } from '../experiment/recover-eligibility.js';
 
 /** What one turn of a dispatch costs, before any run has measured it.
  *
@@ -280,6 +284,9 @@ export interface ExecutionBoundaryInput {
    *  module so it does not acquire a second way to ask what a node cost. */
   spentUsd?: number;
   repositoryRevision?: string;
+  /** Whether the spend guard has hard-stopped this node. The lifecycle only
+   *  reaches a boundary after the guard let it proceed, so false there. */
+  spendHardStop?: boolean;
 }
 
 /** The state, assembled from what the runtime already records.
@@ -418,6 +425,12 @@ export interface EconomicRuntime {
 export interface BoundaryOutcome {
   decision?: ActionDecision;
   state: EconomicState;
+  /** What H2.6 did at this boundary (`none` when no experiment is running). */
+  experiment?: BoundaryRole;
+  /** Candidate ids the market was not allowed to choose here — not
+   *  executable, or masked by H2.6. Any later re-choice (System-1 refinement)
+   *  must respect the same menu. */
+  unavailable?: ReadonlySet<string>;
   cycle: OrchestrationCycleResult;
 }
 
@@ -436,6 +449,9 @@ export function evaluateBoundary(
      *  the version they moved the state to — so the decision is made against
      *  the state its commitment will be checked against. */
     view?: (state: EconomicState) => EconomicState;
+    /** The H2.6 experiment, injected by tests; production reads the
+     *  environment (`experimentFromEnv`). */
+    experiment?: ActiveExperiment | 'off' | null;
   } = {},
 ): BoundaryOutcome {
   const unreserved = economicStateFor(db, input);
@@ -446,11 +462,61 @@ export function evaluateBoundary(
   ];
   const state = (options.view ?? ((s: EconomicState) => s))(withReserves(unreserved, additionalCandidates));
   const governor = governorFor(db, input.nodeId);
+  // H2.6 (bench/governor/h26/DESIGN.md): only when an experiment config is
+  // set; otherwise this is exactly the H2.5 boundary.
+  let experiment: ReturnType<typeof boundaryMask> | null = null;
+  try {
+    const active = options.experiment !== undefined ? options.experiment : experimentFromEnv();
+    if (active) {
+      experiment = boundaryMask(active, {
+        db, nodeId: input.nodeId, rootTaskId: rootTaskOf(db, input.nodeId), state,
+        completedDispatches: executeDispatchesForNode(db, input.nodeId),
+        failureSignature: failureSignatureOf(entry.previous),
+        turnsUsed: turnsForNode(db, input.nodeId),
+        spendHardStop: input.spendHardStop ?? false,
+      });
+    }
+  } catch (err) {
+    // A configuration that cannot be read enrols nothing; the boundary runs as H2.5.
+    console.error('H2.6 experiment configuration unreadable; no assignment at this boundary:', err);
+  }
   const cycle = runDecisionCycle(state, {
-    cadence: entry.cadence, additionalCandidates, executable: isExecutable, ...(governor ? { governor } : {}),
+    cadence: entry.cadence, additionalCandidates, executable: isExecutable,
+    ...(experiment ? { experimentMask: experiment.mask } : {}),
+    ...(governor ? { governor } : {}),
   });
   entry.cadence = cycle.cadence;
-  return { decision: cycle.decision, state, cycle };
+  let decision = cycle.decision;
+  // D1: an evaluated boundary without intervention telemetry says so once.
+  if (decision && observable(cycle) && !interventionEligible(state) && !decision.reasonCodes.includes(INELIGIBLE_NO_TELEMETRY)) {
+    decision = { ...decision, reasonCodes: [...decision.reasonCodes, INELIGIBLE_NO_TELEMETRY] };
+  }
+  const role = experiment?.outcome() ?? { role: 'none' as const };
+  const unavailable = new Set(cycle.candidates.filter((c) => !isExecutable(c)).map((c) => c.id));
+  if (role.role === 'bstar' && role.z === 'masked') {
+    for (const c of cycle.candidates) if (carriesRecover(c)) unavailable.add(c.id);
+  }
+  if (role.role === 'bstar' && decision) {
+    const chosen = decision.action;
+    appendEvent(db, {
+      nodeId: input.nodeId, type: 'experiment.boundary', createdAt: new Date().toISOString(),
+      payload: {
+        experimentId: role.record.experimentId, phase: role.record.phase, rootTaskId: role.record.rootTaskId,
+        nodeId: input.nodeId, stateVersion: state.version, role: 'bstar_decision', decisionId: decision.decisionId,
+        Z: role.z, chosenId: chosen.id, chosenKind: chosen.kind, chosenCarriesRecover: carriesRecover(chosen),
+        substitute: chosen.kind !== 'continue' && chosen.kind !== 'stop' && !carriesRecover(chosen),
+        experimentMs: experiment?.elapsedMs() ?? 0,
+      },
+    });
+  }
+  return { decision, state, cycle, experiment: role, unavailable };
+}
+
+/** The task a node belongs to: the root of its tree. H2.6's unit. */
+function rootTaskOf(db: Db, nodeId: string): string {
+  let id = nodeId;
+  for (let parent = getNode(db, id)?.parentId; parent; parent = getNode(db, parent)?.parentId) id = parent;
+  return id;
 }
 
 /** The boundary's state as it is *now*, without advancing the node's
