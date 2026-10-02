@@ -364,6 +364,9 @@ export function runTask(task, cfg, opts) {
       if (features) {
         const raw = economicState(w, task, cfg);
         const { candidates, state } = boundaryCandidates(w, task, raw);
+        // opts.observeStep: every step's runtime-visible state and event
+        // snapshot (what production derives from its events table).
+        if (opts.observeStep) opts.observeStep({ state, snapshot: snapshotOf(w) });
         if (w.invited && !node.invitationSent) node.invitationSent = true;
         const t0 = performance.now();
         const cycle = runDecisionCycle(state, { cadence: w.cadence, additionalCandidates: candidates, governor: { ctx, node }, ...(opts.executable ? { executable: opts.executable } : {}) });

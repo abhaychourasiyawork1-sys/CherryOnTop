@@ -40,7 +40,7 @@ export function featuresOf(state) {
 
 /** Online ridge regression: the expected cost-to-go of a state whatever is
  *  done there. Solved on demand from accumulated normal equations. */
-function createBaseline(dim, ridge = 1) {
+export function createBaseline(dim, ridge = 1) {
   const A = Array.from({ length: dim }, (_, i) => Array.from({ length: dim }, (_, j) => (i === j ? ridge : 0)));
   const b = new Array(dim).fill(0);
   let beta = null;
