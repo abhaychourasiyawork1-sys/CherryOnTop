@@ -102,3 +102,15 @@ delta CI below 0 and no success regression whose CI lies entirely below −2 pp;
 **gate more aggressively** if CPS is flat (CI spans 0) but overhead > 1 % of tokens;
 **modify** if it improves one primary metric and worsens the other; **remove** if CPS
 is worse with CI above 0 or success regresses (CI below −2 pp).
+
+## Arm B schedule (fixed before launch)
+
+`bench/governor/real/`: 5 SWE-bench Verified instances (flask-5014, sympy-17139,
+seaborn-3187, requests-1142, sphinx-9698) × {H0, H4} × 2 reps = 20 runs, Haiku 4.5
+pinned for every role, $5 cap, 80 execute turns, 45-minute timeout, System-1 (Laya) on
+as in production. Same build for both arms; only `ORG_GOVERNOR_ABLATION` differs.
+Order per task H0, H4, H4, H0, dealt onto 2 lanes. Graded with the official SWE-bench
+harness. Reported: resolved rate, cost/run, cost per resolved, turns, boundary looks,
+interventions, packets, governor events, and any run where the arms' behaviour differs
+for a reason the governor can be blamed for. n is small: Arm B is a dormancy/overhead/
+quality check, not a powered comparison.

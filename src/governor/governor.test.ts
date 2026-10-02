@@ -154,6 +154,11 @@ describe('the autonomy horizon', () => {
     expect(hotH.horizon).toBeGreaterThanOrEqual(1);
   });
 
+  it('looks again at the next boundary when nothing has been measured yet', () => {
+    const fresh = state({ version: 0, resources: { ...state().resources, consumedTokens: 0 } });
+    expect(autonomyHorizon({ state: fresh, risk: riskSnapshot(fresh) }).horizon).toBe(1);
+  });
+
   it('treats a new failure or a validation result as a changed premise', () => {
     const s = state();
     const premise = premiseOf(s);

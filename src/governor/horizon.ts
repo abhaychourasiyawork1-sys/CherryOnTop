@@ -58,7 +58,12 @@ export function autonomyHorizon(input: {
   const { state, risk } = input;
   const cost = Math.max(1, input.lookCostTokens ?? DEEP_EVALUATION_TOKEN_COST);
   const ceiling = expectedRemainingSteps(state);
-  if (!risk) return { horizon: 1, dueAtVersion: state.version + 1, lossRatePerStep: 0, reason: 'first_look' };
+  // Nothing measured yet — no risk reading, or no step to divide a rate by —
+  // means the loss rate is *unknown*, not zero. Unknown is a reason to look
+  // again at the next boundary, never to sleep for the longest horizon: that
+  // was a blind first window exactly where prevention pays most (found by the
+  // 2026-10-02 benchmark: every adaptive run began with 16 unobserved steps).
+  if (!risk || state.version <= 0) return { horizon: 1, dueAtVersion: state.version + 1, lossRatePerStep: 0, reason: 'first_look' };
   const R = risk.expectedRecoveryCostTokens;
   const perStep = state.version > 0 ? state.resources.consumedTokens / state.version : 0;
   const rising = Math.max(0, risk.failureVelocity) * R;
