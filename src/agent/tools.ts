@@ -129,6 +129,9 @@ export interface ToolBrokerOptions {
   sandbox: Sandbox;
   grant?: ToolGrant;
   infoControl?: HookHandler;
+  /** Replaces sandbox execution, for offline replay of recorded outputs.
+   *  Authority, validation and information control still apply. */
+  runTool?(call: ToolCall): Promise<{ text: string; failed: boolean }>;
 }
 
 interface Ran { text: string; failed: boolean; response: unknown }
@@ -157,7 +160,7 @@ export class ToolBroker {
 
     let ran: Ran;
     try {
-      ran = await this.run(name, input);
+      ran = this.opts.runTool ? { ...(await this.opts.runTool(call)), response: null } : await this.run(name, input);
     } catch (err) {
       ran = { text: `${name} could not run: ${err instanceof Error ? err.message : String(err)}`, failed: true, response: null };
     }

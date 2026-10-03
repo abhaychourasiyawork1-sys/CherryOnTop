@@ -251,7 +251,7 @@ export async function runAgentSession(input: AgentSessionInput): Promise<AgentSe
       next = { role: 'user', content: results.map(({ id, outcome }) => ({ type: 'tool_result' as const, tool_use_id: id, content: outcome.content, ...(outcome.isError ? { is_error: true } : {}) })) };
       emit('user', {
         message: next, parent_tool_use_id: null,
-        tool_use_result: results.map(({ id, outcome }) => ({ tool_use_id: id, raw: outcome.raw, projected: outcome.projected, refusal: outcome.refusal ?? null, spilledTo: outcome.spilledTo ?? null })),
+        tool_use_result: results.map(({ id, outcome }) => ({ tool_use_id: id, tool: toolUses.find((t) => t.id === id)?.name ?? null, raw: outcome.raw, projected: outcome.projected, refusal: outcome.refusal ?? null, spilledTo: outcome.spilledTo ?? null })),
       });
     } else if (message.stop_reason === 'max_tokens' || message.stop_reason === 'pause_turn' || message.stop_reason === 'model_context_window_exceeded') {
       if (message.stop_reason === 'model_context_window_exceeded') doCompact('window');
