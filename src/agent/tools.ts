@@ -357,6 +357,11 @@ export class ToolBroker {
     return r?.exitCode === 0 ? String(input.file_path) : null;
   }
 
+  /** Saves a tool's full output in the sandbox, for a placeholder to point at. */
+  saveOutput(id: string, text: string): Promise<string | undefined> {
+    return this.spill(id, text);
+  }
+
   private async spill(id: string, text: string): Promise<string | undefined> {
     const path = `${SPILL_DIR}/${id.replace(/[^A-Za-z0-9_-]/g, '')}.out`;
     const r = await this.opts.sandbox.exec(['sh', '-c', 'mkdir -p "$(dirname "$1")" && cat > "$1"', 'sh', path], { stdin: text }).catch(() => null);

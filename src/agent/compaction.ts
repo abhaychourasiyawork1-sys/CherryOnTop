@@ -50,6 +50,9 @@ export interface CompactionInput {
   /** Keep thinking blocks in the retained tail (budget-thinking models, which
    *  require them on the in-flight tool round and run no history-binding check). */
   keepThinking?: boolean;
+  /** A summary of the dropped turns written by a lightweight model (ToFu's
+   *  third layer). Absent, the call index alone stands for them. */
+  summary?: string;
 }
 
 export interface CompactionResult {
@@ -97,7 +100,7 @@ function toolUseIds(messages: MessageParam[]): string[] {
 
 /** Where the verbatim tail starts: the last exchange always, then earlier ones
  *  while they fit the budget, never all of them (something must be dropped). */
-function tailStart(messages: MessageParam[], budget: number): number {
+export function tailStart(messages: MessageParam[], budget: number): number {
   const starts = exchangeStarts(messages);
   if (starts.length < 2) return -1;
   let start = starts.at(-1)!;
@@ -126,6 +129,7 @@ export function compact(input: CompactionInput): CompactionResult | null {
   const state = [
     '[CherryOnTop: the earlier turns of this session were compacted to keep the context small. Nothing was lost: re-run or re-read anything you need again.]',
     input.activeState,
+    ...(input.summary ? [`Summary of the earlier work (written for this task, exact values kept):\n${input.summary.trim()}`] : []),
     ...(index.length ? [`Calls made before this point (${folded.length}${folded.length > listed.length ? `, the last ${listed.length} listed` : ''}):\n${index.join('\n')}`] : []),
   ].join('\n\n');
   const messages: MessageParam[] = [{ role: 'user', content: `${input.goal}\n\n${state}` }, ...tail];
@@ -171,4 +175,101 @@ export function priceCompaction(input: {
   }, prices);
   const costUsd = rebuildUsd + riskUsd;
   return { savedUsd, costUsd, worth: savedUsd > costUsd };
+}
+
+/** Marks a tool output that micro-compaction has already moved out. */
+export const MOVED_MARK = '[CherryOnTop: this output';
+
+export interface MicroCompactionInput {
+  messages: MessageParam[];
+  /** Tokens the verbatim hot tail may hold (the same tail full compaction keeps). */
+  tailBudget: number;
+  /** The placeholder for one moved output, naming where the whole of it is;
+   *  null when it cannot be recovered and so must stay. */
+  placeholderFor(toolUseId: string, tokens: number): string | null;
+  keepThinking: boolean;
+}
+
+export interface MicroCompactionResult {
+  messages: MessageParam[];
+  movedIds: string[];
+  /** Tokens the moved outputs no longer carry, net of their placeholders. */
+  savedTokens: number;
+  /** Tokens from the first edited message to the end: what the cache rewrites. */
+  rewrittenTokens: number;
+}
+
+/** ToFu's second layer: cache-aware micro-compaction of cold history, with no
+ *  model call. Outputs of tool calls older than the hot tail that are larger
+ *  than a pointer to them become that pointer (a saved file, the file itself,
+ *  or the call to re-run). Every call, all reasoning, every error result and
+ *  the hot tail stay verbatim, so the agent still sees everything it did and
+ *  why; only bulky evidence it can fetch again leaves the context.
+ *
+ *  An edit is a prefix change: on models that bind thinking to the prefix,
+ *  thinking after the first edited message is stripped, as in full compaction. */
+export function microCompact(input: MicroCompactionInput): MicroCompactionResult | null {
+  const start = tailStart(input.messages, input.tailBudget);
+  if (start < 0) return null;
+  const movedIds: string[] = [];
+  let saved = 0;
+  let firstEdited = -1;
+  const messages = input.messages.map((m, i): MessageParam => {
+    if (i >= start || m.role !== 'user' || typeof m.content === 'string') return m;
+    let changed = false;
+    const content = m.content.map((b) => {
+      if (b.type !== 'tool_result' || b.is_error || typeof b.content !== 'string' || b.content.startsWith(MOVED_MARK)) return b;
+      const tokens = estimateTokens(b.content);
+      const placeholder = input.placeholderFor(b.tool_use_id, tokens);
+      if (!placeholder || estimateTokens(placeholder) >= tokens) return b;
+      changed = true;
+      movedIds.push(b.tool_use_id);
+      saved += tokens - estimateTokens(placeholder);
+      return { ...b, content: placeholder };
+    });
+    if (!changed) return m;
+    if (firstEdited < 0) firstEdited = i;
+    return { ...m, content };
+  });
+  if (firstEdited < 0) return null;
+  if (!input.keepThinking) {
+    for (let i = firstEdited + 1; i < messages.length; i++) {
+      const m = messages[i];
+      if (m.role !== 'assistant' || typeof m.content === 'string') continue;
+      const kept = (m.content as ContentBlock[]).filter((b) => b.type !== 'thinking' && b.type !== 'redacted_thinking');
+      messages[i] = { role: 'assistant', content: (kept.length ? kept : [{ type: 'text', text: '(continuing)' }]) as MessageParam['content'] };
+    }
+  }
+  return { messages, movedIds, savedTokens: saved, rewrittenTokens: tokensOf(messages.slice(firstEdited)) };
+}
+
+/** What a lightweight model is asked when the context nears its limit (ToFu's
+ *  third layer, with HarnessBridge's rules for what a summary must keep). */
+export const SUMMARY_INSTRUCTIONS = `You compress the earlier part of a software agent's working session so it can continue without it. You are given the task and a transcript of the agent's earlier turns (its notes, the tool calls it made, and what they returned, shortened).
+
+Write a working-state summary, judged against the task:
+- Keep critical turns in full fidelity: exact file paths, commands, function and variable names, error messages, numbers, values and decisions. Never paraphrase these.
+- Compress useful turns to what was tried, what resulted, and whether it advanced the task.
+- Mention tangential turns in a few words; leave out irrelevant ones.
+- Say plainly what was verified, what failed and why, and what is still open.
+
+Use these sections: Progress so far / Key facts and values / What failed and why / Open items and next steps. Output only the summary.`;
+
+/** The dropped turns as text for the summarizer: notes, calls, and each
+ *  result shortened, bounded overall so the summary request always fits. */
+export function transcriptForSummary(messages: MessageParam[], perResult = 2_000, total = 300_000): string {
+  const lines: string[] = [];
+  for (const m of messages) {
+    if (typeof m.content === 'string') { lines.push(`${m.role === 'user' ? 'USER' : 'AGENT'}: ${m.content.slice(0, perResult * 2)}`); continue; }
+    for (const b of m.content as unknown as Array<Record<string, unknown>>) {
+      if (b.type === 'text') lines.push(`${m.role === 'user' ? 'NOTE' : 'AGENT'}: ${String(b.text)}`);
+      else if (b.type === 'tool_use') lines.push(`CALL ${String(b.name)} ${JSON.stringify(b.input).slice(0, 400)}`);
+      else if (b.type === 'tool_result') {
+        const c = typeof b.content === 'string' ? b.content : JSON.stringify(b.content);
+        lines.push(`RESULT${b.is_error ? ' (error)' : ''}: ${c.length > perResult ? `${c.slice(0, perResult / 2)}\n…\n${c.slice(-perResult / 2)}` : c}`);
+      }
+    }
+  }
+  const text = lines.join('\n');
+  return text.length > total ? `…(earliest turns omitted)…\n${text.slice(-total)}` : text;
 }

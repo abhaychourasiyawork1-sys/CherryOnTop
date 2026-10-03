@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { compact, canCompact, priceCompaction, type CallRecord } from './compaction.js';
+import { compact, canCompact, priceCompaction, microCompact, transcriptForSummary, MOVED_MARK, type CallRecord } from './compaction.js';
 import { ownedPrices } from './loop.js';
 import type { MessageParam } from './model-client.js';
 
@@ -80,5 +80,51 @@ describe('priceCompaction', () => {
     const b = priceCompaction({ ...base, droppedTokens: 40_000, droppedCalls: 20, remainingTurns: 10, refetchProbability: 0.9 }, prices);
     expect(b.costUsd).toBeGreaterThan(a.costUsd);
     expect(b.savedUsd).toBe(a.savedUsd);
+  });
+});
+
+describe('ToFu layer 2: micro-compaction', () => {
+  const big = 'x'.repeat(6000);
+  const msgs = (): MessageParam[] => [
+    { role: 'user', content: 'goal' },
+    ...exchange('a', big),
+    { role: 'assistant', content: [{ type: 'thinking', thinking: '', signature: 's' }, { type: 'tool_use', id: 'e', name: 'Bash', input: { command: 'make' } }] },
+    { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'e', content: big, is_error: true }] },
+    ...exchange('b', 'small'),
+    ...exchange('c', big),
+  ];
+  const ph = (id: string, tokens: number) => `${MOVED_MARK} ${id} (${tokens}) is at /tmp/cto-ic/${id}.out]`;
+
+  it('moves only cold, bulky, recoverable outputs; keeps calls, errors and the hot tail', () => {
+    const r = microCompact({ messages: msgs(), tailBudget: 100, placeholderFor: ph, keepThinking: true })!;
+    expect(r.movedIds).toEqual(['a']);
+    const json = JSON.stringify(r.messages);
+    expect(json).toContain('"tool_use"');                    // every call is still shown
+    expect(json).toContain(MOVED_MARK);
+    expect((r.messages[4].content as Array<{ content: string }>)[0].content).toBe(big); // the error stays
+    expect((r.messages.at(-1)!.content as Array<{ content: string }>)[0].content).toBe(big); // the hot tail stays
+    expect(r.savedTokens).toBeGreaterThan(1000);
+    // A second pass finds nothing new to move.
+    expect(microCompact({ messages: r.messages, tailBudget: 100, placeholderFor: ph, keepThinking: true })).toBeNull();
+  });
+
+  it('never moves an output that cannot be recovered', () => {
+    expect(microCompact({ messages: msgs(), tailBudget: 100, placeholderFor: () => null, keepThinking: true })).toBeNull();
+  });
+
+  it('strips thinking after the edit on prefix-bound models, keeps it on budget-thinking ones', () => {
+    const adaptive = microCompact({ messages: msgs(), tailBudget: 100, placeholderFor: ph, keepThinking: false })!;
+    expect(JSON.stringify(adaptive.messages.slice(3))).not.toContain('"thinking"');
+    const haiku = microCompact({ messages: msgs(), tailBudget: 100, placeholderFor: ph, keepThinking: true })!;
+    expect(JSON.stringify(haiku.messages.slice(3))).toContain('"thinking"');
+  });
+});
+
+describe('ToFu layer 3: the summarizer transcript', () => {
+  it('shows notes, calls and shortened results, bounded overall', () => {
+    const text = transcriptForSummary([{ role: 'user', content: 'goal' }, ...exchange('a', 'y'.repeat(10_000))], 200, 5_000);
+    expect(text).toContain('CALL Read');
+    expect(text).toContain('RESULT');
+    expect(text.length).toBeLessThan(5_100);
   });
 });

@@ -32,6 +32,9 @@ function sessionsOf(rows) {
 }
 
 const records = [];
+// Information control prices carrying with the turn counts of past dispatches;
+// the corpus's own sessions are that history here.
+const pending = [];
 for (const path of dbs) {
   const db = new Database(path, { readonly: true, fileMustExist: true });
   const goals = new Map(db.prepare('select id, goal from nodes').all().map((n) => [n.id, n.goal]));
@@ -44,8 +47,17 @@ for (const path of dbs) {
       if (rec.turns.length < minTurns || !rec.model) continue;
       const first = rec.turns[0].contextTokens;
       const scale = calibration(rec);
+      pending.push({ rec, scale, first, path, nodeId, index });
+    }
+  }
+  db.close();
+}
+const pastTurns = pending.map((p) => p.rec.turns.length);
+for (const { rec, scale, first, path, nodeId, index } of pending) {
+  {
+    {
       const arms = {};
-      for (const arm of ARMS) arms[arm.name] = await replayOwned(rec, arm);
+      for (const arm of ARMS) arms[arm.name] = await replayOwned(rec, arm, { pastTurns });
       records.push({
         db: path, nodeId, session: index, model: rec.model, turns: rec.turns.length, scale,
         recorded: { costUsd: rec.recordedUsd, firstContext: first, peakContext: Math.max(...rec.turns.map((t) => t.contextTokens)), contextTokens: rec.turns.reduce((s, t) => s + t.contextTokens, 0) },
@@ -53,7 +65,6 @@ for (const path of dbs) {
       });
     }
   }
-  db.close();
 }
 
 const sum = (f) => records.reduce((s, r) => s + f(r), 0);
@@ -69,7 +80,7 @@ const summary = {
       costUsd: usd, vsRecorded: recordedUsd > 0 ? usd / recordedUsd - 1 : null,
       vsRecordedAt1hWrites: recordedUsd > 0 ? sum((r) => r.arms[name].costAt1hWritesUsd) / recordedUsd - 1 : null,
       contextTokens: sum((r) => r.arms[name].contextTokens),
-      compactions: sum((r) => r.arms[name].compactions), projected: sum((r) => r.arms[name].projected), elidedChars: sum((r) => r.arms[name].elidedChars),
+      compactions: sum((r) => r.arms[name].compactions), microCompactions: sum((r) => r.arms[name].microCompactions ?? 0), projected: sum((r) => r.arms[name].projected), elidedChars: sum((r) => r.arms[name].elidedChars),
       unrecoverable: sum((r) => r.arms[name].unrecoverable), toolCalls: sum((r) => r.arms[name].toolCalls),
       fullyReplayed: records.filter((r) => r.arms[name].turnsReplayed === r.turns).length,
     }];
@@ -84,9 +95,9 @@ const lines = [
   `Recorded cost (Claude Code, 1-hour cache writes): $${recordedUsd.toFixed(2)}; median first-turn context ${summary.recorded.medianFirstContext} tokens.`,
   `Median estimator calibration (real/estimated tokens): ${summary.medianCalibration.toFixed(2)}.`, '',
   `Recorded context tokens: ${summary.recorded.contextTokens}.`, '',
-  '| arm | cost | vs recorded | vs recorded, same cache-write price | context tokens | vs recorded | compactions | projected | unrecoverable | fully replayed |',
-  '|---|---|---|---|---|---|---|---|---|---|',
-  ...Object.entries(summary.arms).map(([name, a]) => `| ${name} | $${a.costUsd.toFixed(2)} | ${pct(a.vsRecorded)} | ${pct(a.vsRecordedAt1hWrites)} | ${a.contextTokens} | ${pct(a.contextTokens / summary.recorded.contextTokens - 1)} | ${a.compactions} | ${a.projected} | ${a.unrecoverable} | ${a.fullyReplayed}/${summary.sessions} |`),
+  '| arm | cost | vs recorded | vs recorded, same cache-write price | context tokens | vs recorded | compactions | micro | projected | unrecoverable | fully replayed |',
+  '|---|---|---|---|---|---|---|---|---|---|---|',
+  ...Object.entries(summary.arms).map(([name, a]) => `| ${name} | $${a.costUsd.toFixed(2)} | ${pct(a.vsRecorded)} | ${pct(a.vsRecordedAt1hWrites)} | ${a.contextTokens} | ${pct(a.contextTokens / summary.recorded.contextTokens - 1)} | ${a.compactions} | ${a.microCompactions} | ${a.projected} | ${a.unrecoverable} | ${a.fullyReplayed}/${summary.sessions} |`),
   '', 'Counterfactual: the model is assumed to act as recorded on the owned context. Projections are the no-refetch bound.',
 ];
 console.log(lines.join('\n'));

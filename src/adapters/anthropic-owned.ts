@@ -138,7 +138,7 @@ export function quietState(goal: string, model: string, nodeId: string): Session
   }, { emit: () => {} });
   return {
     handle: (p) => session.handle(p), activeState: () => session.activeState(),
-    progressSignature: () => session.progressSignature(), observeEvent: (e) => session.observeEvent(e),
+    progressSignature: () => session.progressSignature(), pastTurns: () => session.pastTurns(), observeEvent: (e) => session.observeEvent(e),
   };
 }
 

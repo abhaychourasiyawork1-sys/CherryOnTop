@@ -548,6 +548,10 @@ export class InfoSession {
   /** Moves only on progress worth telling the agent about: a file edited
    *  for the first time, the latest edit checked or not, a different call
    *  failing. Step numbers and repeated failures of the same call do not move it. */
+  pastTurns(): readonly number[] {
+    return this.config.pastTurns;
+  }
+
   progressSignature(): string {
     const verified = this.edits === 0 ? 'none' : this.lastEditStep > this.lastExecStep ? 'unchecked' : 'checked';
     return [this.filesEdited.size, verified, this.lastFailure?.call ?? ''].join('|');

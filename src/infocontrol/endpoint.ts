@@ -196,6 +196,7 @@ export interface InProcessSession {
   handle(payload: Record<string, unknown>): Promise<Record<string, unknown>>;
   activeState(): string;
   progressSignature(): string;
+  pastTurns(): readonly number[];
   observeEvent(event: { type: string; payload: unknown }): void;
   close(): SessionResult;
 }
@@ -213,6 +214,7 @@ export function openInProcessSession(input: OpenSessionInput & { prices?: Prices
     handle: (payload) => built.session.handle(payload),
     activeState: () => built.session.activeState(),
     progressSignature: () => built.session.progressSignature(),
+    pastTurns: () => built.session.pastTurns(),
     observeEvent: (event) => built.session.observeEvent(event),
     close: () => built.close({ inProcess: true }),
   };

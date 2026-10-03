@@ -2,7 +2,8 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { runAgentSession, systemPromptFor, DEFAULT_MAX_TURNS, CONFIRM_FINISH, RESUME_NOTE, WEB_SEARCH_USD, HARNESS_POLICY, type AgentSessionInput, type SessionState } from './loop.js';
+import { runAgentSession, systemPromptFor, DEFAULT_MAX_TURNS, CONFIRM_FINISH, RESUME_NOTE, WEB_SEARCH_USD, HARNESS_POLICY, SUMMARY_MODEL, type AgentSessionInput, type SessionState } from './loop.js';
+import { SUMMARY_INSTRUCTIONS, MOVED_MARK } from './compaction.js';
 import { fakeMessage, scriptedModelClient, toolUse, ModelError, type ScriptedTurn, type MessageParam } from './model-client.js';
 import { hostSandbox } from './sandbox.js';
 import { ToolBroker } from './tools.js';
@@ -26,7 +27,7 @@ function session(turns: ScriptedTurn[], over: Partial<AgentSessionInput> = {}) {
     sessionId: 's', goal: 'fix app.py', workdir: dir, model: 'haiku', client,
     broker: new ToolBroker({ sandbox: hostSandbox(dir), infoControl: state }), state,
     // Focused tests: the finish check and web search have their own tests below.
-    confirmFinish: false, webSearch: false, ...over,
+    confirmFinish: false, webSearch: false, microCompaction: false, semanticCompaction: false, ...over,
   };
   return { client, run: () => runAgentSession(input) };
 }
@@ -339,6 +340,66 @@ describe('quality fixes from run 2', () => {
   it('audits the work against the task\'s own requirements before a run may end', () => {
     expect(CONFIRM_FINISH).toMatch(/List every explicit requirement/);
     expect(CONFIRM_FINISH).toMatch(/the way the task's user or tests would call it/);
+  });
+});
+
+describe('ToFu three-layer compaction in the loop', () => {
+  it('layer 2: moves cold bulky outputs behind placeholders that point at a saved file, when it pays', async () => {
+    writeFileSync(path.join(dir, 'big.txt'), 'line of data\n'.repeat(4000));
+    const turns = [
+      ...Array.from({ length: 8 }, (_, i) => fakeMessage([toolUse(`t${i}`, 'Bash', { command: `cat big.txt; echo ${i}` })], { usage: { input_tokens: 2_000 + i * 12_000, output_tokens: 50 } })),
+      fakeMessage('done'),
+    ];
+    // A long task: past dispatches of this role ran ~80 turns, so the outputs
+    // would be carried a long way. The same session with no history (expected
+    // remaining turns ~ turns so far) does not pay, and nothing moves.
+    const short = await session(turns.map((t) => t), { microCompaction: true }).run();
+    expect(short.events.some((e) => e.type === 'owned.micro_compaction')).toBe(false);
+    const { run, client } = session(turns, { microCompaction: true, pastTurns: Array(30).fill(80) });
+    const r = await run();
+    const micro = r.events.filter((e) => e.type === 'owned.micro_compaction');
+    expect(micro.length).toBeGreaterThan(0);
+    expect(micro[0].payload).toMatchObject({ worth: true });
+    const last = JSON.stringify(client.requests.at(-1)!.messages);
+    expect(last).toContain(MOVED_MARK);
+    const saved = /saved at (\/tmp\/cto-ic\/[\w-]+\.out)/.exec(last)?.[1];
+    expect(saved).toBeDefined();
+    expect(readFileSync(saved!, 'utf8')).toContain('line of data');
+    // Every call is still in the conversation.
+    expect((last.match(/"tool_use"/g) ?? []).length).toBe(8);
+  });
+
+  it('layer 3: near the limit, a lightweight model summarizes the dropped turns into the compacted context', async () => {
+    const near = { input_tokens: 120_000, output_tokens: 10 }; // > 80% of Haiku's usable 136k with what follows
+    const { run, client } = session([
+      fakeMessage([toolUse('a', 'Bash', { command: 'echo one' })], { usage: near }),
+      fakeMessage([toolUse('b', 'Bash', { command: 'echo two' })], { usage: near }),
+      fakeMessage('Progress so far: echoed one. Key facts: value=42.', { usage: { input_tokens: 3_000, output_tokens: 200 } }),
+      fakeMessage('done'),
+    ], { semanticCompaction: true });
+    const r = await run();
+    const summaryReq = client.requests[2];
+    expect(summaryReq.model).toBe(SUMMARY_MODEL);
+    expect(summaryReq.system).toBe(SUMMARY_INSTRUCTIONS);
+    expect(summaryReq.tools).toEqual([]);
+    expect(String(client.requests[3].messages[0].content)).toContain('value=42');
+    expect(r.events.find((e) => e.type === 'owned.compaction')?.payload).toMatchObject({ reason: 'semantic', summarized: true });
+    expect(r.costUsd).toBeGreaterThan(0);
+  });
+
+  it('layer 3 falls back to the deterministic compaction when the summarizer fails', async () => {
+    const near = { input_tokens: 120_000, output_tokens: 10 };
+    const { run, client } = session([
+      fakeMessage([toolUse('a', 'Bash', { command: 'echo one' })], { usage: near }),
+      fakeMessage([toolUse('b', 'Bash', { command: 'echo two' })], { usage: near }),
+      new ModelError('overloaded', 'busy'),
+      fakeMessage('done'),
+    ], { semanticCompaction: true });
+    const r = await run();
+    expect(r.succeeded).toBe(true);
+    expect(r.events.find((e) => e.type === 'owned.summary')?.payload).toMatchObject({ ok: false });
+    expect(r.events.find((e) => e.type === 'owned.compaction')?.payload).toMatchObject({ summarized: false });
+    expect(String(client.requests[3].messages[0].content)).toContain('1. Bash echo one');
   });
 });
 

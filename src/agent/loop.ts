@@ -21,12 +21,20 @@
  *  cache traffic, spend, the tools' fate (ran, refused and by whom, projected,
  *  spilled), and whether the turn followed a compaction. */
 import type Anthropic from '@anthropic-ai/sdk';
+import { SPILL_DIR } from '../infocontrol/controller.js';
 import { estimateTokens } from '../context/candidates.js';
 import { estimateCostUsd, perTokenRates } from '../execution/pricing.js';
 import { expectedRemainingTurns, type Prices } from '../infocontrol/economics.js';
 import type { StructuredEvent } from '../adapters/adapter.js';
 import type { DispatchUsage } from '../execution/tokens.js';
-import { canCompact, compact, priceCompaction, type CallRecord, type CompactionResult } from './compaction.js';
+import { canCompact, compact, microCompact, priceCompaction, tailStart, transcriptForSummary, MOVED_MARK, SUMMARY_INSTRUCTIONS, type CallRecord, type CompactionResult } from './compaction.js';
+
+/** The lightweight model that writes compaction summaries (ToFu uses a small
+ *  model for its third layer): cheap, and its summary is all it is asked for. */
+export const SUMMARY_MODEL = 'claude-haiku-4-5';
+/** Share of the usable context (window minus the output reserve) at which the
+ *  semantic layer fires: ToFu and the Harness Effect both summarize at ~80%. */
+export const SEMANTIC_SHARE = 0.8;
 import { ModelError, modelProfile, resolveModelId, type ContentBlock, type Message, type MessageParam, type ModelClient, type Tool } from './model-client.js';
 
 /** Server-side web search: $10 per 1000 searches, on top of tokens. */
@@ -56,6 +64,9 @@ export interface SessionState extends HookHandler {
   /** Changes only on real progress (a new file edited, a check run after an
    *  edit or not, a different call failing): when the state is worth reciting. */
   progressSignature?(): string;
+  /** How many turns past dispatches of this role took (information control
+   *  loads them from the ledger): what prices carrying a token to the end. */
+  pastTurns?(): readonly number[];
 }
 
 export interface AgentSessionInput {
@@ -89,6 +100,14 @@ export interface AgentSessionInput {
    *  Used only when the model, system prompt and tools are byte-identical,
    *  so the cached prefix and every thinking block stay valid. */
   resume?: Transcript;
+  /** ToFu's second layer: every round, move cold bulky tool outputs out of the
+   *  context behind recoverable placeholders, when the saving pays for the
+   *  cache rewrite (default on). */
+  microCompaction?: boolean;
+  /** ToFu's third layer: near the context limit, a lightweight model writes a
+   *  task-focused summary of the dropped turns (default on). Its failure falls
+   *  back to the deterministic compaction. */
+  semanticCompaction?: boolean;
   /** Append the task state after a tool round whenever it changed (default on). */
   recite?: boolean;
   /** Waits before re-trying a turn that failed transiently; its length is the retry budget. */
@@ -229,6 +248,9 @@ export async function runAgentSession(input: AgentSessionInput): Promise<AgentSe
   };
   const usage: DispatchUsage = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, numTurns: 0 };
   const calls = new Map<string, CallRecord>();
+  /** Each tool output as produced, for micro-compaction's placeholders. */
+  const outputs = new Map<string, { raw: string; tool: string; filePath?: string; spilledTo?: string }>();
+  let microCompactions = 0;
   const opening = input.orientation ? `${input.goal}\n\n${input.orientation}` : input.goal;
   const toolsJson = JSON.stringify(tools);
   // A retry continues the previous attempt's conversation when nothing that
@@ -275,8 +297,35 @@ export async function runAgentSession(input: AgentSessionInput): Promise<AgentSe
   if (input.resume) emit('owned.resume', { resumed: resumable, priorMessages: input.resume.messages.length, ...(resumable ? {} : { reason: 'model, system prompt or tools differ' }) });
   emit('system', { subtype: 'init', model, cwd: input.workdir, tools: tools.map((t) => ('name' in t ? t.name : t.type)), runtime: 'anthropic-owned', ...(input.effort ? { effort: input.effort } : {}) });
 
-  const doCompact = (reason: 'window' | 'priced' | 'recovery', precomputed?: CompactionResult): boolean => {
-    const result = precomputed ?? compact({ goal: input.goal, messages, activeState: stateForModel(), calls, tailBudget: tailBudget(), keepThinking });
+  /** The third layer's summary of what a compaction is about to drop, or
+   *  undefined (disabled, nothing to drop, or the summarizer failed: the
+   *  deterministic compaction then stands on its own). */
+  const summarize = async (): Promise<string | undefined> => {
+    if (input.semanticCompaction === false) return undefined;
+    const start = tailStart(messages, tailBudget());
+    if (start < 1) return undefined;
+    try {
+      const reply = await input.client.createTurn({
+        model: SUMMARY_MODEL, maxTokens: 8_000, system: SUMMARY_INSTRUCTIONS, tools: [], thinkingBudget: 0,
+        messages: [{ role: 'user', content: `Task:\n${input.goal}\n\nTranscript of the earlier turns:\n${transcriptForSummary(messages.slice(0, start))}` }],
+      }, input.signal);
+      const su = reply.usage;
+      const summaryUsage = { inputTokens: su.input_tokens ?? 0, outputTokens: su.output_tokens ?? 0, cacheReadTokens: su.cache_read_input_tokens ?? 0, cacheCreationTokens: su.cache_creation_input_tokens ?? 0 };
+      // Billed at the summarizer's own prices, counted in this dispatch.
+      extraUsd += estimateCostUsd(summaryUsage, SUMMARY_MODEL);
+      const text = textOf(reply);
+      emit('owned.summary', { ok: text.length > 0, model: SUMMARY_MODEL, usage: su, summaryTokens: estimateTokens(text) });
+      return text || undefined;
+    } catch (err) {
+      emit('owned.summary', { ok: false, error: err instanceof Error ? err.message.slice(0, 300) : String(err) });
+      return undefined;
+    }
+  };
+
+  const doCompact = async (reason: 'window' | 'semantic' | 'priced' | 'recovery', precomputed?: CompactionResult): Promise<boolean> => {
+    if (!precomputed && !canCompact(messages)) return false;
+    const summary = precomputed ? undefined : await summarize();
+    const result = precomputed ?? compact({ goal: input.goal, messages, activeState: stateForModel(), calls, tailBudget: tailBudget(), keepThinking, ...(summary ? { summary } : {}) });
     if (!result) return false;
     messages = result.messages;
     compactions++;
@@ -285,8 +334,49 @@ export async function runAgentSession(input: AgentSessionInput): Promise<AgentSe
     lastContext = fixedTokens;
     // Every pointer information control could make into the old history is gone.
     void input.state.handle({ hook_event_name: 'PostCompact' }).catch(() => {});
-    emit('owned.compaction', { reason, droppedCallIds: result.droppedCallIds, retainedCallIds: result.retainedCallIds, droppedTokens: result.droppedTokens, keptTokens: result.keptTokens, stateTokens: result.stateTokens });
+    emit('owned.compaction', { reason, summarized: Boolean(summary), droppedCallIds: result.droppedCallIds, retainedCallIds: result.retainedCallIds, droppedTokens: result.droppedTokens, keptTokens: result.keptTokens, stateTokens: result.stateTokens });
     return true;
+  };
+
+  /** The placeholder a moved output is replaced by: where the whole of it is. */
+  const placeholderFor = (id: string, tokens: number): string | null => {
+    const o = outputs.get(id);
+    if (!o) return null;
+    const head = `${MOVED_MARK} (~${tokens} tokens) was moved out of the context to keep it small.`;
+    if (o.filePath) return `${head} It was a Read of ${o.filePath}; Read it again if you need it (the file may have changed since).]`;
+    return `${head} The full output is saved at ${o.spilledTo ?? `${SPILL_DIR}/${id.replace(/[^A-Za-z0-9_-]/g, '')}.out`}; Read it (with offset/limit) if you need it.]`;
+  };
+
+  /** ToFu's second layer, priced: applied only when what it saves over the
+   *  remaining turns beats rewriting the cache from the first edit on. */
+  const pastTurns = () => input.pastTurns ?? input.state.pastTurns?.() ?? [];
+  const doMicro = async (projected: number): Promise<void> => {
+    const preview = microCompact({ messages, tailBudget: tailBudget(), placeholderFor, keepThinking });
+    if (!preview) return;
+    const price = priceCompaction({
+      droppedTokens: preview.savedTokens, droppedCalls: preview.movedIds.length, keptTokens: preview.rewrittenTokens, stateTokens: 0,
+      contextTokens: projected, outputPerTurn: usage.numTurns ? usage.outputTokens / usage.numTurns : 0,
+      remainingTurns: expectedRemainingTurns(usage.numTurns, pastTurns()), refetchProbability: 0.5,
+    }, prices);
+    if (!price.worth) return;
+    // Every placeholder must point at something real: save what is not saved yet.
+    const failed = new Set<string>();
+    for (const id of preview.movedIds) {
+      const o = outputs.get(id)!;
+      if (o.filePath || o.spilledTo) continue;
+      const saved = await input.broker.saveOutput(id, o.raw);
+      if (saved) o.spilledTo = saved; else failed.add(id);
+    }
+    const final = failed.size
+      ? microCompact({ messages, tailBudget: tailBudget(), placeholderFor: (id, t) => (failed.has(id) ? null : placeholderFor(id, t)), keepThinking })
+      : preview;
+    if (!final) return;
+    messages = final.messages;
+    microCompactions++;
+    compactedBeforeTurn = true;
+    lastContext = Math.max(fixedTokens, lastContext - final.savedTokens);
+    void input.state.handle({ hook_event_name: 'PostCompact' }).catch(() => {});
+    emit('owned.micro_compaction', { movedIds: final.movedIds, savedTokens: final.savedTokens, rewrittenTokens: final.rewrittenTokens, ...price });
   };
 
   const finish = (stop: StopKind, error?: ModelError): AgentSessionResult => {
@@ -299,7 +389,7 @@ export async function runAgentSession(input: AgentSessionInput): Promise<AgentSe
     emit('result', {
       subtype: succeeded ? 'success' : stop === 'max_turns' ? 'error_max_turns' : 'error_during_execution',
       is_error: !succeeded, result: succeeded ? finalText : message, stop_reason: stop,
-      num_turns: usage.numTurns, duration_ms: Date.now() - started, total_cost_usd: cost(), compactions,
+      num_turns: usage.numTurns, duration_ms: Date.now() - started, total_cost_usd: cost(), compactions, micro_compactions: microCompactions,
       usage: { input_tokens: usage.inputTokens, output_tokens: usage.outputTokens, cache_read_input_tokens: usage.cacheReadTokens, cache_creation_input_tokens: usage.cacheCreationTokens },
       ...(error ? { error_kind: error.kind } : {}),
     });
@@ -314,18 +404,24 @@ export async function runAgentSession(input: AgentSessionInput): Promise<AgentSe
     if (usage.numTurns >= maxTurns) return finish('max_turns');
     if (input.spendLimitUsd !== undefined && cost() >= input.spendLimitUsd) return finish('spend_limit');
 
-    // Compaction: forced by the window, otherwise only when it pays.
+    // ToFu's three layers. The first (size-aware output budgets) is the
+    // broker's. The third fires near the limit: a summary-led compaction at
+    // 80% of the usable context, a deterministic one at 100% whatever the
+    // price. Below that, the second moves cold bulky outputs when it pays.
     const projected = lastContext + appendedSince;
-    if (projected + maxTokens > window && canCompact(messages)) doCompact('window');
-    else if (input.pricedCompaction === true && canCompact(messages) && usage.numTurns > 0) {
+    const usable = window - maxTokens;
+    if (projected > usable && canCompact(messages)) await doCompact('window');
+    else if (input.semanticCompaction !== false && projected > SEMANTIC_SHARE * usable && canCompact(messages)) await doCompact('semantic');
+    else if (input.microCompaction !== false && usage.numTurns > 0) await doMicro(projected);
+    if (input.pricedCompaction === true && canCompact(messages) && usage.numTurns > 0 && !compactedBeforeTurn) {
       const preview = compact({ goal: input.goal, messages, activeState: stateForModel(), calls, tailBudget: tailBudget(), keepThinking });
       if (preview) {
         const price = priceCompaction({
           droppedTokens: preview.droppedTokens, droppedCalls: preview.droppedCallIds.length, keptTokens: preview.keptTokens, stateTokens: preview.stateTokens,
           contextTokens: projected, outputPerTurn: usage.outputTokens / usage.numTurns,
-          remainingTurns: expectedRemainingTurns(usage.numTurns, input.pastTurns ?? []), refetchProbability: 0.5,
+          remainingTurns: expectedRemainingTurns(usage.numTurns, pastTurns()), refetchProbability: 0.5,
         }, prices);
-        if (price.worth) doCompact('priced', preview);
+        if (price.worth) await doCompact('priced', preview);
       }
     }
 
@@ -342,7 +438,7 @@ export async function runAgentSession(input: AgentSessionInput): Promise<AgentSe
       // A refused request is most often a context that no longer fits (or
       // history the provider will not accept). Rebuilding it from state, once,
       // is the defined recovery; a second refusal is final.
-      if (error.kind === 'bad_request' && !retriedAfterCompaction && doCompact('recovery')) {
+      if (error.kind === 'bad_request' && !retriedAfterCompaction && await doCompact('recovery')) {
         retriedAfterCompaction = true;
         continue;
       }
@@ -427,6 +523,12 @@ export async function runAgentSession(input: AgentSessionInput): Promise<AgentSe
           ...(outcome.isError ? { error: outcome.content.trim().split('\n').find((l) => l.trim())?.slice(0, 160) ?? '' } : {}),
           ...(outcome.spilledTo ? { spilledTo: outcome.spilledTo } : {}),
         });
+        const callInput = (call.input ?? {}) as Record<string, unknown>;
+        outputs.set(call.id, {
+          raw: outcome.raw, tool: call.name,
+          ...(call.name === 'Read' && typeof callInput.file_path === 'string' ? { filePath: callInput.file_path } : {}),
+          ...(outcome.spilledTo ? { spilledTo: outcome.spilledTo } : {}),
+        });
         decisions.push({ id: call.id, name: call.name, isError: outcome.isError, refusal: outcome.refusal ?? null, projected: outcome.projected, rawChars: outcome.raw.length, shownChars: outcome.content.length, ...(outcome.spilledTo ? { spilledTo: outcome.spilledTo } : {}) });
       }
       // All results in one user message: splitting them teaches the model to
@@ -458,7 +560,7 @@ export async function runAgentSession(input: AgentSessionInput): Promise<AgentSe
       receipt();
       continue;
     } else if (message.stop_reason === 'max_tokens' || message.stop_reason === 'model_context_window_exceeded') {
-      if (message.stop_reason === 'model_context_window_exceeded') doCompact('window');
+      if (message.stop_reason === 'model_context_window_exceeded') await doCompact('window');
       next = { role: 'user', content: 'Continue from where you stopped.' };
     } else {
       // The model is finishing. The finish gate may send it back to check its

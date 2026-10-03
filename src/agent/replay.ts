@@ -107,6 +107,8 @@ export interface ArmReport {
   turnsReplayed: number;
   toolCalls: number;
   compactions: number;
+  /** ToFu layer-2 passes that moved cold outputs. */
+  microCompactions: number;
   projected: number;
   /** Characters the model was not shown that the sandbox produced. */
   elidedChars: number;
@@ -127,12 +129,14 @@ export interface Arm {
   name: string;
   infoControl: 'off' | 'active';
   pricedCompaction: boolean;
+  microCompaction?: boolean;
 }
 
 export const ARMS: Arm[] = [
   { name: 'owned', infoControl: 'off', pricedCompaction: false },
   { name: 'owned+ic', infoControl: 'active', pricedCompaction: false },
   { name: 'owned+ic+compaction', infoControl: 'active', pricedCompaction: true },
+  { name: 'owned+ic+micro', infoControl: 'active', pricedCompaction: false, microCompaction: true },
 ];
 
 /** Replay can only re-price what reaches the model; components that refuse a
@@ -155,7 +159,7 @@ export function calibration(rec: RecordedSession): number {
   return estimated > 0 && grew > 0 ? grew / estimated : 1;
 }
 
-export async function replayOwned(rec: RecordedSession, arm: Arm): Promise<ArmReport> {
+export async function replayOwned(rec: RecordedSession, arm: Arm, opts: { pastTurns?: readonly number[] } = {}): Promise<ArmReport> {
   const model = resolveModelId(rec.model || 'sonnet');
   const scale = calibration(rec);
   const turns = [...rec.turns];
@@ -192,8 +196,11 @@ export async function replayOwned(rec: RecordedSession, arm: Arm): Promise<ArmRe
   const result = await runAgentSession({
     sessionId: 'replay', goal: rec.goal, workdir: '/app', model, client: { createTurn: async (input) => respond(input) },
     broker, state, maxTurns: rec.turns.length, pricedCompaction: arm.pricedCompaction,
+    ...(opts.pastTurns ? { pastTurns: opts.pastTurns } : {}),
     // Recorded actions only: no turn or tool the recorded run did not have.
     confirmFinish: false, webSearch: false, recite: false,
+    // The summarizer would be a model call the recorded run never made.
+    semanticCompaction: false, microCompaction: arm.microCompaction === true,
   });
 
   let toolCalls = 0; let projected = 0; let elidedChars = 0; let unrecoverable = 0;
@@ -213,7 +220,8 @@ export async function replayOwned(rec: RecordedSession, arm: Arm): Promise<ArmRe
     }
   }
   return {
-    arm: arm.name, turnsReplayed: result.usage.numTurns, toolCalls, compactions: result.compactions, projected, elidedChars, unrecoverable,
+    arm: arm.name, turnsReplayed: result.usage.numTurns, toolCalls, compactions: result.compactions,
+    microCompactions: result.events.filter((e) => e.type === 'owned.micro_compaction').length, projected, elidedChars, unrecoverable,
     contextTokens: totals.context, cacheReadTokens: totals.read, cacheWriteTokens: totals.write, outputTokens: Math.round(totals.output), peakContext: totals.peak,
     costUsd: estimateCostUsd({ inputTokens: 0, outputTokens: totals.output, cacheReadTokens: totals.read, cacheCreationTokens: totals.write }, model),
     costAt1hWritesUsd: (() => { const r = perTokenRates(model); return totals.output * r.output + totals.read * r.read + totals.write * r.write; })(),
