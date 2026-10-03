@@ -152,12 +152,26 @@ const EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit']);
  *  command that mentions one: `pip install pytest` passes and proves nothing. */
 const TEST_COMMAND = /^\s*(?:cd\s+\S+\s*&&\s*)?(?:\w+=\S+\s+)*(?:python3?\s+(?:-\w+\s+)*-m\s+)?(?:pytest|py\.test|unittest|tox|nox|vitest|jest|mocha|go\s+test|cargo\s+test|npm\s+(?:run\s+)?test|make\s+test|\S*runtests?\.py|\S*bin\/test)\b/;
 /** Whether a shell command *verifies* something: it runs tests, a build or
- *  type check, or a script that exercises the code. Judged on the command
+ *  type check, or a script that exercises the code — including an inline
+ *  script fed to any interpreter (`python3 << 'EOF'`, `R -e`, `node -e`),
+ *  which is the same check as `python -c` (measured: the owned runtime's R
+ *  and heredoc checks went unrecognised, so finished work was failed). Judged on the command
  *  itself (after an optional `cd … &&`, `timeout N` and env assignments), never
  *  on words it contains: `grep … test_requests.py; ls test*.py` once passed
  *  validation as an observed test, while the `python -c` repro the same agent
  *  ran to prove its fix counted for nothing. */
-const VERIFY_LEAD = /^\s*(?:cd\s+\S+\s*&&\s*)?(?:timeout\s+\S+\s+)?(?:\w+=\S*\s+)*(?:\S*\/)?(?:(?:python[\d.]*|py\.test)\s+(?:-[\w-]+\s+)*(?:-m\s+(?:pytest|unittest|tox|nox)\b|-c\s|(?!-)\S+\.py\b)|(?:pytest|tox|nox|vitest|jest|mocha)\b|(?:npm|pnpm|yarn)\s+(?:run\s+)?(?:test|build|lint|typecheck)\b|npx\s+(?:tsc|vitest|jest|eslint)\b|tsc\b|eslint\b|cargo\s+(?:test|build|check)\b|go\s+(?:test|build|vet)\b|make\b|node\s+(?!-)\S+\.(?:m?js|ts)\b)/;
+const VERIFY_LEAD = /^\s*(?:cd\s+\S+\s*&&\s*)?(?:timeout\s+\S+\s+)?(?:\w+=\S*\s+)*(?:\S*\/)?(?:(?:python[\d.]*|py\.test)\s+(?:-[\w-]+\s+)*(?:-m\s+(?:pytest|unittest|tox|nox)\b|-c\s|(?!-)\S+\.py\b)|(?:pytest|tox|nox|vitest|jest|mocha)\b|(?:npm|pnpm|yarn)\s+(?:run\s+)?(?:test|build|lint|typecheck)\b|npx\s+(?:tsc|vitest|jest|eslint)\b|tsc\b|eslint\b|cargo\s+(?:test|build|check)\b|go\s+(?:test|build|vet)\b|make\b|node\s+(?!-)\S+\.(?:m?js|ts)\b|(?:python[\d.]*|node|ruby|perl|julia)\s+(?:-[\w-]+\s+)*-?\s*<<|R\s+(?:--?[\w-]+\s+)*(?:-e\b|-f\b|--file\b|<<|CMD\s+check\b)|Rscript\b|node\s+(?:-e|--test)\b|ruby\s+(?:-e\b|(?!-)\S+\.rb\b)|perl\s+(?:-e\b|(?!-)\S+\.pl\b)|julia\s+(?:-e\b|(?!-)\S+\.jl\b)|deno\s+(?:test|run)\b|dotnet\s+(?:test|build|run)\b|mvn\b|\.?\/?gradlew?\b|ctest\b|bats\b|(?:ba)?sh\s+(?!-)\S+\.sh\b|\.\/[\w.\/-]+)/;
+
+/** A build, type check or install: verifies something, but its output is a
+ *  log, where the errors are what matters and the rest is noise. */
+const BUILD_LEAD = /^\s*(?:cd\s+\S+\s*&&\s*)?(?:timeout\s+\S+\s+)?(?:\w+=\S*\s+)*(?:\S*\/)?(?:make\b|cmake\b|cargo\s+(?:build|check)\b|go\s+(?:build|vet)\b|(?:npm|pnpm|yarn)\s+(?:run\s+)?(?:build|lint|typecheck)\b|npx\s+(?:tsc|eslint)\b|tsc\b|eslint\b|dotnet\s+build\b|mvn\s+(?:-\S+\s+)*(?:package|compile|install)\b|\.?\/?gradlew?\s+(?:build|assemble)\b|\.\/configure\b)/;
+
+/** Whether a command runs code and prints the results the agent decides on:
+ *  a test run, a script, an inline program. Builds and installs are excluded:
+ *  their output is a log. */
+export function runsCodeForResults(command: string): boolean {
+  return isVerifyingCommand(command) && !BUILD_LEAD.test(command);
+}
 
 export function isVerifyingCommand(command: string): boolean {
   if (/^\s*(?:\S*\/)?python[\d.]*\s+(?:-m\s+pip|setup\.py\s+(?:install|develop))\b/.test(command)) return false;

@@ -18,13 +18,24 @@ const read = (file: string): string | null => {
  *  including through a shell command (`sed -i`, a script, `git apply`), which
  *  the Write/Edit tool-call stream cannot see. Null outside a git repository
  *  or before its first commit. */
+/** Untracked files minus installed dependencies: anything inside a Python
+ *  virtual environment (recognised by its own `pyvenv.cfg`, whatever the
+ *  directory is called) or under `node_modules`. An agent that makes a venv in
+ *  a repository without a .gitignore otherwise records every installed file as
+ *  a change (measured: 16,090 rows for one Terminal-Bench task). */
+export function withoutInstalledDependencies(untracked: string[]): string[] {
+  const envRoots = untracked.filter((p) => p === 'pyvenv.cfg' || p.endsWith('/pyvenv.cfg')).map((p) => p.slice(0, -'pyvenv.cfg'.length));
+  return untracked.filter((p) => !envRoots.some((root) => p.startsWith(root)) && !p.split('/').includes('node_modules'));
+}
+
 export function treeState(dir: string): TreeState | null {
   try {
     const head = git(dir, ['rev-parse', 'HEAD']).trim();
+    const untracked = git(dir, ['ls-files', '-z', '-o', '--exclude-standard']).split('\0').filter(Boolean);
     const dirty = [
-      ...git(dir, ['diff', '--name-only', '-z', 'HEAD']).split('\0'),
-      ...git(dir, ['ls-files', '-z', '-o', '--exclude-standard']).split('\0'),
-    ].filter(Boolean);
+      ...git(dir, ['diff', '--name-only', '-z', 'HEAD']).split('\0').filter(Boolean),
+      ...withoutInstalledDependencies(untracked),
+    ];
     return { head, files: new Map(dirty.map((p) => [p, read(path.join(dir, p))])) };
   } catch {
     return null;

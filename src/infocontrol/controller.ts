@@ -28,6 +28,7 @@ import {
 } from './economics.js';
 import { predictRefetch, type RefetchFeatures, type RefetchModel } from './refetch-model.js';
 import { classifyShell } from './shell.js';
+import { runsCodeForResults } from '../execution/observation.js';
 import { codeIdentifiers, extractText, shapeCandidates, termsOf } from './shape.js';
 import type { NegativeFinding } from './memory.js';
 
@@ -372,6 +373,14 @@ export class InfoSession {
       if (subsumed) return subsumed;
     }
     if (ranged) return delivered();
+    // Hard guard: what a test run, a script or an inline program printed is
+    // the evidence the agent decides on, so it is never shaped, only
+    // deduplicated (a build or install log still is). HarnessBridge's learned
+    // projection compressed test execution 3.1% of the time, against ~25% for
+    // builds and 20-40% for reads and searches; measured here, shaping a
+    // data-analysis run hid its correlation matrix from the agent
+    // (Terminal-Bench bn-fit-modify, 2026-10-03).
+    if (tool === 'Bash' && runsCodeForResults(String(input.command ?? ''))) return delivered();
     const outputIds = codeIdentifiers(text);
     try {
       const shaped = await this.shape(tool, input, text, tokens, outputIds, p.tool_use_id);
@@ -534,6 +543,18 @@ export class InfoSession {
     const negatives = [...this.negatives.values()].filter((n) => n.epoch === this.epoch).slice(-5);
     if (negatives.length > 0) lines.push(`Searches that found nothing, with nothing changed since: ${negatives.map((n) => n.query).join('; ')}`);
     return lines.join('\n');
+  }
+
+  /** Moves only on progress worth telling the agent about: a file edited
+   *  for the first time, the latest edit checked or not, a different call
+   *  failing. Step numbers and repeated failures of the same call do not move it. */
+  pastTurns(): readonly number[] {
+    return this.config.pastTurns;
+  }
+
+  progressSignature(): string {
+    const verified = this.edits === 0 ? 'none' : this.lastEditStep > this.lastExecStep ? 'unchecked' : 'checked';
+    return [this.filesEdited.size, verified, this.lastFailure?.call ?? ''].join('|');
   }
 
   private recite(): Record<string, unknown> {

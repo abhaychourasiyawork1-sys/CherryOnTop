@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { treeState, treeChanges } from './tree-changes.js';
+import { treeState, treeChanges, withoutInstalledDependencies } from './tree-changes.js';
 
 describe('treeChanges', () => {
   it('reports what a run changed by any means, and nothing that was already dirty and left alone', () => {
@@ -30,5 +30,14 @@ describe('treeChanges', () => {
 
   it('is null outside a git repository', () => {
     expect(treeState(fs.mkdtempSync(path.join(os.tmpdir(), 'nogit-')))).toBeNull();
+  });
+});
+
+describe('withoutInstalledDependencies', () => {
+  it('drops a virtualenv (by its pyvenv.cfg, any name) and node_modules, keeps the work', () => {
+    expect(withoutInstalledDependencies([
+      'learned_dag.csv', 'venv/pyvenv.cfg', 'venv/lib/python3.12/site-packages/x.py', 'env2/pyvenv.cfg', 'env2/bin/python',
+      'web/node_modules/a/index.js', 'src/venv_notes.md',
+    ])).toEqual(['learned_dag.csv', 'src/venv_notes.md']);
   });
 });
