@@ -25,7 +25,28 @@ import { AnthropicModelClient, anthropicConfigured } from '../agent/anthropic-mo
 import { resolveModelId, type ModelClient } from '../agent/model-client.js';
 import { containerSandbox, podSandbox, workdirSnapshot, type Sandbox } from '../agent/sandbox.js';
 import { ToolBroker } from '../agent/tools.js';
-import { ownedPrices, runAgentSession, type SessionState } from '../agent/loop.js';
+import { ownedPrices, runAgentSession, type SessionState, type Transcript } from '../agent/loop.js';
+
+/** The last owned conversation per node, so the node's next dispatch (a
+ *  validation retry, a proof pass) continues it instead of starting over.
+ *  Measured: a restarted retry re-explored from scratch, cost a second full
+ *  run and produced worse work. In memory only, kept within the prompt cache's
+ *  hour, bounded in count. */
+const transcripts = new Map<string, { transcript: Transcript; at: number }>();
+const TRANSCRIPT_TTL_MS = 55 * 60_000;
+const TRANSCRIPTS_KEPT = 64;
+
+export function rememberTranscript(nodeId: string, transcript: Transcript, now = Date.now()): void {
+  transcripts.delete(nodeId);
+  transcripts.set(nodeId, { transcript, at: now });
+  while (transcripts.size > TRANSCRIPTS_KEPT) transcripts.delete(transcripts.keys().next().value!);
+}
+
+export function takeTranscript(nodeId: string, now = Date.now()): Transcript | undefined {
+  const entry = transcripts.get(nodeId);
+  transcripts.delete(nodeId);
+  return entry && now - entry.at < TRANSCRIPT_TTL_MS ? entry.transcript : undefined;
+}
 import { ZERO_USAGE } from '../execution/tokens.js';
 import { toolNamesFromEvent } from '../execution/tool-calls.js';
 import { isToolAllowed } from '../engines/enforce-tools.js';
@@ -167,7 +188,7 @@ export function createOwnedAdapter(deps: OwnedDeps = defaultDeps, configured: ()
         workdir: sandbox.workdir, orientation, model, client,
         ...(input.effort ? { effort: input.effort } : {}),
         ...(thinkingBudget !== undefined ? { thinkingBudget } : {}),
-        pricedCompaction: process.env.ORG_OWNED_COMPACTION !== 'window',
+        pricedCompaction: process.env.ORG_OWNED_COMPACTION === 'priced',
         recite: process.env.ORG_OWNED_RECITE !== 'off',
         webSearch: process.env.ORG_OWNED_WEB_SEARCH !== 'off',
         confirmFinish: process.env.ORG_OWNED_CONFIRM_FINISH !== 'off',
@@ -188,8 +209,10 @@ export function createOwnedAdapter(deps: OwnedDeps = defaultDeps, configured: ()
         });
         return { text: child.finalText || (child.events.at(-1)?.payload as { result?: string } | undefined)?.result || '', failed: !child.succeeded, usage: child.usage, costUsd: child.costUsd, events: child.events };
       };
+      const resume = process.env.ORG_OWNED_RESUME === 'off' ? undefined : takeTranscript(input.nodeId);
       try {
         const result = await runAgentSession({
+          ...(resume ? { resume } : {}),
           sessionId: `owned-${input.nodeId}-${requestedAt}`,
           goal: input.goal,
           ...(input.systemPrompt ? { systemPrompt: input.systemPrompt } : {}),
@@ -215,6 +238,8 @@ export function createOwnedAdapter(deps: OwnedDeps = defaultDeps, configured: ()
             input.onEvent?.(event);
           },
         });
+        // Only a conversation that ended in turn order can be continued.
+        if (result.stop !== 'model_error' && result.stop !== 'aborted') rememberTranscript(input.nodeId, result.transcript);
         const final = result.events.at(-1)?.payload as { result?: string } | undefined;
         return {
           succeeded: result.succeeded,

@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { runAgentSession, systemPromptFor, DEFAULT_MAX_TURNS, CONFIRM_FINISH, WEB_SEARCH_USD, HARNESS_POLICY, type AgentSessionInput, type SessionState } from './loop.js';
+import { runAgentSession, systemPromptFor, DEFAULT_MAX_TURNS, CONFIRM_FINISH, RESUME_NOTE, WEB_SEARCH_USD, HARNESS_POLICY, type AgentSessionInput, type SessionState } from './loop.js';
 import { fakeMessage, scriptedModelClient, toolUse, ModelError, type ScriptedTurn, type MessageParam } from './model-client.js';
 import { hostSandbox } from './sandbox.js';
 import { ToolBroker } from './tools.js';
@@ -305,6 +305,40 @@ describe('Claude Code parity in the loop', () => {
     await run();
     expect(client.requests[0].system.startsWith(HARNESS_POLICY)).toBe(true);
     expect(HARNESS_POLICY).toMatch(/Never end a response by saying what you are about to do/);
+  });
+});
+
+describe('quality fixes from run 2', () => {
+  it('continues a previous attempt\'s conversation, append-only, when nothing in the prefix changed', async () => {
+    const first = session([fakeMessage([toolUse('a', 'Bash', { command: 'echo first' })]), fakeMessage('first attempt done')]);
+    const r1 = await first.run();
+    expect(r1.transcript.messages.at(-1)?.role).toBe('assistant');
+    const second = session([fakeMessage('second attempt done')], { resume: r1.transcript });
+    const r2 = await second.run();
+    const sent = second.client.requests[0].messages;
+    expect(JSON.stringify(sent.slice(0, r1.transcript.messages.length))).toBe(JSON.stringify(r1.transcript.messages));
+    expect(String(sent.at(-1)!.content)).toContain(RESUME_NOTE);
+    expect(r2.events.find((e) => e.type === 'owned.resume')?.payload).toMatchObject({ resumed: true });
+  });
+
+  it('starts clean when the model, system prompt or tools differ, and says why', async () => {
+    const r1 = await session([fakeMessage('done')]).run();
+    const other = session([fakeMessage('ok')], { resume: r1.transcript, systemPrompt: 'a different role' });
+    const r2 = await other.run();
+    expect(other.client.requests[0].messages).toHaveLength(1);
+    expect(r2.events.find((e) => e.type === 'owned.resume')?.payload).toMatchObject({ resumed: false });
+  });
+
+  it('does not compact on price unless asked: only the window forces it', async () => {
+    const heavy = { input_tokens: 60_000, output_tokens: 10 };
+    const turns = Array.from({ length: 12 }, (_, i) => fakeMessage([toolUse(`t${i}`, 'Bash', { command: `echo ${i}` })], { usage: heavy }));
+    const r = await session([...turns, fakeMessage('done')]).run();
+    expect(r.compactions).toBe(0);
+  });
+
+  it('audits the work against the task\'s own requirements before a run may end', () => {
+    expect(CONFIRM_FINISH).toMatch(/List every explicit requirement/);
+    expect(CONFIRM_FINISH).toMatch(/the way the task's user or tests would call it/);
   });
 });
 

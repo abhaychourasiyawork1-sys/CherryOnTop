@@ -26,6 +26,14 @@ const pre = (tool: string, input: Record<string, unknown>, id = 'p1'): HookPaylo
 const shaped = (r: Record<string, unknown>) => (r.hookSpecificOutput as { updatedToolOutput?: string } | undefined)?.updatedToolOutput;
 
 describe('shaping', () => {
+  it('never shapes what a test run, script or inline program printed: that output is the evidence', async () => {
+    for (const command of ["cd /app && python3 << 'EOF'\nimport pandas as pd\nprint(df.corr())\nEOF", 'pytest -q tests', 'R --vanilla -e "source(\'ars.R\'); test()"']) {
+      const { s, events } = session();
+      expect(shaped(await s.handle(bash(command, BIG_LOG, 'toolu_R')))).toBeUndefined();
+      expect(events.some((e) => e.type === 'ic.decision' && String(e.payload.action).startsWith('shape'))).toBe(false);
+    }
+  });
+
   it('shapes a large build log into a smaller view that names the spill file', async () => {
     const { s, events } = session();
     const r = await s.handle(bash('make all', BIG_LOG, 'toolu_A'));

@@ -72,9 +72,12 @@ function stanza(role: PromptRole, p: RolePromptParams): string {
         'YOUR ROLE FOR THIS RUN: implementer closing one commitment.',
         tools,
         'Work to the definition of done and then stop — do not gold-plate.',
-        // Evidence still has to be observed (validation's V2 rung reads the
-        // trace), but each extra full-suite run re-reads the whole context.
-        'Verify with the narrowest check that proves the change — the one relevant test, run after your last edit. Do not re-run a check that already passed or run the whole suite unless the task needs it.',
+        // Evidence has to be observed (validation's V2 rung reads the trace).
+        // Was "the narrowest check … the one relevant test": measured on
+        // Terminal-Bench, where there is no test to find, it steered the agent
+        // to one self-made check and requirements went unverified. The waste
+        // it guarded against is a re-run with nothing changed, and that stays.
+        'Verify every requirement of the task with checks that actually exercise it, the way the task\'s user or tests would, and re-run the checks covering what you changed after your last edit. Do not re-run a check whose inputs have not changed since it passed.',
         'Your final message is the evidence that closes this commitment: state what you changed, what you verified, and what remains unchecked.',
         'If a standing constraint blocks the most direct path, follow the constraint and say which one and where.',
         // What lets a delegating parent combine this result without paying a

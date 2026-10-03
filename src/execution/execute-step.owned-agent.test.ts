@@ -66,6 +66,24 @@ describe('anthropic-owned through executeStep', () => {
     expect(r.events.some((e) => e.type === 'subagent.result' && (e.payload as { parent_tool_use_id?: string }).parent_tool_use_id === 'task1')).toBe(true);
   });
 
+  it('a second dispatch on the same node continues the first one\'s conversation (retry, proof pass)', async () => {
+    const client = scriptedModelClient([
+      fakeMessage([toolUse('a', 'Bash', { command: 'cat f.txt' })]), fakeMessage('first: done'), fakeMessage('first: confirmed'),
+      fakeMessage('second: fixed'), fakeMessage('second: confirmed'),
+    ]);
+    const adapter = createOwnedAdapter({ client: () => client, sandbox: async () => ({ ...hostSandbox(dir), close: async () => {} }) }, () => true);
+    await executeStep(input(adapter, { nodeId: 'resume-node' }));
+    const firstLength = client.requests.at(-1)!.messages.length + 1;
+    const r = await executeStep(input(adapter, { nodeId: 'resume-node' }));
+    expect(r.succeeded).toBe(true);
+    expect(client.requests[3].messages.length).toBe(firstLength + 1);
+    expect(r.events.find((e) => e.type === 'owned.resume')?.payload).toMatchObject({ resumed: true });
+    // Another node never sees it.
+    const other = scriptedModelClient([fakeMessage('x'), fakeMessage('y')]);
+    await executeStep(input(createOwnedAdapter({ client: () => other, sandbox: async () => ({ ...hostSandbox(dir), close: async () => {} }) }, () => true), { nodeId: 'another-node' }));
+    expect(other.requests[0].messages).toHaveLength(1);
+  });
+
   it('reports a forbidden request as a violation and never runs it', async () => {
     const violations: string[] = [];
     const r = await executeStep(input(owned([

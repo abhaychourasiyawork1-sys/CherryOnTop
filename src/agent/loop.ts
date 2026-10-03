@@ -34,7 +34,19 @@ export const WEB_SEARCH_USD = 0.01;
 /** Searches per model turn (the server's own loop). */
 const WEB_SEARCH_MAX_USES = 5;
 
-export const CONFIRM_FINISH = 'Before you finish: if the task is fully done and verified against every requirement, reply with your final summary and no tool call. If anything is still unchecked, or you meant to run, read or fix something, do it now.';
+/** The one check before a run may end: a requirements audit against the task
+ *  itself (ToFu's critic gate, HarnessBridge's premature-submission check),
+ *  not a generic "are you sure". Measured misses it targets: an interface the
+ *  tests call differently from how it was built, an output format or path not
+ *  re-checked, a statement left as "I will check" with no check made. */
+export const CONFIRM_FINISH = `Before you finish, audit your work against the task statement:
+1. List every explicit requirement in the task: each file and path, output format, function name, argument and how it will be called (use the conventional calling form for that language, e.g. a vector where R users pass a vector), value, range and behaviour.
+2. For each one, point to the command output from this session that proves it, or run the check now. Exercise your code the way the task's user or tests would call it, not only the way you wrote it.
+3. If anything is unproven, wrong or assumed, fix and re-check it.
+When every requirement is proven, reply with your final summary and no tool call.`;
+
+/** Opens a continued attempt: what happened and what to do now. */
+export const RESUME_NOTE = '[CherryOnTop: your previous attempt at this task, above, ended without being accepted. Its work is still in place. Continue from where it stands: re-check the result against every requirement of the task below, find what is missing or wrong, and fix it. Do not start over unless the existing work is unsalvageable.]';
 import type { HookHandler, ToolBroker, ToolOutcome } from './tools.js';
 
 export interface SessionState extends HookHandler {
@@ -66,8 +78,17 @@ export interface AgentSessionInput {
   /** Past dispatches' turn counts, for the expected-remaining-turns estimate. */
   pastTurns?: readonly number[];
   maxOutputTokens?: number;
-  /** Compact when the price says so (default). Off: only when the window forces it. */
+  /** Also compact when the price says so. Off by default: measured on
+   *  Terminal-Bench it compacted a trial-and-error task six times at ~12% of
+   *  the window, rewriting the cache and dropping what had been tried each
+   *  time, where Claude Code never compacted. The papers compact near the
+   *  context budget (~80%), which the window rule below already does. */
   pricedCompaction?: boolean;
+  /** A previous attempt at the same work, continued instead of restarted
+   *  (the Harness Effect's durable resume; ToFu re-runs rather than restarts).
+   *  Used only when the model, system prompt and tools are byte-identical,
+   *  so the cached prefix and every thinking block stay valid. */
+  resume?: Transcript;
   /** Append the task state after a tool round whenever it changed (default on). */
   recite?: boolean;
   /** Waits before re-trying a turn that failed transiently; its length is the retry budget. */
@@ -86,7 +107,17 @@ export interface AgentSessionInput {
 
 export type StopKind = 'end_turn' | 'max_turns' | 'spend_limit' | 'refusal' | 'model_error' | 'aborted';
 
+/** What a later attempt needs to continue this one. */
+export interface Transcript {
+  model: string;
+  system: string;
+  toolsJson: string;
+  messages: MessageParam[];
+}
+
 export interface AgentSessionResult {
+  /** The conversation as it ended, for a retry to continue. */
+  transcript: Transcript;
   stop: StopKind;
   succeeded: boolean;
   finalText: string;
@@ -199,9 +230,16 @@ export async function runAgentSession(input: AgentSessionInput): Promise<AgentSe
   const usage: DispatchUsage = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, numTurns: 0 };
   const calls = new Map<string, CallRecord>();
   const opening = input.orientation ? `${input.goal}\n\n${input.orientation}` : input.goal;
-  let messages: MessageParam[] = [{ role: 'user', content: opening }];
+  const toolsJson = JSON.stringify(tools);
+  // A retry continues the previous attempt's conversation when nothing that
+  // shapes the prefix changed; otherwise it starts clean, and says why.
+  const resumable = input.resume !== undefined && input.resume.model === model && input.resume.system === system
+    && input.resume.toolsJson === toolsJson && input.resume.messages.length > 0 && input.resume.messages.at(-1)?.role === 'assistant';
+  let messages: MessageParam[] = resumable
+    ? [...input.resume!.messages, { role: 'user', content: `${RESUME_NOTE}\n\n${opening}` }]
+    : [{ role: 'user', content: opening }];
   let lastContext = 0;
-  let appendedSince = estimateTokens(opening);
+  let appendedSince = estimateTokens(JSON.stringify(messages));
   let compactions = 0;
   let compactedBeforeTurn = false;
   let retriedAfterCompaction = false;
@@ -234,6 +272,7 @@ export async function runAgentSession(input: AgentSessionInput): Promise<AgentSe
   let recitedTodos = '';
   let confirmedFinish = false;
 
+  if (input.resume) emit('owned.resume', { resumed: resumable, priorMessages: input.resume.messages.length, ...(resumable ? {} : { reason: 'model, system prompt or tools differ' }) });
   emit('system', { subtype: 'init', model, cwd: input.workdir, tools: tools.map((t) => ('name' in t ? t.name : t.type)), runtime: 'anthropic-owned', ...(input.effort ? { effort: input.effort } : {}) });
 
   const doCompact = (reason: 'window' | 'priced' | 'recovery', precomputed?: CompactionResult): boolean => {
@@ -264,7 +303,10 @@ export async function runAgentSession(input: AgentSessionInput): Promise<AgentSe
       usage: { input_tokens: usage.inputTokens, output_tokens: usage.outputTokens, cache_read_input_tokens: usage.cacheReadTokens, cache_creation_input_tokens: usage.cacheCreationTokens },
       ...(error ? { error_kind: error.kind } : {}),
     });
-    return { stop, succeeded, finalText, events, usage: { ...usage }, costUsd: cost(), compactions, ...(error ? { error } : {}) };
+    return {
+      stop, succeeded, finalText, events, usage: { ...usage }, costUsd: cost(), compactions, ...(error ? { error } : {}),
+      transcript: { model, system, toolsJson, messages: [...messages] },
+    };
   };
 
   for (;;) {
@@ -275,7 +317,7 @@ export async function runAgentSession(input: AgentSessionInput): Promise<AgentSe
     // Compaction: forced by the window, otherwise only when it pays.
     const projected = lastContext + appendedSince;
     if (projected + maxTokens > window && canCompact(messages)) doCompact('window');
-    else if (input.pricedCompaction !== false && canCompact(messages) && usage.numTurns > 0) {
+    else if (input.pricedCompaction === true && canCompact(messages) && usage.numTurns > 0) {
       const preview = compact({ goal: input.goal, messages, activeState: stateForModel(), calls, tailBudget: tailBudget(), keepThinking });
       if (preview) {
         const price = priceCompaction({

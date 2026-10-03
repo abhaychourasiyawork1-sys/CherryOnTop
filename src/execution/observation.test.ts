@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { observationsFromEvents, operationOf, observationBytes, verifiedChangeAtTurnCap, isVerifyingCommand } from './observation.js';
+import { observationsFromEvents, operationOf, observationBytes, verifiedChangeAtTurnCap, isVerifyingCommand, runsCodeForResults } from './observation.js';
 
 const call = (id: string, name: string, input: Record<string, unknown>) => ({
   type: 'assistant',
@@ -154,6 +154,12 @@ describe('isVerifyingCommand', () => {
       "cat > /tmp/verify.py << 'EOF'\nprint(1)\nEOF", 'apt-get install -y r-base', 'which R', 'pip install pgmpy',
       'sleep 30 && which R', 'ps aux | grep apt', 'ls -la /app/*.txt', 'echo done',
     ]) expect(isVerifyingCommand(c), c).toBe(false);
+  });
+  it('tells a code or test run (results the agent decides on) from a build or install (a log)', () => {
+    for (const c of ['pytest -q', "python3 << 'EOF'\nprint(1)\nEOF", 'R -e "test()"', 'node run.js', 'cargo test', 'go test ./...'])
+      expect(runsCodeForResults(c), c).toBe(true);
+    for (const c of ['make', 'make -j4 all', 'npm run build', 'cargo build --release', 'npx tsc --noEmit', 'go build ./...', './configure --prefix=/usr', 'pip install x'])
+      expect(runsCodeForResults(c), c).toBe(false);
   });
 });
 
