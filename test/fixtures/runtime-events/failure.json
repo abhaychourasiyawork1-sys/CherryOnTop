@@ -1,0 +1,5 @@
+{
+  "type": "result",
+  "is_error": true,
+  "result": "model \"haiku\" is not available on your plan"
+}

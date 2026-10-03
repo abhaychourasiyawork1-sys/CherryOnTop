@@ -1,0 +1,9 @@
+{
+  "type": "result",
+  "subtype": "success",
+  "is_error": false,
+  "result": "Done.",
+  "total_cost_usd": 0.035,
+  "duration_api_ms": 10191,
+  "num_turns": 7
+}
