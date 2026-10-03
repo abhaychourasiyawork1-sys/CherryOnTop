@@ -192,6 +192,8 @@ export async function replayOwned(rec: RecordedSession, arm: Arm): Promise<ArmRe
   const result = await runAgentSession({
     sessionId: 'replay', goal: rec.goal, workdir: '/app', model, client: { createTurn: async (input) => respond(input) },
     broker, state, maxTurns: rec.turns.length, pricedCompaction: arm.pricedCompaction,
+    // Recorded actions only: no turn or tool the recorded run did not have.
+    confirmFinish: false, webSearch: false, recite: false,
   });
 
   let toolCalls = 0; let projected = 0; let elidedChars = 0; let unrecoverable = 0;

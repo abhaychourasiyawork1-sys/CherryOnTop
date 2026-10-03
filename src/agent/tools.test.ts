@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync } from 'no
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { hostSandbox } from './sandbox.js';
-import { ToolBroker, toolDefinitions, authorityRefusal, OUTPUT_CAP, WEB_CAP, BREAKER_FAILURES, recoverArgs, htmlToText, type HookHandler } from './tools.js';
+import { ToolBroker, toolDefinitions, authorityRefusal, OUTPUT_CAP, WEB_CAP, BREAKER_FAILURES, SUBAGENT_REPORT_CAP, recoverArgs, htmlToText, type HookHandler } from './tools.js';
 import { InfoSession, SPILL_DIR } from '../infocontrol/controller.js';
 
 let dir: string;
@@ -18,12 +18,13 @@ const broker = (opts: Partial<ConstructorParameters<typeof ToolBroker>[0]> = {})
 describe('tool definitions', () => {
   it('are deterministic, Claude Code–named, and filtered by the grant', () => {
     const all = toolDefinitions();
-    expect(all.map((t) => t.name)).toEqual(['Bash', 'Read', 'Edit', 'Write', 'Glob', 'Grep', 'WebFetch']);
+    expect(all.map((t) => t.name)).toEqual(['Bash', 'Read', 'Edit', 'Write', 'Glob', 'Grep', 'WebFetch', 'NotebookEdit', 'TodoWrite']);
+    expect(toolDefinitions(undefined, { subagents: true }).map((t) => t.name)).toContain('Task');
     expect(JSON.stringify(toolDefinitions())).toBe(JSON.stringify(all));
     expect(all[0].input_schema).toMatchObject({ type: 'object', required: ['command'] });
     expect(all[0].input_schema).not.toHaveProperty('$schema');
     expect(toolDefinitions({ allowedTools: ['Read', 'Grep'], readOnly: true }).map((t) => t.name)).toEqual(['Read', 'Grep']);
-    expect(toolDefinitions({ allowedTools: null, readOnly: true }).map((t) => t.name)).toEqual(['Read', 'Glob', 'Grep', 'WebFetch']);
+    expect(toolDefinitions({ allowedTools: null, readOnly: true }).map((t) => t.name)).toEqual(['Read', 'Glob', 'Grep', 'WebFetch', 'TodoWrite']);
   });
 
   it('a read-only grant refuses writers even when it lists them', () => {
@@ -195,6 +196,66 @@ describe('paper mechanisms in the broker', () => {
     expect(last).toBeGreaterThan(100);
     expect(out.content).toContain(`${String(last).padStart(6)}\tline_${last - 1} = `);
     expect(out.content).not.toContain('…\n');
+  });
+});
+
+describe('Claude Code parity', () => {
+  it('keeps the Bash working directory between calls, and exit codes intact', async () => {
+    const b = broker();
+    await b.execute({ id: '1', name: 'Bash', input: { command: 'mkdir -p sub/deeper && cd sub' } });
+    expect((await b.execute({ id: '2', name: 'Bash', input: { command: 'pwd' } })).content).toBe(path.join(dir, 'sub'));
+    expect(await b.execute({ id: '3', name: 'Bash', input: { command: 'cd deeper && exit 4' } })).toMatchObject({ isError: true, content: 'Exit code 4' });
+    expect((await b.execute({ id: '4', name: 'Bash', input: { command: 'pwd' } })).content).toBe(path.join(dir, 'sub', 'deeper'));
+    // A heredoc and quotes survive the wrapper unchanged.
+    expect((await b.execute({ id: '5', name: 'Bash', input: { command: "cat <<'EOF'\nit's \"fine\"\nEOF" } })).content).toBe('it\'s "fine"');
+  });
+
+  it('greps with context and a head limit', async () => {
+    const b = broker();
+    expect((await b.execute({ id: '1', name: 'Grep', input: { pattern: 'return', output_mode: 'content', '-B': 1 } })).content).toBe('./a.py-1-def f():\n./a.py:2:    return 1');
+    expect((await b.execute({ id: '2', name: 'Grep', input: { pattern: '.', output_mode: 'content', head_limit: 2 } })).content).toMatch(/^\.\/a\.py:1:def f\(\):\n\.\/a\.py:2: {4}return 1\n… 1 more lines/);
+  });
+
+  it('keeps a task list the loop can recite', async () => {
+    const b = broker();
+    const out = await b.execute({ id: 't', name: 'TodoWrite', input: { todos: [
+      { content: 'reproduce', status: 'completed' }, { content: 'fix', status: 'in_progress' }, { content: 'verify', status: 'pending' },
+    ] } });
+    expect(out.content).toMatch(/1\/3 done/);
+    expect(b.todos()).toBe('[x] reproduce\n[~] fix\n[ ] verify');
+    expect((await b.execute({ id: 'bad', name: 'TodoWrite', input: { todos: [{ content: 'x', status: 'later' }] } })).refusal).toBe('invalid');
+  });
+
+  it('runs a sub-agent for Task with the parent\'s remaining budget, capping its report', async () => {
+    let seen: unknown;
+    const b = broker({ subagent: async (prompt, id, budget) => {
+      seen = { prompt, id, budget };
+      return { text: 'r'.repeat(SUBAGENT_REPORT_CAP + 50), failed: false, usage: { inputTokens: 5, outputTokens: 1, cacheReadTokens: 0, cacheCreationTokens: 0, numTurns: 2 }, costUsd: 0.001, events: [] };
+    } });
+    expect(b.definitions.map((d) => d.name)).toContain('Task');
+    const out = await b.execute({ id: 'toolu_t', name: 'Task', input: { description: 'find it', prompt: 'Find where X is defined' } }, { remainingUsd: 0.4 });
+    expect(seen).toEqual({ prompt: 'Find where X is defined', id: 'toolu_t', budget: { remainingUsd: 0.4 } });
+    expect(out.content).toMatch(/first 8000 are shown/);
+    expect(out.subagent?.costUsd).toBe(0.001);
+    expect((await broker().execute({ id: 'x', name: 'Task', input: { description: 'd', prompt: 'p' } })).refusal).toBe('invalid');
+  });
+
+  it('edits notebook cells, and a read-only mandate cannot', async () => {
+    const nb = { cells: [{ cell_type: 'code', id: 'c1', metadata: {}, source: ['x = 1\n'], outputs: [], execution_count: null }], metadata: {}, nbformat: 4, nbformat_minor: 5 };
+    writeFileSync(path.join(dir, 'n.ipynb'), JSON.stringify(nb));
+    const b = broker();
+    expect((await b.execute({ id: '1', name: 'NotebookEdit', input: { notebook_path: 'n.ipynb', cell_id: 'c1', new_source: 'x = 2\n' } })).isError).toBe(false);
+    expect((await b.execute({ id: '2', name: 'NotebookEdit', input: { notebook_path: 'n.ipynb', cell_number: 0, new_source: '# notes', cell_type: 'markdown', edit_mode: 'insert' } })).isError).toBe(false);
+    const after = JSON.parse(readFileSync(path.join(dir, 'n.ipynb'), 'utf8'));
+    expect(after.cells.map((c: { source: string[] }) => c.source.join(''))).toEqual(['x = 2\n', '# notes']);
+    expect((await b.execute({ id: '3', name: 'NotebookEdit', input: { notebook_path: 'n.ipynb', cell_number: 9, new_source: '' } })).isError).toBe(true);
+    expect((await broker({ grant: { allowedTools: null, readOnly: true } }).execute({ id: '4', name: 'NotebookEdit', input: { notebook_path: 'n.ipynb', cell_number: 0, new_source: '' } })).refusal).toBe('authority');
+  });
+
+  it('offers server-side web search only where the mandate allows it', () => {
+    expect(broker().allowsWebSearch).toBe(true);
+    expect(broker({ grant: { allowedTools: ['Read', 'WebSearch'], readOnly: true } }).allowsWebSearch).toBe(true);
+    expect(broker({ grant: { allowedTools: ['Read'], readOnly: true } }).allowsWebSearch).toBe(false);
   });
 });
 

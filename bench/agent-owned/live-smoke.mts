@@ -154,6 +154,8 @@ async function dryRun() {
       const oracle = scriptedModelClient([
         ...task.oracle.map((c, i) => fakeMessage([toolUse(`toolu_oracle_${i}`, c.name, c.input)])),
         fakeMessage('fixed and verified'),
+        // Production default: the finish check asks once; the oracle confirms.
+        fakeMessage('confirmed: fixed and verified'),
       ]);
       const r = await runOwned(name, task, oracle);
       const after = await check(name, task);
@@ -167,7 +169,7 @@ async function dryRun() {
   }
   const sample = buildRequest({ model, maxTokens: 64_000, system: systemPromptFor({ workdir: WORKDIR }), tools: new ToolBroker({ sandbox: containerSandbox({ container: 'x', workdir: WORKDIR, docker: 'docker' }) }).definitions, messages: [{ role: 'user', content: tasks[0]?.goal ?? '' }] });
   const bytes = JSON.stringify(sample).length;
-  console.log(`First owned request: model=${sample.model} tools=${sample.tools?.length} system=${JSON.stringify(sample.system).length}B total≈${bytes}B (~${Math.round(bytes / 4)} tokens est.), cache_control on system and request, no thinking param, effort ${sample.output_config ? JSON.stringify(sample.output_config) : 'not sent'}.`);
+  console.log(`First owned request: model=${sample.model} tools=${sample.tools?.length} system=${JSON.stringify(sample.system).length}B total≈${bytes}B (~${Math.round(bytes / 4)} tokens est.), cache_control on system and request, thinking ${JSON.stringify(sample.thinking ?? null)}, effort ${sample.output_config ? JSON.stringify(sample.output_config) : 'not sent'}.`);
   console.log(`API key in this process: ${process.env.ANTHROPIC_API_KEY ? 'set' : 'not set'} (not used in a dry run).`);
   console.log(ok ? 'All tasks wired.' : 'Some tasks are broken — do not run live.');
   process.exitCode = ok ? 0 : 1;

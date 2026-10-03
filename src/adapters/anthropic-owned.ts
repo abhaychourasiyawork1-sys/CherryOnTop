@@ -115,7 +115,10 @@ export function quietState(goal: string, model: string, nodeId: string): Session
     nodeId, taskRootId: nodeId, role: 'execute', goal, mode: 'off', disabled: new Set(), prices: ownedPrices(model),
     confidence: 0.5, taskValueUsd: 0, beliefs: new Map(), pastTurns: [], finish: { failed: 0, finished: 0 }, negatives: [], revision: null,
   }, { emit: () => {} });
-  return { handle: (p) => session.handle(p), activeState: () => session.activeState(), observeEvent: (e) => session.observeEvent(e) };
+  return {
+    handle: (p) => session.handle(p), activeState: () => session.activeState(),
+    progressSignature: () => session.progressSignature(), observeEvent: (e) => session.observeEvent(e),
+  };
 }
 
 function failed(message: string): ExecuteStepResult {
@@ -155,25 +158,50 @@ export function createOwnedAdapter(deps: OwnedDeps = defaultDeps, configured: ()
       const reported = new Set<string>();
       const abort = new AbortController();
       const timer = input.timeoutMs && Number.isFinite(input.timeoutMs) ? setTimeout(() => abort.abort(), input.timeoutMs) : undefined;
+      const client = deps.client();
+      const orientation = await workdirSnapshot(sandbox);
+      const envNumber = (name: string) => (process.env[name]?.trim() && Number.isFinite(Number(process.env[name])) ? Number(process.env[name]) : undefined);
+      const thinkingBudget = envNumber('ORG_OWNED_THINKING_BUDGET');
+      const refusalCap = envNumber('ORG_OWNED_REFUSAL_CAP');
+      const shared = {
+        workdir: sandbox.workdir, orientation, model, client,
+        ...(input.effort ? { effort: input.effort } : {}),
+        ...(thinkingBudget !== undefined ? { thinkingBudget } : {}),
+        pricedCompaction: process.env.ORG_OWNED_COMPACTION !== 'window',
+        recite: process.env.ORG_OWNED_RECITE !== 'off',
+        webSearch: process.env.ORG_OWNED_WEB_SEARCH !== 'off',
+        confirmFinish: process.env.ORG_OWNED_CONFIRM_FINISH !== 'off',
+        signal: abort.signal,
+      };
+      // Claude Code's Task tool: a sub-agent with a fresh context in the same
+      // sandbox, under the same mandate, bounded by what is left of the
+      // parent's spend limit. It cannot spawn sub-agents of its own.
+      const subagent = async (prompt: string, toolUseId: string, budget: { remainingUsd?: number }) => {
+        const childState = quietState(prompt, model, `${input.nodeId}:${toolUseId}`);
+        const child = await runAgentSession({
+          ...shared,
+          sessionId: `owned-${input.nodeId}-${requestedAt}-sub-${toolUseId}`,
+          goal: prompt,
+          broker: new ToolBroker({ sandbox, ...(input.grant ? { grant: input.grant } : {}), infoControl: childState, ...(refusalCap !== undefined ? { refusalCap } : {}) }),
+          state: childState,
+          ...(budget.remainingUsd !== undefined ? { spendLimitUsd: budget.remainingUsd } : {}),
+        });
+        return { text: child.finalText || (child.events.at(-1)?.payload as { result?: string } | undefined)?.result || '', failed: !child.succeeded, usage: child.usage, costUsd: child.costUsd, events: child.events };
+      };
       try {
         const result = await runAgentSession({
           sessionId: `owned-${input.nodeId}-${requestedAt}`,
           goal: input.goal,
           ...(input.systemPrompt ? { systemPrompt: input.systemPrompt } : {}),
-          workdir: sandbox.workdir,
-          orientation: await workdirSnapshot(sandbox),
-          model,
-          ...(input.effort ? { effort: input.effort } : {}),
-          client: deps.client(),
+          ...shared,
           broker: new ToolBroker({
             sandbox, ...(input.grant ? { grant: input.grant } : {}), infoControl: state,
-            ...(Number.isFinite(Number(process.env.ORG_OWNED_REFUSAL_CAP)) && process.env.ORG_OWNED_REFUSAL_CAP ? { refusalCap: Number(process.env.ORG_OWNED_REFUSAL_CAP) } : {}),
+            ...(refusalCap !== undefined ? { refusalCap } : {}),
+            ...(process.env.ORG_OWNED_SUBAGENTS !== 'off' ? { subagent } : {}),
           }),
           state,
           ...(input.maxTurns ? { maxTurns: input.maxTurns } : {}),
           ...(input.spendLimitUsd !== undefined ? { spendLimitUsd: input.spendLimitUsd } : {}),
-          pricedCompaction: process.env.ORG_OWNED_COMPACTION !== 'window',
-          recite: process.env.ORG_OWNED_RECITE !== 'off',
           onEvent: (event) => {
             // The broker refuses a forbidden call before it runs; the request
             // is still reported, as a Claude Code dispatch's would be.
@@ -186,7 +214,6 @@ export function createOwnedAdapter(deps: OwnedDeps = defaultDeps, configured: ()
             }
             input.onEvent?.(event);
           },
-          signal: abort.signal,
         });
         const final = result.events.at(-1)?.payload as { result?: string } | undefined;
         return {

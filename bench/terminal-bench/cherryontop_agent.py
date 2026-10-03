@@ -214,6 +214,11 @@ class CherryOnTop(_BenchEnvironment):
             "ORG_IC_HOOK_PORT": str(port + 100),
             "ORG_TASK_SPEND_CAP_USD": _env("CTO_BUDGET", "5"),
             "ORG_RUNTIME": "anthropic-owned" if _owned() else "claude-code",
+            # Stock Claude Code has no turn cap; the task's spend cap is the
+            # bound. 0 is the documented "uncapped" (src/config/efficiency.ts).
+            # Left at the default, the execute cap (60, lowered further by the
+            # complexity band) cut build-pov-ray off mid-build.
+            "ORG_MAX_TURNS_EXECUTE": _env("CTO_MAX_TURNS_EXECUTE", "0"),
             "ORG_RESULT_CACHE_TTL_HOURS": "0",
             "ORG_PLAN_CACHE_TTL_HOURS": "0",
             **{f"ORG_MODEL_{role}": model for role in ("EXECUTE", "PLAN", "SYNTHESIZE", "FAST", "STANDARD", "DEEP")},

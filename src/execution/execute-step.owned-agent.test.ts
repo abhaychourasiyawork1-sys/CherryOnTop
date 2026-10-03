@@ -31,14 +31,39 @@ describe('anthropic-owned through executeStep', () => {
     const r = await executeStep(input(owned([
       fakeMessage([toolUse('t', 'Bash', { command: 'cat f.txt' })], { usage: { input_tokens: 1000, output_tokens: 100 } }),
       fakeMessage('done', { usage: { input_tokens: 10, cache_read_input_tokens: 1000, output_tokens: 10 } }),
+      // The production finish check asks once; the model confirms.
+      fakeMessage('confirmed done', { usage: { input_tokens: 0, output_tokens: 0 } }),
     ], closed), { onEvent: (e) => events.push(e.type) }), {
       createJob: async () => { throw new Error('no Job may be created'); },
     });
     expect(r).toMatchObject({ succeeded: true, message: 'completed', rateLimited: false });
-    expect(r.usage).toEqual({ inputTokens: 1010, outputTokens: 110, cacheReadTokens: 1000, cacheCreationTokens: 0, numTurns: 2 });
+    expect(r.usage).toEqual({ inputTokens: 1010, outputTokens: 110, cacheReadTokens: 1000, cacheCreationTokens: 0, numTurns: 3 });
     expect((r.events.at(-1)!.payload as { total_cost_usd: number }).total_cost_usd).toBeCloseTo((1010 + 110 * 5 + 1000 * 0.1) / 1e6);
     expect(events).toContain('owned.turn');
+    expect(events).toContain('owned.confirm_finish');
     expect(closed.n).toBe(1);
+  });
+
+  it('runs a Task sub-agent as a real child loop: same sandbox, no nesting, its spend in the dispatch', async () => {
+    const client = scriptedModelClient([
+      fakeMessage([toolUse('task1', 'Task', { description: 'look', prompt: 'Report the contents of f.txt' })], { usage: { input_tokens: 100, output_tokens: 10 } }),
+      fakeMessage([toolUse('c1', 'Bash', { command: 'cat f.txt' })], { usage: { input_tokens: 50, output_tokens: 5 } }),
+      fakeMessage('f.txt says hello', { usage: { input_tokens: 50, output_tokens: 5 } }),
+      fakeMessage('f.txt says hello (confirmed)', { usage: { input_tokens: 50, output_tokens: 5 } }),
+      fakeMessage('The file says hello.', { usage: { input_tokens: 100, output_tokens: 10 } }),
+      fakeMessage('Done.', { usage: { input_tokens: 100, output_tokens: 10 } }),
+    ]);
+    const adapter = createOwnedAdapter({ client: () => client, sandbox: async () => ({ ...hostSandbox(dir), close: async () => {} }) }, () => true);
+    const r = await executeStep(input(adapter, { spendLimitUsd: 1 }));
+    expect(r.succeeded).toBe(true);
+    const names = (i: number) => client.requests[i].tools.map((t) => ('name' in t ? t.name : ''));
+    expect(names(0)).toContain('Task');
+    expect(names(1)).not.toContain('Task');
+    expect(client.requests[1].messages[0].content).toContain('Report the contents of f.txt');
+    const toolResult = client.requests[4].messages.at(-1)!.content as Array<{ type: string; content?: string }>;
+    expect(toolResult[0].content).toBe('f.txt says hello (confirmed)');
+    expect(r.usage.inputTokens).toBe(450);
+    expect(r.events.some((e) => e.type === 'subagent.result' && (e.payload as { parent_tool_use_id?: string }).parent_tool_use_id === 'task1')).toBe(true);
   });
 
   it('reports a forbidden request as a violation and never runs it', async () => {
@@ -46,6 +71,7 @@ describe('anthropic-owned through executeStep', () => {
     const r = await executeStep(input(owned([
       fakeMessage([toolUse('t', 'Bash', { command: 'touch bad' })]),
       fakeMessage('ok'),
+      fakeMessage('ok, done'),
     ]), { grant: { allowedTools: ['Read'], readOnly: true }, onViolation: (t) => violations.push(t) }));
     expect(violations).toEqual(['Bash']);
     expect(existsSync(path.join(dir, 'bad'))).toBe(false);

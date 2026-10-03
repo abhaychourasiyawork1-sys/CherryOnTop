@@ -27,13 +27,23 @@ import { expectedRemainingTurns, type Prices } from '../infocontrol/economics.js
 import type { StructuredEvent } from '../adapters/adapter.js';
 import type { DispatchUsage } from '../execution/tokens.js';
 import { canCompact, compact, priceCompaction, type CallRecord, type CompactionResult } from './compaction.js';
-import { ModelError, resolveModelId, type ContentBlock, type Message, type MessageParam, type ModelClient } from './model-client.js';
+import { ModelError, modelProfile, resolveModelId, type ContentBlock, type Message, type MessageParam, type ModelClient, type Tool } from './model-client.js';
+
+/** Server-side web search: $10 per 1000 searches, on top of tokens. */
+export const WEB_SEARCH_USD = 0.01;
+/** Searches per model turn (the server's own loop). */
+const WEB_SEARCH_MAX_USES = 5;
+
+export const CONFIRM_FINISH = 'Before you finish: if the task is fully done and verified against every requirement, reply with your final summary and no tool call. If anything is still unchecked, or you meant to run, read or fix something, do it now.';
 import type { HookHandler, ToolBroker, ToolOutcome } from './tools.js';
 
 export interface SessionState extends HookHandler {
   /** The canonical task state, rendered for the model. */
   activeState(): string;
   observeEvent(event: StructuredEvent): void;
+  /** Changes only on real progress (a new file edited, a check run after an
+   *  edit or not, a different call failing): when the state is worth reciting. */
+  progressSignature?(): string;
 }
 
 export interface AgentSessionInput {
@@ -62,6 +72,14 @@ export interface AgentSessionInput {
   recite?: boolean;
   /** Waits before re-trying a turn that failed transiently; its length is the retry budget. */
   retryDelaysMs?: readonly number[];
+  /** Thinking tokens per turn for a budget-thinking model (Haiku). */
+  thinkingBudget?: number;
+  /** Offer server-side web search when the grant allows it (default on). */
+  webSearch?: boolean;
+  /** Ask once, when the model stops without a tool call, whether it is really
+   *  done (default on): HarnessBridge's premature-submission check and ToFu's
+   *  critic gate, applied to the one moment a run can end too early. */
+  confirmFinish?: boolean;
   onEvent?(event: StructuredEvent): void;
   signal?: AbortSignal;
 }
@@ -79,11 +97,37 @@ export interface AgentSessionResult {
   error?: ModelError;
 }
 
-const HARNESS_POLICY = `You are an autonomous software engineering agent working on a task inside an isolated sandbox. Use the tools to inspect and change files and to run commands; nobody will answer questions mid-task, so make reasonable decisions and keep going until the task is done. Verify your change by running the narrowest relevant check before you finish. When you are done, reply with a short summary of what you changed and how you verified it, without calling a tool.`;
+/** The harness policy: how to work, the same ground Claude Code's own system
+ *  prompt covers, written for this harness and its tools. Frozen for every
+ *  session (it is the start of the 1-hour cached prefix), so its length is paid
+ *  for once per hour, not per turn. Measured reason it is long: the 600-byte
+ *  version it replaces lost on every long Terminal-Bench task it was run on. */
+export const HARNESS_POLICY = `You are an autonomous software engineering agent. You work alone inside an isolated sandbox on one task, using the tools provided. Nobody will answer questions or approve steps while you work: make reasonable decisions yourself and keep going until the task is completely done.
 
-/** The loop's own iteration ceiling when the dispatch sets none (the Harness
- *  Effect caps its loop at 50): a guard against a runaway, not a budget. */
-export const DEFAULT_MAX_TURNS = 50;
+# How to work
+- Understand before acting. Read the task carefully, then look at the relevant files, the existing tests, build files and documentation. Find the real mechanism the task is about before changing anything; do not pattern-match on keywords.
+- Plan multi-step work. For anything with three or more steps, write the steps down with TodoWrite, keep exactly one step in progress, and mark each step completed as soon as it is done.
+- Make the change the task asks for, in the style of the surrounding code. Do not rename, reformat or refactor unrelated code. Never delete or rewrite the task's own input files, data or tests to make a check pass, unless the task explicitly asks for it.
+- Install what you need. If a tool, package or runtime is missing, install it (apt-get, pip, npm and so on) and continue; long installs and builds are normal, wait for them.
+- Verify your work for real. Run the task's own tests or checks when they exist; otherwise run the program the way the task describes and check its actual output against every requirement stated in the task. A script you wrote that only re-states your own assumptions is not verification. If the task names output files, formats, paths or exact values, check each one exactly.
+- When something fails, read the error, find the cause, and fix it; do not repeat a failing command unchanged, and do not paper over failures. If an approach is clearly not working, step back and try a different one.
+- Before finishing, re-read the task and check every requirement against what you actually produced.
+
+# Using the tools
+- Every response either calls at least one tool or is your final answer. Never end a response by saying what you are about to do: if you intend to run, read or check something, make that tool call in the same response.
+- Prefer Read, Grep and Glob for looking at files and Edit or Write for changing them; use Bash for running programs, tests, builds and installs. Read a file before editing or overwriting it.
+- When several independent lookups or commands are needed, issue them together in one response; they run in order and all results come back at once.
+- Use Task to hand a broad, self-contained investigation to a sub-agent when doing it yourself would flood your context. Use web search only when the answer is not in the sandbox.
+- Outputs that are too long are shortened and the full text is saved to a file whose path is shown; read that file (with offset/limit) when you need what was left out. Never conclude that something succeeded from a shortened preview.
+- Messages marked [CherryOnTop: …] come from the harness: they report the task state (files you changed, whether your latest change has been checked, the last failure, your task list). Treat them as accurate.
+
+# Finishing
+When, and only when, the task is fully done and verified, reply without a tool call: a short summary of what you changed and how you verified it. If you could not complete something, say exactly what and why.`;
+
+/** The loop's own iteration ceiling when the dispatch sets none: a guard
+ *  against a runaway, not a budget (the spend limit is the budget). Claude Code
+ *  has none at all and used 105 turns on a Terminal-Bench build task. */
+export const DEFAULT_MAX_TURNS = 200;
 /** Re-tries of a turn lost to the network or an overloaded provider, with
  *  backoff (ToFu re-runs an interrupted stream; the SDK already retries
  *  before a stream starts). A failed attempt never ran a tool. */
@@ -135,7 +179,12 @@ export async function runAgentSession(input: AgentSessionInput): Promise<AgentSe
   const model = resolveModelId(input.model);
   const prices = ownedPrices(model);
   const system = systemPromptFor(input);
-  const tools = input.broker.definitions;
+  const profile = modelProfile(model);
+  const tools: Tool[] = [
+    ...input.broker.definitions,
+    ...(input.webSearch !== false && input.broker.allowsWebSearch
+      ? [{ type: profile.webSearchType, name: 'web_search', max_uses: WEB_SEARCH_MAX_USES } as Tool] : []),
+  ];
   const maxTokens = input.maxOutputTokens ?? 64_000;
   const window = contextWindowFor(model);
   const fixedTokens = estimateTokens(system) + estimateTokens(JSON.stringify(tools));
@@ -163,18 +212,32 @@ export async function runAgentSession(input: AgentSessionInput): Promise<AgentSe
   // own split of each turn's cache writes.
   let write1h = 0;
   const premium1h = perTokenRates(model).input * 0.75;
-  const cost = () => estimateCostUsd(usage, model) + write1h * premium1h;
+  /** Spend outside the token price list: web searches, and the 1-hour-write
+   *  premium and searches of sub-agents. */
+  let extraUsd = 0;
+  const cost = () => estimateCostUsd(usage, model) + write1h * premium1h + extraUsd;
   const tailBudget = () => TAIL_SHARE * (lastContext + appendedSince);
+  // A budget-thinking model (Haiku) must see its thinking on the turn whose
+  // tool round is in flight; it has no history-binding check, so compaction
+  // keeps those blocks. Adaptive models bind thinking to the prefix, so a
+  // compacted (re-prefixed) history carries none.
+  const keepThinking = profile.thinking === 'budget';
+  const stateForModel = () => {
+    const todos = input.broker.todos();
+    return todos ? `${input.state.activeState()}\nTask list:\n${todos}` : input.state.activeState();
+  };
   const maxTurns = input.maxTurns ?? DEFAULT_MAX_TURNS;
   const retryDelays = input.retryDelaysMs ?? RETRY_DELAYS_MS;
   let retries = 0;
-  /** The state last recited, so it is appended only when it changed. */
-  let recited = '';
+  /** The progress signature and task list last recited: recited again only when one moved. */
+  let recitedSignature = '';
+  let recitedTodos = '';
+  let confirmedFinish = false;
 
-  emit('system', { subtype: 'init', model, cwd: input.workdir, tools: tools.map((t) => t.name), runtime: 'anthropic-owned', ...(input.effort ? { effort: input.effort } : {}) });
+  emit('system', { subtype: 'init', model, cwd: input.workdir, tools: tools.map((t) => ('name' in t ? t.name : t.type)), runtime: 'anthropic-owned', ...(input.effort ? { effort: input.effort } : {}) });
 
   const doCompact = (reason: 'window' | 'priced' | 'recovery', precomputed?: CompactionResult): boolean => {
-    const result = precomputed ?? compact({ goal: input.goal, messages, activeState: input.state.activeState(), calls, tailBudget: tailBudget() });
+    const result = precomputed ?? compact({ goal: input.goal, messages, activeState: stateForModel(), calls, tailBudget: tailBudget(), keepThinking });
     if (!result) return false;
     messages = result.messages;
     compactions++;
@@ -213,7 +276,7 @@ export async function runAgentSession(input: AgentSessionInput): Promise<AgentSe
     const projected = lastContext + appendedSince;
     if (projected + maxTokens > window && canCompact(messages)) doCompact('window');
     else if (input.pricedCompaction !== false && canCompact(messages) && usage.numTurns > 0) {
-      const preview = compact({ goal: input.goal, messages, activeState: input.state.activeState(), calls, tailBudget: tailBudget() });
+      const preview = compact({ goal: input.goal, messages, activeState: stateForModel(), calls, tailBudget: tailBudget(), keepThinking });
       if (preview) {
         const price = priceCompaction({
           droppedTokens: preview.droppedTokens, droppedCalls: preview.droppedCallIds.length, keptTokens: preview.keptTokens, stateTokens: preview.stateTokens,
@@ -226,7 +289,11 @@ export async function runAgentSession(input: AgentSessionInput): Promise<AgentSe
 
     let message: Message;
     try {
-      message = await input.client.createTurn({ model, maxTokens, system, tools, messages, ...(input.effort ? { effort: input.effort } : {}) }, input.signal);
+      message = await input.client.createTurn({
+        model, maxTokens, system, tools, messages,
+        ...(input.effort ? { effort: input.effort } : {}),
+        ...(input.thinkingBudget !== undefined ? { thinkingBudget: input.thinkingBudget } : {}),
+      }, input.signal);
     } catch (err) {
       const error = err instanceof ModelError ? err : new ModelError('other', err instanceof Error ? err.message : String(err));
       if (input.signal?.aborted) return finish('aborted');
@@ -256,6 +323,7 @@ export async function runAgentSession(input: AgentSessionInput): Promise<AgentSe
     usage.cacheReadTokens += u.cache_read_input_tokens ?? 0;
     usage.cacheCreationTokens += u.cache_creation_input_tokens ?? 0;
     write1h += (u as { cache_creation?: { ephemeral_1h_input_tokens?: number } | null }).cache_creation?.ephemeral_1h_input_tokens ?? 0;
+    extraUsd += ((u as { server_tool_use?: { web_search_requests?: number } | null }).server_tool_use?.web_search_requests ?? 0) * WEB_SEARCH_USD;
     lastContext = (u.input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0) + (u.output_tokens ?? 0);
     appendedSince = 0;
     const assistant = emit('assistant', { message, parent_tool_use_id: null });
@@ -293,7 +361,24 @@ export async function runAgentSession(input: AgentSessionInput): Promise<AgentSe
         // A turn cut off at max_tokens may carry a truncated tool input: never run it.
         const outcome: ToolOutcome = message.stop_reason === 'max_tokens'
           ? { content: 'Your response hit the output limit before this call was complete, so it did not run. Issue it again, smaller if it was large.', isError: true, raw: '', refusal: 'invalid', projected: false }
-          : await input.broker.execute({ id: call.id, name: call.name, input: call.input });
+          : await input.broker.execute({ id: call.id, name: call.name, input: call.input },
+            input.spendLimitUsd !== undefined ? { remainingUsd: Math.max(0, input.spendLimitUsd - cost()) } : {});
+        if (outcome.subagent) {
+          // A sub-agent's spend is this dispatch's spend; its trace is part of
+          // this dispatch's record, marked as the sub-agent's.
+          const sub = outcome.subagent;
+          usage.inputTokens += sub.usage.inputTokens;
+          usage.outputTokens += sub.usage.outputTokens;
+          usage.cacheReadTokens += sub.usage.cacheReadTokens;
+          usage.cacheCreationTokens += sub.usage.cacheCreationTokens;
+          extraUsd += Math.max(0, sub.costUsd - estimateCostUsd(sub.usage, model));
+          for (const e of sub.events) {
+            const type = e.type === 'result' || e.type === 'system' ? `subagent.${e.type}` : e.type;
+            const event = { type, payload: { ...(e.payload as Record<string, unknown>), type, parent_tool_use_id: call.id } };
+            events.push(event);
+            input.onEvent?.(event);
+          }
+        }
         results.push({ id: call.id, outcome });
         calls.set(call.id, {
           id: call.id, name: call.name, target: describeTarget(call.name, call.input), isError: outcome.isError,
@@ -309,23 +394,40 @@ export async function runAgentSession(input: AgentSessionInput): Promise<AgentSe
       // it stands now, after the results. Never edited or removed later, so the
       // cached prefix and earlier thinking blocks stay valid (a volatile tail
       // rebuilt each turn would break both on preserved-thinking models).
-      const state = input.recite === false ? '' : recitable(input.state.activeState(), input.goal);
-      if (state && state !== recited) {
-        recited = state;
-        blocks.push({ type: 'text', text: `[CherryOnTop: task state]\n${state}` });
+      if (input.recite !== false) {
+        const signature = input.state.progressSignature?.() ?? input.state.activeState();
+        const todos = input.broker.todos();
+        const state = recitable(input.state.activeState(), input.goal);
+        if ((signature !== recitedSignature || todos !== recitedTodos) && (state || todos)) {
+          recitedSignature = signature;
+          recitedTodos = todos;
+          blocks.push({ type: 'text', text: `[CherryOnTop: task state]\n${[state, todos ? `Task list:\n${todos}` : ''].filter(Boolean).join('\n')}` });
+        }
       }
       next = { role: 'user', content: blocks };
       emit('user', {
         message: next, parent_tool_use_id: null,
         tool_use_result: results.map(({ id, outcome }) => ({ tool_use_id: id, tool: toolUses.find((t) => t.id === id)?.name ?? null, raw: outcome.raw, projected: outcome.projected, refusal: outcome.refusal ?? null, spilledTo: outcome.spilledTo ?? null })),
       });
-    } else if (message.stop_reason === 'max_tokens' || message.stop_reason === 'pause_turn' || message.stop_reason === 'model_context_window_exceeded') {
+    } else if (message.stop_reason === 'pause_turn') {
+      // The server's own tool loop (web search) paused: send the conversation
+      // back as it is and it resumes. No user message: the API resumes from
+      // the trailing server-tool block.
+      receipt();
+      continue;
+    } else if (message.stop_reason === 'max_tokens' || message.stop_reason === 'model_context_window_exceeded') {
       if (message.stop_reason === 'model_context_window_exceeded') doCompact('window');
       next = { role: 'user', content: 'Continue from where you stopped.' };
     } else {
-      // The model is finishing. The finish gate may send it back once to check its work.
+      // The model is finishing. The finish gate may send it back to check its
+      // work; otherwise it is asked once whether it is really done.
       const gate = await input.state.handle({ hook_event_name: 'Stop', last_assistant_message: text }).catch(() => ({}) as Record<string, unknown>);
       if (gate.decision === 'block' && typeof gate.reason === 'string') next = { role: 'user', content: gate.reason };
+      else if (input.confirmFinish !== false && !confirmedFinish) {
+        confirmedFinish = true;
+        next = { role: 'user', content: CONFIRM_FINISH };
+        emit('owned.confirm_finish', {});
+      }
     }
     receipt();
     if (!next) return finish('end_turn');

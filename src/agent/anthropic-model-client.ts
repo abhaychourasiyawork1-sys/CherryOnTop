@@ -14,7 +14,15 @@
  *  connection errors itself; what still fails is mapped onto `ModelFailureKind`
  *  by the SDK's typed errors, never by message text. */
 import Anthropic from '@anthropic-ai/sdk';
-import { ModelError, resolveModelId, type Message, type ModelClient, type ModelTurnInput } from './model-client.js';
+import { ModelError, modelProfile, resolveModelId, type Message, type ModelClient, type ModelTurnInput } from './model-client.js';
+
+/** Thinking tokens per turn for a budget-thinking model when the caller sets
+ *  none: generous, because the model was measured failing without it (owned
+ *  arm, Terminal-Bench, 2026-10-03: no thinking, 0/4) while Claude Code runs it
+ *  thinking on nearly every turn. `ORG_OWNED_THINKING_BUDGET` overrides. */
+export const DEFAULT_THINKING_BUDGET = 16_384;
+/** Interleaved thinking for budget-thinking models: reasoning between tool calls. */
+export const INTERLEAVED_BETA = 'interleaved-thinking-2025-05-14';
 
 const EFFORTS = new Set(['low', 'medium', 'high', 'xhigh', 'max']);
 
@@ -27,9 +35,14 @@ export function acceptsEffort(modelId: string): boolean {
  *  be checked (and token-counted for free) without making a paid call. */
 export function buildRequest(input: ModelTurnInput): Anthropic.MessageCreateParamsNonStreaming {
   const model = resolveModelId(input.model);
+  const profile = modelProfile(model);
   const effort = input.effort && EFFORTS.has(input.effort) && acceptsEffort(model)
     ? { output_config: { effort: input.effort as 'low' | 'medium' | 'high' | 'xhigh' | 'max' } }
     : {};
+  const budget = Math.min(input.thinkingBudget ?? DEFAULT_THINKING_BUDGET, input.maxTokens - 1);
+  const thinking: Anthropic.ThinkingConfigParam | undefined = profile.thinking === 'adaptive'
+    ? { type: 'adaptive' }
+    : budget >= 1024 ? { type: 'enabled', budget_tokens: budget } : undefined;
   return {
     model,
     max_tokens: input.maxTokens,
@@ -41,8 +54,15 @@ export function buildRequest(input: ModelTurnInput): Anthropic.MessageCreatePara
     tools: input.tools,
     messages: input.messages,
     cache_control: { type: 'ephemeral' },
+    ...(thinking ? { thinking } : {}),
     ...effort,
   };
+}
+
+/** Request headers a body needs: the interleaved-thinking beta whenever a
+ *  budget-thinking model thinks, so it can reason between tool calls. */
+export function requestHeaders(body: Anthropic.MessageCreateParamsNonStreaming): Record<string, string> {
+  return body.thinking?.type === 'enabled' ? { 'anthropic-beta': INTERLEAVED_BETA } : {};
 }
 
 export function classifyError(err: unknown): ModelError {
@@ -59,7 +79,7 @@ export function classifyError(err: unknown): ModelError {
 }
 
 export interface AnthropicClientLike {
-  messages: { stream(body: Anthropic.MessageStreamParams, options?: { signal?: AbortSignal }): { finalMessage(): Promise<Message> } };
+  messages: { stream(body: Anthropic.MessageStreamParams, options?: { signal?: AbortSignal; headers?: Record<string, string> }): { finalMessage(): Promise<Message> } };
 }
 
 export class AnthropicModelClient implements ModelClient {
@@ -72,7 +92,8 @@ export class AnthropicModelClient implements ModelClient {
 
   async createTurn(input: ModelTurnInput, signal?: AbortSignal): Promise<Message> {
     try {
-      return await this.client.messages.stream(buildRequest(input), signal ? { signal } : undefined).finalMessage();
+      const body = buildRequest(input);
+      return await this.client.messages.stream(body, { ...(signal ? { signal } : {}), headers: requestHeaders(body) }).finalMessage();
     } catch (err) {
       throw classifyError(err);
     }

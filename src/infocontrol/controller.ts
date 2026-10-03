@@ -536,6 +536,14 @@ export class InfoSession {
     return lines.join('\n');
   }
 
+  /** Moves only on progress worth telling the agent about: a file edited
+   *  for the first time, the latest edit checked or not, a different call
+   *  failing. Step numbers and repeated failures of the same call do not move it. */
+  progressSignature(): string {
+    const verified = this.edits === 0 ? 'none' : this.lastEditStep > this.lastExecStep ? 'unchecked' : 'checked';
+    return [this.filesEdited.size, verified, this.lastFailure?.call ?? ''].join('|');
+  }
+
   private recite(): Record<string, unknown> {
     this.forgetContext();
     const text = `[information control: where this task stands, from its own record before the compaction]\n${this.activeState()}`;

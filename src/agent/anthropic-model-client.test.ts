@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import Anthropic from '@anthropic-ai/sdk';
-import { AnthropicModelClient, buildRequest, classifyError, acceptsEffort, type AnthropicClientLike } from './anthropic-model-client.js';
-import { fakeMessage, resolveModelId, scriptedModelClient, ModelError, type ModelTurnInput } from './model-client.js';
+import { AnthropicModelClient, buildRequest, classifyError, acceptsEffort, requestHeaders, DEFAULT_THINKING_BUDGET, INTERLEAVED_BETA, type AnthropicClientLike } from './anthropic-model-client.js';
+import { fakeMessage, modelProfile, resolveModelId, scriptedModelClient, ModelError, type ModelTurnInput } from './model-client.js';
 
 const turn: ModelTurnInput = { model: 'haiku', maxTokens: 1000, system: 'sys', tools: [], messages: [{ role: 'user', content: 'hi' }] };
 
@@ -22,12 +22,32 @@ describe('buildRequest', () => {
     expect(body.cache_control).toEqual({ type: 'ephemeral' });
   });
 
-  it('sends effort only to models that accept it, and never a thinking config', () => {
+  it('sends effort only to models that accept it', () => {
     expect(buildRequest({ ...turn, effort: 'high' }).output_config).toBeUndefined();
     expect(buildRequest({ ...turn, model: 'sonnet', effort: 'high' }).output_config).toEqual({ effort: 'high' });
     expect(buildRequest({ ...turn, model: 'sonnet', effort: 'bogus' }).output_config).toBeUndefined();
-    expect(buildRequest({ ...turn, model: 'opus', effort: 'low' })).not.toHaveProperty('thinking');
     expect(acceptsEffort('claude-haiku-4-5')).toBe(false);
+  });
+
+  it('always lets the model think: a budget (and interleaving) on Haiku, adaptive elsewhere', () => {
+    const haiku = buildRequest({ ...turn, maxTokens: 64_000 });
+    expect(haiku.thinking).toEqual({ type: 'enabled', budget_tokens: DEFAULT_THINKING_BUDGET });
+    expect(requestHeaders(haiku)).toEqual({ 'anthropic-beta': INTERLEAVED_BETA });
+    expect(buildRequest({ ...turn, maxTokens: 64_000, thinkingBudget: 4_000 }).thinking).toEqual({ type: 'enabled', budget_tokens: 4_000 });
+    // The budget always stays below max_tokens, and below the API's 1024 floor thinking is off.
+    expect(buildRequest({ ...turn, maxTokens: 2_000 }).thinking).toEqual({ type: 'enabled', budget_tokens: 1_999 });
+    expect(buildRequest({ ...turn, maxTokens: 64_000, thinkingBudget: 0 })).not.toHaveProperty('thinking');
+    for (const model of ['sonnet', 'opus', 'fable']) {
+      const body = buildRequest({ ...turn, model });
+      expect(body.thinking).toEqual({ type: 'adaptive' });
+      expect(requestHeaders(body)).toEqual({});
+    }
+  });
+
+  it('knows each model\'s thinking mode and web search version', () => {
+    expect(modelProfile('claude-haiku-4-5')).toEqual({ thinking: 'budget', webSearchType: 'web_search_20250305' });
+    expect(modelProfile('claude-sonnet-5-5')).toEqual({ thinking: 'adaptive', webSearchType: 'web_search_20260209' });
+    expect(modelProfile('claude-opus-5-5').thinking).toBe('adaptive');
   });
 
   it('is byte-identical for identical input (cache prefix stability)', () => {
@@ -39,9 +59,11 @@ describe('AnthropicModelClient', () => {
   it('returns the streamed final message', async () => {
     const message = fakeMessage('done');
     let sent: unknown;
-    const fake: AnthropicClientLike = { messages: { stream: (body) => { sent = body; return { finalMessage: async () => message }; } } };
-    expect(await new AnthropicModelClient(fake).createTurn(turn)).toBe(message);
+    let headers: unknown;
+    const fake: AnthropicClientLike = { messages: { stream: (body, opts) => { sent = body; headers = opts?.headers; return { finalMessage: async () => message }; } } };
+    expect(await new AnthropicModelClient(fake).createTurn({ ...turn, maxTokens: 64_000 })).toBe(message);
     expect((sent as { model: string }).model).toBe('claude-haiku-4-5');
+    expect(headers).toEqual({ 'anthropic-beta': INTERLEAVED_BETA });
   });
 
   it('maps SDK errors to failure kinds by type, not by message text', async () => {

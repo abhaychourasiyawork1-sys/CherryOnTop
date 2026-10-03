@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { runAgentSession, systemPromptFor, type AgentSessionInput, type SessionState } from './loop.js';
+import { runAgentSession, systemPromptFor, DEFAULT_MAX_TURNS, CONFIRM_FINISH, WEB_SEARCH_USD, HARNESS_POLICY, type AgentSessionInput, type SessionState } from './loop.js';
 import { fakeMessage, scriptedModelClient, toolUse, ModelError, type ScriptedTurn, type MessageParam } from './model-client.js';
 import { hostSandbox } from './sandbox.js';
 import { ToolBroker } from './tools.js';
@@ -24,7 +24,9 @@ function session(turns: ScriptedTurn[], over: Partial<AgentSessionInput> = {}) {
   const state = over.state ?? quietState('fix app.py', 'haiku', 'n');
   const input: AgentSessionInput = {
     sessionId: 's', goal: 'fix app.py', workdir: dir, model: 'haiku', client,
-    broker: new ToolBroker({ sandbox: hostSandbox(dir), infoControl: state }), state, ...over,
+    broker: new ToolBroker({ sandbox: hostSandbox(dir), infoControl: state }), state,
+    // Focused tests: the finish check and web search have their own tests below.
+    confirmFinish: false, webSearch: false, ...over,
   };
   return { client, run: () => runAgentSession(input) };
 }
@@ -183,9 +185,9 @@ describe('paper mechanisms in the loop', () => {
 
   it('caps a dispatch with no turn limit at the default ceiling', async () => {
     const loop = () => fakeMessage([toolUse(String(Math.random()), 'Bash', { command: 'true' })]);
-    const r = await session(Array.from({ length: 60 }, () => loop)).run();
+    const r = await session(Array.from({ length: DEFAULT_MAX_TURNS + 5 }, () => loop)).run();
     expect(r).toMatchObject({ stop: 'max_turns' });
-    expect(r.usage.numTurns).toBe(50);
+    expect(r.usage.numTurns).toBe(DEFAULT_MAX_TURNS);
   });
 
   it('recites the task state after a round that changed it, append-only and only once per change', async () => {
@@ -219,6 +221,93 @@ describe('cost', () => {
   });
 });
 
+describe('Claude Code parity in the loop', () => {
+  it('asks once whether a turn without a tool call is really the end, then accepts it', async () => {
+    const { run, client } = session([
+      fakeMessage('Let me check if there is a /tests directory:'),
+      fakeMessage([toolUse('l', 'Bash', { command: 'ls' })]),
+      fakeMessage('All done.'),
+      fakeMessage('Still done.'),
+    ], { confirmFinish: true });
+    const r = await run();
+    expect(r.succeeded).toBe(true);
+    expect(client.requests[1].messages.at(-1)).toEqual({ role: 'user', content: CONFIRM_FINISH });
+    // The second stop is accepted: the check is asked once per dispatch.
+    expect(client.requests).toHaveLength(3);
+    expect(r.finalText).toBe('All done.');
+    expect(r.events.filter((e) => e.type === 'owned.confirm_finish')).toHaveLength(1);
+  });
+
+  it('resumes a paused server-tool turn by resending, never with an extra user message', async () => {
+    const { run, client } = session([
+      fakeMessage([{ type: 'server_tool_use', id: 'srv', name: 'web_search', input: { query: 'x' } } as never], { stopReason: 'pause_turn' }),
+      fakeMessage('found it'),
+    ]);
+    const r = await run();
+    expect(r.succeeded).toBe(true);
+    const resumed = client.requests[1].messages;
+    expect(resumed.at(-1)?.role).toBe('assistant');
+    expect(JSON.stringify(resumed)).not.toContain('Continue from where you stopped');
+  });
+
+  it('offers web search in the model\'s own version and prices each search', async () => {
+    const usage = { input_tokens: 0, output_tokens: 0, server_tool_use: { web_search_requests: 3 } };
+    const haiku = session([fakeMessage('ok', { usage: usage as never })], { webSearch: true });
+    const r = await haiku.run();
+    expect(haiku.client.requests[0].tools.find((t) => 'type' in t && String(t.type).startsWith('web_search'))).toMatchObject({ type: 'web_search_20250305', name: 'web_search' });
+    expect(r.costUsd).toBeCloseTo(3 * WEB_SEARCH_USD, 9);
+    const sonnet = session([fakeMessage('ok')], { webSearch: true, model: 'sonnet' });
+    await sonnet.run();
+    expect(sonnet.client.requests[0].tools.some((t) => 'type' in t && t.type === 'web_search_20260209')).toBe(true);
+    const readOnly = session([fakeMessage('ok')], { webSearch: true, broker: new ToolBroker({ sandbox: hostSandbox(dir), grant: { allowedTools: ['Read'], readOnly: true } }) });
+    await readOnly.run();
+    expect(readOnly.client.requests[0].tools.some((t) => 'type' in t && String(t.type).startsWith('web_search'))).toBe(false);
+  });
+
+  it('passes the thinking budget through to every turn', async () => {
+    const { run, client } = session([fakeMessage('ok')], { thinkingBudget: 8_000 });
+    await run();
+    expect(client.requests[0].thinkingBudget).toBe(8_000);
+  });
+
+  it('charges a sub-agent\'s spend to the dispatch and keeps its trace, marked as the sub-agent\'s', async () => {
+    const subUsage = { inputTokens: 1_000_000, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, numTurns: 3 };
+    const state = quietState('fix app.py', 'haiku', 'n');
+    const broker = new ToolBroker({ sandbox: hostSandbox(dir), infoControl: state, subagent: async () => ({
+      text: 'X is in app.py', failed: false, usage: subUsage, costUsd: 1.0,
+      events: [{ type: 'assistant', payload: { message: { id: 'm_sub', content: [] } } }, { type: 'result', payload: { total_cost_usd: 1.0 } }],
+    }) });
+    const { run } = session([fakeMessage([toolUse('t', 'Task', { description: 'look', prompt: 'find X' })]), fakeMessage('done')], { broker, state });
+    const r = await run();
+    expect(r.usage.inputTokens).toBe(1_000_000 + 200);
+    expect(r.costUsd).toBeGreaterThanOrEqual(1.0);
+    expect(r.events.find((e) => e.type === 'subagent.result')?.payload).toMatchObject({ parent_tool_use_id: 't' });
+    // The dispatch's own result is still the last one: usage and cost readers see the total.
+    expect(r.events.at(-1)?.type).toBe('result');
+    expect((r.events.at(-1)!.payload as { total_cost_usd: number }).total_cost_usd).toBeCloseTo(r.costUsd, 9);
+  });
+
+  it('recites the task list with the state when it changes', async () => {
+    const { run, client } = session([
+      fakeMessage([toolUse('t', 'TodoWrite', { todos: [{ content: 'reproduce', status: 'in_progress' }, { content: 'fix', status: 'pending' }] })]),
+      fakeMessage([toolUse('l', 'Bash', { command: 'ls' })]),
+      fakeMessage('done'),
+    ], { recite: true });
+    await run();
+    const texts = (m: MessageParam) => (Array.isArray(m.content) ? m.content.filter((b) => b.type === 'text').map((b) => (b as { text: string }).text) : []);
+    const final = client.requests[2].messages;
+    expect(texts(final[2])[0]).toMatch(/Task list:\n\[~\] reproduce\n\[ \] fix/);
+    expect(texts(final[4])).toEqual([]);
+  });
+
+  it('opens with the rich harness policy, frozen for every session', async () => {
+    const { run, client } = session([fakeMessage('ok')]);
+    await run();
+    expect(client.requests[0].system.startsWith(HARNESS_POLICY)).toBe(true);
+    expect(HARNESS_POLICY).toMatch(/Never end a response by saying what you are about to do/);
+  });
+});
+
 describe('orientation', () => {
   it('follows the goal in the first message only, leaving the system prompt identical across tasks', async () => {
     const { run, client } = session([fakeMessage('ok')], { orientation: 'Contents of the work directory: app.py' });
@@ -249,16 +338,31 @@ describe('compaction in the loop', () => {
     expect(receipt.compactedBefore).toBe(true);
   });
 
-  it('strips thinking from the retained exchange (preserved-thinking safe) but never from an uncompacted history', async () => {
+  it('on an adaptive model, strips thinking from the retained exchange (preserved-thinking safe), never from an uncompacted history', async () => {
     const thinking = { type: 'thinking', thinking: '', signature: 'sig' } as never;
+    const big = { input_tokens: 990_000, output_tokens: 10 };
+    const { run, client } = session([
+      fakeMessage([thinking, toolUse('1', 'Bash', { command: 'echo one' })], { usage: big }),
+      fakeMessage([thinking, toolUse('2', 'Bash', { command: 'echo two' })], { usage: big }),
+      fakeMessage('done'),
+    ], { pricedCompaction: false, model: 'sonnet' });
+    await run();
+    expect(client.requests[1].messages[1].content).toContainEqual(thinking);
+    expect(JSON.stringify(client.requests[2].messages)).not.toContain('"thinking"');
+  });
+
+  it('on Haiku (budget thinking), keeps thinking on the retained tool round, which the API requires', async () => {
+    const thinking = { type: 'thinking', thinking: 'plan', signature: 'sig' } as never;
     const big = { input_tokens: 150_000, output_tokens: 10 };
     const { run, client } = session([
       fakeMessage([thinking, toolUse('1', 'Bash', { command: 'echo one' })], { usage: big }),
       fakeMessage([thinking, toolUse('2', 'Bash', { command: 'echo two' })], { usage: big }),
       fakeMessage('done'),
     ], { pricedCompaction: false });
-    await run();
-    expect(client.requests[1].messages[1].content).toContainEqual(thinking);
-    expect(JSON.stringify(client.requests[2].messages)).not.toContain('"thinking"');
+    const r = await run();
+    expect(r.compactions).toBe(1);
+    const sent = client.requests[2].messages;
+    expect(sent).toHaveLength(3);
+    expect((sent[1].content as Array<{ type: string }>)[0].type).toBe('thinking');
   });
 });

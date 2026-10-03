@@ -142,6 +142,19 @@ describe('isVerifyingCommand', () => {
       'sed -n 1,40p test_utils.py', 'find . -name "test_*"', 'git diff', 'pip install pytest', 'which pytest',
     ]) expect(isVerifyingCommand(c), c).toBe(false);
   });
+
+  it('counts an inline script fed to any interpreter, the same check as python -c (missed live on Terminal-Bench)', () => {
+    for (const c of [
+      "cd /app && python3 << 'EOF'\nimport pandas as pd\nprint(pd.read_csv('x.csv').shape)\nEOF",
+      'cd /app && R --vanilla --slave -e "source(\'ars.R\'); test()"', "R --vanilla --quiet << 'EOF'\nsource('ars.R')\nEOF",
+      'Rscript test.R', 'node -e "require(\'./x\')"', 'node --test', 'ruby spec.rb', 'julia run.jl', 'perl -e "print 1"',
+      'bash run_tests.sh', './build/app --selftest', 'dotnet test', 'mvn -q test', './gradlew test', 'ctest --output-on-failure',
+    ]) expect(isVerifyingCommand(c), c).toBe(true);
+    for (const c of [
+      "cat > /tmp/verify.py << 'EOF'\nprint(1)\nEOF", 'apt-get install -y r-base', 'which R', 'pip install pgmpy',
+      'sleep 30 && which R', 'ps aux | grep apt', 'ls -la /app/*.txt', 'echo done',
+    ]) expect(isVerifyingCommand(c), c).toBe(false);
+  });
 });
 
 describe('where an observation’s output lives', () => {

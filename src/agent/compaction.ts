@@ -47,6 +47,9 @@ export interface CompactionInput {
   calls: ReadonlyMap<string, CallRecord>;
   /** Tokens the verbatim tail may hold; at least the last exchange is always kept. */
   tailBudget?: number;
+  /** Keep thinking blocks in the retained tail (budget-thinking models, which
+   *  require them on the in-flight tool round and run no history-binding check). */
+  keepThinking?: boolean;
 }
 
 export interface CompactionResult {
@@ -110,7 +113,7 @@ export function compact(input: CompactionInput): CompactionResult | null {
   if (start < 0) return null;
   const dropped = input.messages.slice(0, start);
   const tail = input.messages.slice(start).map((m): MessageParam => {
-    if (m.role !== 'assistant' || typeof m.content === 'string') return m;
+    if (m.role !== 'assistant' || typeof m.content === 'string' || input.keepThinking) return m;
     const kept = (m.content as ContentBlock[]).filter((b) => b.type !== 'thinking' && b.type !== 'redacted_thinking');
     return { role: 'assistant', content: (kept.length ? kept : [{ type: 'text', text: '(continuing)' }]) as MessageParam['content'] };
   });

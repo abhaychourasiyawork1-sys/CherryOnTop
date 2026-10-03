@@ -98,7 +98,9 @@ export function hostSandbox(workdir: string): Sandbox {
  *  the sandbox cannot say. Claude Code opens with the same orientation (a git
  *  status snapshot); without it an agent spends turns finding where it is. */
 export async function workdirSnapshot(sandbox: Sandbox): Promise<string> {
-  const r = await sandbox.exec(['sh', '-c', 'ls -Ap | head -60; if git rev-parse --git-dir >/dev/null 2>&1; then echo "--- git status --short (first 30)"; git status --short | head -30; fi'], { timeoutMs: 15_000 }).catch(() => null);
+  const r = await sandbox.exec(['sh', '-c', 'echo "--- environment"; uname -sm 2>/dev/null; (. /etc/os-release 2>/dev/null && echo "$PRETTY_NAME"); echo "user $(id -un 2>/dev/null)"; '
+    + 'for t in python3 node R git make gcc cargo go java; do command -v $t >/dev/null 2>&1 && printf "%s " $t; done; echo; '
+    + 'echo "--- work directory"; ls -Ap | head -60; if git rev-parse --git-dir >/dev/null 2>&1; then echo "--- git status --short (first 30)"; git status --short | head -30; fi'], { timeoutMs: 15_000 }).catch(() => null);
   const text = r?.exitCode === 0 ? r.stdout.trim() : '';
   return text ? `Contents of the work directory ${sandbox.workdir}:\n${text}` : '';
 }

@@ -13,7 +13,7 @@ import type Anthropic from '@anthropic-ai/sdk';
 
 export type Message = Anthropic.Message;
 export type MessageParam = Anthropic.MessageParam;
-export type Tool = Anthropic.Tool;
+export type Tool = Anthropic.ToolUnion;
 export type ContentBlock = Anthropic.ContentBlock;
 
 export interface ModelTurnInput {
@@ -26,6 +26,9 @@ export interface ModelTurnInput {
   messages: MessageParam[];
   /** Reasoning effort, sent only to a model that accepts it. */
   effort?: string;
+  /** Thinking tokens per turn on a model that takes a budget (Haiku 4.5).
+   *  Adaptive models decide for themselves. 0 turns thinking off where allowed. */
+  thinkingBudget?: number;
 }
 
 /** Why a turn could not be had, in the terms the loop recovers by. */
@@ -50,6 +53,24 @@ const ALIASES: Record<string, string> = {
   opus: 'claude-opus-5-5',
   fable: 'claude-fable-5-1',
 };
+
+/** What a model can do that the request has to say differently per model.
+ *  Facts from the API's own model table, not tuning: Haiku 4.5 thinks only with
+ *  an explicit token budget (and needs the interleaved-thinking beta to think
+ *  between tool calls, as Claude Code runs it); every newer model thinks
+ *  adaptively, interleaved by default. The dynamic-filtering web search exists
+ *  only on the newer models. */
+export interface ModelProfile {
+  thinking: 'budget' | 'adaptive';
+  webSearchType: 'web_search_20250305' | 'web_search_20260209';
+}
+
+export function modelProfile(modelId: string): ModelProfile {
+  const legacy = /haiku|-4-5\b|sonnet-4-5|opus-4-5|opus-4-1/.test(modelId);
+  return legacy
+    ? { thinking: 'budget', webSearchType: 'web_search_20250305' }
+    : { thinking: 'adaptive', webSearchType: 'web_search_20260209' };
+}
 
 export function resolveModelId(model: string | undefined): string {
   const name = (model ?? '').trim().toLowerCase();

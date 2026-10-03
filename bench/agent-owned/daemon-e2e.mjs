@@ -50,7 +50,7 @@ const server = http.createServer((req, res) => {
   req.on('end', () => {
     if (req.method !== 'POST' || !req.url.startsWith('/v1/messages')) { res.writeHead(404); res.end('{}'); return; }
     const json = JSON.parse(body);
-    requests.push({ headers: { key: req.headers['x-api-key'] ?? null, auth: req.headers.authorization ?? null }, body: json });
+    requests.push({ headers: { key: req.headers['x-api-key'] ?? null, auth: req.headers.authorization ?? null, beta: req.headers['anthropic-beta'] ?? '' }, body: json });
     const first = typeof json.messages[0]?.content === 'string' ? json.messages[0].content : JSON.stringify(json.messages[0]?.content);
     const ours = first.includes('test_calc.py');
     const done = json.messages.filter((m) => m.role === 'assistant').length;
@@ -138,12 +138,20 @@ try {
   check('task completed', status === 'COMPLETE', status);
   check('the fix landed in the task container', fixed);
   check('every request went to the fake API with the configured key, none with another credential', requests.length > 0 && requests.every((r) => r.headers.key === FAKE_KEY && !r.headers.auth));
-  check('requests use the API id, a cached frozen system block, and no thinking param',
-    ours.every((r) => r.body.model === 'claude-haiku-4-5' && r.body.system?.[0]?.cache_control && r.body.cache_control && !('thinking' in r.body)));
+  check('requests use the API id and a cached frozen system block',
+    ours.every((r) => r.body.model === 'claude-haiku-4-5' && r.body.system?.[0]?.cache_control && r.body.cache_control));
   check('system prompt and tools byte-identical across the dispatch',
     ours.length > 1 && ours.every((r) => JSON.stringify(r.body.system) === JSON.stringify(ours[0].body.system) && JSON.stringify(r.body.tools) === JSON.stringify(ours[0].body.tools)));
   check('history append-only between turns',
     ours.every((r, i) => i === 0 || JSON.stringify(r.body.messages.slice(0, ours[i - 1].body.messages.length)) === JSON.stringify(ours[i - 1].body.messages)));
+  const names = (r) => (r.body.tools ?? []).map((t) => t.name ?? t.type);
+  check('Haiku thinks on every turn, interleaved between tool calls (budget + beta header)',
+    ours.every((r) => r.body.thinking?.type === 'enabled' && r.body.thinking.budget_tokens >= 1024 && r.headers.beta.includes('interleaved-thinking-2025-05-14')), JSON.stringify(ours[0]?.body.thinking));
+  check('Claude Code tool parity offered: Bash Read Edit Write Glob Grep WebFetch NotebookEdit TodoWrite Task + server web search',
+    ['Bash', 'Read', 'Edit', 'Write', 'Glob', 'Grep', 'WebFetch', 'NotebookEdit', 'TodoWrite', 'Task', 'web_search'].every((n) => names(ours[0]).includes(n)), names(ours[0] ?? { body: {} }).join(','));
+  check('the full harness policy is the frozen system prompt (1h cache)',
+    String(ours[0]?.body.system?.[0]?.text).includes('Never end a response by saying what you are about to do') && ours[0]?.body.system?.[0]?.cache_control?.ttl === '1h');
+  check('the finish check asked once before the run ended', ours.some((r) => JSON.stringify(r.body.messages.at(-1)).includes('Before you finish')) && types.has('exec.owned.confirm_finish'));
   check('first message carries the work-directory orientation', String(ours[0]?.body.messages[0].content).includes('calc.py') && String(ours[0]?.body.messages[0].content).includes('Contents of the work directory'));
   check('Claude Code–shaped events recorded (init/assistant/user/result)', ['exec.system', 'exec.assistant', 'exec.user', 'exec.result'].every((t) => types.has(t)), [...types].filter((t) => t.startsWith('exec.')).join(','));
   check('per-turn owned receipts recorded', events.filter((e) => e.type === 'exec.owned.turn').length >= SCRIPT.length);

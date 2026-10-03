@@ -46,7 +46,7 @@ const LINE_CHARS = 2000;
 const BASH_TIMEOUT_MS = 120_000;
 const BASH_TIMEOUT_MAX_MS = 600_000;
 
-const WRITERS = new Set(['Bash', 'Edit', 'Write']);
+const WRITERS = new Set(['Bash', 'Edit', 'Write', 'NotebookEdit']);
 
 const schemas = {
   Bash: z.object({
@@ -73,21 +73,48 @@ const schemas = {
     glob: z.string().optional(),
     output_mode: z.enum(['content', 'files_with_matches', 'count']).optional(),
     '-i': z.boolean().optional(),
+    '-A': z.number().int().nonnegative().optional(),
+    '-B': z.number().int().nonnegative().optional(),
+    '-C': z.number().int().nonnegative().optional(),
+    head_limit: z.number().int().positive().optional(),
   }),
   WebFetch: z.object({ url: z.string().url(), prompt: z.string().optional() }),
+  NotebookEdit: z.object({
+    notebook_path: z.string().min(1),
+    new_source: z.string(),
+    cell_id: z.string().optional(),
+    cell_number: z.number().int().nonnegative().optional(),
+    cell_type: z.enum(['code', 'markdown']).optional(),
+    edit_mode: z.enum(['replace', 'insert', 'delete']).optional(),
+  }),
+  TodoWrite: z.object({
+    todos: z.array(z.object({
+      content: z.string().min(1),
+      status: z.enum(['pending', 'in_progress', 'completed']),
+      activeForm: z.string().optional(),
+    })),
+  }),
+  Task: z.object({
+    description: z.string().min(1),
+    prompt: z.string().min(1),
+    subagent_type: z.string().optional(),
+  }),
 } as const;
 
 export type ToolName = keyof typeof schemas;
 export const TOOL_NAMES = Object.keys(schemas) as ToolName[];
 
 const descriptions: Record<ToolName, string> = {
-  Bash: `Run a shell command (bash when present, else sh) in the task's sandbox, from the work directory. Each call is a fresh shell: cd and exported variables do not persist between calls. Combined stdout and stderr is returned, bounded to ${OUTPUT_CAP} characters (the full output is saved and the result says where). Default timeout ${BASH_TIMEOUT_MS / 1000}s, \`timeout\` in ms up to ${BASH_TIMEOUT_MAX_MS / 1000}s.`,
+  Bash: `Run a shell command (bash when present, else sh) in the task's sandbox. The working directory persists between calls (a \`cd\` carries over); exported variables do not. Combined stdout and stderr is returned, bounded to ${OUTPUT_CAP} characters (the full output is saved and the result says where). Default timeout ${BASH_TIMEOUT_MS / 1000}s, \`timeout\` in ms up to ${BASH_TIMEOUT_MAX_MS / 1000}s. For a long-running server or watcher, start it in the background (\`nohup … > log 2>&1 &\`) and poll its log. Prefer Read, Grep and Glob over cat, grep and find for looking at files.`,
   Read: `Read a text file. Lines come back numbered (\`N<tab>text\`), ${READ_LINES} at a time from \`offset\` (1-based) unless \`limit\` says otherwise; long lines are cut at ${LINE_CHARS} characters. Use offset/limit for a range of a large file.`,
   Edit: 'Replace an exact string in a file. `old_string` must occur exactly once unless `replace_all` is true; include enough surrounding text to make it unique. Whitespace and indentation must match the file.',
   Write: 'Create or overwrite a file with `content`. Parent directories are created. Prefer Edit for changing part of an existing file.',
   Glob: 'List files matching a glob pattern (`**` matches across directories), relative to `path` (default: the work directory).',
-  Grep: 'Search file contents with an extended regular expression, recursively from `path` (default: the work directory). `glob` limits which files; `output_mode` is files_with_matches (default), content (matching lines with line numbers) or count.',
+  Grep: 'Search file contents with an extended regular expression, recursively from `path` (default: the work directory). `glob` limits which files; `output_mode` is files_with_matches (default), content (matching lines with line numbers) or count. In content mode `-A`/`-B`/`-C` add lines of context; `head_limit` keeps the first N lines of output.',
   WebFetch: 'Fetch a URL from inside the sandbox and return its text (HTML reduced to text). `prompt` describes what you are looking for.',
+  NotebookEdit: 'Edit a Jupyter notebook (.ipynb) cell: replace a cell\'s source (default), insert a new cell after the given one (or at the top), or delete a cell. Address the cell by `cell_id` or by 0-based `cell_number`.',
+  TodoWrite: 'Create and update the task list for this session. Use it for any task with three or more steps: list the steps, keep exactly one `in_progress`, and mark each `completed` as soon as it is done (not in batches). Send the whole list every time. The list is shown back to you as part of the task state, so it survives a long session.',
+  Task: 'Launch a sub-agent with its own fresh context for an independent, well-scoped piece of work: a broad search across a large codebase, investigating one question, or a self-contained change. It has the same sandbox and tools (except Task) and returns only its final report. It cannot see this conversation, so give it a complete, self-contained prompt that says exactly what to find or do and what to report back. Use it when the exploration would otherwise flood this context; do simple lookups yourself.',
 };
 
 function inputSchema(schema: z.ZodType): Anthropic.Tool['input_schema'] {
@@ -96,11 +123,25 @@ function inputSchema(schema: z.ZodType): Anthropic.Tool['input_schema'] {
 }
 
 /** The tool definitions a grant permits, in a fixed order: part of the cached
- *  prefix, so the same grant always yields byte-identical definitions. */
-export function toolDefinitions(grant?: ToolGrant): Anthropic.Tool[] {
-  return TOOL_NAMES.filter((name) => authorityRefusal(name, grant) === null)
+ *  prefix, so the same grant always yields byte-identical definitions. `Task`
+ *  is offered only where a sub-agent can be run (never inside a sub-agent). */
+export function toolDefinitions(grant?: ToolGrant, opts: { subagents?: boolean } = {}): Anthropic.Tool[] {
+  return TOOL_NAMES.filter((name) => authorityRefusal(name, grant) === null && (name !== 'Task' || opts.subagents === true))
     .map((name) => ({ name, description: descriptions[name], input_schema: inputSchema(schemas[name]) }));
 }
+
+/** What a sub-agent run hands back to the parent's broker. */
+export interface SubagentResult {
+  text: string;
+  failed: boolean;
+  usage: import('../execution/tokens.js').DispatchUsage;
+  costUsd: number;
+  events: import('../adapters/adapter.js').StructuredEvent[];
+}
+
+/** A sub-agent's report is capped like any other context firewall (the
+ *  Harness Effect returns at most 8 KB to the parent). */
+export const SUBAGENT_REPORT_CAP = 8_000;
 
 /** Why the grant forbids this tool, or null. A read-only grant forbids every
  *  writer even when its list names one (`isReadOnly` derives readOnly from the
@@ -135,6 +176,8 @@ export interface ToolOutcome {
   projected: boolean;
   /** Where the full output was saved in the sandbox, when it was. */
   spilledTo?: string;
+  /** A sub-agent's own run, when the call was Task: its spend is the parent's. */
+  subagent?: SubagentResult;
 }
 
 export interface ToolBrokerOptions {
@@ -146,9 +189,18 @@ export interface ToolBrokerOptions {
   runTool?(call: ToolCall): Promise<{ text: string; failed: boolean }>;
   /** See REFUSAL_CAP. */
   refusalCap?: number;
+  /** Runs a sub-agent for Task. Absent: Task is not offered. */
+  subagent?(prompt: string, toolUseId: string, budget: { remainingUsd?: number }): Promise<SubagentResult>;
 }
 
-const NUMERIC = new Set(['timeout', 'offset', 'limit']);
+export interface ExecuteContext {
+  /** What is left of the dispatch's spend limit, for a sub-agent's own limit. */
+  remainingUsd?: number;
+}
+
+export interface Todo { content: string; status: 'pending' | 'in_progress' | 'completed'; activeForm?: string }
+
+const NUMERIC = new Set(['timeout', 'offset', 'limit', 'cell_number', 'head_limit', '-A', '-B', '-C']);
 const BOOLEAN = new Set(['replace_all', '-i']);
 
 /** Schema hygiene for weaker or noisier models (the Harness Effect's
@@ -170,17 +222,36 @@ export function recoverArgs(input: unknown): unknown {
   return out;
 }
 
-interface Ran { text: string; failed: boolean; response: unknown }
+interface Ran { text: string; failed: boolean; response: unknown; subagent?: SubagentResult }
+
+const CWD_MARK = '__CTO_CWD__';
 
 export class ToolBroker {
   readonly definitions: Anthropic.Tool[];
 
+  /** Web search runs server-side; the grant decides whether it is offered. */
+  readonly allowsWebSearch: boolean;
+  /** The Bash working directory, carried between calls as Claude Code does. */
+  private cwd: string;
+  private todoList: Todo[] = [];
+
   constructor(private readonly opts: ToolBrokerOptions) {
-    this.definitions = toolDefinitions(opts.grant);
+    this.definitions = toolDefinitions(opts.grant, { subagents: opts.subagent !== undefined });
+    this.allowsWebSearch = authorityRefusal('WebSearch', opts.grant) === null;
+    this.cwd = opts.sandbox.workdir;
   }
 
-  async execute(call: ToolCall): Promise<ToolOutcome> {
-    if (!(call.name in schemas)) return refuse('invalid', `Unknown tool ${call.name}. Available: ${this.definitions.map((d) => d.name).join(', ')}.`);
+  /** The session's task list, rendered for the task state; empty when none. */
+  todos(): string {
+    const mark = { pending: '[ ]', in_progress: '[~]', completed: '[x]' } as const;
+    return this.todoList.map((t) => `${mark[t.status]} ${t.content}`).join('\n');
+  }
+
+  async execute(call: ToolCall, ctx: ExecuteContext = {}): Promise<ToolOutcome> {
+    // A tool this session does not offer is unknown, whatever the schema table holds.
+    if (!(call.name in schemas) || (call.name === 'Task' && !this.opts.subagent)) {
+      return refuse('invalid', `Unknown tool ${call.name}. Available: ${this.definitions.map((d) => d.name).join(', ')}.`);
+    }
     const name = call.name as ToolName;
     const forbidden = authorityRefusal(name, this.opts.grant);
     if (forbidden) return refuse('authority', `Permission denied: ${forbidden}. The call did not run.`);
@@ -211,7 +282,7 @@ export class ToolBroker {
 
     let ran: Ran;
     try {
-      ran = this.opts.runTool ? { ...(await this.opts.runTool(call)), response: null } : await this.run(name, input);
+      ran = this.opts.runTool ? { ...(await this.opts.runTool(call)), response: null } : await this.run(name, input, call.id, ctx);
     } catch (err) {
       ran = { text: `${name} could not run: ${err instanceof Error ? err.message : String(err)}`, failed: true, response: null };
     }
@@ -259,7 +330,7 @@ export class ToolBroker {
     }
     if (advice) content = `${content}\n\n[Information control advised against this call: ${advice}]`;
     if (preOut?.additionalContext) content = `${content}\n\n${preOut.additionalContext}`;
-    return { content: content || '(no output)', isError: ran.failed, raw: ran.text, projected, ...(spilledTo ? { spilledTo } : {}) };
+    return { content: content || '(no output)', isError: ran.failed, raw: ran.text, projected, ...(spilledTo ? { spilledTo } : {}), ...(ran.subagent ? { subagent: ran.subagent } : {}) };
   }
 
   /** Identical failing calls, by exact signature, for the circuit breaker. */
@@ -296,11 +367,26 @@ export class ToolBroker {
     return this.opts.sandbox.exec(['sh', '-c', script, 'sh', ...args], { ...(stdin !== undefined ? { stdin } : {}), ...(timeoutMs ? { timeoutMs } : {}) });
   }
 
-  private async run(name: ToolName, input: Record<string, unknown>): Promise<Ran> {
+  private async run(name: ToolName, input: Record<string, unknown>, id: string, ctx: ExecuteContext): Promise<Ran> {
     switch (name) {
       case 'Bash': {
         const timeoutMs = (input.timeout as number | undefined) ?? BASH_TIMEOUT_MS;
-        const r = await this.sh('if command -v bash >/dev/null 2>&1; then exec bash -c "$1"; else exec sh -c "$1"; fi', [String(input.command)], undefined, timeoutMs);
+        // The command runs in the directory the last one left, and reports the
+        // directory it ends in on an EXIT trap, so the next call starts there.
+        const script = `trap 'printf "\\n${CWD_MARK}%s" "$(pwd)"' EXIT; cd "$1" 2>/dev/null || true; eval "$2"`;
+        // `timeout` inside the sandbox kills the command's whole process group;
+        // killing only the client side would leave its children running and
+        // holding the output open. The host-side kill stays as a backstop.
+        const r = await this.sh('S=$1; T=$2; shift 2; B=sh; command -v bash >/dev/null 2>&1 && B=bash; '
+          + 'if command -v timeout >/dev/null 2>&1; then exec timeout -k 5 "$T" "$B" -c "$S" "$B" "$@"; else exec "$B" -c "$S" "$B" "$@"; fi',
+          [script, String(Math.ceil(timeoutMs / 1000)), this.cwd, String(input.command)], undefined, timeoutMs + 15_000);
+        if (r.exitCode === 124) r.timedOut = true;
+        const mark = r.stdout.lastIndexOf(`\n${CWD_MARK}`);
+        if (mark >= 0) {
+          const dir = r.stdout.slice(mark + CWD_MARK.length + 1).trim();
+          if (dir) this.cwd = dir;
+          r.stdout = r.stdout.slice(0, mark);
+        }
         const text = [r.stdout.replace(/\n$/, ''), r.stderr.replace(/\n$/, '')].filter(Boolean).join('\n');
         if (r.timedOut) return { text: `${text}\nCommand timed out after ${timeoutMs} ms`.trim(), failed: true, response: null };
         if (r.exitCode !== 0) return { text: `${text}\nExit code ${r.exitCode}`.trim(), failed: true, response: null };
@@ -336,13 +422,39 @@ export class ToolBroker {
       }
       case 'Grep': {
         const mode = (input.output_mode as string | undefined) ?? 'files_with_matches';
+        const context = mode === 'content'
+          ? (['-A', '-B', '-C'] as const).flatMap((f) => (input[f] !== undefined ? [`${f}${String(input[f])}`] : []))
+          : [];
         const flags = ['-r', '-I', '-E', '--exclude-dir=.git', mode === 'content' ? '-n' : mode === 'count' ? '-c' : '-l',
-          ...(input['-i'] ? ['-i'] : []), ...(input.glob ? [`--include=${String(input.glob)}`] : [])];
+          ...(input['-i'] ? ['-i'] : []), ...(input.glob ? [`--include=${String(input.glob)}`] : []), ...context];
         const r = await this.opts.sandbox.exec(['grep', ...flags, '--', String(input.pattern), String(input.path ?? '.')]);
         // grep: 0 found, 1 none found, 2 error.
         if (r.exitCode > 1) return { text: r.stderr.trim() || `Grep failed (exit ${r.exitCode})`, failed: true, response: null };
-        const out = mode === 'count' ? r.stdout.split('\n').filter((l) => l && !l.endsWith(':0')).join('\n') : r.stdout.replace(/\n$/, '');
+        let out = mode === 'count' ? r.stdout.split('\n').filter((l) => l && !l.endsWith(':0')).join('\n') : r.stdout.replace(/\n$/, '');
+        const head = input.head_limit as number | undefined;
+        if (head !== undefined) {
+          const lines = out.split('\n');
+          if (lines.length > head) out = `${lines.slice(0, head).join('\n')}\n… ${lines.length - head} more lines (raise head_limit to see them)`;
+        }
         return { text: out, failed: false, response: null };
+      }
+      case 'NotebookEdit': {
+        const r = await this.opts.sandbox.exec(['python3', '-c', NOTEBOOK_EDIT], { stdin: JSON.stringify(input) });
+        if (r.exitCode !== 0) return { text: (r.stderr || r.stdout).trim() || `NotebookEdit failed (exit ${r.exitCode})`, failed: true, response: null };
+        return { text: r.stdout.trim(), failed: false, response: null };
+      }
+      case 'TodoWrite': {
+        this.todoList = (input.todos as Todo[]).map((t) => ({ ...t }));
+        const done = this.todoList.filter((t) => t.status === 'completed').length;
+        return { text: `Task list updated (${done}/${this.todoList.length} done):\n${this.todos()}`, failed: false, response: null };
+      }
+      case 'Task': {
+        if (!this.opts.subagent) return { text: 'Sub-agents are not available in this session.', failed: true, response: null };
+        const sub = await this.opts.subagent(String(input.prompt), id, { ...(ctx.remainingUsd !== undefined ? { remainingUsd: ctx.remainingUsd } : {}) });
+        const report = sub.text.length > SUBAGENT_REPORT_CAP
+          ? `${sub.text.slice(0, SUBAGENT_REPORT_CAP)}\n… [the sub-agent's report was ${sub.text.length} characters; the first ${SUBAGENT_REPORT_CAP} are shown]`
+          : sub.text;
+        return { text: report || '(the sub-agent returned no report)', failed: sub.failed, response: null, subagent: sub };
       }
       case 'WebFetch': {
         const r = await this.sh('curl -sSL --max-time 30 --max-filesize 5000000 -- "$1"', [String(input.url)], undefined, 45_000);
@@ -365,6 +477,39 @@ export class ToolBroker {
     return { text: `Edited ${path}: ${all ? count : 1} replacement${(all ? count : 1) === 1 ? '' : 's'}`, failed: false, response: null };
   }
 }
+
+/** Notebook cell editing, run with the sandbox's python3: the notebook is JSON. */
+const NOTEBOOK_EDIT = `
+import json, sys
+a = json.load(sys.stdin)
+p = a['notebook_path']
+nb = json.load(open(p))
+cells = nb.get('cells', [])
+mode = a.get('edit_mode') or 'replace'
+idx = None
+if a.get('cell_id') is not None:
+    idx = next((i for i, c in enumerate(cells) if c.get('id') == a['cell_id']), None)
+    if idx is None: sys.exit('No cell with id ' + a['cell_id'])
+elif a.get('cell_number') is not None:
+    idx = a['cell_number']
+if mode != 'insert' and (idx is None or not 0 <= idx < len(cells)):
+    sys.exit('Cell index out of range (the notebook has %d cells)' % len(cells))
+lines = a.get('new_source', '').splitlines(True)
+if mode == 'delete':
+    del cells[idx]
+elif mode == 'insert':
+    kind = a.get('cell_type') or 'code'
+    cell = {'cell_type': kind, 'metadata': {}, 'source': lines}
+    if kind == 'code': cell.update(outputs=[], execution_count=None)
+    at = 0 if idx is None else idx + 1
+    cells.insert(at, cell); idx = at
+else:
+    cells[idx]['source'] = lines
+    if a.get('cell_type'): cells[idx]['cell_type'] = a['cell_type']
+nb['cells'] = cells
+json.dump(nb, open(p, 'w'), indent=1)
+print('Notebook %s: %s cell %d (%d cells now)' % (p, mode, idx, len(cells)))
+`;
 
 function refuse(refusal: NonNullable<ToolOutcome['refusal']>, content: string): ToolOutcome {
   return { content, isError: true, raw: '', refusal, projected: false };
