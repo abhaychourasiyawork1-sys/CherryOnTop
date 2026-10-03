@@ -25,6 +25,7 @@ import {
   refetchBeliefs, refetchObservations, repeatBelief, turnHistory,
 } from './memory.js';
 import { fitRefetchModel } from './refetch-model.js';
+import type { Prices } from './economics.js';
 
 export interface IcEnv {
   mode: Mode;
@@ -174,8 +175,52 @@ export function openSession(input: OpenSessionInput): OpenedSession | null {
   const env = input.env ?? icEnv();
   const address = advertised;
   if (env.mode === 'off' || !address) return null;
+  const built = buildSession(input, env);
+  const token = randomBytes(18).toString('base64url');
+  const live: Live = { session: built.session, nodeId: input.nodeId, role: input.role, hookMs: 0 };
+  sessions.set(token, live);
+  const url = `http://${address.host}:${address.port}/ic/hook/${token}`;
+  return {
+    token,
+    settings: JSON.stringify(hookSettings(url, env.mode === 'active' && !env.disabled.has('shape'))),
+    egress: address,
+    observeEvent: (event) => built.session.observeEvent(event),
+    close: () => {
+      sessions.delete(token);
+      return built.close({ hookMs: live.hookMs });
+    },
+  };
+}
+
+export interface InProcessSession {
+  handle(payload: Record<string, unknown>): Promise<Record<string, unknown>>;
+  activeState(): string;
+  observeEvent(event: { type: string; payload: unknown }): void;
+  close(): SessionResult;
+}
+
+/** The same controller for a runtime CherryOnTop drives itself (the owned
+ *  agent loop): called in-process with the hook payloads, so it needs no
+ *  listener and the sandbox needs no route to the daemon. With information
+ *  control off it still tracks the trajectory (the active state compaction
+ *  recites) but records and changes nothing. `prices` overrides the Claude
+ *  Code cache rates when the runtime's cache is priced differently. */
+export function openInProcessSession(input: OpenSessionInput & { prices?: Prices }): InProcessSession {
+  const env = input.env ?? icEnv();
+  const built = buildSession(input, env);
+  return {
+    handle: (payload) => built.session.handle(payload),
+    activeState: () => built.session.activeState(),
+    observeEvent: (event) => built.session.observeEvent(event),
+    close: () => built.close({ inProcess: true }),
+  };
+}
+
+function buildSession(input: OpenSessionInput & { prices?: Prices }, env: IcEnv): { session: InfoSession; close(extra: Record<string, unknown>): SessionResult } {
   const { db, nodeId } = input;
+  const quiet = env.mode === 'off';
   const emit = (type: string, payload: Record<string, unknown>) => {
+    if (quiet) return;
     try {
       appendEvent(db, { nodeId, type, payload, createdAt: new Date().toISOString() });
     } catch (err) {
@@ -191,30 +236,24 @@ export function openSession(input: OpenSessionInput): OpenedSession | null {
     emit('ic.system1', { surface, requestId: request.id, probability: p ?? null, failure: outcome?.failure ?? null, cached: outcome?.cached ?? false, latencyMs: outcome?.latencyMs ?? 0 });
     return typeof p === 'number' ? p : null;
   };
+  const rates = perTokenRates(input.model);
   const session = new InfoSession({
     nodeId, taskRootId: input.taskRootId, role: input.role, goal: input.goal, mode: env.mode, disabled: env.disabled,
-    prices: perTokenRates(input.model), confidence: input.confidence, taskValueUsd: input.taskValueUsd,
+    prices: input.prices ?? rates, confidence: input.confidence, taskValueUsd: input.taskValueUsd,
     beliefs: refetchBeliefs(db), refetchModel: fitRefetchModel(refetchObservations(db)), pastTurns: turnHistory(db, input.role), finish: finishBelief(db),
     negatives: negativeFindings(db, input.taskRootId), revision: input.revision, repeat: repeatBelief(db),
   }, {
     emit,
     judge,
-    admitNegative: env.disabled.has('memory') ? undefined : (finding) => {
+    admitNegative: quiet || env.disabled.has('memory') ? undefined : (finding) => {
       try { admitNegative(db, input.taskRootId, finding); } catch { /* memory is an optimisation */ }
     },
   });
-  const token = randomBytes(18).toString('base64url');
-  const live: Live = { session, nodeId, role: input.role, hookMs: 0 };
-  sessions.set(token, live);
-  const url = `http://${address.host}:${address.port}/ic/hook/${token}`;
   return {
-    token,
-    settings: JSON.stringify(hookSettings(url, env.mode === 'active' && !env.disabled.has('shape'))),
-    egress: address,
-    observeEvent: (event) => session.observeEvent(event),
-    close: () => {
-      sessions.delete(token);
+    session,
+    close: (extra) => {
       const result = session.close();
+      if (quiet) return result;
       try {
         if (env.mode === 'active') {
           for (const [cell, belief] of result.refetch) recordRefetch(db, cell, belief, nodeId);
@@ -228,7 +267,7 @@ export function openSession(input: OpenSessionInput): OpenedSession | null {
       }
       if (result.unverifiedFinish) pendingFinish.add(nodeId);
       else pendingFinish.delete(nodeId);
-      emit('ic.session', { mode: env.mode, disabled: [...env.disabled], hookMs: live.hookMs, unverifiedFinish: result.unverifiedFinish, ...result.summary });
+      emit('ic.session', { mode: env.mode, disabled: [...env.disabled], ...extra, unverifiedFinish: result.unverifiedFinish, ...result.summary });
       return result;
     },
   };

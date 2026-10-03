@@ -9,6 +9,9 @@ import { publish } from '../events/bus.js';
 import { executeStep } from '../execution/execute-step.js';
 import { ZERO_USAGE, type DispatchUsage } from '../execution/tokens.js';
 import { claudeCodeAdapter } from '../adapters/claude-code.js';
+import { anthropicOwnedAdapter } from '../adapters/anthropic-owned.js';
+import { anthropicConfigured } from '../agent/anthropic-model-client.js';
+import { ownedPrices } from '../agent/loop.js';
 import { stopgapAdapter } from '../adapters/stopgap.js';
 import { assessUncertainty } from '../intelligence/coordinator.js';
 import { decideExecution, MIN_AGENT_BUDGET_USD } from '../engines/decide-execution.js';
@@ -67,7 +70,7 @@ import { setNodeSnapshot, clearNodeSnapshot } from '../db/queries/nodes.js';
 import { insertDodItems, listDodForNode, setDodState } from '../db/queries/dod.js';
 import { executeTimeoutMs, dispatchOptionsFor, planCacheTtlHours, repoMapTokenBudget, rolePromptsEnabled, resultCacheTtlHours, type DispatchRole } from '../config/efficiency.js';
 import { repoHead, repoDirty, repoIdentity } from '../execution/git-state.js';
-import { openSession as openInfoControl, settleFinish } from '../infocontrol/endpoint.js';
+import { openSession as openInfoControl, openInProcessSession, settleFinish } from '../infocontrol/endpoint.js';
 import { autoCommitAndPush, autoCommitEnabled, hostRepoPath, isDisposableFork } from './auto-commit.js';
 import { putKnowledge } from '../evidence/store.js';
 import { extractAnchors } from '../efficiency/task-economics.js';
@@ -737,7 +740,23 @@ const ADAPTERS: RuntimeAdapter[] = [claudeCodeAdapter, codexAdapter];
  *  ORG_RUNNER_IMAGE means "dispatch a stand-in image": no real harness runs
  *  inside it, so the stand-in is the only capability there is. */
 function availableAdapters(): RuntimeAdapter[] {
-  return runnerImageOverride() ? [stopgapAdapter] : ADAPTERS;
+  if (runnerImageOverride()) return [stopgapAdapter];
+  return ownedRuntimeSelected() ? [anthropicOwnedAdapter] : ADAPTERS;
+}
+
+let ownedUnavailableReported = false;
+
+/** `ORG_RUNTIME=anthropic-owned` puts the CherryOnTop-owned agent loop in
+ *  place of the CLI harnesses. Explicit only; without an API key to run it
+ *  the deployment falls back to the CLI harnesses, and says so once. */
+export function ownedRuntimeSelected(env: NodeJS.ProcessEnv = process.env): boolean {
+  if (env.ORG_RUNTIME?.trim() !== 'anthropic-owned') return false;
+  if (anthropicConfigured(env)) return true;
+  if (!ownedUnavailableReported) {
+    ownedUnavailableReported = true;
+    console.error('ORG_RUNTIME=anthropic-owned, but ANTHROPIC_API_KEY is not set; falling back to the Claude Code runtime');
+  }
+  return false;
 }
 
 /** Runs one dispatch on the candidate the market committed to, and — if the
@@ -2884,14 +2903,18 @@ function productionMachine(db: Db, nodeId: string) {
           const spendLimitUsd = spend.spendCapUsd > 0 ? Math.max(0, spend.spendCapUsd - spend.spentUsd) : undefined;
           // Information control for this attempt: null when it is off or has no
           // listener, and the dispatch then runs exactly as baseline.
-          const infoControl = openInfoControl({
+          const icInput = {
             db, nodeId, taskRootId: taskRootId(db, nodeId), role: 'execute', goal: input.goal, model,
             confidence: qualityFloorFor(db, nodeId, input.goal),
             taskValueUsd: node?.contract.authority.budget_usd ?? 0,
             revision: repoHead(worktreePath),
-          });
+          };
+          // A runtime CherryOnTop drives itself calls the controller in-process.
+          const inProcess = adapter.run ? openInProcessSession({ ...icInput, prices: ownedPrices(model ?? '') }) : null;
+          const infoControl = inProcess ? null : openInfoControl(icInput);
           return dispatch(db, nodeId, () => executeStep({
           ...(infoControl ? { infoControl } : {}),
+          ...(inProcess ? { inProcessInfoControl: inProcess } : {}),
           nodeId,
           goal: goalForDispatch,
           timeoutMs: executeTimeoutMs(),
@@ -2937,7 +2960,7 @@ function productionMachine(db: Db, nodeId: string) {
               insertArtifact(db, { id: randomUUID(), nodeId, eventId: id, createdAt: now, ...artifact });
             }
           },
-        })).finally(() => infoControl?.close());
+        })).finally(() => { infoControl?.close(); inProcess?.close(); });
         };
 
         // The committed candidate — and if the runtime then refuses its model,

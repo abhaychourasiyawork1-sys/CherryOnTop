@@ -60,6 +60,9 @@ export interface ExecuteStepInput {
   /** Information control for this dispatch (src/infocontrol): the runtime's
    *  hook settings, the daemon address its egress must allow, and the live
    *  usage feed the controller prices carrying cost from. Absent = baseline. */
+  /** The same controller, in-process, for a runtime CherryOnTop drives
+   *  itself (`adapter.run`): no hooks, no listener, no sandbox egress. */
+  inProcessInfoControl?: import('../infocontrol/endpoint.js').InProcessSession;
   infoControl?: {
     settings: string;
     egress: { host: string; port: number };
@@ -156,6 +159,36 @@ const DEFAULT_EGRESS_ALLOWLIST = [
   },
 ];
 
+/** The sandbox pod's egress: public HTTPS (minus metadata and private
+ *  ranges), DNS, and — only when a dispatch has a hook-based controller — the
+ *  daemon's hook listener on one port.
+ *
+ *  DNS is allowed to the kube-dns *pods* by label as well as to the Service
+ *  IP. The Service IP is rewritten to a CoreDNS pod IP (10.244.x.x) before the
+ *  policy is evaluated, and that address sits inside the blocked 10.0.0.0/8, so
+ *  the IP-only rule let ~5% of lookups through (measured: 2/40). Every model
+ *  call retried its way past it, which made each sandbox turn ~5x slower than
+ *  the same turn on the host, and package installs simply failed. By label it
+ *  is 40/40 and survives CoreDNS restarts. */
+export function sandboxNetworkPolicy(nodeId: string, dnsIp: string, hookEgress?: { host: string; port: number }) {
+  return buildEgressAllowlistPolicy(nodeId, DEFAULT_EGRESS_ALLOWLIST, [
+    {
+      to: [
+        { ipBlock: { cidr: `${dnsIp}/32` } },
+        {
+          namespaceSelector: { matchLabels: { 'kubernetes.io/metadata.name': 'kube-system' } },
+          podSelector: { matchLabels: { 'k8s-app': 'kube-dns' } },
+        },
+      ],
+      ports: [{ port: 53, protocol: 'UDP' }, { port: 53, protocol: 'TCP' }],
+    },
+    ...(hookEgress ? [{
+      to: [{ ipBlock: { cidr: `${hookEgress.host}/32` } }],
+      ports: [{ port: hookEgress.port, protocol: 'TCP' }],
+    }] : []),
+  ]);
+}
+
 /** The runtime's own account of why it failed. A refused request outranks the
  *  generic result text: the runtime reports an exhausted quota as "Request timed
  *  out", which is both wrong and the kind of wrong that sends you to debug the
@@ -188,6 +221,8 @@ export async function executeStep(
   input: ExecuteStepInput,
   deps: Partial<ExecuteStepDeps> = {},
 ): Promise<ExecuteStepResult> {
+  // A runtime CherryOnTop drives itself owns its sandbox and its loop.
+  if (input.adapter.run) return input.adapter.run(input);
   try {
     return await runStep(input, deps);
   } catch (err) {
@@ -218,31 +253,7 @@ async function runStep(
     // The policy is per-node, not per-step, so it outlives this call; the node's
     // terminal transition deletes it (k8s/cleanup.ts).
     const dnsIp = await d.getKubeDnsClusterIp();
-    // DNS is allowed to the kube-dns *pods* by label as well as to the Service
-    // IP. The Service IP is rewritten to a CoreDNS pod IP (10.244.x.x) before
-    // the policy is evaluated, and that address sits inside the blocked
-    // 10.0.0.0/8, so the IP-only rule let ~5% of lookups through (measured:
-    // 2/40). Every model call retried its way past it, which made each sandbox
-    // turn ~5x slower than the same turn on the host, and package installs
-    // simply failed. By label it is 40/40 and survives CoreDNS restarts.
-    const policy = buildEgressAllowlistPolicy(input.nodeId, DEFAULT_EGRESS_ALLOWLIST, [
-      {
-        to: [
-          { ipBlock: { cidr: `${dnsIp}/32` } },
-          {
-            namespaceSelector: { matchLabels: { 'kubernetes.io/metadata.name': 'kube-system' } },
-            podSelector: { matchLabels: { 'k8s-app': 'kube-dns' } },
-          },
-        ],
-        ports: [{ port: 53, protocol: 'UDP' }, { port: 53, protocol: 'TCP' }],
-      },
-      // The one private address a sandbox may reach: the daemon's hook
-      // listener, one port, and only when this dispatch has a controller.
-      ...(input.infoControl ? [{
-        to: [{ ipBlock: { cidr: `${input.infoControl.egress.host}/32` } }],
-        ports: [{ port: input.infoControl.egress.port, protocol: 'TCP' }],
-      }] : []),
-    ]);
+    const policy = sandboxNetworkPolicy(input.nodeId, dnsIp, input.infoControl?.egress);
     await d.applyNetworkPolicy(policy, input.namespace);
 
     const worktreeHost = fromContainerPath(input.worktreePath);

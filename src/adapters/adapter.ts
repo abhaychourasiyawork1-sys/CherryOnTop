@@ -89,5 +89,10 @@ export interface RuntimeAdapter {
   /** Wraps one raw output line as a StructuredEvent, or null if it is not a
    *  recognizable event (blank, malformed JSON, or missing a `type` field). */
   parseLine(line: string): StructuredEvent | null;
+  /** A runtime CherryOnTop drives itself, in-process (the owned agent loop):
+   *  `executeStep` hands it the whole dispatch instead of running
+   *  `buildCommand`'s argv in a sandbox. Its `buildCommand` then only
+   *  describes the dispatch, for capability probing. */
+  run?(input: import('../execution/execute-step.js').ExecuteStepInput): Promise<import('../execution/execute-step.js').ExecuteStepResult>;
   parseEventStream(stream: NodeJS.ReadableStream): Promise<StructuredEvent[]>;
 }
