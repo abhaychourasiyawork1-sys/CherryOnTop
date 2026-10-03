@@ -24,8 +24,10 @@ set -a; . "$HOME/.config/cherryontop/anthropic.env"; set +a
 TASKS=("$@")
 [ ${#TASKS[@]} -eq 0 ] && mapfile -t TASKS < "$ROOT/bench/agent-owned/tb-tasks.txt"
 export CTO_BUDGET=${CTO_BUDGET:-2}
+# ARMS="owned" reruns CherryOnTop only, against Claude Code results already on disk.
+ARMS=${ARMS:-owned cc-api}
 for task in "${TASKS[@]}"; do
-  CTO_RUNTIME=anthropic-owned CTO_STATE=$B/state/owned HARBOR_AGENT=cherryontop_agent:CherryOnTop "$ROOT/bench/terminal-bench/sweep.sh" owned "$task"
-  HARBOR_AGENT=cherryontop_agent:ClaudeCodeApi "$ROOT/bench/terminal-bench/sweep.sh" cc-api "$task"
+  case " $ARMS " in *" owned "*) CTO_RUNTIME=anthropic-owned CTO_STATE=$B/state/owned HARBOR_AGENT=cherryontop_agent:CherryOnTop "$ROOT/bench/terminal-bench/sweep.sh" owned "$task";; esac
+  case " $ARMS " in *" cc-api "*) HARBOR_AGENT=cherryontop_agent:ClaudeCodeApi "$ROOT/bench/terminal-bench/sweep.sh" cc-api "$task";; esac
 done
 echo "[$(date +%T)] owned vs cc-api complete"
