@@ -1,0 +1,779 @@
+[
+ {
+  "arm": "Claude Code",
+  "run": "run1",
+  "task": "adaptive-rejection-sampler",
+  "reward": 0.0,
+  "exception": null,
+  "wall_s": 1368.171228,
+  "agent_s": 611.51086,
+  "passed": 8,
+  "failed": 1,
+  "failing": [
+   "test_can_generate_standard_distribution_samples"
+  ],
+  "dispatches": 1,
+  "turns": 49,
+  "fresh_in": 393,
+  "cache_read": 3120812,
+  "cache_write": 95652,
+  "output": 56421,
+  "total_tokens": 3273278,
+  "avg_tokens_per_turn": 66802,
+  "avg_context_per_turn": 65650,
+  "peak_context": 95660,
+  "first_context": 21120,
+  "cost": 0.7141,
+  "cost_final": true,
+  "cost_per_turn": 0.01457,
+  "thinking_blocks": 49,
+  "tool_calls": 48,
+  "tools": {
+   "Bash": 30,
+   "Write": 4,
+   "Edit": 12,
+   "Read": 2
+  },
+  "tool_errors": 3,
+  "cache_hit_rate": 0.97
+ },
+ {
+  "arm": "CherryOnTop",
+  "run": "run1",
+  "task": "adaptive-rejection-sampler",
+  "reward": 0.0,
+  "exception": null,
+  "wall_s": 778.555811,
+  "agent_s": 541.146565,
+  "passed": 8,
+  "failed": 1,
+  "failing": [
+   "test_can_generate_standard_distribution_samples"
+  ],
+  "dispatches": 2,
+  "turns": 58,
+  "fresh_in": 17438,
+  "cache_read": 1564699,
+  "cache_write": 63364,
+  "output": 29022,
+  "total_tokens": 1674523,
+  "avg_tokens_per_turn": 28871,
+  "avg_context_per_turn": 28371,
+  "peak_context": 53858,
+  "first_context": 2566,
+  "cost": 0.3982,
+  "cost_per_turn": 0.00687,
+  "thinking_blocks": 0,
+  "tool_calls": 56,
+  "tools": {
+   "Bash": 41,
+   "Write": 2,
+   "Edit": 8,
+   "Read": 5
+  },
+  "tool_errors": 8,
+  "refused": {},
+  "projected": 1,
+  "spilled": 1,
+  "web_searches": 0,
+  "stop_reasons": [
+   "end_turn",
+   "end_turn"
+  ],
+  "validation": [
+   "V1:fail",
+   "V1:fail"
+  ],
+  "events": {
+   "retry": 1
+  },
+  "cache_hit_rate": 0.951,
+  "ic_decisions": {
+   "keep": 12,
+   "shape:pointer": 1
+  }
+ },
+ {
+  "arm": "CherryOnTop",
+  "run": "run2",
+  "task": "adaptive-rejection-sampler",
+  "reward": 0.0,
+  "exception": null,
+  "wall_s": 650.210294,
+  "agent_s": 555.025813,
+  "passed": 8,
+  "failed": 1,
+  "failing": [
+   "test_can_generate_standard_distribution_samples"
+  ],
+  "dispatches": 1,
+  "turns": 34,
+  "fresh_in": 391,
+  "cache_read": 1165352,
+  "cache_write": 100619,
+  "output": 19917,
+  "total_tokens": 1286279,
+  "avg_tokens_per_turn": 37832,
+  "avg_context_per_turn": 37246,
+  "peak_context": 51346,
+  "first_context": 5891,
+  "cost": 0.3458,
+  "cost_per_turn": 0.01017,
+  "thinking_blocks": 35,
+  "tool_calls": 32,
+  "tools": {
+   "Bash": 23,
+   "Write": 1,
+   "Edit": 6,
+   "Read": 2
+  },
+  "tool_errors": 5,
+  "refused": {},
+  "projected": 0,
+  "spilled": 1,
+  "web_searches": 0,
+  "stop_reasons": [
+   "end_turn"
+  ],
+  "validation": [
+   "V2:pass"
+  ],
+  "events": {
+   "confirm_finish": 1
+  },
+  "cache_hit_rate": 0.92,
+  "ic_decisions": {
+   "keep": 11
+  }
+ },
+ {
+  "arm": "CherryOnTop",
+  "run": "run3",
+  "task": "adaptive-rejection-sampler",
+  "reward": 0.0,
+  "exception": null,
+  "wall_s": 969.477663,
+  "agent_s": 887.235935,
+  "passed": 8,
+  "failed": 1,
+  "failing": [
+   "test_can_generate_standard_distribution_samples"
+  ],
+  "dispatches": 1,
+  "turns": 44,
+  "fresh_in": 493,
+  "cache_read": 2301478,
+  "cache_write": 92108,
+  "output": 59858,
+  "total_tokens": 2453937,
+  "avg_tokens_per_turn": 55771,
+  "avg_context_per_turn": 54411,
+  "peak_context": 89464,
+  "first_context": 5902,
+  "cost": 0.6451,
+  "cost_per_turn": 0.01466,
+  "thinking_blocks": 44,
+  "tool_calls": 42,
+  "tools": {
+   "Bash": 31,
+   "TodoWrite": 4,
+   "Write": 7
+  },
+  "tool_errors": 7,
+  "refused": {},
+  "projected": 0,
+  "spilled": 1,
+  "web_searches": 0,
+  "stop_reasons": [
+   "end_turn"
+  ],
+  "validation": [
+   "V2:pass"
+  ],
+  "events": {
+   "confirm_finish": 1
+  },
+  "cache_hit_rate": 0.961,
+  "ic_decisions": {
+   "keep": 3
+  }
+ },
+ {
+  "arm": "Claude Code",
+  "run": "run1",
+  "task": "bn-fit-modify",
+  "reward": 1.0,
+  "exception": null,
+  "wall_s": 703.379828,
+  "agent_s": 209.470148,
+  "passed": 9,
+  "failed": 0,
+  "failing": [],
+  "dispatches": 1,
+  "turns": 24,
+  "fresh_in": 193,
+  "cache_read": 750044,
+  "cache_write": 32402,
+  "output": 14719,
+  "total_tokens": 797358,
+  "avg_tokens_per_turn": 33223,
+  "avg_context_per_turn": 32610,
+  "peak_context": 46159,
+  "first_context": 20860,
+  "cost": 0.1893,
+  "cost_final": true,
+  "cost_per_turn": 0.00789,
+  "thinking_blocks": 24,
+  "tool_calls": 23,
+  "tools": {
+   "Read": 1,
+   "Bash": 22
+  },
+  "tool_errors": 8,
+  "cache_hit_rate": 0.958
+ },
+ {
+  "arm": "CherryOnTop",
+  "run": "run1",
+  "task": "bn-fit-modify",
+  "reward": 0.0,
+  "exception": null,
+  "wall_s": 601.774284,
+  "agent_s": 412.964764,
+  "passed": 8,
+  "failed": 1,
+  "failing": [
+   "test_intervened__data_structure"
+  ],
+  "dispatches": 2,
+  "turns": 41,
+  "fresh_in": 28875,
+  "cache_read": 492477,
+  "cache_write": 38348,
+  "output": 17189,
+  "total_tokens": 576889,
+  "avg_tokens_per_turn": 14070,
+  "avg_context_per_turn": 13651,
+  "peak_context": 31456,
+  "first_context": 2402,
+  "cost": 0.212,
+  "cost_per_turn": 0.00517,
+  "thinking_blocks": 0,
+  "tool_calls": 39,
+  "tools": {
+   "Read": 9,
+   "Bash": 28,
+   "Write": 2
+  },
+  "tool_errors": 7,
+  "refused": {},
+  "projected": 1,
+  "spilled": 0,
+  "web_searches": 0,
+  "stop_reasons": [
+   "end_turn",
+   "end_turn"
+  ],
+  "validation": [
+   "V1:fail",
+   "V1:fail"
+  ],
+  "events": {},
+  "cache_hit_rate": 0.88,
+  "ic_decisions": {
+   "keep": 16,
+   "dedup": 1
+  }
+ },
+ {
+  "arm": "CherryOnTop",
+  "run": "run2",
+  "task": "bn-fit-modify",
+  "reward": 0.0,
+  "exception": null,
+  "wall_s": 1797.818872,
+  "agent_s": 1470.441425,
+  "passed": 6,
+  "failed": 3,
+  "failing": [
+   "test_learned_dag_structure",
+   "test_intervened__data_structure",
+   "test_sampled_data"
+  ],
+  "dispatches": 2,
+  "turns": 88,
+  "fresh_in": 1049,
+  "cache_read": 1889585,
+  "cache_write": 150399,
+  "output": 38616,
+  "total_tokens": 2079649,
+  "avg_tokens_per_turn": 23632,
+  "avg_context_per_turn": 23194,
+  "peak_context": 41230,
+  "first_context": 5726,
+  "cost": 0.5711,
+  "cost_per_turn": 0.00649,
+  "thinking_blocks": 88,
+  "tool_calls": 84,
+  "tools": {
+   "Read": 8,
+   "Bash": 76
+  },
+  "tool_errors": 25,
+  "refused": {},
+  "projected": 2,
+  "spilled": 2,
+  "web_searches": 0,
+  "stop_reasons": [
+   "end_turn",
+   "end_turn"
+  ],
+  "validation": [
+   "V2:fail",
+   "V2:pass"
+  ],
+  "events": {
+   "confirm_finish": 2,
+   "compaction": 1
+  },
+  "cache_hit_rate": 0.926,
+  "ic_decisions": {
+   "shape:salient": 2,
+   "keep": 32
+  }
+ },
+ {
+  "arm": "CherryOnTop",
+  "run": "run3",
+  "task": "bn-fit-modify",
+  "reward": 1.0,
+  "exception": null,
+  "wall_s": 507.774683,
+  "agent_s": 382.391064,
+  "passed": 9,
+  "failed": 0,
+  "failing": [],
+  "dispatches": 1,
+  "turns": 31,
+  "fresh_in": 365,
+  "cache_read": 579072,
+  "cache_write": 68284,
+  "output": 23419,
+  "total_tokens": 671140,
+  "avg_tokens_per_turn": 21650,
+  "avg_context_per_turn": 20894,
+  "peak_context": 37951,
+  "first_context": 5737,
+  "cost": 0.2607,
+  "cost_per_turn": 0.00841,
+  "thinking_blocks": 31,
+  "tool_calls": 29,
+  "tools": {
+   "Read": 1,
+   "Bash": 28
+  },
+  "tool_errors": 9,
+  "refused": {},
+  "projected": 0,
+  "spilled": 0,
+  "web_searches": 0,
+  "stop_reasons": [
+   "end_turn"
+  ],
+  "validation": [
+   "V2:pass"
+  ],
+  "events": {
+   "confirm_finish": 1
+  },
+  "cache_hit_rate": 0.894,
+  "ic_decisions": {}
+ },
+ {
+  "arm": "Claude Code",
+  "run": "run1",
+  "task": "build-pov-ray",
+  "reward": 0.0,
+  "exception": null,
+  "wall_s": 1736.874453,
+  "agent_s": 997.666465,
+  "passed": 0,
+  "failed": 3,
+  "failing": [
+   "test_illum1_render_and_verify",
+   "test_povray_version",
+   "test_povray_built_from_correct_source"
+  ],
+  "dispatches": 1,
+  "turns": 105,
+  "fresh_in": 841,
+  "cache_read": 4641470,
+  "cache_write": 72665,
+  "output": 27765,
+  "total_tokens": 4742741,
+  "avg_tokens_per_turn": 45169,
+  "avg_context_per_turn": 44905,
+  "peak_context": 72673,
+  "first_context": 20669,
+  "cost": 0.6946,
+  "cost_final": true,
+  "cost_per_turn": 0.00662,
+  "thinking_blocks": 105,
+  "tool_calls": 104,
+  "tools": {
+   "Bash": 103,
+   "Read": 1
+  },
+  "tool_errors": 8,
+  "cache_hit_rate": 0.984
+ },
+ {
+  "arm": "CherryOnTop",
+  "run": "run1",
+  "task": "build-pov-ray",
+  "reward": 0.0,
+  "exception": null,
+  "wall_s": 706.188942,
+  "agent_s": 434.250812,
+  "passed": 0,
+  "failed": 3,
+  "failing": [
+   "test_illum1_render_and_verify",
+   "test_povray_version",
+   "test_povray_built_from_correct_source"
+  ],
+  "dispatches": 1,
+  "turns": 60,
+  "fresh_in": 22131,
+  "cache_read": 1329917,
+  "cache_write": 46273,
+  "output": 8112,
+  "total_tokens": 1406433,
+  "avg_tokens_per_turn": 23441,
+  "avg_context_per_turn": 23305,
+  "peak_context": 46276,
+  "first_context": 2205,
+  "cost": 0.2535,
+  "cost_per_turn": 0.00423,
+  "thinking_blocks": 0,
+  "tool_calls": 60,
+  "tools": {
+   "Bash": 55,
+   "Read": 2,
+   "WebFetch": 3
+  },
+  "tool_errors": 8,
+  "refused": {},
+  "projected": 1,
+  "spilled": 2,
+  "web_searches": 0,
+  "stop_reasons": [
+   "max_turns"
+  ],
+  "validation": [
+   "V1:fail"
+  ],
+  "events": {},
+  "cache_hit_rate": 0.951,
+  "ic_decisions": {
+   "shape:salient": 1,
+   "keep": 1
+  }
+ },
+ {
+  "arm": "CherryOnTop",
+  "run": "run2",
+  "task": "build-pov-ray",
+  "reward": 1.0,
+  "exception": null,
+  "wall_s": 432.721293,
+  "agent_s": 250.202061,
+  "passed": 3,
+  "failed": 0,
+  "failing": [],
+  "dispatches": 1,
+  "turns": 44,
+  "fresh_in": 543,
+  "cache_read": 1158121,
+  "cache_write": 149875,
+  "output": 11585,
+  "total_tokens": 1320124,
+  "avg_tokens_per_turn": 30003,
+  "avg_context_per_turn": 29740,
+  "peak_context": 65895,
+  "first_context": 5524,
+  "cost": 0.3916,
+  "cost_per_turn": 0.0089,
+  "thinking_blocks": 47,
+  "tool_calls": 46,
+  "tools": {
+   "Read": 5,
+   "Bash": 31,
+   "web_search": 3,
+   "TodoWrite": 5,
+   "Edit": 2
+  },
+  "tool_errors": 7,
+  "refused": {
+   "invalid": 1
+  },
+  "projected": 1,
+  "spilled": 0,
+  "web_searches": 3,
+  "stop_reasons": [
+   "end_turn"
+  ],
+  "validation": [
+   "V2:pass"
+  ],
+  "events": {
+   "compaction": 1,
+   "confirm_finish": 1
+  },
+  "cache_hit_rate": 0.885,
+  "ic_decisions": {
+   "keep": 10,
+   "dedup": 1
+  }
+ },
+ {
+  "arm": "CherryOnTop",
+  "run": "run3",
+  "task": "build-pov-ray",
+  "reward": 1.0,
+  "exception": null,
+  "wall_s": 391.668979,
+  "agent_s": 252.467699,
+  "passed": 3,
+  "failed": 0,
+  "failing": [],
+  "dispatches": 1,
+  "turns": 49,
+  "fresh_in": 615,
+  "cache_read": 1512525,
+  "cache_write": 101025,
+  "output": 11800,
+  "total_tokens": 1625965,
+  "avg_tokens_per_turn": 33183,
+  "avg_context_per_turn": 32942,
+  "peak_context": 50554,
+  "first_context": 5535,
+  "cost": 0.3607,
+  "cost_per_turn": 0.00736,
+  "thinking_blocks": 51,
+  "tool_calls": 51,
+  "tools": {
+   "Read": 8,
+   "Bash": 38,
+   "Glob": 1,
+   "web_search": 2,
+   "Write": 1,
+   "Edit": 1
+  },
+  "tool_errors": 5,
+  "refused": {},
+  "projected": 1,
+  "spilled": 0,
+  "web_searches": 2,
+  "stop_reasons": [
+   "end_turn"
+  ],
+  "validation": [
+   "V2:pass"
+  ],
+  "events": {
+   "confirm_finish": 1
+  },
+  "cache_hit_rate": 0.937,
+  "ic_decisions": {
+   "shape:salient": 1,
+   "keep": 13
+  }
+ },
+ {
+  "arm": "Claude Code",
+  "run": "run1",
+  "task": "break-filter-js-from-html",
+  "reward": 0.0,
+  "exception": null,
+  "wall_s": 1201.788115,
+  "agent_s": 844.997729,
+  "passed": 0,
+  "failed": 1,
+  "failing": [
+   "test_out_html_bypasses_filter"
+  ],
+  "dispatches": 1,
+  "turns": 89,
+  "fresh_in": 705,
+  "cache_read": 5584829,
+  "cache_write": 82952,
+  "output": 63439,
+  "total_tokens": 5731925,
+  "avg_tokens_per_turn": 64404,
+  "avg_context_per_turn": 64415,
+  "peak_context": 96709,
+  "first_context": 20646,
+  "cost": 0.9801,
+  "cost_final": true,
+  "cost_per_turn": 0.01101,
+  "thinking_blocks": 88,
+  "tool_calls": 88,
+  "tools": {
+   "Read": 2,
+   "Write": 16,
+   "Bash": 70
+  },
+  "tool_errors": 12,
+  "cache_hit_rate": 0.985
+ },
+ {
+  "arm": "CherryOnTop",
+  "run": "run1",
+  "task": "break-filter-js-from-html",
+  "reward": 0.0,
+  "exception": null,
+  "wall_s": 428.300561,
+  "agent_s": 113.504114,
+  "passed": 0,
+  "failed": 1,
+  "failing": [
+   "test_out_html_bypasses_filter"
+  ],
+  "dispatches": 1,
+  "turns": 21,
+  "fresh_in": 10993,
+  "cache_read": 146164,
+  "cache_write": 13114,
+  "output": 3861,
+  "total_tokens": 174132,
+  "avg_tokens_per_turn": 8292,
+  "avg_context_per_turn": 8108,
+  "peak_context": 13120,
+  "first_context": 2206,
+  "cost": 0.0613,
+  "cost_per_turn": 0.00292,
+  "thinking_blocks": 0,
+  "tool_calls": 21,
+  "tools": {
+   "Read": 4,
+   "Bash": 14,
+   "Write": 3
+  },
+  "tool_errors": 2,
+  "refused": {},
+  "projected": 1,
+  "spilled": 0,
+  "web_searches": 0,
+  "stop_reasons": [
+   "end_turn"
+  ],
+  "validation": [
+   "V2:pass"
+  ],
+  "events": {},
+  "cache_hit_rate": 0.858,
+  "ic_decisions": {
+   "keep": 6,
+   "shape:salient": 1
+  }
+ },
+ {
+  "arm": "CherryOnTop",
+  "run": "run2",
+  "task": "break-filter-js-from-html",
+  "reward": 0.0,
+  "exception": "AgentTimeoutError",
+  "wall_s": 1382.750866,
+  "agent_s": 1202.351026,
+  "passed": 0,
+  "failed": 1,
+  "failing": [
+   "test_out_html_bypasses_filter"
+  ],
+  "dispatches": 0,
+  "turns": 83,
+  "fresh_in": 910,
+  "cache_read": 1066837,
+  "cache_write": 107919,
+  "output": 107628,
+  "total_tokens": 1283294,
+  "avg_tokens_per_turn": 15461,
+  "avg_context_per_turn": 14165,
+  "peak_context": 25168,
+  "first_context": 5529,
+  "cost": 0.7806,
+  "cost_per_turn": 0.00941,
+  "thinking_blocks": 83,
+  "tool_calls": 88,
+  "tools": {
+   "Read": 15,
+   "Write": 30,
+   "Bash": 42,
+   "Edit": 1
+  },
+  "tool_errors": 12,
+  "refused": {},
+  "projected": 0,
+  "spilled": 0,
+  "web_searches": 0,
+  "stop_reasons": [],
+  "validation": [],
+  "events": {
+   "compaction": 6
+  },
+  "cache_hit_rate": 0.907,
+  "ic_decisions": {
+   "keep": 35,
+   "allow-repeat": 1
+  }
+ },
+ {
+  "arm": "CherryOnTop",
+  "run": "run3",
+  "task": "break-filter-js-from-html",
+  "reward": 0.0,
+  "exception": "AgentTimeoutError",
+  "wall_s": 1305.716796,
+  "agent_s": 1201.911337,
+  "passed": 0,
+  "failed": 1,
+  "failing": [
+   "test_out_html_bypasses_filter"
+  ],
+  "dispatches": 0,
+  "turns": 131,
+  "fresh_in": 1478,
+  "cache_read": 4235062,
+  "cache_write": 158780,
+  "output": 93138,
+  "total_tokens": 4488458,
+  "avg_tokens_per_turn": 34263,
+  "avg_context_per_turn": 33552,
+  "peak_context": 61802,
+  "first_context": 5540,
+  "cost": 1.0891,
+  "cost_per_turn": 0.00831,
+  "thinking_blocks": 135,
+  "tool_calls": 131,
+  "tools": {
+   "Read": 2,
+   "Bash": 98,
+   "Write": 31
+  },
+  "tool_errors": 19,
+  "refused": {},
+  "projected": 2,
+  "spilled": 0,
+  "web_searches": 0,
+  "stop_reasons": [],
+  "validation": [],
+  "events": {},
+  "cache_hit_rate": 0.964,
+  "ic_decisions": {
+   "keep": 5,
+   "block-finish": 1,
+   "dedup": 2
+  }
+ }
+]
