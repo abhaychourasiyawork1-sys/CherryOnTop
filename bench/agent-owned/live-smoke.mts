@@ -28,7 +28,7 @@ import { runAgentSession, systemPromptFor } from '../../src/agent/loop.js';
 import { buildRequest } from '../../src/agent/anthropic-model-client.js';
 import { AnthropicModelClient } from '../../src/agent/anthropic-model-client.js';
 import { fakeMessage, resolveModelId, scriptedModelClient, toolUse, type ModelClient } from '../../src/agent/model-client.js';
-import { containerSandbox } from '../../src/agent/sandbox.js';
+import { containerSandbox, workdirSnapshot } from '../../src/agent/sandbox.js';
 import { ToolBroker } from '../../src/agent/tools.js';
 import { quietState } from '../../src/adapters/anthropic-owned.js';
 import { claudeCodeAdapter } from '../../src/adapters/claude-code.js';
@@ -56,7 +56,10 @@ const TASKS: Task[] = [
       'test_calc.py': 'from calc import add, mul\n\nassert add(2, 3) == 5, add(2, 3)\nassert mul(2, 3) == 6\nprint("ok")\n',
     },
     check: 'python3 test_calc.py && grep -q "assert add(2, 3) == 5" test_calc.py',
-    oracle: [{ name: 'Edit', input: { file_path: 'calc.py', old_string: 'return a - b', new_string: 'return a + b' } }],
+    oracle: [
+      { name: 'Read', input: { file_path: 'calc.py' } },
+      { name: 'Edit', input: { file_path: 'calc.py', old_string: 'return a - b', new_string: 'return a + b' } },
+    ],
   },
   {
     name: 'wc',
@@ -78,6 +81,7 @@ const TASKS: Task[] = [
     check: 'test "$(python3 -m app)" = "Hello, world"',
     oracle: [
       { name: 'Grep', input: { pattern: 'Helo', path: 'app', output_mode: 'content' } },
+      { name: 'Read', input: { file_path: 'app/words.py' } },
       { name: 'Edit', input: { file_path: 'app/words.py', old_string: '"Helo"', new_string: '"Hello"' } },
       { name: 'Bash', input: { command: 'python3 -m app' } },
     ],
@@ -114,7 +118,7 @@ async function runOwned(name: string, task: Task, client: ModelClient, limit?: n
   const state = quietState(task.goal, resolveModelId(model), `smoke-${task.name}`);
   const started = Date.now();
   const r = await runAgentSession({
-    sessionId: name, goal: task.goal, workdir: WORKDIR, model, client,
+    sessionId: name, goal: task.goal, workdir: WORKDIR, orientation: await workdirSnapshot(sandbox), model, client,
     broker: new ToolBroker({ sandbox, infoControl: state }), state, maxTurns: 20,
     ...(limit !== undefined ? { spendLimitUsd: limit } : {}),
   });

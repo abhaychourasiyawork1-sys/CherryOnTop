@@ -87,14 +87,29 @@ describe('ToolBroker', () => {
 
   it('edits exactly, refusing ambiguous or absent matches without touching the file', async () => {
     const b = broker();
+    await b.execute({ id: 'r', name: 'Read', input: { file_path: 'a.py' } });
     expect(await b.execute({ id: '1', name: 'Edit', input: { file_path: 'a.py', old_string: 'return 1', new_string: 'return 2' } })).toMatchObject({ isError: false });
     expect(readFileSync(path.join(dir, 'a.py'), 'utf8')).toContain('return 2');
     writeFileSync(path.join(dir, 'd.txt'), 'x x');
+    await b.execute({ id: 'r2', name: 'Read', input: { file_path: 'd.txt' } });
     expect((await b.execute({ id: '2', name: 'Edit', input: { file_path: 'd.txt', old_string: 'x', new_string: 'y' } })).content).toMatch(/occurs 2 times/);
     expect(readFileSync(path.join(dir, 'd.txt'), 'utf8')).toBe('x x');
     expect(await b.execute({ id: '3', name: 'Edit', input: { file_path: 'd.txt', old_string: 'x', new_string: '$&y', replace_all: true } })).toMatchObject({ isError: false });
     expect(readFileSync(path.join(dir, 'd.txt'), 'utf8')).toBe('$&y $&y');
     expect((await b.execute({ id: '4', name: 'Edit', input: { file_path: 'd.txt', old_string: 'zzz', new_string: 'q' } })).isError).toBe(true);
+  });
+
+  it('refuses to overwrite or edit an existing file the session has not read (Claude Code\'s guard)', async () => {
+    const b = broker();
+    const clobber = await b.execute({ id: '1', name: 'Write', input: { file_path: 'a.py', content: 'gone' } });
+    expect(clobber).toMatchObject({ isError: true, refusal: 'invalid' });
+    expect(readFileSync(path.join(dir, 'a.py'), 'utf8')).toContain('def f');
+    expect((await b.execute({ id: '2', name: 'Edit', input: { file_path: 'a.py', old_string: 'return 1', new_string: 'return 2' } })).refusal).toBe('invalid');
+    // A new file needs no read; one the session wrote may be rewritten; a read file may be changed.
+    expect((await b.execute({ id: '3', name: 'Write', input: { file_path: 'new.txt', content: '1' } })).isError).toBe(false);
+    expect((await b.execute({ id: '4', name: 'Write', input: { file_path: path.join(dir, 'new.txt'), content: '2' } })).isError).toBe(false);
+    await b.execute({ id: '5', name: 'Read', input: { file_path: './a.py' } });
+    expect((await b.execute({ id: '6', name: 'Write', input: { file_path: 'a.py', content: 'ok' } })).isError).toBe(false);
   });
 
   it('writes (creating directories), globs and greps', async () => {

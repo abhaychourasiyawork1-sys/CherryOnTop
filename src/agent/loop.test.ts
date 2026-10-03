@@ -68,12 +68,13 @@ describe('runAgentSession', () => {
 
   it('runs sequential tool calls that change the sandbox', async () => {
     const { run } = session([
+      fakeMessage([toolUse('r', 'Read', { file_path: 'app.py' })]),
       fakeMessage([toolUse('e', 'Edit', { file_path: 'app.py', old_string: 'x = 1', new_string: 'x = 2' })]),
       fakeMessage([toolUse('v', 'Bash', { command: 'grep -c "x = 2" app.py' })]),
       fakeMessage('changed and checked'),
     ]);
     const r = await run();
-    expect(r.usage.numTurns).toBe(3);
+    expect(r.usage.numTurns).toBe(4);
     expect(readFileSync(path.join(dir, 'app.py'), 'utf8')).toBe('x = 2\n');
   });
 
@@ -166,6 +167,15 @@ describe('runAgentSession', () => {
     expect((receipts[0].layers as { systemTokens: number }).systemTokens).toBeGreaterThan(0);
     expect(visibleContextProfile(r.events).first).toBe(1000);
     expect(r.events.filter((e) => e.type === 'assistant').flatMap(toolNamesFromEvent)).toEqual(['Bash']);
+  });
+});
+
+describe('orientation', () => {
+  it('follows the goal in the first message only, leaving the system prompt identical across tasks', async () => {
+    const { run, client } = session([fakeMessage('ok')], { orientation: 'Contents of the work directory: app.py' });
+    await run();
+    expect(client.requests[0].messages[0].content).toBe('fix app.py\n\nContents of the work directory: app.py');
+    expect(client.requests[0].system).toBe(systemPromptFor({ workdir: dir }));
   });
 });
 

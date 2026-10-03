@@ -23,7 +23,7 @@ import { gitMounts, toolchainMounts, dependencyMounts, SANDBOX_ENV } from '../k8
 import { InfoSession } from '../infocontrol/controller.js';
 import { AnthropicModelClient, anthropicConfigured } from '../agent/anthropic-model-client.js';
 import { resolveModelId, type ModelClient } from '../agent/model-client.js';
-import { containerSandbox, podSandbox, type Sandbox } from '../agent/sandbox.js';
+import { containerSandbox, podSandbox, workdirSnapshot, type Sandbox } from '../agent/sandbox.js';
 import { ToolBroker } from '../agent/tools.js';
 import { ownedPrices, runAgentSession, type SessionState } from '../agent/loop.js';
 import { ZERO_USAGE } from '../execution/tokens.js';
@@ -161,6 +161,7 @@ export function createOwnedAdapter(deps: OwnedDeps = defaultDeps, configured: ()
           goal: input.goal,
           ...(input.systemPrompt ? { systemPrompt: input.systemPrompt } : {}),
           workdir: sandbox.workdir,
+          orientation: await workdirSnapshot(sandbox),
           model,
           ...(input.effort ? { effort: input.effort } : {}),
           client: deps.client(),

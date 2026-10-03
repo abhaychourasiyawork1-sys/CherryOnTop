@@ -42,6 +42,9 @@ export interface AgentSessionInput {
   systemPrompt?: string;
   /** Where the sandbox's work directory is, for the harness policy. */
   workdir: string;
+  /** What the work directory holds at the start (`workdirSnapshot`), shown
+   *  after the goal in the first message. */
+  orientation?: string;
   model: string;
   effort?: string;
   client: ModelClient;
@@ -118,9 +121,10 @@ export async function runAgentSession(input: AgentSessionInput): Promise<AgentSe
   };
   const usage: DispatchUsage = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, numTurns: 0 };
   const calls = new Map<string, CallRecord>();
-  let messages: MessageParam[] = [{ role: 'user', content: input.goal }];
+  const opening = input.orientation ? `${input.goal}\n\n${input.orientation}` : input.goal;
+  let messages: MessageParam[] = [{ role: 'user', content: opening }];
   let lastContext = 0;
-  let appendedSince = estimateTokens(input.goal);
+  let appendedSince = estimateTokens(opening);
   let compactions = 0;
   let compactedBeforeTurn = false;
   let retriedAfterCompaction = false;

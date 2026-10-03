@@ -16,6 +16,7 @@
  *  Tool names and argument names match Claude Code's, so a model sees the
  *  tools it was trained on and every reader of a trace (validation, the
  *  controller's own signatures, the TUI) reads an owned run unchanged. */
+import { posix } from 'node:path';
 import { z } from 'zod';
 import type Anthropic from '@anthropic-ai/sdk';
 import type { ToolGrant } from '../adapters/adapter.js';
@@ -153,6 +154,8 @@ export class ToolBroker {
       return refuse('invalid', `Invalid input for ${name}: ${parsed.error.issues.map((i) => `${i.path.join('.') || 'input'}: ${i.message}`).join('; ')}. Received ${JSON.stringify(call.input).slice(0, 500)}`);
     }
     const input = parsed.data as Record<string, unknown>;
+    const unread = await this.unreadTarget(name, input);
+    if (unread) return refuse('invalid', `${unread} already exists and has not been read in this session. Read it first, so you change it knowing what it holds.`);
     const ic = this.opts.infoControl;
     const pre = ic ? await safeHandle(ic, { hook_event_name: 'PreToolUse', tool_name: name, tool_input: input, tool_use_id: call.id }) : {};
     const preOut = pre.hookSpecificOutput as { permissionDecision?: string; permissionDecisionReason?: string; additionalContext?: string } | undefined;
@@ -186,8 +189,28 @@ export class ToolBroker {
         projected = true;
       }
     }
+    if (!ran.failed && (name === 'Read' || name === 'Write' || name === 'Edit')) this.known.add(this.resolve(String(input.file_path)));
     if (preOut?.additionalContext) content = `${content}\n\n${preOut.additionalContext}`;
     return { content: content || '(no output)', isError: ran.failed, raw: ran.text, projected, ...(spilledTo ? { spilledTo } : {}) };
+  }
+
+  /** Files this session has read or written: the ones it may overwrite. */
+  private readonly known = new Set<string>();
+
+  private resolve(file: string): string {
+    return posix.resolve(this.opts.sandbox.workdir, file);
+  }
+
+  /** Claude Code's guard, kept: Write and Edit refuse an existing file the
+   *  session has never read, which is what stops an agent clobbering a task's
+   *  input to make itself a test fixture (seen live). Replay reproduces
+   *  recorded actions, which already obeyed it. */
+  private async unreadTarget(name: ToolName, input: Record<string, unknown>): Promise<string | null> {
+    if ((name !== 'Write' && name !== 'Edit') || this.opts.runTool) return null;
+    const file = this.resolve(String(input.file_path));
+    if (this.known.has(file)) return null;
+    const r = await this.opts.sandbox.exec(['test', '-e', file]).catch(() => null);
+    return r?.exitCode === 0 ? String(input.file_path) : null;
   }
 
   private async spill(id: string, text: string): Promise<string | undefined> {
