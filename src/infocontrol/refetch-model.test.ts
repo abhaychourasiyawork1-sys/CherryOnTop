@@ -58,3 +58,14 @@ describe('fitRefetchModel', () => {
     expect(x.every(Number.isFinite)).toBe(true);
   });
 });
+
+describe('small samples', () => {
+  it('stays sane on a few rows that were all not refetched (no separation blow-up)', () => {
+    const f = { tool: 'read', representation: 'salient', originalTokens: 500, keptFraction: 0.3, novelIdentifiers: 2, progress: 0.5 };
+    const model = fitRefetchModel(Array.from({ length: 5 }, () => ({ features: f, used: false })))!;
+    const p = predictRefetch(model, f, 0.9);
+    expect(p.mean).toBeGreaterThan(0.05);
+    expect(p.mean).toBeLessThan(0.5);
+    expect(p.bound).toBeGreaterThan(p.mean);
+  });
+});
