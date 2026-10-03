@@ -158,7 +158,12 @@ export async function runAgentSession(input: AgentSessionInput): Promise<AgentSe
   let retriedAfterCompaction = false;
   let finalText = '';
   const started = Date.now();
-  const cost = () => estimateCostUsd(usage, model);
+  // 1-hour cache writes (the stable prefix) bill at 2x input, not the 1.25x
+  // estimateCostUsd assumes for every write: the difference, from the API's
+  // own split of each turn's cache writes.
+  let write1h = 0;
+  const premium1h = perTokenRates(model).input * 0.75;
+  const cost = () => estimateCostUsd(usage, model) + write1h * premium1h;
   const tailBudget = () => TAIL_SHARE * (lastContext + appendedSince);
   const maxTurns = input.maxTurns ?? DEFAULT_MAX_TURNS;
   const retryDelays = input.retryDelaysMs ?? RETRY_DELAYS_MS;
@@ -250,6 +255,7 @@ export async function runAgentSession(input: AgentSessionInput): Promise<AgentSe
     usage.outputTokens += u.output_tokens ?? 0;
     usage.cacheReadTokens += u.cache_read_input_tokens ?? 0;
     usage.cacheCreationTokens += u.cache_creation_input_tokens ?? 0;
+    write1h += (u as { cache_creation?: { ephemeral_1h_input_tokens?: number } | null }).cache_creation?.ephemeral_1h_input_tokens ?? 0;
     lastContext = (u.input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0) + (u.output_tokens ?? 0);
     appendedSince = 0;
     const assistant = emit('assistant', { message, parent_tool_use_id: null });

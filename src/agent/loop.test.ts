@@ -209,6 +209,16 @@ describe('paper mechanisms in the loop', () => {
   });
 });
 
+describe('cost', () => {
+  it('prices 1-hour cache writes at 2x input, from the API\'s own split', async () => {
+    const usage = { input_tokens: 0, output_tokens: 0, cache_creation_input_tokens: 1000, cache_read_input_tokens: 0, cache_creation: { ephemeral_1h_input_tokens: 400, ephemeral_5m_input_tokens: 600 } };
+    const r = await session([fakeMessage('done', { usage: usage as never })]).run();
+    // Haiku: 600 x 1.25 + 400 x 2.0 = 1550 input-token equivalents at $1/M.
+    expect(r.costUsd).toBeCloseTo(1550 / 1e6, 9);
+    expect((r.events.at(-1)!.payload as { total_cost_usd: number }).total_cost_usd).toBeCloseTo(1550 / 1e6, 9);
+  });
+});
+
 describe('orientation', () => {
   it('follows the goal in the first message only, leaving the system prompt identical across tasks', async () => {
     const { run, client } = session([fakeMessage('ok')], { orientation: 'Contents of the work directory: app.py' });
