@@ -106,3 +106,66 @@ export function elisionValue(
 export function betaProbability(b: RefetchBelief, confidence: number): { mean: number; bound: number } {
   return { mean: refetchMean(b), bound: refetchBound(b, confidence) };
 }
+
+/** What repeating a call that just failed, into a world nothing has changed
+ *  since, has been seen to do. Counted per allowed repeat: did its result
+ *  differ from the failure before it, and did the agent then issue it yet
+ *  again (the loop continuing). Uniform when nothing is known. */
+export interface RepeatBelief {
+  repeats: number;
+  differed: number;
+  again: number;
+}
+
+export interface RepeatValue {
+  /** The duplicate failure's carrying cost avoided, plus the turn a loop
+   *  would go on to spend, at the loop probability's lower bound. */
+  savedUsd: number;
+  /** A refusal that was wrong costs the agent the turn it spends working
+   *  around it, at the probability-of-a-different-result's upper bound. */
+  riskBoundUsd: number;
+  pDifferBound: number;
+  pLoopLower: number;
+  verdict: 'deny' | 'allow';
+}
+
+/** Refuse an identical repeat only when the evidence says it pays.
+ *
+ *  Allowing and refusing both cost the agent a turn; what differs is what the
+ *  turn carries forward. Allowing re-carries the same failure and, if the agent
+ *  is looping, buys the next identical turn too. Refusing carries a short
+ *  grounded note, and is wrong exactly when the repeat would have come out
+ *  differently. `sessionRepeats` identical repeats already allowed in this
+ *  dispatch are evidence of both kinds: none of them differed, and each after
+ *  the first was the loop going on. */
+export function repeatValue(
+  input: {
+    belief: RepeatBelief;
+    sessionRepeats: number;
+    duplicateTokens: number;
+    feedbackTokens: number;
+    remainingTurns: number;
+    /** One more turn: re-reading the context and deciding again. */
+    turnUsd: number;
+  },
+  p: Prices,
+  confidence: number,
+): RepeatValue {
+  const r = Math.max(0, input.sessionRepeats);
+  const repeats = input.belief.repeats + r;
+  const differed = input.belief.differed;
+  const again = input.belief.again + Math.max(0, r - 1);
+  const pDifferBound = repeats > 0
+    ? upperDifficulty(difficultyFrom(differed / repeats, repeats, 'history'), confidence)
+    : upperDifficulty(difficultyFrom(0.5, 0, 'history'), confidence);
+  // The loop can only go on after a repeat that came out the same: P(same) ·
+  // P(again | same), each at the bound the evidence cannot rule out.
+  const same = Math.max(0, repeats - differed);
+  const pAgainLower = same > 0
+    ? 1 - upperDifficulty(difficultyFrom(1 - Math.min(again, same) / same, same, 'history'), confidence)
+    : 1 - upperDifficulty(difficultyFrom(0.5, 0, 'history'), confidence);
+  const pLoopLower = Math.max(0, 1 - pDifferBound) * Math.max(0, pAgainLower);
+  const savedUsd = carryingUsd(input.duplicateTokens - input.feedbackTokens, input.remainingTurns, p) + pLoopLower * input.turnUsd;
+  const riskBoundUsd = pDifferBound * input.turnUsd;
+  return { savedUsd, riskBoundUsd, pDifferBound, pLoopLower, verdict: savedUsd - riskBoundUsd > 0 ? 'deny' : 'allow' };
+}

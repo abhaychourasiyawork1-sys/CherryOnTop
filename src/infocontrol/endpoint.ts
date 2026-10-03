@@ -21,8 +21,8 @@ import { compileHarnessRequest } from '../system1/compiler.js';
 import { system1 } from '../system1/guard.js';
 import { InfoSession, COMPONENTS, SPILL_DIR, type Component, type Judge, type Mode, type SessionResult } from './controller.js';
 import {
-  admitNegative, finishBelief, negativeFindings, recordFinish, recordRefetch, recordRefetchObservation, recordTurns,
-  refetchBeliefs, refetchObservations, turnHistory,
+  admitNegative, finishBelief, negativeFindings, recordFinish, recordRefetch, recordRefetchObservation, recordRepeat, recordTurns,
+  refetchBeliefs, refetchObservations, repeatBelief, turnHistory,
 } from './memory.js';
 import { fitRefetchModel } from './refetch-model.js';
 
@@ -109,19 +109,28 @@ export function hookAddress(): { host: string; port: number } | null {
 
 /** The `--settings` a dispatch's runtime is started with. `spill` adds the
  *  command hook that keeps every shapeable output's full text in the sandbox,
- *  so a shaped observation is always one `Read` away from complete. */
+ *  so a shaped observation is always one `Read` away from complete.
+ *
+ *  A failed call is reported on `PostToolUseFailure`, never on `PostToolUse`;
+ *  without it the controller would not see one Bash call in eleven (the
+ *  recorded corpus) and would count steps, checks and repeats wrongly. A
+ *  compaction ends with `SessionStart` (source `compact`), the one point at
+ *  which the active state can be put back into a summarized context. */
 export function hookSettings(url: string, spill: boolean): Record<string, unknown> {
   const http = [{ type: 'http', url, timeout: 15 }];
-  const post: Array<Record<string, unknown>> = [{ matcher: 'Read|Bash|Grep|Glob|WebFetch|Edit|Write|MultiEdit|NotebookEdit', hooks: http }];
+  const observed = 'Read|Bash|Grep|Glob|WebFetch|Edit|Write|MultiEdit|NotebookEdit';
+  const post: Array<Record<string, unknown>> = [{ matcher: observed, hooks: http }];
   if (spill) {
     post.push({ matcher: 'Bash|Grep|Glob|WebFetch', hooks: [{ type: 'command', command: SPILL_COMMAND, timeout: 15 }] });
   }
   return {
     hooks: {
-      PreToolUse: [{ matcher: 'Read|Bash|Grep|Glob', hooks: http }],
+      PreToolUse: [{ matcher: 'Read|Bash|Grep|Glob|Edit|MultiEdit', hooks: http }],
       PostToolUse: post,
+      PostToolUseFailure: [{ matcher: observed, hooks: http }],
       Stop: [{ hooks: http }],
       PostCompact: [{ hooks: http }],
+      SessionStart: [{ matcher: 'compact', hooks: http }],
     },
   };
 }
@@ -186,7 +195,7 @@ export function openSession(input: OpenSessionInput): OpenedSession | null {
     nodeId, taskRootId: input.taskRootId, role: input.role, goal: input.goal, mode: env.mode, disabled: env.disabled,
     prices: perTokenRates(input.model), confidence: input.confidence, taskValueUsd: input.taskValueUsd,
     beliefs: refetchBeliefs(db), refetchModel: fitRefetchModel(refetchObservations(db)), pastTurns: turnHistory(db, input.role), finish: finishBelief(db),
-    negatives: negativeFindings(db, input.taskRootId), revision: input.revision,
+    negatives: negativeFindings(db, input.taskRootId), revision: input.revision, repeat: repeatBelief(db),
   }, {
     emit,
     judge,
@@ -211,6 +220,8 @@ export function openSession(input: OpenSessionInput): OpenedSession | null {
           for (const [cell, belief] of result.refetch) recordRefetch(db, cell, belief, nodeId);
           for (const row of result.observations) recordRefetchObservation(db, 'live', row, nodeId);
         }
+        // Labels come from repeats that ran, so shadow mode learns them for free.
+        if (!env.disabled.has('repeat')) for (const row of result.repeats) recordRepeat(db, row, nodeId);
         recordTurns(db, input.role, result.turns, nodeId);
       } catch (err) {
         console.error('Information control: could not record what the session learned:', err);

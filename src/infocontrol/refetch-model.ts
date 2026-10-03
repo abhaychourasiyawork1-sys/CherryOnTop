@@ -73,8 +73,11 @@ function invert(a: number[][]): number[][] {
   return Array.from({ length: n }, (_, i) => cols.map((col) => col[i]));
 }
 
-/** `l2` is the prior precision on every weight but the intercept: a Gaussian
- *  prior centred on zero, i.e. "no feature matters" until the data say so. */
+/** `l2` is the prior precision on every weight, the intercept included: a
+ *  Gaussian prior centred on zero, i.e. "no feature matters, and a refetch is
+ *  even odds" until the data say so. The intercept once had no prior, so a few
+ *  rows that were all "not refetched" drove it toward -infinity (p ~ 1e-8 from
+ *  five rows in a live run), and every observation then looked ambiguous. */
 export function fitRefetchModel(rows: ReadonlyArray<{ features: RefetchFeatures; used: boolean }>, l2 = 1): RefetchModel | null {
   if (rows.length === 0) return null;
   const xs = rows.map((r) => featurize(r.features));
@@ -96,7 +99,8 @@ export function fitRefetchModel(rows: ReadonlyArray<{ features: RefetchFeatures;
     }
     for (let j = 0; j < d; j++) {
       for (let k = 0; k < j; k++) hessian[j][k] = hessian[k][j];
-      if (j > 0) { hessian[j][j] += l2; grad[j] += l2 * w[j]; } else { hessian[j][j] += 1e-6; }
+      hessian[j][j] += l2;
+      grad[j] += l2 * w[j];
     }
     const step = solve(hessian, grad);
     w = w.map((v, j) => v - step[j]);
