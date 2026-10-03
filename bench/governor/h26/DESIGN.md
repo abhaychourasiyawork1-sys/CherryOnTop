@@ -114,6 +114,20 @@ experiment arms). It is an environment parameter of the benchmark generation:
   turns remain), by the same rule in both experiment arms. Masking acts only on
   the market's menu at b\*, never on the turn budget or on whether a retry
   exists. Recover masking therefore cannot be confounded with turn budgets.
+* **Turns are model turns.** Claude Code honours `--max-turns n` exactly (n
+  model calls) but reports `num_turns = n + 1` when it stops on the cap
+  (`error_max_turns`; on success the two agree). The runtime records the model
+  calls actually made, so dispatch 1 runs at most T − R turns and the retry
+  sees all of R. This is a measurement fix and applies to every arm.
+* **D2 reserves turns, not budget (resolved 2026-10-03).** The retry still
+  passes the market's ordinary commitment check, identical in every arm: its
+  reservation must fit the task's turn-scaled token budget
+  (`max(consumed, T · measured tokens/turn)`, input + output tokens, no cache
+  reads) and the USD authority. A retry refused there stops the task before
+  its execution boundary is evaluated, so it never reaches b\* and is never
+  assigned. The refusal acts before Z and cannot differ by arm; it thins the
+  §8 funnel, which the pilot measures. Reserving token headroom as well would
+  change the H2.5 market's reservation policy and is out of scope.
 
 D1 and D2 change H0 too, so every arm runs on a new benchmark generation. The
 v1 Arm B numbers are not comparable to it.
@@ -334,6 +348,15 @@ by assignment (intention to treat).
   ungraded, Y is computed with resolved = false (the conservative redo
   penalty). The missing-grade rate is reported per arm, and a
   complete-case analysis is a pre-declared sensitivity only.
+* **Provider refusals are invalid runs, not outcomes.** A run in which the
+  model provider refused service (a `rate_limit_event` with status
+  `rejected`, the runtime's "usage limit is used up" message, the market's
+  `harness_rate_limited`, or a final unrecovered API rate-limit/overload
+  error) measured the account's quota, not the task. It is marked invalid,
+  kept on disk, and excluded from every analysis; the scheduler halts at the
+  first one. Invalid counts are reported per arm, and for any invalid task
+  that had already been assigned, a pre-declared sensitivity analysis keeps
+  it in the ITT set as unresolved.
 * **Primary test:** the mean difference (§7), unchanged by any diagnostic.
 * **Descriptive distribution diagnostics** of Y per arm, reported and never
   tested: n, mean, SD, median, IQR (P25, P75), P90, P95, P99, max, and the

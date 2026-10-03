@@ -1,9 +1,9 @@
 // H2.6 offline analysis self-checks (unit suite; needs `npm run build`).
 import { describe, expect, it } from 'vitest';
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { CONFIG, outcomeY, report, effect, collectRun, priceUsd, readLedger, carriedInWindow } from './analysis.mjs';
+import { CONFIG, outcomeY, report, effect, collectRun, collect, priceUsd, readLedger, carriedInWindow } from './analysis.mjs';
 import { monitor, evaluateLook, lookPrefix, conditionalPower } from './monitor.mjs';
 import { gate, clopperPearsonLower, costUpperBound, balanceCheck, funnel } from './gate.mjs';
 
@@ -229,5 +229,28 @@ describe('the pilot gate', () => {
   });
   it('the denominator is the scheduled 40, not the runs that left a database', () => {
     expect(funnel([]).tasks).toBe(40);
+  });
+});
+
+describe('provider-refused runs never enter the analysis', () => {
+  it('collect() excludes them, with the reason, and keeps the valid run', async () => {
+    const dist = new URL('../../../dist/db/client.js', import.meta.url).pathname;
+    if (!existsSync(dist)) return;
+    const { createDb } = await import(dist);
+    const { insertNode } = await import(new URL('../../../dist/db/queries/nodes.js', import.meta.url).pathname);
+    const { appendEvent } = await import(new URL('../../../dist/db/queries/events.js', import.meta.url).pathname);
+    const root = mkdtempSync(join(tmpdir(), 'h26-invalid-'));
+    const make = (name, outcome) => {
+      mkdirSync(join(root, 'runs', name), { recursive: true });
+      const db = createDb(join(root, 'runs', name, 'state.db'));
+      insertNode(db, { id: name, parentId: null, goal: 'g', repoPath: '/r', state: 'FAILED', createdAt: 't', updatedAt: 't',
+        contract: { goal: 'g', definition_of_done: [], authority: { tools: [], spawn_children: false, max_child_count: 0, budget_usd: 1 }, constraints: [] } });
+      appendEvent(db, { nodeId: name, type: 'step.outcome', createdAt: 't', payload: outcome });
+    };
+    make('refused', { succeeded: false, message: 'Your Claude five-hour usage limit is used up, so the request was refused.' });
+    make('agent-failure', { succeeded: false, message: 'error_max_turns' });
+    const runs = collect(join(root, 'runs'));
+    expect(runs.map((r) => r.run)).toEqual(['agent-failure']);
+    expect(runs.excluded).toEqual([{ run: 'refused', kind: 'provider_limit', reason: 'usage_limit_message', eventType: 'step.outcome' }]);
   });
 });

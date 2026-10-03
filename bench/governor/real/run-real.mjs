@@ -20,7 +20,9 @@ import { execFileSync, execFile } from 'node:child_process';
 import { existsSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { createRequire } from 'node:module';
 import { materializeGoalWorktree, releaseGoalWorktree } from '../../lib/isolation.mjs';
+import { providerLimitInDb } from '../h26/provider-limit.mjs';
 
 const [, , runId, taskId, arm, repArg, slotArg] = process.argv;
 if (!runId || !taskId || !['H0', 'H4', 'h26', 'h26ctl'].includes(arm) || !repArg || !slotArg) {
@@ -243,6 +245,9 @@ async function main() {
     host: { node: process.version, claude_host: tryRun('claude', ['--version']) },
     driver_wall_ms: Date.now() - wallStart,
   };
+  // A run the provider refused is invalid, not an agent outcome (kept for audit).
+  const limited = providerLimitIn(join(RUN_DIR, 'state.db'));
+  if (limited) { meta.invalid = { kind: 'provider_limit', ...limited }; log(`INVALID provider limit: ${JSON.stringify(limited)}`); }
   writeFileSync(join(RUN_DIR, 'meta.json'), JSON.stringify(meta, null, 2));
   if (H26) { rmSync(worktree.path, { recursive: true, force: true }); rmSync(worktree.store, { recursive: true, force: true }); } else releaseGoalWorktree(base, worktree.path);
   console.log(JSON.stringify({ runId, arm, taskId, state: outcome.state, files: files.length }));
@@ -261,6 +266,13 @@ function isolatedRepo(base, revision) {
   g(store, 'worktree', 'add', '-q', '--detach', path, revision);
   rmSync(join(store, 'FETCH_HEAD'), { force: true });
   return { path, store, revision: g(path, 'rev-parse', 'HEAD').trim() };
+}
+
+function providerLimitIn(dbPath) {
+  if (!existsSync(dbPath)) return null;
+  const Database = createRequire(join(ARM_DIR, 'package.json'))('better-sqlite3');
+  const db = new Database(dbPath, { readonly: true });
+  try { return providerLimitInDb(db); } finally { db.close(); }
 }
 
 function tryRun(cmd, args) { try { return execFileSync(cmd, args, { encoding: 'utf8' }).trim(); } catch { return null; } }

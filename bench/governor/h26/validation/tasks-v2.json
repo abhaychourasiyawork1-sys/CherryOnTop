@@ -1,0 +1,37 @@
+{
+ "rule": "SWE-bench Verified test split minus the 40 h26 pilot instances, the 5 Arm B instances and the 12 h26-validation-v1 instances, restricted to repositories in ~/.swebench-repos; 3 from difficulty {'1-4 hours','>4 hours'} and 3 from {'15 min - 1 hour'}, each in order of sha256('h26-validation-v2' + instance_id); instances whose base_commit is not in the local clone are skipped (operational, decided before any run).",
+ "poolSize": 387,
+ "skippedUnresolvable": [],
+ "tasks": [
+  {
+   "instance": "django__django-13344",
+   "stratum": "hard",
+   "difficulty": "1-4 hours"
+  },
+  {
+   "instance": "django__django-15128",
+   "stratum": "hard",
+   "difficulty": "1-4 hours"
+  },
+  {
+   "instance": "django__django-12325",
+   "stratum": "hard",
+   "difficulty": "1-4 hours"
+  },
+  {
+   "instance": "django__django-15278",
+   "stratum": "medium",
+   "difficulty": "15 min - 1 hour"
+  },
+  {
+   "instance": "sphinx-doc__sphinx-7757",
+   "stratum": "medium",
+   "difficulty": "15 min - 1 hour"
+  },
+  {
+   "instance": "django__django-17084",
+   "stratum": "medium",
+   "difficulty": "15 min - 1 hour"
+  }
+ ]
+}

@@ -92,5 +92,5 @@ if (process.argv[1] && process.argv[1].endsWith('gate.mjs')) {
   const f = funnel(runs);
   const g = gate({ x: f.triggered.count, n: f.tasks, costs: f.costPerTaskUsd, budgetUsd: CONFIG.budgetUsd,
     integrationPassed: integration.allPassed === true && f.criterion3.passed });
-  console.log(JSON.stringify({ funnel: f, gate: g }, null, 1));
+  console.log(JSON.stringify({ funnel: f, gate: g, excludedInvalidRuns: runs.excluded }, null, 1));
 }

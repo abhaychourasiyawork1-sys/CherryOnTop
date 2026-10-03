@@ -5,7 +5,7 @@
 import { readdirSync, readFileSync, existsSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { createRequire } from 'node:module';
-import { priceUsd, readLedger, carriedInWindow } from '../analysis.mjs';
+import { priceUsd, readLedger, carriedInWindow, invalidity } from '../analysis.mjs';
 
 const require = createRequire(import.meta.url);
 const Database = require('better-sqlite3');
@@ -93,8 +93,16 @@ export function collectValidationRun(dir, ledger = readLedger(join(dir, '..', '.
 
 if (process.argv[1] && process.argv[1].endsWith('collect.mjs')) {
   const root = process.argv[2];
-  const runs = readdirSync(join(root, 'runs')).filter((d) => existsSync(join(root, 'runs', d, 'meta.json')))
-    .map((d) => collectValidationRun(join(root, 'runs', d)));
+  const dirs = readdirSync(join(root, 'runs')).filter((d) => existsSync(join(root, 'runs', d, 'meta.json')));
+  // Provider-refused runs are not agent outcomes: excluded, with the reason.
+  const excluded = [];
+  const runs = dirs.flatMap((d) => {
+    const invalid = invalidity(join(root, 'runs', d));
+    if (invalid) { excluded.push({ run: d, ...invalid }); return []; }
+    return [collectValidationRun(join(root, 'runs', d))];
+  });
   writeFileSync(join(root, 'collected.json'), JSON.stringify(runs, null, 1));
+  writeFileSync(join(root, 'excluded.json'), JSON.stringify(excluded, null, 1));
+  if (excluded.length) console.error(`excluded ${excluded.length} invalid run(s): ${excluded.map((e) => `${e.run} (${e.reason})`).join(', ')}`);
   console.log(JSON.stringify(runs.map((r) => ({ run: r.run, state: r.state, resolved: r.resolved, execs: r.executeDispatches, bstar: r.d1.bstar, masked: r.maskIntegrity.masked })), null, 0));
 }

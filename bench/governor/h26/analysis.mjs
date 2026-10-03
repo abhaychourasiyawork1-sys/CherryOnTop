@@ -6,6 +6,7 @@
 import { readFileSync, readdirSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { createRequire } from 'node:module';
+import { providerLimitInDb } from './provider-limit.mjs';
 
 const HERE = new URL('.', import.meta.url).pathname;
 export const CONFIG = JSON.parse(readFileSync(join(HERE, 'config.json'), 'utf8'));
@@ -144,10 +145,29 @@ export function collectRun(runDir, ledgerRows = readLedger(join(runDir, '..', '.
   } finally { db.close(); }
 }
 
+/** Why a run is invalid (a provider refusal), or null. Read from the runner's
+ *  mark and, for runs recorded before it existed, from the events. */
+export function invalidity(runDir) {
+  const metaFile = join(runDir, 'meta.json');
+  const meta = existsSync(metaFile) ? JSON.parse(readFileSync(metaFile, 'utf8')) : {};
+  if (meta.invalid) return meta.invalid;
+  const Database = createRequire(import.meta.url)('better-sqlite3');
+  const db = new Database(join(runDir, 'state.db'), { readonly: true });
+  try { const p = providerLimitInDb(db); return p ? { kind: 'provider_limit', ...p } : null; } finally { db.close(); }
+}
+
+/** Every valid run's rows. Provider-refused runs never enter the analysis;
+ *  they are listed, with the reason, on the returned array's `excluded`. */
 export function collect(runsDir, ledgerPath = join(runsDir, '..', 'ledger.db')) {
   const ledger = readLedger(ledgerPath);
   const runs = readdirSync(runsDir).filter((d) => existsSync(join(runsDir, d, 'state.db')));
-  return runs.map((r) => ({ run: r, ...collectRun(join(runsDir, r), ledger) }));
+  const excluded = [];
+  const out = runs.flatMap((r) => {
+    const invalid = invalidity(join(runsDir, r));
+    if (invalid) { excluded.push({ run: r, ...invalid }); return []; }
+    return [{ run: r, ...collectRun(join(runsDir, r), ledger) }];
+  });
+  return Object.assign(out, { excluded });
 }
 
 /** The data as it stood at scheduled look k (DESIGN.md §7). Looks 1–3: the

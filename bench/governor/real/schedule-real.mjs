@@ -3,7 +3,7 @@
  *  line up with one arm), dealt round-robin onto `lanes` parallel lanes, each
  *  lane on its own ports. Resumable: a finished run is never repeated. */
 import { spawn, execFileSync } from 'node:child_process';
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync, mkdirSync, renameSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
@@ -62,14 +62,28 @@ function ensureAuth() {
   return authGate;
 }
 
+// A provider refusal halts every lane: further runs would only be refused too.
+// The invalid run moves to invalid/ (kept for audit) so a relaunch, once the
+// limit resets, runs it again.
+let halted = null;
+
 async function lane(n) {
   for (const s of schedule.filter((x) => x.lane === n)) {
+    if (halted) break;
     if (existsSync(join(ROOT, 'runs', s.runId, 'meta.json'))) { console.log(`skip ${s.runId}`); continue; }
     if (H26) await ensureAuth();
     console.log(`[${new Date().toISOString()}] RUN ${s.runId} (lane ${n})`);
     const code = await new Promise((resolve) => spawn('node', [join(import.meta.dirname, 'run-real.mjs'), s.runId, s.task, s.arm, String(s.rep), String(n)], { stdio: ['ignore', 'inherit', 'inherit'] }).on('exit', resolve));
     console.log(`[${new Date().toISOString()}] END ${s.runId} exit=${code}`);
+    const metaFile = join(ROOT, 'runs', s.runId, 'meta.json');
+    const invalid = existsSync(metaFile) ? JSON.parse(readFileSync(metaFile, 'utf8')).invalid : undefined;
+    if (invalid) {
+      mkdirSync(join(ROOT, 'invalid'), { recursive: true });
+      renameSync(join(ROOT, 'runs', s.runId), join(ROOT, 'invalid', `${s.runId}@${Date.now()}`));
+      halted = invalid;
+      console.log(`[${new Date().toISOString()}] HALT ${s.runId} invalid: ${JSON.stringify(invalid)} — relaunch after the limit resets`);
+    }
   }
 }
 await Promise.all(Array.from({ length: LANES }, (_, n) => lane(n)));
-console.log('schedule complete');
+console.log(halted ? `schedule HALTED (provider limit): ${JSON.stringify(halted)}` : 'schedule complete');
