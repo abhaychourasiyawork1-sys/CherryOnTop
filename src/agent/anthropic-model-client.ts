@@ -33,7 +33,11 @@ export function buildRequest(input: ModelTurnInput): Anthropic.MessageCreatePara
   return {
     model,
     max_tokens: input.maxTokens,
-    system: [{ type: 'text', text: input.system, cache_control: { type: 'ephemeral' } }],
+    // The stable prefix (tools + system) is identical across every dispatch of
+    // a harness version: held for an hour so later sessions read it from cache
+    // too (both ToFu and the Harness Effect pin it). The growing history rides
+    // the request-level 5-minute breakpoint. Longer TTLs must come first.
+    system: [{ type: 'text', text: input.system, cache_control: { type: 'ephemeral', ttl: '1h' } }],
     tools: input.tools,
     messages: input.messages,
     cache_control: { type: 'ephemeral' },

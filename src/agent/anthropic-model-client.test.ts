@@ -18,7 +18,7 @@ describe('buildRequest', () => {
   it('caches the frozen system prompt and rides a breakpoint on the history', () => {
     const body = buildRequest(turn);
     expect(body.model).toBe('claude-haiku-4-5');
-    expect(body.system).toEqual([{ type: 'text', text: 'sys', cache_control: { type: 'ephemeral' } }]);
+    expect(body.system).toEqual([{ type: 'text', text: 'sys', cache_control: { type: 'ephemeral', ttl: '1h' } }]);
     expect(body.cache_control).toEqual({ type: 'ephemeral' });
   });
 

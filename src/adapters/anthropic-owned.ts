@@ -165,11 +165,15 @@ export function createOwnedAdapter(deps: OwnedDeps = defaultDeps, configured: ()
           model,
           ...(input.effort ? { effort: input.effort } : {}),
           client: deps.client(),
-          broker: new ToolBroker({ sandbox, ...(input.grant ? { grant: input.grant } : {}), infoControl: state }),
+          broker: new ToolBroker({
+            sandbox, ...(input.grant ? { grant: input.grant } : {}), infoControl: state,
+            ...(Number.isFinite(Number(process.env.ORG_OWNED_REFUSAL_CAP)) && process.env.ORG_OWNED_REFUSAL_CAP ? { refusalCap: Number(process.env.ORG_OWNED_REFUSAL_CAP) } : {}),
+          }),
           state,
           ...(input.maxTurns ? { maxTurns: input.maxTurns } : {}),
           ...(input.spendLimitUsd !== undefined ? { spendLimitUsd: input.spendLimitUsd } : {}),
           pricedCompaction: process.env.ORG_OWNED_COMPACTION !== 'window',
+          recite: process.env.ORG_OWNED_RECITE !== 'off',
           onEvent: (event) => {
             // The broker refuses a forbidden call before it runs; the request
             // is still reported, as a Claude Code dispatch's would be.

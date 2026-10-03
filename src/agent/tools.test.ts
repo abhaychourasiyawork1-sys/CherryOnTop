@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync } from 'no
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { hostSandbox } from './sandbox.js';
-import { ToolBroker, toolDefinitions, authorityRefusal, OUTPUT_CAP, htmlToText, type HookHandler } from './tools.js';
+import { ToolBroker, toolDefinitions, authorityRefusal, OUTPUT_CAP, WEB_CAP, BREAKER_FAILURES, recoverArgs, htmlToText, type HookHandler } from './tools.js';
 import { InfoSession, SPILL_DIR } from '../infocontrol/controller.js';
 
 let dir: string;
@@ -143,6 +143,58 @@ describe('ToolBroker', () => {
     expect(existsSync(path.join(dir, 'ran'))).toBe(false);
     const broken: HookHandler = { handle: async () => { throw new Error('controller down'); } };
     expect(await broker({ infoControl: broken }).execute({ id: '2', name: 'Bash', input: { command: 'echo ok' } })).toMatchObject({ isError: false, content: 'ok' });
+  });
+});
+
+describe('paper mechanisms in the broker', () => {
+  it('recovers double-encoded and stringly-typed arguments (model-agnostic floor)', async () => {
+    expect(recoverArgs('{"command":"echo hi"}')).toEqual({ command: 'echo hi' });
+    expect(recoverArgs({ file_path: 'a', offset: '2', limit: '1', replace_all: 'true' })).toEqual({ file_path: 'a', offset: 2, limit: 1, replace_all: true });
+    expect(recoverArgs('not json')).toBe('not json');
+    const out = await broker().execute({ id: '1', name: 'Read', input: JSON.stringify({ file_path: 'a.py', offset: '4' }) });
+    expect(out).toMatchObject({ isError: false, content: '     4\tprint(f())' });
+  });
+
+  it('trips a circuit breaker on an identical call failing identically, and re-arms after a change', async () => {
+    const b = broker();
+    const call = { name: 'Bash', input: { command: 'cat nope.txt' } };
+    for (let i = 0; i < BREAKER_FAILURES; i++) expect((await b.execute({ id: `f${i}`, ...call })).refusal).toBeUndefined();
+    const blocked = await b.execute({ id: 'f9', ...call });
+    expect(blocked).toMatchObject({ isError: true, refusal: 'trajectory' });
+    expect(blocked.content).toMatch(/failed 3 times/);
+    await b.execute({ id: 'w', name: 'Write', input: { file_path: 'nope.txt', content: 'now here' } });
+    expect(await b.execute({ id: 'f10', ...call })).toMatchObject({ isError: false, content: 'now here' });
+  });
+
+  it('caps information-control refusals per dispatch, then passes the call with the concern attached', async () => {
+    const deny: HookHandler = { handle: async (p) => (p.hook_event_name === 'PreToolUse' ? { hookSpecificOutput: { permissionDecision: 'deny', permissionDecisionReason: 'looks wasteful' } } : {}) };
+    const b = broker({ infoControl: deny, refusalCap: 2 });
+    expect((await b.execute({ id: '1', name: 'Bash', input: { command: 'echo 1' } })).refusal).toBe('trajectory');
+    expect((await b.execute({ id: '2', name: 'Bash', input: { command: 'echo 2' } })).refusal).toBe('trajectory');
+    const third = await b.execute({ id: '3', name: 'Bash', input: { command: 'echo 3' } });
+    expect(third).toMatchObject({ isError: false });
+    expect(third.content).toMatch(/^3\n\n\[Information control advised against this call: looks wasteful\]$/);
+  });
+
+  it('budgets web pages at 8K inline with a no-inference banner, the rest spilled', async () => {
+    const page = 'w'.repeat(WEB_CAP * 3);
+    const b = broker({ runTool: async () => ({ text: page, failed: false }) });
+    const out = await b.execute({ id: 'toolu_web', name: 'WebFetch', input: { url: 'https://example.com' } });
+    expect(out.content.startsWith('[Preview only')).toBe(true);
+    expect(out.content).toMatch(/Do not infer success or failure/);
+    expect(out.content.length).toBeLessThan(WEB_CAP + 400);
+    expect(out.spilledTo).toBe(`${SPILL_DIR}/toolu_web.out`);
+    rmSync(out.spilledTo!);
+  });
+
+  it('never shows a source file with a hole: a long Read stops at a line and says where to continue', async () => {
+    writeFileSync(path.join(dir, 'long.py'), Array.from({ length: 1500 }, (_, i) => `line_${i} = ${'x'.repeat(40)}`).join('\n'));
+    const out = await broker().execute({ id: 'r', name: 'Read', input: { file_path: 'long.py' } });
+    expect(out.content.length).toBeLessThanOrEqual(OUTPUT_CAP + 200);
+    const last = Number(/output limit reached at line (\d+); Read with offset (\d+)/.exec(out.content)?.[1]);
+    expect(last).toBeGreaterThan(100);
+    expect(out.content).toContain(`${String(last).padStart(6)}\tline_${last - 1} = `);
+    expect(out.content).not.toContain('…\n');
   });
 });
 

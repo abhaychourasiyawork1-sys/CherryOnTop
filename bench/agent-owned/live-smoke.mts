@@ -218,7 +218,17 @@ async function liveRun() {
   return finish();
 
   function finish() {
-    writeFileSync(path.join(out, 'summary.json'), JSON.stringify({ model: resolveModelId(model), budget, spent, rows }, null, 2));
+    // The Harness Effect's efficiency metrics, per arm: quality per dollar
+    // (η$ = Q / C) and task-completions per million tokens (CPM = Q·10⁶ / τ).
+    const perArm = Object.fromEntries(arms.map((arm) => {
+      const r = rows.filter((x) => x.arm === arm);
+      const q = r.length ? r.filter((x) => x.passed).length / r.length : 0;
+      const usd = r.reduce((s, x) => s + Number(x.costUsd), 0) / Math.max(1, r.length);
+      const tok = r.reduce((s, x) => { const u = x.usage as { inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheCreationTokens: number }; return s + u.inputTokens + u.outputTokens + u.cacheReadTokens + u.cacheCreationTokens; }, 0) / Math.max(1, r.length);
+      return [arm, { runs: r.length, quality: q, costPerTaskUsd: usd, tokensPerTask: tok, qualityPerDollar: usd > 0 ? q / usd : null, cpm: tok > 0 ? (q * 1e6) / tok : null }];
+    }));
+    for (const [arm, m] of Object.entries(perArm)) console.log(`${arm}: Q=${m.quality.toFixed(2)} $/task=${m.costPerTaskUsd.toFixed(4)} tokens/task=${Math.round(m.tokensPerTask)} η$=${m.qualityPerDollar?.toFixed(1) ?? 'n/a'} CPM=${m.cpm?.toFixed(1) ?? 'n/a'}`);
+    writeFileSync(path.join(out, 'summary.json'), JSON.stringify({ model: resolveModelId(model), budget, spent, perArm, rows }, null, 2));
     console.log(`Spent $${spent.toFixed(4)} of $${budget.toFixed(2)}. Receipts in ${out}`);
   }
 }

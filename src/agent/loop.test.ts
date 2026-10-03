@@ -61,7 +61,7 @@ describe('runAgentSession', () => {
       fakeMessage('ok'),
     ]);
     await run();
-    const results = client.requests[1].messages[2].content as Array<{ tool_use_id: string; is_error?: boolean }>;
+    const results = (client.requests[1].messages[2].content as Array<{ type: string; tool_use_id: string; is_error?: boolean }>).filter((b) => b.type === 'tool_result');
     expect(results.map((b) => b.tool_use_id)).toEqual(['a', 'b', 'c']);
     expect(results.map((b) => b.is_error === true)).toEqual([false, true, false]);
   });
@@ -167,6 +167,45 @@ describe('runAgentSession', () => {
     expect((receipts[0].layers as { systemTokens: number }).systemTokens).toBeGreaterThan(0);
     expect(visibleContextProfile(r.events).first).toBe(1000);
     expect(r.events.filter((e) => e.type === 'assistant').flatMap(toolNamesFromEvent)).toEqual(['Bash']);
+  });
+});
+
+describe('paper mechanisms in the loop', () => {
+  it('re-tries a turn lost to the network, with a receipt, and gives up after its budget', async () => {
+    const ok = await session([new ModelError('network', 'reset'), new ModelError('overloaded', '529'), fakeMessage('done')], { retryDelaysMs: [0, 0] }).run();
+    expect(ok.succeeded).toBe(true);
+    expect(ok.events.filter((e) => e.type === 'owned.retry').map((e) => (e.payload as { kind: string }).kind)).toEqual(['network', 'overloaded']);
+    const out = await session([new ModelError('network', 'a'), new ModelError('network', 'b')], { retryDelaysMs: [0] }).run();
+    expect(out).toMatchObject({ stop: 'model_error' });
+    const never = await session([new ModelError('auth', 'bad key')], { retryDelaysMs: [0, 0] }).run();
+    expect(never.events.some((e) => e.type === 'owned.retry')).toBe(false);
+  });
+
+  it('caps a dispatch with no turn limit at the default ceiling', async () => {
+    const loop = () => fakeMessage([toolUse(String(Math.random()), 'Bash', { command: 'true' })]);
+    const r = await session(Array.from({ length: 60 }, () => loop)).run();
+    expect(r).toMatchObject({ stop: 'max_turns' });
+    expect(r.usage.numTurns).toBe(50);
+  });
+
+  it('recites the task state after a round that changed it, append-only and only once per change', async () => {
+    const { run, client } = session([
+      fakeMessage([toolUse('r', 'Read', { file_path: 'app.py' })]),
+      fakeMessage([toolUse('e', 'Edit', { file_path: 'app.py', old_string: 'x = 1', new_string: 'x = 2' })]),
+      fakeMessage([toolUse('g', 'Grep', { pattern: 'x' })]),
+      fakeMessage('done'),
+    ]);
+    await run();
+    const texts = (m: MessageParam) => (Array.isArray(m.content) ? m.content.filter((b) => b.type === 'text').map((b) => (b as { text: string }).text) : []);
+    const final = client.requests[3].messages;
+    expect(texts(final[2])).toEqual([]);
+    expect(texts(final[4])[0]).toMatch(/^\[CherryOnTop: task state\]\nFiles you have edited \(1\): app\.py/);
+    expect(texts(final[4])[0]).not.toContain('Goal:');
+    // Unchanged by the Grep: not recited again.
+    expect(texts(final[6])).toEqual([]);
+    const quiet = session([fakeMessage([toolUse('r', 'Read', { file_path: 'app.py' })]), fakeMessage([toolUse('e', 'Edit', { file_path: 'app.py', old_string: 'x = 1', new_string: 'x = 3' })]), fakeMessage('ok')], { recite: false });
+    await quiet.run();
+    expect(JSON.stringify(quiet.client.requests[2].messages)).not.toContain('task state');
   });
 });
 

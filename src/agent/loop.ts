@@ -20,6 +20,7 @@
  *  Each turn also emits an `owned.turn` receipt: context tokens by layer,
  *  cache traffic, spend, the tools' fate (ran, refused and by whom, projected,
  *  spilled), and whether the turn followed a compaction. */
+import type Anthropic from '@anthropic-ai/sdk';
 import { estimateTokens } from '../context/candidates.js';
 import { estimateCostUsd, perTokenRates } from '../execution/pricing.js';
 import { expectedRemainingTurns, type Prices } from '../infocontrol/economics.js';
@@ -57,6 +58,10 @@ export interface AgentSessionInput {
   maxOutputTokens?: number;
   /** Compact when the price says so (default). Off: only when the window forces it. */
   pricedCompaction?: boolean;
+  /** Append the task state after a tool round whenever it changed (default on). */
+  recite?: boolean;
+  /** Waits before re-trying a turn that failed transiently; its length is the retry budget. */
+  retryDelaysMs?: readonly number[];
   onEvent?(event: StructuredEvent): void;
   signal?: AbortSignal;
 }
@@ -75,6 +80,22 @@ export interface AgentSessionResult {
 }
 
 const HARNESS_POLICY = `You are an autonomous software engineering agent working on a task inside an isolated sandbox. Use the tools to inspect and change files and to run commands; nobody will answer questions mid-task, so make reasonable decisions and keep going until the task is done. Verify your change by running the narrowest relevant check before you finish. When you are done, reply with a short summary of what you changed and how you verified it, without calling a tool.`;
+
+/** The loop's own iteration ceiling when the dispatch sets none (the Harness
+ *  Effect caps its loop at 50): a guard against a runaway, not a budget. */
+export const DEFAULT_MAX_TURNS = 50;
+/** Re-tries of a turn lost to the network or an overloaded provider, with
+ *  backoff (ToFu re-runs an interrupted stream; the SDK already retries
+ *  before a stream starts). A failed attempt never ran a tool. */
+export const RETRY_DELAYS_MS = [2_000, 5_000, 15_000, 30_000];
+/** The share of the context the verbatim tail may keep through a compaction
+ *  (the Harness Effect keeps at most 30% of the budget verbatim). */
+export const TAIL_SHARE = 0.3;
+
+const sleep = (ms: number, signal?: AbortSignal) => new Promise<void>((resolve) => {
+  const t = setTimeout(resolve, ms);
+  signal?.addEventListener('abort', () => { clearTimeout(t); resolve(); }, { once: true });
+});
 
 /** Context windows, tokens. Haiku 4.5 is the one current model below 1M. */
 export function contextWindowFor(modelId: string): number {
@@ -97,6 +118,13 @@ function describeTarget(name: string, input: unknown): string {
   const i = (input ?? {}) as Record<string, unknown>;
   const t = name === 'Bash' ? i.command : i.file_path ?? i.pattern ?? i.url ?? i.path;
   return t === undefined ? '' : String(t).replace(/\s+/g, ' ').slice(0, 160);
+}
+
+/** The active state without its goal line (the goal opens the conversation
+ *  already); empty when nothing has happened worth reciting. */
+export function recitable(activeState: string, goal: string): string {
+  const head = `Goal: ${goal.trim().slice(0, 600)}`;
+  return (activeState.startsWith(head) ? activeState.slice(head.length) : activeState).trim();
 }
 
 function textOf(message: Message): string {
@@ -131,11 +159,17 @@ export async function runAgentSession(input: AgentSessionInput): Promise<AgentSe
   let finalText = '';
   const started = Date.now();
   const cost = () => estimateCostUsd(usage, model);
+  const tailBudget = () => TAIL_SHARE * (lastContext + appendedSince);
+  const maxTurns = input.maxTurns ?? DEFAULT_MAX_TURNS;
+  const retryDelays = input.retryDelaysMs ?? RETRY_DELAYS_MS;
+  let retries = 0;
+  /** The state last recited, so it is appended only when it changed. */
+  let recited = '';
 
   emit('system', { subtype: 'init', model, cwd: input.workdir, tools: tools.map((t) => t.name), runtime: 'anthropic-owned', ...(input.effort ? { effort: input.effort } : {}) });
 
   const doCompact = (reason: 'window' | 'priced' | 'recovery', precomputed?: CompactionResult): boolean => {
-    const result = precomputed ?? compact({ goal: input.goal, messages, activeState: input.state.activeState(), calls });
+    const result = precomputed ?? compact({ goal: input.goal, messages, activeState: input.state.activeState(), calls, tailBudget: tailBudget() });
     if (!result) return false;
     messages = result.messages;
     compactions++;
@@ -167,14 +201,14 @@ export async function runAgentSession(input: AgentSessionInput): Promise<AgentSe
 
   for (;;) {
     if (input.signal?.aborted) return finish('aborted');
-    if (input.maxTurns !== undefined && usage.numTurns >= input.maxTurns) return finish('max_turns');
+    if (usage.numTurns >= maxTurns) return finish('max_turns');
     if (input.spendLimitUsd !== undefined && cost() >= input.spendLimitUsd) return finish('spend_limit');
 
     // Compaction: forced by the window, otherwise only when it pays.
     const projected = lastContext + appendedSince;
     if (projected + maxTokens > window && canCompact(messages)) doCompact('window');
     else if (input.pricedCompaction !== false && canCompact(messages) && usage.numTurns > 0) {
-      const preview = compact({ goal: input.goal, messages, activeState: input.state.activeState(), calls });
+      const preview = compact({ goal: input.goal, messages, activeState: input.state.activeState(), calls, tailBudget: tailBudget() });
       if (preview) {
         const price = priceCompaction({
           droppedTokens: preview.droppedTokens, droppedCalls: preview.droppedCallIds.length, keptTokens: preview.keptTokens, stateTokens: preview.stateTokens,
@@ -198,10 +232,18 @@ export async function runAgentSession(input: AgentSessionInput): Promise<AgentSe
         retriedAfterCompaction = true;
         continue;
       }
+      // Lost to the network or an overloaded provider: the same request again,
+      // after a wait. Bounded, receipted, and nothing ran on the lost attempt.
+      if ((error.kind === 'network' || error.kind === 'overloaded') && retries < retryDelays.length) {
+        emit('owned.retry', { kind: error.kind, attempt: retries + 1, waitMs: retryDelays[retries], message: error.message.slice(0, 300) });
+        await sleep(retryDelays[retries++], input.signal);
+        continue;
+      }
       if (error.kind === 'rate_limit') emit('rate_limit_event', { rate_limit_info: { status: 'rejected', rateLimitType: 'api' } });
       return finish('model_error', error);
     }
     retriedAfterCompaction = false;
+    retries = 0;
     usage.numTurns++;
     const u = message.usage;
     usage.inputTokens += u.input_tokens ?? 0;
@@ -247,12 +289,26 @@ export async function runAgentSession(input: AgentSessionInput): Promise<AgentSe
           ? { content: 'Your response hit the output limit before this call was complete, so it did not run. Issue it again, smaller if it was large.', isError: true, raw: '', refusal: 'invalid', projected: false }
           : await input.broker.execute({ id: call.id, name: call.name, input: call.input });
         results.push({ id: call.id, outcome });
-        calls.set(call.id, { id: call.id, name: call.name, target: describeTarget(call.name, call.input), isError: outcome.isError, ...(outcome.spilledTo ? { spilledTo: outcome.spilledTo } : {}) });
+        calls.set(call.id, {
+          id: call.id, name: call.name, target: describeTarget(call.name, call.input), isError: outcome.isError,
+          ...(outcome.isError ? { error: outcome.content.trim().split('\n').find((l) => l.trim())?.slice(0, 160) ?? '' } : {}),
+          ...(outcome.spilledTo ? { spilledTo: outcome.spilledTo } : {}),
+        });
         decisions.push({ id: call.id, name: call.name, isError: outcome.isError, refusal: outcome.refusal ?? null, projected: outcome.projected, rawChars: outcome.raw.length, shownChars: outcome.content.length, ...(outcome.spilledTo ? { spilledTo: outcome.spilledTo } : {}) });
       }
       // All results in one user message: splitting them teaches the model to
       // stop making parallel calls.
-      next = { role: 'user', content: results.map(({ id, outcome }) => ({ type: 'tool_result' as const, tool_use_id: id, content: outcome.content, ...(outcome.isError ? { is_error: true } : {}) })) };
+      const blocks: Array<Anthropic.ToolResultBlockParam | Anthropic.TextBlockParam> = results.map(({ id, outcome }) => ({ type: 'tool_result' as const, tool_use_id: id, content: outcome.content, ...(outcome.isError ? { is_error: true } : {}) }));
+      // Objective recitation, append-only: when the task state moved, say where
+      // it stands now, after the results. Never edited or removed later, so the
+      // cached prefix and earlier thinking blocks stay valid (a volatile tail
+      // rebuilt each turn would break both on preserved-thinking models).
+      const state = input.recite === false ? '' : recitable(input.state.activeState(), input.goal);
+      if (state && state !== recited) {
+        recited = state;
+        blocks.push({ type: 'text', text: `[CherryOnTop: task state]\n${state}` });
+      }
+      next = { role: 'user', content: blocks };
       emit('user', {
         message: next, parent_tool_use_id: null,
         tool_use_result: results.map(({ id, outcome }) => ({ tool_use_id: id, tool: toolUses.find((t) => t.id === id)?.name ?? null, raw: outcome.raw, projected: outcome.projected, refusal: outcome.refusal ?? null, spilledTo: outcome.spilledTo ?? null })),

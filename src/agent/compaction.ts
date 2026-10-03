@@ -31,6 +31,9 @@ export interface CallRecord {
   /** What the call was about (a command, a path, a pattern). */
   target: string;
   isError: boolean;
+  /** The first line of what a failed call returned: errors are what an agent
+   *  most needs not to rediscover (HarnessBridge keeps them; so does this). */
+  error?: string;
   spilledTo?: string;
 }
 
@@ -39,8 +42,11 @@ export interface CompactionInput {
   messages: MessageParam[];
   /** The canonical task state, rendered. */
   activeState: string;
-  /** Every tool call so far, by id. */
+  /** Every tool call of the session so far, in order — including calls an
+   *  earlier compaction already folded away, so the index carries forward. */
   calls: ReadonlyMap<string, CallRecord>;
+  /** Tokens the verbatim tail may hold; at least the last exchange is always kept. */
+  tailBudget?: number;
 }
 
 export interface CompactionResult {
@@ -54,18 +60,23 @@ export interface CompactionResult {
   stateTokens: number;
 }
 
-/** Index of the assistant message that opens the last exchange, or -1 when
- *  there is nothing before it to drop. An exchange is an assistant turn and
- *  the user turn that answers it. */
-function tailStart(messages: MessageParam[]): number {
-  for (let i = messages.length - 1; i >= 1; i--) {
-    if (messages[i].role === 'assistant') return i > 1 ? i : -1;
-  }
-  return -1;
+/** Most exchanges kept verbatim (the Harness Effect keeps a live tail of
+ *  4–12 messages); the token budget usually binds first. */
+export const MAX_TAIL_EXCHANGES = 6;
+/** Index entries kept; older ones are counted, not listed. */
+const MAX_INDEX = 60;
+
+/** Indexes of the assistant messages that open each exchange (an assistant
+ *  turn and the user turn answering it), oldest first, excluding the opening
+ *  user message. */
+function exchangeStarts(messages: MessageParam[]): number[] {
+  const starts: number[] = [];
+  for (let i = 1; i < messages.length; i++) if (messages[i].role === 'assistant') starts.push(i);
+  return starts;
 }
 
 export function canCompact(messages: MessageParam[]): boolean {
-  return tailStart(messages) > 0;
+  return exchangeStarts(messages).length > 1;
 }
 
 function tokensOf(messages: MessageParam[]): number {
@@ -81,8 +92,21 @@ function toolUseIds(messages: MessageParam[]): string[] {
   return ids;
 }
 
+/** Where the verbatim tail starts: the last exchange always, then earlier ones
+ *  while they fit the budget, never all of them (something must be dropped). */
+function tailStart(messages: MessageParam[], budget: number): number {
+  const starts = exchangeStarts(messages);
+  if (starts.length < 2) return -1;
+  let start = starts.at(-1)!;
+  for (let k = starts.length - 2, kept = 1; k >= 1 && kept < MAX_TAIL_EXCHANGES; k--, kept++) {
+    if (tokensOf(messages.slice(starts[k])) > budget) break;
+    start = starts[k];
+  }
+  return start;
+}
+
 export function compact(input: CompactionInput): CompactionResult | null {
-  const start = tailStart(input.messages);
+  const start = tailStart(input.messages, input.tailBudget ?? 0);
   if (start < 0) return null;
   const dropped = input.messages.slice(0, start);
   const tail = input.messages.slice(start).map((m): MessageParam => {
@@ -90,19 +114,22 @@ export function compact(input: CompactionInput): CompactionResult | null {
     const kept = (m.content as ContentBlock[]).filter((b) => b.type !== 'thinking' && b.type !== 'redacted_thinking');
     return { role: 'assistant', content: (kept.length ? kept : [{ type: 'text', text: '(continuing)' }]) as MessageParam['content'] };
   });
-  const droppedCallIds = toolUseIds(dropped);
-  const index = droppedCallIds.map((id) => input.calls.get(id)).filter((c): c is CallRecord => c !== undefined)
-    .map((c, i) => `${i + 1}. ${c.name} ${c.target}${c.isError ? ' — failed' : ''}${c.spilledTo ? ` — full output in ${c.spilledTo}` : ''}`);
+  const retainedCallIds = toolUseIds(tail);
+  const retained = new Set(retainedCallIds);
+  const folded = [...input.calls.values()].filter((c) => !retained.has(c.id));
+  const listed = folded.slice(-MAX_INDEX);
+  const index = listed.map((c, i) => `${folded.length - listed.length + i + 1}. ${c.name} ${c.target}`
+    + `${c.isError ? ` — failed${c.error ? `: ${c.error}` : ''}` : ''}${c.spilledTo ? ` — full output in ${c.spilledTo}` : ''}`);
   const state = [
     '[CherryOnTop: the earlier turns of this session were compacted to keep the context small. Nothing was lost: re-run or re-read anything you need again.]',
     input.activeState,
-    ...(index.length ? [`Calls made before this point (${index.length}):\n${index.join('\n')}`] : []),
+    ...(index.length ? [`Calls made before this point (${folded.length}${folded.length > listed.length ? `, the last ${listed.length} listed` : ''}):\n${index.join('\n')}`] : []),
   ].join('\n\n');
   const messages: MessageParam[] = [{ role: 'user', content: `${input.goal}\n\n${state}` }, ...tail];
   return {
     messages,
-    droppedCallIds,
-    retainedCallIds: toolUseIds(tail),
+    droppedCallIds: toolUseIds(dropped),
+    retainedCallIds,
     droppedTokens: tokensOf(dropped),
     keptTokens: tokensOf(tail),
     stateTokens: estimateTokens(state),

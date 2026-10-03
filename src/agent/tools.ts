@@ -30,6 +30,17 @@ import type { Sandbox } from './sandbox.js';
  *  says where. A hard guard against a single call flooding the context, not an
  *  economic choice; the economic choices are information control's. */
 export const OUTPUT_CAP = 30_000;
+/** A web page is mostly navigation and boilerplate: inline only the first 8K
+ *  characters and spill the rest (the Harness Effect's web-fetch budget). */
+export const WEB_CAP = 8_000;
+/** An identical call that failed identically this many times is not run again
+ *  until something changes (the Harness Effect's circuit breaker). */
+export const BREAKER_FAILURES = 3;
+/** How many times information control may refuse an action in one dispatch
+ *  before its refusals become advice (HarnessBridge's tolerant mode and its
+ *  per-task action-projection cap, 5 on Terminal-Bench): over-rejection costs
+ *  more than the waste it prevents. `ORG_OWNED_REFUSAL_CAP` overrides. */
+export const REFUSAL_CAP = 5;
 const READ_LINES = 2000;
 const LINE_CHARS = 2000;
 const BASH_TIMEOUT_MS = 120_000;
@@ -133,6 +144,30 @@ export interface ToolBrokerOptions {
   /** Replaces sandbox execution, for offline replay of recorded outputs.
    *  Authority, validation and information control still apply. */
   runTool?(call: ToolCall): Promise<{ text: string; failed: boolean }>;
+  /** See REFUSAL_CAP. */
+  refusalCap?: number;
+}
+
+const NUMERIC = new Set(['timeout', 'offset', 'limit']);
+const BOOLEAN = new Set(['replace_all', '-i']);
+
+/** Schema hygiene for weaker or noisier models (the Harness Effect's
+ *  model-agnostic floor): an argument object sent double-encoded as a JSON
+ *  string, and numbers or booleans sent as strings, are recovered rather than
+ *  refused. Anything else is left for the schema to judge. */
+export function recoverArgs(input: unknown): unknown {
+  let value = input;
+  if (typeof value === 'string') {
+    try { value = JSON.parse(value); } catch { return input; }
+  }
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return value;
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(value)) {
+    if (NUMERIC.has(k) && typeof v === 'string' && /^\d+$/.test(v.trim())) out[k] = Number(v);
+    else if (BOOLEAN.has(k) && (v === 'true' || v === 'false')) out[k] = v === 'true';
+    else out[k] = v;
+  }
+  return out;
 }
 
 interface Ran { text: string; failed: boolean; response: unknown }
@@ -149,17 +184,30 @@ export class ToolBroker {
     const name = call.name as ToolName;
     const forbidden = authorityRefusal(name, this.opts.grant);
     if (forbidden) return refuse('authority', `Permission denied: ${forbidden}. The call did not run.`);
-    const parsed = schemas[name].safeParse(call.input);
+    const parsed = schemas[name].safeParse(recoverArgs(call.input));
     if (!parsed.success) {
       return refuse('invalid', `Invalid input for ${name}: ${parsed.error.issues.map((i) => `${i.path.join('.') || 'input'}: ${i.message}`).join('; ')}. Received ${JSON.stringify(call.input).slice(0, 500)}`);
     }
     const input = parsed.data as Record<string, unknown>;
+    const signature = `${name}\u0000${JSON.stringify(input, Object.keys(input).sort())}`;
+    const tripped = this.failures.get(signature);
+    if (tripped && tripped.count >= BREAKER_FAILURES) {
+      return refuse('trajectory', `This exact ${name} call has failed ${tripped.count} times with the same result, and nothing has changed since:\n${tripped.tail}\nIt will not run again unchanged. Change its arguments, fix what makes it fail, or take a different approach.`);
+    }
     const unread = await this.unreadTarget(name, input);
     if (unread) return refuse('invalid', `${unread} already exists and has not been read in this session. Read it first, so you change it knowing what it holds.`);
     const ic = this.opts.infoControl;
     const pre = ic ? await safeHandle(ic, { hook_event_name: 'PreToolUse', tool_name: name, tool_input: input, tool_use_id: call.id }) : {};
+    let advice: string | undefined;
     const preOut = pre.hookSpecificOutput as { permissionDecision?: string; permissionDecisionReason?: string; additionalContext?: string } | undefined;
-    if (preOut?.permissionDecision === 'deny') return refuse('trajectory', preOut.permissionDecisionReason ?? 'Refused by information control.');
+    if (preOut?.permissionDecision === 'deny') {
+      if (this.refusals < (this.opts.refusalCap ?? REFUSAL_CAP)) {
+        this.refusals++;
+        return refuse('trajectory', preOut.permissionDecisionReason ?? 'Refused by information control.');
+      }
+      // Past the cap the call runs; the concern still reaches the model.
+      advice = preOut.permissionDecisionReason;
+    }
 
     let ran: Ran;
     try {
@@ -169,10 +217,21 @@ export class ToolBroker {
     }
     let content = ran.text;
     let spilledTo: string | undefined;
-    if (content.length > OUTPUT_CAP) {
-      spilledTo = name === 'Read' ? undefined : await this.spill(call.id, ran.text);
-      const where = name === 'Read' ? 'Read a smaller range with offset/limit' : spilledTo ? `The full output is in ${spilledTo}` : 'The full output could not be saved';
-      content = `${content.slice(0, OUTPUT_CAP / 2)}\n… [${content.length - OUTPUT_CAP} characters cut. ${where}.] …\n${content.slice(-OUTPUT_CAP / 2)}`;
+    const cap = name === 'WebFetch' ? WEB_CAP : OUTPUT_CAP;
+    if (content.length > cap) {
+      if (name === 'Read') {
+        // A source file is never shown with a hole in the middle: stop at a
+        // line boundary and say where to continue (re-read loops cost more
+        // than a clean page break).
+        const page = content.slice(0, content.lastIndexOf('\n', cap) + 1 || cap);
+        const last = Number(/^ *(\d+)\t/m.exec(page.split('\n').filter(Boolean).at(-1) ?? '')?.[1] ?? 0);
+        content = `${page}… output limit reached${last ? ` at line ${last}; Read with offset ${last + 1} to continue` : '; Read a smaller range with offset/limit'}.`;
+      } else {
+        spilledTo = await this.spill(call.id, ran.text);
+        const where = spilledTo ? `The complete output is in ${spilledTo} — Read it (with offset/limit) for what is not shown` : 'The complete output could not be saved';
+        const banner = `[Preview only: ${content.length - cap} of ${content.length} characters are not shown. Do not infer success or failure from this preview. ${where}.]`;
+        content = name === 'WebFetch' ? `${banner}\n${content.slice(0, cap)}` : `${banner}\n${content.slice(0, cap / 2)}\n…\n${content.slice(-cap / 2)}`;
+      }
     }
 
     let projected = false;
@@ -190,9 +249,23 @@ export class ToolBroker {
       }
     }
     if (!ran.failed && (name === 'Read' || name === 'Write' || name === 'Edit')) this.known.add(this.resolve(String(input.file_path)));
+    if (ran.failed) {
+      const prev = this.failures.get(signature);
+      const same = prev !== undefined && prev.text === ran.text;
+      this.failures.set(signature, { count: same ? prev.count + 1 : 1, text: ran.text, tail: ran.text.trim().slice(-300) });
+    } else if (name === 'Edit' || name === 'Write' || name === 'Bash') {
+      // Something may have changed: every breaker re-arms.
+      this.failures.clear();
+    }
+    if (advice) content = `${content}\n\n[Information control advised against this call: ${advice}]`;
     if (preOut?.additionalContext) content = `${content}\n\n${preOut.additionalContext}`;
     return { content: content || '(no output)', isError: ran.failed, raw: ran.text, projected, ...(spilledTo ? { spilledTo } : {}) };
   }
+
+  /** Identical failing calls, by exact signature, for the circuit breaker. */
+  private readonly failures = new Map<string, { count: number; text: string; tail: string }>();
+  /** Information-control refusals issued so far (see REFUSAL_CAP). */
+  private refusals = 0;
 
   /** Files this session has read or written: the ones it may overwrite. */
   private readonly known = new Set<string>();

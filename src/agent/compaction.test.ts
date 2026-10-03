@@ -36,6 +36,32 @@ describe('compact', () => {
   });
 });
 
+describe('compaction, paper mechanisms', () => {
+  const ex = (id: string, out: string) => exchange(id, out);
+  const calls = (ids: string[]) => new Map<string, CallRecord>(ids.map((id) => [id, { id, name: 'Read', target: `${id}.py`, isError: id === 'b', ...(id === 'b' ? { error: 'FileNotFoundError: b.py' } : {}) }]));
+
+  it('keeps a hot tail of recent exchanges within its budget, never everything', () => {
+    const messages: MessageParam[] = [{ role: 'user', content: 'goal' }, ...ex('a', 'x'.repeat(8000)), ...ex('b', 'small'), ...ex('c', 'small')];
+    const r = compact({ goal: 'goal', messages, activeState: '', calls: calls(['a', 'b', 'c']), tailBudget: 500 })!;
+    expect(r.retainedCallIds).toEqual(['b', 'c']);
+    expect(r.droppedCallIds).toEqual(['a']);
+    const all = compact({ goal: 'goal', messages, activeState: '', calls: calls(['a', 'b', 'c']), tailBudget: 1e9 })!;
+    expect(all.droppedCallIds).toEqual(['a']);
+  });
+
+  it('carries the index of earlier calls forward through a second compaction, errors included', () => {
+    let messages: MessageParam[] = [{ role: 'user', content: 'goal' }, ...ex('a', 'x'), ...ex('b', 'y'), ...ex('c', 'z')];
+    messages = compact({ goal: 'goal', messages, activeState: '', calls: calls(['a', 'b', 'c']) })!.messages;
+    messages = [...messages, ...ex('d', 'w')];
+    const second = compact({ goal: 'goal', messages, activeState: '', calls: calls(['a', 'b', 'c', 'd']) })!;
+    const head = second.messages[0].content as string;
+    expect(head).toContain('1. Read a.py');
+    expect(head).toContain('2. Read b.py — failed: FileNotFoundError: b.py');
+    expect(head).toContain('3. Read c.py');
+    expect(second.retainedCallIds).toEqual(['d']);
+  });
+});
+
 describe('priceCompaction', () => {
   const prices = ownedPrices('haiku');
   const base = { keptTokens: 2_000, stateTokens: 300, contextTokens: 80_000, outputPerTurn: 300, refetchProbability: 0.5 };
