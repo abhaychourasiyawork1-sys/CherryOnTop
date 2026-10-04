@@ -1,0 +1,115 @@
+{
+ "experimentId": "h26-recover-eligibility-v1",
+ "phase": "pilot",
+ "epsilon": 0.5,
+ "hmacPrefix": "h26-recover-eligibility-v1",
+ "keyCommitment": null,
+ "nMax": 3035,
+ "cMask": 3400,
+ "looks": [
+  759,
+  1518,
+  2277,
+  3035
+ ],
+ "efficacyBoundaries": [
+  4.046,
+  2.861,
+  2.336,
+  2.023
+ ],
+ "futility": {
+  "looks": [
+   2,
+   3
+  ],
+  "theta": 2.843,
+  "cpMin": 0.1
+ },
+ "safety": {
+  "constant": 2.363,
+  "marginResolution": 0.02
+ },
+ "turnBudget": {
+  "T": 80,
+  "reserveShare": 0.25,
+  "R": 20,
+  "env": {
+   "ORG_MAX_TURNS_EXECUTE": "80",
+   "ORG_TURN_RETRY_RESERVATION": "on"
+  }
+ },
+ "governorVariant": "H2",
+ "priceSnapshotUsdPerMTok": {
+  "haiku": {
+   "input": 1,
+   "output": 5,
+   "cacheRead": 0.1,
+   "cacheWrite": 2
+  },
+  "source": "src/execution/pricing.ts (Claude API model table 2026-06-24); cache writes at the CLI's 1-hour TTL (2x input)"
+ },
+ "budgetUsd": null,
+ "seeds": {
+  "bootstrapCi": 20261002,
+  "gateBootstrap": 20261003
+ },
+ "gate": {
+  "cpOneSidedAlpha": 0.05,
+  "tQuantile": 1.685,
+  "bootstrapResamples": 10000
+ },
+ "regradeAttempts": 3,
+ "model": "haiku",
+ "perTaskCapUsd": 5,
+ "maxTurnsExecute": 80,
+ "pilot": {
+  "n": 40,
+  "selection": "first 40 of SWE-bench Verified (test split, princeton-nlp/SWE-bench_Verified) ordered by sha256('h26-pilot-v1' + instance_id)",
+  "pool": 500,
+  "instances": [
+   "django__django-10097",
+   "matplotlib__matplotlib-24570",
+   "django__django-15629",
+   "sympy__sympy-16886",
+   "astropy__astropy-14096",
+   "sympy__sympy-20590",
+   "psf__requests-2317",
+   "pylint-dev__pylint-4970",
+   "django__django-11433",
+   "django__django-16263",
+   "django__django-13786",
+   "django__django-16429",
+   "django__django-16662",
+   "django__django-15525",
+   "django__django-10999",
+   "sympy__sympy-18211",
+   "django__django-11451",
+   "sympy__sympy-18199",
+   "matplotlib__matplotlib-24177",
+   "sympy__sympy-21379",
+   "django__django-16032",
+   "sympy__sympy-11618",
+   "matplotlib__matplotlib-22719",
+   "sphinx-doc__sphinx-7590",
+   "pydata__xarray-6461",
+   "django__django-14752",
+   "django__django-13809",
+   "django__django-13449",
+   "django__django-12663",
+   "pytest-dev__pytest-7571",
+   "django__django-14311",
+   "sympy__sympy-24066",
+   "scikit-learn__scikit-learn-14053",
+   "sphinx-doc__sphinx-9320",
+   "django__django-16877",
+   "django__django-12741",
+   "pylint-dev__pylint-4661",
+   "matplotlib__matplotlib-25775",
+   "scikit-learn__scikit-learn-13135",
+   "django__django-11163"
+  ],
+  "benchRoot": "~/Desktop/CherryOnTop-bench/h26-pilot",
+  "lanes": 2
+ }
+}

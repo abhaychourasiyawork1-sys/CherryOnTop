@@ -93,6 +93,14 @@ export function turnsForNode(db: Db, nodeId: string): number {
     .reduce((sum, row) => sum + ((row.value as StoredValue).usage?.numTurns ?? 0), 0);
 }
 
+/** Execute dispatches this node has finished (one usage row each). D2 and
+ *  H2.6 read it: the first execute dispatch is capped short of the retry
+ *  reservation, and "a completed dispatch" is one with its usage recorded. */
+export function executeDispatchesForNode(db: Db, nodeId: string): number {
+  return db.select().from(memory).where(eq(memory.kind, KIND)).all()
+    .filter((row) => row.nodeId === nodeId && (row.value as StoredValue).role === 'execute').length;
+}
+
 /** Tokens this node has already billed, across every dispatch recorded for it.
  *
  *  Node-scoped for the same reason `turnsForNode` is: it feeds decisions about

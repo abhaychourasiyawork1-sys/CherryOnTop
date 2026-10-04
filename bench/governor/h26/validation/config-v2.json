@@ -1,0 +1,85 @@
+{
+ "experimentId": "h26-engineering-validation-2",
+ "phase": "pilot",
+ "epsilon": 0.5,
+ "hmacPrefix": "h26-recover-eligibility-v1",
+ "keyCommitment": "b1d28931da8c78fb0199a6a38d5564fd88beffd75c09dd0cc451f3b876b63f51",
+ "nMax": 3035,
+ "cMask": 3400,
+ "looks": [
+  759,
+  1518,
+  2277,
+  3035
+ ],
+ "efficacyBoundaries": [
+  4.046,
+  2.861,
+  2.336,
+  2.023
+ ],
+ "futility": {
+  "looks": [
+   2,
+   3
+  ],
+  "theta": 2.843,
+  "cpMin": 0.1
+ },
+ "safety": {
+  "constant": 2.363,
+  "marginResolution": 0.02
+ },
+ "turnBudget": {
+  "T": 80,
+  "reserveShare": 0.25,
+  "R": 20,
+  "env": {
+   "ORG_MAX_TURNS_EXECUTE": "80",
+   "ORG_TURN_RETRY_RESERVATION": "on"
+  }
+ },
+ "governorVariant": "H2",
+ "priceSnapshotUsdPerMTok": {
+  "haiku": {
+   "input": 1,
+   "output": 5,
+   "cacheRead": 0.1,
+   "cacheWrite": 2
+  },
+  "source": "src/execution/pricing.ts (Claude API model table 2026-06-24); cache writes at the CLI's 1-hour TTL (2x input)"
+ },
+ "budgetUsd": null,
+ "seeds": {
+  "bootstrapCi": 20261002,
+  "gateBootstrap": 20261003
+ },
+ "gate": {
+  "cpOneSidedAlpha": 0.05,
+  "tQuantile": 1.685,
+  "bootstrapResamples": 10000
+ },
+ "regradeAttempts": 3,
+ "model": "haiku",
+ "perTaskCapUsd": 5,
+ "maxTurnsExecute": 80,
+ "pilot": {
+  "n": 6,
+  "selection": "SWE-bench Verified test split minus the 40 h26 pilot instances, the 5 Arm B instances and the 12 h26-validation-v1 instances, restricted to repositories in ~/.swebench-repos; 3 from difficulty {'1-4 hours','>4 hours'} and 3 from {'15 min - 1 hour'}, each in order of sha256('h26-validation-v2' + instance_id); instances whose base_commit is not in the local clone are skipped (operational, decided before any run).",
+  "pool": 500,
+  "instances": [
+   "django__django-13344",
+   "django__django-15128",
+   "django__django-12325",
+   "django__django-15278",
+   "sphinx-doc__sphinx-7757",
+   "django__django-17084"
+  ],
+  "benchRoot": "~/Desktop/CherryOnTop-bench/h26-validation-2",
+  "lanes": 2
+ },
+ "preregTag": "h26-validation-2",
+ "validation": {
+  "note": "Engineering validation 2 (not the pre-registered pilot): confirms the provider-limit, D2 turn-count and token-budget resolutions on 6 holdout tasks, arms h26ctl (H2.5) and h26. No causal claim; no parameter is tuned from it."
+ }
+}

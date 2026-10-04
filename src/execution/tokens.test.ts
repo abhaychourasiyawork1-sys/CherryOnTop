@@ -97,3 +97,24 @@ describe('visibleContextProfile', () => {
     expect(visibleContextProfile([])).toEqual({ turns: 0, first: 0, last: 0, peak: 0, average: 0, reductions: [] });
   });
 });
+
+describe('turns taken on error_max_turns (H2.6 D2)', () => {
+  // The Claude Code stream: one assistant event per model call (an id may
+  // repeat across content blocks), then the result.
+  const stream = (calls: number, result: Record<string, unknown>): StructuredEvent[] => [
+    ...Array.from({ length: calls }, (_, i) => ev({ type: 'assistant', message: { id: `msg_${i}`, usage: {} } })),
+    ...(calls > 0 ? [ev({ type: 'assistant', message: { id: `msg_${calls - 1}`, usage: {} } })] : []),
+    ev({ type: 'result', ...result }),
+  ];
+  it('counts the model calls, not the CLI\'s cap+1 report', () => {
+    expect(usageFromEvents(stream(60, { subtype: 'error_max_turns', num_turns: 61, usage: {} })).numTurns).toBe(60);
+    expect(usageFromEvents(stream(80, { subtype: 'error_max_turns', num_turns: 81, usage: {} })).numTurns).toBe(80);
+  });
+  it('leaves a successful dispatch as reported', () => {
+    expect(usageFromEvents(stream(32, { subtype: 'success', num_turns: 32, usage: {} })).numTurns).toBe(32);
+  });
+  it('never raises the count, and falls back to the report without assistant events', () => {
+    expect(usageFromEvents(stream(70, { subtype: 'error_max_turns', num_turns: 61, usage: {} })).numTurns).toBe(61);
+    expect(usageFromEvents(stream(0, { subtype: 'error_max_turns', num_turns: 61, usage: {} })).numTurns).toBe(61);
+  });
+});

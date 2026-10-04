@@ -215,6 +215,7 @@ export function governDecision(input: {
   node: GovernorNodeState;
   estimates?: EconomicDecisionInput['estimates'];
   executable?: EconomicDecisionInput['executable'];
+  experimentMask?: EconomicDecisionInput['experimentMask'];
 }): GovernedDecision {
   const { state, ctx, node } = input;
   const f = ctx.features;
@@ -284,6 +285,7 @@ export function governDecision(input: {
     const started = now();
     const decision = chooseEconomicAction({
       state, candidates: list, faults: input.faults, valuation, estimates: input.estimates, executable: input.executable,
+      experimentMask: input.experimentMask,
     });
     node.stats.marketRuns += 1;
     node.stats.marketLatencyMs += Math.max(0, now() - started);

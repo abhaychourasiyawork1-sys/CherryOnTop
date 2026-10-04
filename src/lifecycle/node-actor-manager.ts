@@ -89,7 +89,10 @@ import type { ExecutionStrategy } from '../decision/strategy-gate.js';
 import { policyVersion } from '../efficiency/policy-version.js';
 import { evaluateSpendGuard, SpendGuardStop, type SpendGuardState } from '../efficiency/spend-guard.js';
 import { summarizeExecutionTrajectory, executionSnapshot, UNKNOWN_PROGRESS } from '../efficiency/progress-signals.js';
-import { executionPolicyForGoal, calibrate, effectiveTurnCap, currentPolicyVersions, EXECUTION_POLICY_VERSION } from '../efficiency/policy.js';
+import {
+  executionPolicyForGoal, calibrate, effectiveTurnCap, currentPolicyVersions, EXECUTION_POLICY_VERSION,
+  dispatchTurnCap, retryReservation, retryReservationEnabled,
+} from '../efficiency/policy.js';
 import { activePolicyChanges } from '../learning/policy-experiments.js';
 import { templateFor, pruneTemplate } from '../intelligence/execution-templates.js';
 import type { TaskMode } from '../intelligence/task-understanding.js';
@@ -108,7 +111,7 @@ import { uninformedDifficulty, withSemanticEstimate, type Difficulty } from '../
 import { understandingFor, READ_ONLY_GRANT, WRITABLE_GRANT, modeOf } from '../intelligence/task-understanding.js';
 import { rateLimitFromEvents } from '../execution/rate-limit.js';
 import { dispatchContextFor, warmRepoInventory } from '../context/dispatch-context-cache.js';
-import { recordDispatchUsage, turnsForNode } from '../db/queries/tokens.js';
+import { recordDispatchUsage, turnsForNode, executeDispatchesForNode } from '../db/queries/tokens.js';
 import { shouldRetryWithoutModel, recoveredUsage, visibleContextProfile } from '../execution/tokens.js';
 import { estimateCostUsd } from '../execution/pricing.js';
 import { readOnlyPlanningGrant, investigativeExecuteGrant, needsProofOnly, unprovableWithoutChanges, PROOF_PASS_INSTRUCTION, PROOF_PASS_TURNS } from './dispatch-helpers.js';
@@ -123,6 +126,7 @@ import { contractFor } from '../validation/contract.js';
 import { validationProfileFor, contractForProfile, meetsMinimumLevel } from '../validation/profile.js';
 import { adviceFor } from '../governor/governor.js';
 import { extractProposals, PROPOSAL_INVITATION } from '../governor/coverage.js';
+import { carriesRecover } from '../experiment/recover-eligibility.js';
 import { taskEconomicsFor } from '../efficiency/task-economics.js';
 import { requestEvidenceAtBoundary, renderAcquiredEvidence } from '../context/evidence-actions.js';
 import { actionCandidate, type ActionDecision } from '../decision/actions.js';
@@ -1127,6 +1131,8 @@ async function economicBoundary(
       nodeId: input.nodeId, goal: input.goal, repositoryRevision: revision,
       repository: repoIdentity(input.worktreePath) ?? undefined,
       fullArtifactRequests: input.fullArtifactRequests,
+      // Reached only after `refuseIfSpent` let this dispatch proceed.
+      spendHardStop: false,
     };
     const view = (current: EconomicState) => marketViewOf(input.nodeId, current);
     const boundary = evaluateBoundary(db, boundaryInput, { view });
@@ -1140,10 +1146,29 @@ async function economicBoundary(
     if (decision && !cycle.skippedDeepEvaluation && cycle.candidates.length > 0) {
       // No stale check is needed here: this awaits on the dispatch path before
       // the Job exists, so nothing can move this node's state meanwhile.
+      // The refinement re-runs the market over these candidates, so it gets
+      // exactly the menu the market had: nothing production cannot carry out,
+      // and nothing an H2.6 assignment withheld at this boundary.
+      const menu = cycle.candidates.filter((c) => !boundary.unavailable?.has(c.id));
       const refined = await refineWithSystem1({
-        s1: system1(), scope: input.nodeId, state, candidates: cycle.candidates, decision,
+        s1: system1(), scope: input.nodeId, state, candidates: menu, decision,
       });
       recordSystem1(db, input.nodeId, refined.outcomes, refined.contexts);
+      // H2.6: if System-1 changed the choice at b*, the final choice is M*.
+      // (refineWithSystem1 keeps the decisionId, so the action is what tells.)
+      if (boundary.experiment?.role === 'bstar' && refined.decision.action.id !== decision.action.id) {
+        const chosen = refined.decision.action;
+        appendEvent(db, {
+          nodeId: input.nodeId, type: 'experiment.boundary', createdAt: new Date().toISOString(),
+          payload: {
+            experimentId: boundary.experiment.record.experimentId, phase: boundary.experiment.record.phase,
+            rootTaskId: boundary.experiment.record.rootTaskId, nodeId: input.nodeId, stateVersion: state.version,
+            role: 'bstar_final_decision', decisionId: refined.decision.decisionId, Z: boundary.experiment.z,
+            chosenId: chosen.id, chosenKind: chosen.kind, chosenCarriesRecover: carriesRecover(chosen),
+            substitute: chosen.kind !== 'continue' && chosen.kind !== 'stop' && !carriesRecover(chosen),
+          },
+        });
+      }
       publishRefinement(db, input.nodeId, decision.decisionId, refined.refinement);
       decision = refined.decision;
     }
@@ -2715,7 +2740,32 @@ function productionMachine(db: Db, nodeId: string) {
         // same tree, not a fresh run of the whole task (see dispatch-helpers.ts).
         const proofOnly = needsProofOnly(listEventsForNode(db, nodeId)
           .filter((row) => row.type === 'validation.result').at(-1)?.payload);
-        const configuredCap = effectiveTurnCap(execOpts.maxTurns, execPolicy);
+        const taskTurnBudget = effectiveTurnCap(execOpts.maxTurns, execPolicy);
+        // D2 (H2.6, bench/governor/h26/DESIGN.md §2): with the retry
+        // reservation on, the first execute dispatch is capped at T − R so a
+        // failed first attempt still leaves a retry the boundary can govern.
+        // Identical in every arm of a benchmark generation; off by default.
+        let configuredCap = taskTurnBudget;
+        if (retryReservationEnabled() && taskTurnBudget !== undefined) {
+          const turnsUsedBefore = turnsForNode(db, nodeId);
+          const priorExecuteDispatches = executeDispatchesForNode(db, nodeId);
+          configuredCap = dispatchTurnCap({ taskTurnBudget, turnsUsed: turnsUsedBefore, priorExecuteDispatches });
+          appendEvent(db, {
+            nodeId, type: 'dispatch.turn_budget', createdAt: new Date().toISOString(),
+            payload: {
+              dispatchIndex: priorExecuteDispatches + 1, T: taskTurnBudget, R: retryReservation(taskTurnBudget),
+              cap: configuredCap, turnsUsedBefore,
+            },
+          });
+          // No turns left is a hard stop, never a dispatch: an adapter reads a
+          // cap of 0 as "no cap" (claude-code.ts drops `--max-turns 0`).
+          if (configuredCap === 0) {
+            const message = `Turn budget exhausted — ${turnsUsedBefore} of ${taskTurnBudget} turns. No further sandbox was opened for this agent.`;
+            publishProgress(db, nodeId, message);
+            cancelExecution(nodeId, selection);
+            throw new SpendGuardStop(message, true);
+          }
+        }
         const hardTurnCap = proofOnly ? Math.min(configuredCap ?? PROOF_PASS_TURNS, PROOF_PASS_TURNS) : configuredCap;
         // Built once, out here rather than inside runOnce: the fallback retry
         // below calls runOnce a second time with the same goal, and a goal

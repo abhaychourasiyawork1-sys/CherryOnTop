@@ -152,6 +152,14 @@ export interface EconomicDecisionInput {
    *  chosen. The null action is always executable. Absent, nothing is refused
    *  for this reason (the diagnosis ladder and tests price abstract menus). */
   executable?: (candidate: ActionCandidate) => boolean;
+  /** A randomized experiment's mask (H2.6, `experiment/recover-eligibility.ts`).
+   *  Called once, after every candidate is priced and before anything is
+   *  ranked, with the *unmasked* priced menu. It may only name candidates to
+   *  refuse; they are refused as `unavailable:<reason>` with their price kept,
+   *  and the market then chooses among the rest exactly as it otherwise would.
+   *  It can never add, force or reorder a candidate, and never refuse the null
+   *  action. Absent, nothing changes. */
+  experimentMask?: (menu: UnmaskedMenu) => { refuse: readonly string[]; reason: string } | null;
   /** Injected so a decision is reproducible in a test. Production never
    *  passes it. */
   decisionId?: string;
@@ -161,6 +169,26 @@ export interface EconomicDecisionInput {
 interface Priced {
   candidate: ActionCandidate;
   evaluation: ActionEvaluation;
+}
+
+/** One priced candidate as an experiment mask sees it, before any masking. */
+export interface UnmaskedEntry {
+  candidate: ActionCandidate;
+  feasible: boolean;
+  expectedCostUsd: number;
+  conservativeCostUsd: number;
+  successLowerBound: number;
+  confidence: number;
+  provenance: string;
+  reasonCodes: string[];
+}
+
+/** The unmasked priced menu, and its feasible entries in the market's own
+ *  order (`compareCost`): the first is what the market would choose. */
+export interface UnmaskedMenu {
+  state: EconomicState;
+  entries: UnmaskedEntry[];
+  feasibleInOrder: UnmaskedEntry[];
 }
 
 /** The one entry point the runtime asks "what now?" through. Pure: it reads
@@ -196,7 +224,24 @@ export function chooseEconomicAction(input: EconomicDecisionInput): ActionDecisi
     };
   };
 
-  const priced = candidates.map(price);
+  let priced = candidates.map(price);
+  if (input.experimentMask) {
+    const entry = (p: Priced): UnmaskedEntry => ({
+      candidate: p.candidate, feasible: p.evaluation.allowed,
+      expectedCostUsd: p.evaluation.expectedCostUsd, conservativeCostUsd: p.evaluation.conservativeCostUsd,
+      successLowerBound: p.evaluation.successLowerBound, confidence: p.candidate.confidence,
+      provenance: p.evaluation.estimate.provenance, reasonCodes: [...p.evaluation.reasonCodes],
+    });
+    const byEntry = new Map(priced.map((p) => [p, entry(p)]));
+    const feasibleInOrder = priced.filter((p) => p.evaluation.allowed).sort(compareCost).map((p) => byEntry.get(p)!);
+    const mask = input.experimentMask({ state, entries: [...byEntry.values()], feasibleInOrder });
+    if (mask && mask.refuse.length > 0) {
+      const refuse = new Set(mask.refuse);
+      priced = priced.map((p) => (refuse.has(p.candidate.id) && !isNullAction(p.candidate)
+        ? { ...p, evaluation: { ...p.evaluation, allowed: false, reasonCodes: [...p.evaluation.reasonCodes, `unavailable:${mask.reason}`] } }
+        : p));
+    }
+  }
   const feasible = priced.filter((p) => p.evaluation.allowed);
   const rejected = priced.filter((p) => !p.evaluation.allowed);
   const { kept, pruned } = dominancePrune(feasible);

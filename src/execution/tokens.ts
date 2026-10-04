@@ -120,8 +120,19 @@ export function usageFromEvents(events: StructuredEvent[]): DispatchUsage {
     outputTokens: n(u.output_tokens),
     cacheReadTokens: n(u.cache_read_input_tokens),
     cacheCreationTokens: n(u.cache_creation_input_tokens),
-    numTurns: n(payload.num_turns),
+    numTurns: modelTurns(events, payload, n(payload.num_turns)),
   };
+}
+
+/** Turns the model actually took. On `error_max_turns` Claude Code reports
+ *  one more than it ran: `--max-turns 60` makes 60 model calls and reports
+ *  `num_turns: 61` (measured on every cap-hit dispatch of the 2026-10-02 H2.6
+ *  validation; on success the two agree). Counted, as in `recoveredUsage`, by
+ *  distinct top-level assistant message ids — never above what was reported. */
+function modelTurns(events: StructuredEvent[], payload: Record<string, unknown>, reported: number): number {
+  if (payload.subtype !== 'error_max_turns') return reported;
+  const counted = recoveredUsage(events).usage.numTurns;
+  return counted > 0 ? Math.min(reported, counted) : reported;
 }
 
 // Matched against the runtime's own final error text. Deliberately broad on
