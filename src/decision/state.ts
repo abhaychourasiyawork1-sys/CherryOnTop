@@ -86,6 +86,21 @@ export interface ResourceState {
    *  being worth making — see `decision/budget.ts`. */
   recoveryReserve: number;
   latencyBudgetMs?: number;
+  /** Held by committed actions that have not settled yet. Remaining minus this
+   *  is what a new commitment may claim — the thing that stops two concurrent
+   *  decisions spending the same tokens twice. */
+  reservedTokens?: number;
+  /** The same three facts in money, when the task has a dollar authority.
+   *  Absent means nobody costed the task, which is not the same as out of money. */
+  budgetUsd?: number;
+  spentUsd?: number;
+  reservedUsd?: number;
+  /** What a token of this task's work costs. Converts the token-denominated
+   *  state into the dollars the market ranks in. */
+  usdPerToken?: number;
+  /** What the whole task is expected to consume, when something measured it.
+   *  The scale of the remaining-work estimate; see `utility.ts`. */
+  expectedTaskTokens?: number;
 }
 
 /** Where the run is going, as opposed to where it is. Every field is [0,1]. */
@@ -181,7 +196,23 @@ export type EconomicEvent =
   | { kind: 'INTERVENTION_DECIDED'; decisionId: string; action: string; orchestrationCost: number }
   | { kind: 'VALIDATION_RESULT'; passed: boolean; confidence: number; tokenCost: number; evidenceIds: string[] }
   | { kind: 'TASK_COMPLETED'; succeeded: boolean }
-  | { kind: 'TASK_FAILED'; reason: string };
+  | { kind: 'TASK_FAILED'; reason: string }
+  // The action lifecycle. A decision never moves state; a commitment does,
+  // by reserving, and settlement moves it again by replacing the reservation
+  // with what was actually spent. Amounts ride on the events so the reducer
+  // needs no table of open commitments.
+  | { kind: 'ACTION_COMMITTED'; commitmentId: string; reservedTokens: number; reservedUsd?: number }
+  | { kind: 'ACTION_STARTED'; commitmentId: string }
+  | {
+      kind: 'ACTION_COMPLETED';
+      commitmentId: string;
+      reservedTokens: number;
+      reservedUsd?: number;
+      actualTokens: number;
+      actualUsd?: number;
+      succeeded: boolean;
+    }
+  | { kind: 'ACTION_CANCELLED'; commitmentId: string; reservedTokens: number; reservedUsd?: number };
 
 /** Maximum doubt, which is the honest starting point: before anything has been
  *  observed, every question about the task is open. Starting lower would make a
@@ -255,6 +286,10 @@ function normalizeEvidence(refs: EvidenceRef[]): EvidenceRef[] {
   return out;
 }
 
+function optionalNonNegative<K extends string>(key: K, value: number | undefined): Partial<Record<K, number>> {
+  return Number.isFinite(value) && (value as number) >= 0 ? { [key]: value } as Record<K, number> : {};
+}
+
 /** Total by construction. Anything unreadable becomes the safe middle rather
  *  than propagating a NaN into an arithmetic that decides whether to spend
  *  money. */
@@ -287,6 +322,12 @@ export function normalizeEconomicState(state: EconomicState): EconomicState {
       latencyBudgetMs: Number.isFinite(state.resources?.latencyBudgetMs)
         ? Math.max(0, state.resources!.latencyBudgetMs as number)
         : undefined,
+      reservedTokens: nonNegative(state.resources?.reservedTokens),
+      ...optionalNonNegative('budgetUsd', state.resources?.budgetUsd),
+      ...optionalNonNegative('spentUsd', state.resources?.spentUsd),
+      ...optionalNonNegative('reservedUsd', state.resources?.reservedUsd),
+      ...optionalNonNegative('usdPerToken', state.resources?.usdPerToken),
+      ...optionalNonNegative('expectedTaskTokens', state.resources?.expectedTaskTokens),
     },
     trajectory: {
       progress: clamp01(state.trajectory?.progress),
@@ -473,6 +514,41 @@ function advance(state: EconomicState, event: EconomicEvent): EconomicState {
     case 'TASK_FAILED':
       return { ...state, constraints: { ...state.constraints, hardStop: true } };
 
+    case 'ACTION_COMMITTED':
+      return {
+        ...state,
+        resources: {
+          ...state.resources,
+          reservedTokens: (state.resources.reservedTokens ?? 0) + nonNegative(event.reservedTokens),
+          reservedUsd: (state.resources.reservedUsd ?? 0) + nonNegative(event.reservedUsd),
+        },
+      };
+
+    case 'ACTION_STARTED':
+      // Nothing is spent by starting; the version still moves, so a decision
+      // made before the start is recognisably older than one made after it.
+      return state;
+
+    case 'ACTION_CANCELLED':
+      return { ...state, resources: release(state.resources, event.reservedTokens, event.reservedUsd) };
+
+    case 'ACTION_COMPLETED': {
+      const released = release(state.resources, event.reservedTokens, event.reservedUsd);
+      return {
+        ...state,
+        resources: {
+          ...released,
+          consumedTokens: released.consumedTokens + nonNegative(event.actualTokens),
+          ...(event.actualUsd !== undefined || released.spentUsd !== undefined
+            ? { spentUsd: (released.spentUsd ?? 0) + nonNegative(event.actualUsd) }
+            : {}),
+        },
+        trajectory: event.succeeded
+          ? state.trajectory
+          : { ...state.trajectory, failurePressure: clamp01(state.trajectory.failurePressure + FAILURE_STEP) },
+      };
+    }
+
     default:
       // An event this reducer does not know is not an error — a newer producer
       // may emit one — but it must not silently look like it was handled, so
@@ -482,6 +558,16 @@ function advance(state: EconomicState, event: EconomicEvent): EconomicState {
 }
 
 
+
+/** Returns a reservation. Floored at zero: settling a reservation twice must
+ *  not mint budget. */
+function release(resources: ResourceState, tokens: number, usd: number | undefined): ResourceState {
+  return {
+    ...resources,
+    reservedTokens: Math.max(0, (resources.reservedTokens ?? 0) - nonNegative(tokens)),
+    reservedUsd: Math.max(0, (resources.reservedUsd ?? 0) - nonNegative(usd)),
+  };
+}
 
 /** How much doubt this evidence actually removed, as a fraction of the doubt
  *  there was. Evidence that named no dimension gets a small fixed credit rather

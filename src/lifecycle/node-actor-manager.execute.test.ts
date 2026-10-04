@@ -11,6 +11,7 @@ import { startNodeActor } from './node-actor-manager.js';
 import type { ExecuteStepInput, ExecuteStepResult } from '../execution/execute-step.js';
 import { ZERO_USAGE } from '../execution/tokens.js';
 import { successfulRunEvents, replayInto } from './run-fixtures.js';
+import { modelCapabilities } from '../execution/model-capability.js';
 
 // The one place the three optimizations meet — repo context, role system prompt and
 // the tiered-model fallback — is the executeStep actor closure, and it dispatches
@@ -75,6 +76,9 @@ afterEach(() => {
   delete process.env.ORG_ROLE_PROMPTS;
   delete process.env.ORG_MODEL_EXECUTE;
   delete process.env.ANTHROPIC_API_KEY;
+  // A refused model is remembered process-wide, which is the point; a test that
+  // refuses one on purpose must not decide the next test's candidates.
+  modelCapabilities.clear();
   vi.clearAllMocks();
 });
 

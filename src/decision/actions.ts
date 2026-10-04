@@ -18,6 +18,7 @@
  *  the first step towards a per-capability schema, and a per-capability schema
  *  is a per-capability pathway with extra steps. */
 import { clamp01 } from '../efficiency/policy-types.js';
+import type { ActionTransitionEstimate } from './transition.js';
 
 /** The whole vocabulary. Ten verbs, each of which is something *any* task can
  *  do — deliberately not "refactor", "investigate", "write tests", which are
@@ -107,11 +108,65 @@ export interface ActionDecision {
    *  the state has moved on can be recognised as stale rather than applied. */
   stateVersion: number;
   action: ActionCandidate;
+  /** V(s) − Q(s,a) in dollars: what the chosen action is expected to save over
+   *  carrying on as we are. Zero for the null action; positive means an
+   *  intervention the numbers justify. */
   utility: number;
   /** Machine-readable, stable, and the thing a benchmark attributes regressions
    *  with. Prose belongs in the receipt, not here. */
   reasonCodes: string[];
   confidence: number;
+
+  // ---- the receipt: why this, and what it beat ------------------------------
+  // Optional only so a hand-built decision in a test stays legal; the market
+  // always fills every one.
+
+  estimate?: ActionTransitionEstimate;
+  expectedCostUsd?: number;
+  conservativeCostUsd?: number;
+  successLowerBound?: number;
+  /** Q₂ − Q₁. Null when nothing else was feasible. */
+  margin?: { absoluteUsd: number; relative: number } | null;
+  ranked?: Array<{
+    id: string; fingerprint: string; expectedCostUsd: number; conservativeCostUsd: number;
+    successLowerBound: number; provenance: string;
+  }>;
+  rejected?: Array<{ id: string; reasonCodes: string[] }>;
+  pruned?: string[];
+  /** True when nothing was feasible and the answer is the terminal stop. */
+  blocked?: boolean;
+  /** Every candidate the market saw, compact: what it was, where it came
+   *  from, whether it was feasible, what it was priced at, and what became of
+   *  it. Bounded by the candidate count, never by prompt or context size — the
+   *  raw metadata (evidence bodies, file contents) is deliberately not copied.
+   *  The DecisionPacket is built from this, which is what lets a later miss be
+   *  told apart as never-generated, rejected, pruned or out-ranked. */
+  candidates?: CandidateSnapshot[];
+  /** What deciding cost: the optimizer's own bill, measured. */
+  overhead?: { candidateCount: number; estimatorCalls: number; cacheHits: number; cacheMisses: number; latencyMs: number };
+}
+
+export interface CandidateSnapshot {
+  id: string;
+  fingerprint: string;
+  kind: ActionKind;
+  capability: string;
+  /** The candidate source that proposed it (`metadata.candidateSource`), or
+   *  `caller` when it was handed straight to the market. */
+  source: string;
+  status: 'chosen' | 'ranked' | 'pruned' | 'rejected';
+  reasonCodes: string[];
+  expectedCostUsd: number;
+  conservativeCostUsd: number;
+  successLowerBound: number;
+  immediateTokens: number;
+  provenance: string;
+  confidence: number;
+  /** The rank among feasible, unpruned candidates, 1-based. Null when it never
+   *  reached the ranking. */
+  rank: number | null;
+  /** The doubt dimensions its provider said it addresses, when it said. */
+  addresses?: string[];
 }
 
 /** Absolute quantities: finite and non-negative, or zero. Not clamped above —

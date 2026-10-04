@@ -9,7 +9,7 @@
  *  Nothing here dispatches. A template is a list of intentions that the
  *  decision engine prices and prunes.
  */
-import type { TaskClass } from './task-judge.js';
+import type { TaskMode } from './task-understanding.js';
 import type { DecisionType } from '../decision/types.js';
 
 export interface TemplateStep {
@@ -26,7 +26,7 @@ export interface TemplateStep {
 }
 
 export interface ExecutionTemplate {
-  taskClass: TaskClass;
+  taskClass: TaskMode;
   steps: TemplateStep[];
 }
 
@@ -37,48 +37,36 @@ const step = (
   optional = true,
 ): TemplateStep => ({ intent, name, establishes, optional });
 
-const TEMPLATES: Record<TaskClass, TemplateStep[]> = {
-  trivial_edit: [
-    step('RUN_MODEL', 'make the edit', ['edit'], false),
-  ],
-  investigation: [
+/** Three shapes, because three is what is *known*: the task asks only for an
+ *  answer, it changes something, or it was handed out in pieces. Finer kinds of
+ *  work (debugging, documentation, test writing) were read off the goal's
+ *  wording, and a prior that is wrong about a word is a prior that prunes the
+ *  wrong step — so none is inferred. */
+const TEMPLATES: Record<TaskMode, TemplateStep[]> = {
+  answer: [
     // Reading before running is the whole shape of an investigation, and the
     // reading is what a prior context projection can often skip.
     step('RETRIEVE_CONTEXT', 'locate the relevant code', ['repo_structure']),
     step('RUN_MODEL', 'investigate', ['findings'], false),
   ],
-  debugging: [
-    step('RETRIEVE_CONTEXT', 'locate the failing path', ['repo_structure']),
-    step('RUN_TEST', 'reproduce the failure', ['failure_evidence']),
-    step('RUN_MODEL', 'diagnose', ['root_cause'], false),
-  ],
-  implementation: [
+  change: [
     step('RETRIEVE_CONTEXT', 'locate the code to change', ['repo_structure']),
     step('RUN_MODEL', 'make the change', ['edit'], false),
     step('RUN_TEST', 'verify the change', ['verification']),
   ],
-  test_authoring: [
-    step('RETRIEVE_CONTEXT', 'locate the code under test', ['repo_structure']),
-    step('RUN_MODEL', 'write the tests', ['edit'], false),
-    step('RUN_TEST', 'run them', ['verification']),
-  ],
-  documentation: [
-    step('RETRIEVE_CONTEXT', 'locate what is being documented', ['repo_structure']),
-    step('RUN_MODEL', 'write the documentation', ['edit'], false),
-  ],
-  multi_workstream: [
+  split: [
     step('RUN_MODEL', 'plan the split', ['plan']),
     step('SPAWN_AGENT', 'delegate the pieces', ['child_results'], false),
     step('SYNTHESIZE', 'combine the answers', ['answer']),
   ],
 };
 
-export function templateFor(taskClass: TaskClass): ExecutionTemplate {
+export function templateFor(taskClass: TaskMode): ExecutionTemplate {
   return { taskClass, steps: TEMPLATES[taskClass] };
 }
 
 export interface PrunedTemplate {
-  taskClass: TaskClass;
+  taskClass: TaskMode;
   steps: TemplateStep[];
   /** Steps removed because what they would establish is already known. Named,
    *  so a saving is visible rather than an absence. */

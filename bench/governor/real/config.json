@@ -1,0 +1,21 @@
+{
+  "experiment": "governor-real-armB-2026-10-02",
+  "benchRoot": "~/Desktop/CherryOnTop-bench/governor",
+  "arms": { "H0": "no governor (boundary never evaluates)", "H4": "full governor (production default)" },
+  "model": { "alias": "haiku", "note": "all roles/tiers pinned to the same alias" },
+  "effort": "CLI default",
+  "budgetUsd": 5,
+  "maxChildren": 3,
+  "maxTurnsExecute": 80,
+  "timeoutMinutes": 45,
+  "basePorts": { "daemon": 4400, "laya": 8900 },
+  "reps": 2,
+  "lanes": 2,
+  "tasks": [
+    { "id": "T1", "instance": "pallets__flask-5014" },
+    { "id": "T2", "instance": "sympy__sympy-17139" },
+    { "id": "T3", "instance": "mwaskom__seaborn-3187" },
+    { "id": "T4", "instance": "psf__requests-1142" },
+    { "id": "T5", "instance": "sphinx-doc__sphinx-9698" }
+  ]
+}

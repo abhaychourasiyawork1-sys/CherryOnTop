@@ -15,13 +15,22 @@ export function recordDispatchUsage(
      *  than assumed per database: a deployment that changes policy mid-run must
      *  not make its own history unreadable. */
     policy?: { context: string; execution: string };
+    /** What the cost model conditions on, alongside role and model. Optional:
+     *  rows written before they were recorded are still read, at the coarser
+     *  segments they can serve. */
+    effort?: string;
+    taskClass?: string;
   },
 ): void {
   db.insert(memory).values({
     id: randomUUID(),
     kind: KIND,
     key: r.role,
-    value: { role: r.role, model: r.model, usage: r.usage, costUsd: r.costUsd, policy: r.policy },
+    value: {
+      role: r.role, model: r.model, usage: r.usage, costUsd: r.costUsd, policy: r.policy,
+      ...(r.effort ? { effort: r.effort } : {}),
+      ...(r.taskClass ? { taskClass: r.taskClass } : {}),
+    },
     confidence: null,
     nodeId: r.nodeId,
     createdAt: r.createdAt,
@@ -47,6 +56,7 @@ export interface RoleTokenRow {
 interface StoredValue {
   role: string; model: string | null; usage: DispatchUsage; costUsd: number;
   policy?: { context: string; execution: string };
+  effort?: string; taskClass?: string;
 }
 
 /** Every policy generation this database has dispatches from, newest first.
@@ -126,4 +136,25 @@ export function tokensByRole(db: Db, caseId?: string): { rows: RoleTokenRow[]; p
     rows: [...acc.values()].sort((a, b) => b.inputTokens - a.inputTokens),
     ...hits,
   };
+}
+
+/** Every dispatch of a role as a cost sample: the tokens it billed (input plus
+ *  output, the unit the market prices in) and the features that explain them.
+ *  What the cost model estimates from — one scan, no aggregation, so the model
+ *  can condition however it needs to. Dispatches that did not happen (a cache
+ *  hit) are not samples. */
+export function loadCostSamples(db: Db, role: string): import('../../efficiency/execution-cost-model.js').CostSample[] {
+  const out: import('../../efficiency/execution-cost-model.js').CostSample[] = [];
+  for (const row of db.select().from(memory).where(eq(memory.kind, KIND)).all()) {
+    const v = row.value as StoredValue;
+    if (v.role !== role || CACHE_HIT_ROLES[v.role]) continue;
+    out.push({
+      role: v.role,
+      model: v.model ?? '(default)',
+      ...(v.effort ? { effort: v.effort } : {}),
+      ...(v.taskClass ? { taskClass: v.taskClass } : {}),
+      tokens: (v.usage?.inputTokens ?? 0) + (v.usage?.outputTokens ?? 0),
+    });
+  }
+  return out;
 }

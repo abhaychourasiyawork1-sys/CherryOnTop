@@ -16,6 +16,10 @@ import { assessDecomposability } from './decomposability.js';
 import { createSystem1 } from './guard.js';
 import { fakeLaya } from './fake-provider.js';
 import { createModelGateway } from './model-gateway.js';
+import { SPLITTABLE_PRICING } from '../architecture/fixtures.js';
+import { decompositionBoundary } from './economic-mapping.js';
+
+const SPLIT_BOUNDARY = decompositionBoundary(SPLITTABLE_PRICING);
 
 const certain = () => createSystem1(fakeLaya(1), { maxCallsPerScope: 10, timeoutMs: 1_000 });
 
@@ -33,16 +37,16 @@ describe('System-1 cannot override hard control', () => {
   it('a certain "decomposable" grants no spawn authority', async () => {
     const authority = { budget_usd: 5, spawn_children: false, max_child_count: 4, tools: [] };
     const goal = 'Audit every module for dead code and also document the public services';
-    const r = await assessDecomposability({ scope: 'n', goal, authority, existingChildren: 0 }, certain());
-    expect(r.bundle.worthSplitting).toBe(false);
-    expect(decideExecution({ goal, authority, complexity: r.bundle.complexity, worthSplitting: true }).outcome).toBe('SELF_EXECUTE');
+    const r = await assessDecomposability({ scope: 'n', goal, authority, existingChildren: 0, boundary: SPLIT_BOUNDARY }, certain());
+    expect(r.bundle.splitProbability).toBeUndefined();
+    expect(decideExecution({ goal, authority, splitProbability: 1, pricing: SPLITTABLE_PRICING }).outcome).toBe('SELF_EXECUTE');
   });
 
   it('a certain "decomposable" cannot buy past the budget floor', async () => {
     const authority = { budget_usd: 0.4, spawn_children: true, max_child_count: 4, tools: [] };
     const goal = 'Audit every module for dead code and also document the public services';
-    const r = await assessDecomposability({ scope: 'n', goal, authority, existingChildren: 0 }, certain());
-    expect(decideExecution({ goal, authority, complexity: r.bundle.complexity, worthSplitting: r.bundle.worthSplitting }).outcome).toBe('ESCALATE');
+    const r = await assessDecomposability({ scope: 'n', goal, authority, existingChildren: 0, boundary: SPLIT_BOUNDARY }, certain());
+    expect(decideExecution({ goal, authority, splitProbability: r.bundle.splitProbability, pricing: SPLITTABLE_PRICING }).outcome).toBe('ESCALATE');
   });
 });
 

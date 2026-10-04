@@ -313,6 +313,28 @@ describe('evaluateBoundary', () => {
     forgetNode(id);
   });
 
+  it('carries the representation being bought, and the price of the rung above it, on the action', () => {
+    const db = createDb(TEST_DB);
+    const id = seedNode(db, tmpRepo());
+    for (let i = 0; i < 6; i++) {
+      recordToolCall(db, id, 'Bash', { command: 'npm test' }, true, 'error: checkout is not a function');
+    }
+    const outcome = evaluateBoundary(db, {
+      nodeId: id, goal: GOAL, repositoryRevision: 'abc',
+      fullArtifactRequests: [
+        { path: 'src/cart/checkout.ts', tokens: 120, expectedNetValue: 5_000, representation: 'symbol', symbol: 'checkout', fullTokens: 900 },
+        { path: 'src/cart/totals.ts', tokens: 300, expectedNetValue: 4_000, representation: 'full', fullTokens: 300 },
+      ],
+    });
+    const targeted = outcome.cycle.candidates.find((c) => c.id === 'evidence:src/cart/checkout.ts')!;
+    expect(targeted.metadata).toMatchObject({ representation: 'symbol', symbol: 'checkout', fullTokens: 900 });
+    expect(targeted.tokenCost).toBe(120);
+    const whole = outcome.cycle.candidates.find((c) => c.id === 'evidence:src/cart/totals.ts')!;
+    expect(whole.metadata.representation).toBe('full');
+    expect(whole.metadata.symbol).toBeUndefined();
+    forgetNode(id);
+  });
+
   it('carries the cadence forward so a quiet run is screened less often', () => {
     const db = createDb(TEST_DB);
     const id = seedNode(db, tmpRepo());

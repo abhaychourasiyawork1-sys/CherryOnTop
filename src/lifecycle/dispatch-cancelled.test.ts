@@ -77,7 +77,7 @@ describe('a dispatch whose node was cancelled while queued', () => {
         dispatched.push(input.nodeId);
         resolve();
         await new Promise<void>((release) => { releaseFirst = release; });
-        const events = successfulRunEvents({ editedPath: '/workspace/README.md' });
+        const events = successfulRunEvents({ editedPath: '/workspace/README.md', verifyCommand: 'npm test' });
         for (const event of events) input.onEvent?.(event);
         return { succeeded: true, message: 'done', events, usage: { ...ZERO_USAGE } };
       });

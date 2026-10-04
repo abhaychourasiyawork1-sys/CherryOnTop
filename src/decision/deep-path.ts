@@ -26,7 +26,7 @@ export type CandidateSource = (state: EconomicState) => ActionCandidate[];
  *  than a parameter threaded through six call sites, for the same reason the
  *  sandbox limiter and the efficiency ledger are: what it holds is a property
  *  of the process, not of any one node. */
-const sources: Array<{ name: string; source: CandidateSource }> = [];
+const sources: Array<{ name: string; source: CandidateSource; version: string }> = [];
 
 /** Adds a candidate source, replacing any earlier one with the same name.
  *
@@ -34,10 +34,10 @@ const sources: Array<{ name: string; source: CandidateSource }> = [];
  *  import, and a test that imports a module twice must not get two copies of
  *  its candidates. Returns an unregister function so a test can clean up
  *  without reaching into module state. */
-export function registerCandidateSource(name: string, source: CandidateSource): () => void {
+export function registerCandidateSource(name: string, source: CandidateSource, version = '1'): () => void {
   const existing = sources.findIndex((entry) => entry.name === name);
   if (existing >= 0) sources.splice(existing, 1);
-  sources.push({ name, source });
+  sources.push({ name, source, version });
   return () => {
     const index = sources.findIndex((entry) => entry.name === name);
     if (index >= 0) sources.splice(index, 1);
@@ -148,30 +148,57 @@ export function stateDerivedCandidates(state: EconomicState): ActionCandidate[] 
   return out;
 }
 
-/** Every action worth considering in this state.
+/** What one source did at one decision: whether it ran, how many candidates
+ *  it proposed, and whether it failed. Feasible/rejected counts are filled in
+ *  after the market ran (`governor/coverage.ts`). A miss traced later can only
+ *  be told apart as generation rather than ranking if this exists. */
+export interface SourceCoverage {
+  source: string;
+  version: string;
+  invoked: boolean;
+  skipReason?: string;
+  proposed: number;
+  feasible: number;
+  rejected: number;
+  error?: string;
+}
+
+/** Every action worth considering in this state, with what each source did.
  *
  *  Total: a source that throws costs the runtime that source's candidates and
  *  nothing else. An optimizer that can fail a dispatch by failing to optimize
  *  is worse than no optimizer. */
-export function evaluateDeepPath(state: EconomicState): ActionCandidate[] {
-  if (evaluating) return [];
+export function evaluateDeepPathWithCoverage(state: EconomicState): { candidates: ActionCandidate[]; coverage: SourceCoverage[] } {
+  if (evaluating) return { candidates: [], coverage: [] };
   evaluating = true;
   try {
-    const out = stateDerivedCandidates(state);
-    for (const { name, source } of sources) {
+    const tag = (name: string, list: ActionCandidate[]) =>
+      list.map((c) => (typeof c.metadata.candidateSource === 'string' ? c : { ...c, metadata: { ...c.metadata, candidateSource: name } }));
+    const derived = tag('state-derived', stateDerivedCandidates(state));
+    const out = [...derived];
+    const coverage: SourceCoverage[] = [{ source: 'state-derived', version: '1', invoked: true, proposed: derived.length, feasible: 0, rejected: 0 }];
+    for (const { name, source, version } of sources) {
       try {
-        out.push(...source(state));
+        const proposed = tag(name, source(state));
+        out.push(...proposed);
+        coverage.push({ source: name, version, invoked: true, proposed: proposed.length, feasible: 0, rejected: 0 });
       } catch (err) {
         console.error(`The "${name}" candidate source failed; its options are unavailable for this decision:`, err);
+        coverage.push({ source: name, version, invoked: true, proposed: 0, feasible: 0, rejected: 0, error: err instanceof Error ? err.message : String(err) });
       }
     }
     // Deterministic order in, deterministic ranking out. The engine's final
     // tie-break is the id, so sorting here costs nothing and makes the
     // *proposal* reproducible too — which is what a receipt is read against.
-    return out.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+    return { candidates: out.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)), coverage };
   } finally {
     evaluating = false;
   }
+}
+
+/** The candidates alone, for callers that do not record coverage. */
+export function evaluateDeepPath(state: EconomicState): ActionCandidate[] {
+  return evaluateDeepPathWithCoverage(state).candidates;
 }
 
 // ---------------------------------------------------------------------------

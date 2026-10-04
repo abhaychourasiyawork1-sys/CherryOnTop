@@ -183,12 +183,11 @@ describe('the policy generation a run reports', () => {
     expect(versions.policy).toContain('lexical');
   });
 
-  it('distinguishes the two arms', () => {
+  it('is not moved by the retired efficiency switch — there are no arms in production', () => {
     process.env.ORG_EFFICIENCY_MODE = 'disabled';
-    const baseline = currentPolicyVersions().policy;
+    const before = currentPolicyVersions().policy;
     process.env.ORG_EFFICIENCY_MODE = 'enabled';
-    const full = currentPolicyVersions().policy;
-    expect(baseline).not.toBe(full);
+    expect(currentPolicyVersions().policy).toBe(before);
   });
 });
 

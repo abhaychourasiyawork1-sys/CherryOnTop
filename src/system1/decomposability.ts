@@ -1,32 +1,30 @@
 /** `execution.decomposable`: whether a goal comes apart into independent
  *  workstreams.
  *
- *  Ownership after this change:
+ *  System-1 owns the verdict, and nothing reads the goal's wording ahead of it:
+ *  breadth words, conjunctions and "in parallel" are guesses, and each of the
+ *  rules built on them (a coherent-single-task gate, an explicit-split gate, a
+ *  complexity band) decided the same semantic question System-1 exists to
+ *  answer, with a blind spot of its own.
  *
- *   - `assessDecomposition` keeps producing the *facts* (breadth terms,
- *     separate items, work types, named targets, explicit split requests,
- *     investigative wording) and the size band economics prices on. They are
- *     recorded as before.
- *   - The *semantic verdict* (does it split?) now comes from System-1, turned
- *     into a yes/no by a boundary derived from the delegation economics
- *     (`decompositionBoundary`), not a magic probability.
- *   - `decideExecution` / `authorizeExecution` are unchanged and still decide
- *     whether splitting is legal and worth it.
+ *   - The verdict is System-1's calibrated P(splits), turned into a yes/no by a
+ *     boundary derived from what the market says each way of getting the work
+ *     done costs (`decompositionBoundary`) — not a magic probability.
+ *   - `decideExecution` / `authorizeExecution` still decide whether splitting is
+ *     legal and worth it.
  *
- *  The question is asked only when its answer can change the action. With no
- *  spawn authority, fewer than two children allowed, children already
- *  created, an explicit split request, or economics that would not delegate
- *  even on a certain "yes", the rule decides and System-1 is never called.
+ *  The question is asked only when its answer can change the action: with no
+ *  spawn authority, fewer than two children allowed, children already created,
+ *  or economics that would not delegate even on a certain "yes", the rule
+ *  decides and System-1 is never called.
  *
- *  On provider failure the answer is "do not split" unless the person asked for
- *  a split in so many words (spec §17). The regex verdict this replaced is
- *  deliberately *not* the fallback: a hidden second brain behind the provider
- *  is the thing this architecture forbids. */
-import { assessDecomposition } from '../intelligence/decompose.js';
+ *  On provider failure the answer is "do not split" (spec §17): a hidden second
+ *  brain behind the provider is the thing this architecture forbids. */
 import type { IntelligenceBundle } from '../intelligence/coordinator.js';
+import { uninformedDifficulty } from '../intelligence/difficulty.js';
 import type { Authority } from '../schemas/node-contract.js';
 import { compileHarnessRequest, type Fact } from './compiler.js';
-import { decompositionBoundary, worthSplittingFrom } from './economic-mapping.js';
+import { worthSplittingFrom, type DecompositionBoundary } from './economic-mapping.js';
 import { system1 as defaultSystem1, type JudgeOutcome, type System1 } from './guard.js';
 
 export interface DecomposabilityInput {
@@ -34,6 +32,11 @@ export interface DecomposabilityInput {
   goal: string;
   authority: Authority;
   existingChildren: number;
+  /** Where delegating starts to beat doing the work whole, from the market's
+   *  prices. Null when no answer could make it cheaper — nothing to ask. */
+  boundary: DecompositionBoundary | null;
+  /** How hard the work is believed to be. */
+  difficulty?: number;
   facts?: Fact[];
   stateVersion?: number;
   orchestration?: number;
@@ -52,37 +55,24 @@ export async function assessDecomposability(
   input: DecomposabilityInput,
   s1: System1 = defaultSystem1(),
 ): Promise<DecomposabilityResult> {
-  const decomposition = assessDecomposition(input.goal);
-  const signals: Record<string, number> = { ...decomposition.signals };
-  const bundle = (worthSplitting: boolean): IntelligenceBundle => ({
+  const signals: Record<string, number> = {};
+  const bundle = (splitProbability?: number): IntelligenceBundle => ({
     sufficientContext: true,
-    complexity: decomposition.complexity,
-    worthSplitting,
+    difficulty: input.difficulty ?? uninformedDifficulty().value,
+    ...(splitProbability === undefined ? {} : { splitProbability }),
     signals,
   });
 
-  const explicit = (signals.explicit_split_request ?? 0) > 0;
-  const boundary = decompositionBoundary(decomposition.complexity);
+  const boundary = input.boundary;
   const gate = !input.authority.spawn_children ? 'no-spawn-authority'
     : input.authority.max_child_count < 2 ? 'no-fan-out-allowance'
     : input.existingChildren > 0 ? 'already-delegated'
-    : explicit ? 'explicit-split-request'
     : !boundary ? 'economics-would-not-delegate'
-    // The heuristic itself already named this one coherent (single work type,
-    // no separate items) — asking System-1 anyway lets a noisy probability
-    // override a call the rule was confident about. Measured on SWE-bench: a
-    // requests-1142 run scored coherent_single_task=1 here and was asked
-    // anyway; System-1 answered 0.59 (just past its 0.33 threshold) and
-    // delegated a single bug-fix report, paying for a planning dispatch that
-    // could never fan out into real children. Only the confident case is
-    // gated — an ambiguous one (workTypes>1 or a conjunction) still asks.
-    : signals.coherent_single_task === 1 ? 'coherent-single-task'
     : undefined;
   if (gate) {
     signals[`system1_gate_${gate.replace(/-/g, '_')}`] = 1;
-    // An explicit request is a fact about what the person wants, and it still
-    // only reaches economics as "worth trying". Every other gate means no.
-    return { bundle: bundle(gate === 'explicit-split-request'), gate };
+    // Every gate means no: nothing is said about whether the work splits.
+    return { bundle: bundle(), gate };
   }
 
   const request = compileHarnessRequest({
@@ -102,8 +92,9 @@ export async function assessDecomposability(
   const p = outcome.judgment?.result.probabilities?.many;
   if (p === undefined) {
     signals.system1_fallback = 1;
-    return { bundle: bundle(false), outcome, fallbackReason: outcome.failure?.reason ?? 'no judgment' };
+    return { bundle: bundle(), outcome, fallbackReason: outcome.failure?.reason ?? 'no judgment' };
   }
   signals.system1_p_decomposable = Number(p.toFixed(4));
-  return { bundle: bundle(worthSplittingFrom(p, boundary!)), outcome };
+  signals.system1_worth_splitting = worthSplittingFrom(p, boundary!) ? 1 : 0;
+  return { bundle: bundle(p), outcome };
 }

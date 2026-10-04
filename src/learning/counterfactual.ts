@@ -26,7 +26,7 @@
 import { counterfactual, type Counterfactual } from '../engines/economics.js';
 import type { ExecutionStrategy } from '../decision/strategy-gate.js';
 import type { ValidationLevel } from '../validation/contract.js';
-import { outcomeKindOf, type StrategyOutcomeKind } from './hierarchical.js';
+import { outcomeKindOf, type StrategyOutcomeKind, type CandidateOutcomeObservation } from './hierarchical.js';
 
 export interface CounterfactualInput {
   chosen: ExecutionStrategy;
@@ -154,4 +154,46 @@ export function summarizeCalibration(observations: CounterfactualObservation[]):
     meanSuccessError: mean((o) => o.predictionError.successProbability),
     recoveryRate: observations.filter((o) => o.outcome === 'SUCCESS_WITH_RECOVERY').length / observations.length,
   };
+}
+
+/** Calibration of the Action Market's transition estimates, grouped however
+ *  the caller asks — by candidate, task class, task shape, repository or state
+ *  signature. The question it answers: "is this candidate consistently
+ *  under-priced for this shape of work?" Invalid observations are excluded and
+ *  counted, the same census rule as learning. */
+export interface TransitionCalibration {
+  observations: number;
+  excluded: number;
+  meanCostErrorUsd: number | null;
+  meanLatencyErrorMs: number | null;
+  meanSuccessError: number | null;
+  meanProgressError: number | null;
+}
+
+export function calibrateTransitions(
+  observations: CandidateOutcomeObservation[],
+  groupBy: (observation: CandidateOutcomeObservation) => string,
+): Record<string, TransitionCalibration> {
+  const groups = new Map<string, CandidateOutcomeObservation[]>();
+  const excluded = new Map<string, number>();
+  for (const o of observations) {
+    const key = groupBy(o);
+    if (o.validity !== 'VALID') { excluded.set(key, (excluded.get(key) ?? 0) + 1); continue; }
+    groups.set(key, [...(groups.get(key) ?? []), o]);
+  }
+  const out: Record<string, TransitionCalibration> = {};
+  for (const key of new Set([...groups.keys(), ...excluded.keys()])) {
+    const valid = groups.get(key) ?? [];
+    const avg = (pick: (o: CandidateOutcomeObservation) => number) =>
+      valid.length === 0 ? null : valid.reduce((sum, o) => sum + pick(o), 0) / valid.length;
+    out[key] = {
+      observations: valid.length,
+      excluded: excluded.get(key) ?? 0,
+      meanCostErrorUsd: avg((o) => o.actual.costUsd - o.predicted.costUsd),
+      meanLatencyErrorMs: avg((o) => o.actual.latencyMs - o.predicted.latencyMs),
+      meanSuccessError: avg((o) => (o.actual.succeeded ? 1 : 0) - o.predicted.successProbability),
+      meanProgressError: avg((o) => o.actual.progress - o.predicted.progress),
+    };
+  }
+  return out;
 }

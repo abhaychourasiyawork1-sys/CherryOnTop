@@ -31,7 +31,6 @@ describe('prepareDispatch', () => {
     const deps = spyDeps();
     const result = prepareDispatch(input(), deps);
 
-    expect(deps.judgeTask).toHaveBeenCalledTimes(1);
     expect(deps.taskEconomicsFor).toHaveBeenCalledTimes(1);
     expect(deps.contextPolicyFor).toHaveBeenCalledTimes(1);
     expect(deps.executionPolicyFor).toHaveBeenCalledTimes(1);
@@ -40,11 +39,23 @@ describe('prepareDispatch', () => {
     expect(result.goal).toBe('Fix the typo in README.md');
   });
 
-  it('hands the already-computed verdict to the economics rather than re-judging', () => {
+  it('hands the understanding it was given to the economics, and reads nothing from the goal', () => {
     const deps = spyDeps();
-    prepareDispatch(input(), deps);
-    // Second argument present means `taskEconomicsFor` skipped its own judgeTask.
-    expect(deps.taskEconomicsFor.mock.calls[0][1]).toBeDefined();
+    prepareDispatch(input({ understanding: { readOnly: true, anchors: ['README.md'] } }), deps);
+    expect(deps.taskEconomicsFor.mock.calls[0][1]).toMatchObject({ readOnly: true });
+  });
+
+  it('knows a task only as far as it has been told: unknown is a change, and nobody has said it splits', () => {
+    const snapshot = prepareDispatch(input());
+    expect(snapshot.mode).toBe('change');
+    expect(snapshot.economics.readOnly).toBe(false);
+    expect(snapshot.understanding.splitProbability).toBeUndefined();
+  });
+
+  it('names the mode from what is known: answer, change, or split', () => {
+    expect(prepareDispatch(input({ understanding: { readOnly: true, anchors: [] } })).mode).toBe('answer');
+    expect(prepareDispatch(input()).mode).toBe('change');
+    expect(prepareDispatch(input({ delegated: true })).mode).toBe('split');
   });
 
   it('keeps repository revision and policy versions identical for every consumer', () => {
@@ -87,15 +98,20 @@ describe('prepareDispatch', () => {
 
 describe('taskShapeFingerprint', () => {
   const base = {
-    taskClass: 'implementation', complexity: 'medium', worthSplitting: false,
+    mode: 'change' as const, splitProbability: 0.1,
     economics: {
       complexityBand: 'small' as const, hasExplicitAnchors: true,
       breadth: 0.1, verificationNeed: 0.8, readOnly: false,
     },
   };
 
-  it('separates shapes that differ in how they decompose', () => {
-    expect(taskShapeFingerprint(base)).not.toBe(taskShapeFingerprint({ ...base, worthSplitting: true }));
+  it('separates shapes that differ in how likely they are to decompose', () => {
+    expect(taskShapeFingerprint(base)).not.toBe(taskShapeFingerprint({ ...base, splitProbability: 0.9 }));
+    expect(taskShapeFingerprint(base)).not.toBe(taskShapeFingerprint({ ...base, splitProbability: undefined }));
+  });
+
+  it('separates answering from changing', () => {
+    expect(taskShapeFingerprint(base)).not.toBe(taskShapeFingerprint({ ...base, mode: 'answer' }));
   });
 
   it('bands continuous signals, so two near-identical runs share a key', () => {

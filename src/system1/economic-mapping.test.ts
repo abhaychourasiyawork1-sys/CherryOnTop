@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { decompositionBoundary, worthSplittingFrom, withHelpfulness } from './economic-mapping.js';
 import { calibrate, CALIBRATION_VERSION } from './calibration.js';
 import { actionCandidate } from '../decision/actions.js';
-import { evaluateActionUtility } from '../decision/utility.js';
+import { evaluateAction } from '../decision/utility.js';
 import { initialEconomicState } from '../decision/state.js';
 import type { DecisionJudgment } from './types.js';
 
@@ -28,17 +28,29 @@ describe('calibration', () => {
 });
 
 describe('decomposability boundary', () => {
-  it('is derived from the delegation economics, not a universal 0.5', () => {
-    const medium = decompositionBoundary('medium')!;
-    const high = decompositionBoundary('high')!;
-    expect(medium.threshold).toBeCloseTo(1 / 3);
-    expect(high.threshold).toBeCloseTo(0.2);
-    expect(worthSplittingFrom(0.34, medium)).toBe(true);
-    expect(worthSplittingFrom(0.3, medium)).toBe(false);
+  const price = (expectedUsd: number, conservativeUsd = expectedUsd) => ({ expectedUsd, conservativeUsd });
+  const pricing = (solo: number, plan: number, children: number, synth: number) => ({
+    solo: price(solo), plan: price(plan), children: price(children), synth: price(synth), childCount: 2,
   });
 
-  it('is absent when no answer could make economics delegate, so nobody asks', () => {
-    expect(decompositionBoundary('low')).toBeNull();
+  it('is derived from what each way of doing the work costs, not a universal 0.5', () => {
+    // solo 1.0; plan .1, children .3, synth .1 -> a real split saves .5 net of the plan,
+    // and trying is worth it once p·.5 >= (1-p)·.1.
+    const cheapPlan = decompositionBoundary(pricing(1, 0.1, 0.3, 0.1))!;
+    expect(cheapPlan.gain).toBeCloseTo(0.5);
+    expect(cheapPlan.threshold).toBeCloseTo(0.1 / 0.6);
+    // A dearer plan needs a likelier split before it is worth buying.
+    expect(decompositionBoundary(pricing(1, 0.3, 0.3, 0.1))!.threshold).toBeGreaterThan(cheapPlan.threshold);
+    expect(worthSplittingFrom(0.18, cheapPlan)).toBe(true);
+    expect(worthSplittingFrom(0.15, cheapPlan)).toBe(false);
+  });
+
+  it('is absent when no answer could make delegating cheaper, so nobody asks', () => {
+    expect(decompositionBoundary(pricing(0.4, 0.1, 0.3, 0.1))).toBeNull();
+  });
+
+  it('is absent when the market could not price the work', () => {
+    expect(decompositionBoundary(pricing(Number.POSITIVE_INFINITY, 0.1, Number.NaN, 0.1))).toBeNull();
   });
 });
 
@@ -58,7 +70,7 @@ describe('helpfulness', () => {
   });
 
   it('a certainly-useless action keeps its full cost', () => {
-    const u = evaluateActionUtility(withHelpfulness(validate, 0), state);
-    expect(u.score).toBeLessThan(0);
+    const u = evaluateAction(withHelpfulness(validate, 0), state);
+    expect(u.advantageUsd).toBeLessThan(0);
   });
 });

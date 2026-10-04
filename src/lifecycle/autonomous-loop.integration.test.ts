@@ -1,6 +1,7 @@
 import { describe, it, expect, afterEach, beforeAll } from 'vitest';
 import { existsSync, unlinkSync } from 'node:fs';
 import { execa } from 'execa';
+import { listEventsForNode } from '../db/queries/events.js';
 import { createDb } from '../db/client.js';
 import { insertNode } from '../db/queries/nodes.js';
 import { startNodeActor, getNodeActor, waitForNodeCompletion } from './node-actor-manager.js';
@@ -52,13 +53,19 @@ describe.skipIf(!CLUSTER_AVAILABLE)('autonomous lifecycle, real cluster', () => 
     // START is the only input. INTELLIGENCE_GATE, EXECUTION_DECISION, SELF_EXECUTE
     // (a genuine K8s Job round-trip) and VERIFY all resolve themselves.
     const result = await waitForNodeCompletion(db, 'auto-1', 240_000);
-    expect(result.succeeded).toBe(true);
+    // The busybox job claims success and produces nothing. The lifecycle must
+    // reach a terminal state on its own — and validation must refuse a claim
+    // with nothing behind it rather than call an unproven change done.
+    expect(result.succeeded).toBe(false);
     // The persisted state, not the actor: a finished actor is evicted from the
     // registry, and the DB row is the durable record either way.
-    expect(getNode(db, 'auto-1')?.state).toBe('COMPLETE');
+    expect(getNode(db, 'auto-1')?.state).toBe('FAILED');
+    const verdicts = listEventsForNode(db, 'auto-1').filter((e) => e.type === 'validation.result');
+    expect(verdicts.length).toBeGreaterThan(0);
+    expect((verdicts[0].payload as { reasonCodes: string[] }).reasonCodes).toContain('V0:run_claimed_success');
 
     const decisions = listDecisionsForNode(db, 'auto-1');
-    expect(decisions).toHaveLength(1);
+    expect(decisions.length).toBeGreaterThan(0);
     expect(decisions[0].outcome).toBe('SELF_EXECUTE');
   }, 260_000);
 });

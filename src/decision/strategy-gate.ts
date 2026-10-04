@@ -1,4 +1,4 @@
-/** Can this task be partitioned, and is partitioning worth what it costs?
+/** Can this task be partitioned, and what shape did the market's choice take?
  *
  *  Two questions, and the whole point of this module is that they are asked
  *  separately and in that order. Collapsing them is what produces both failure
@@ -9,25 +9,27 @@
  *
  *  Three stages, and stage two only runs when stage one cannot answer:
  *
- *   1. **Deterministic gate.** Free. Handles the obvious managed cases and the
- *      obvious delegation candidates from signals `assessDecomposition` already
- *      computes. Most tasks stop here, which is the saving.
+ *   1. **Typed evidence.** Free. System-1's calibrated P(splits), already
+ *      asked for the delegation decision, settles partitionability; nothing is
+ *      read off the goal's wording. Most tasks stop here, which is the saving.
  *   2. **Cheap classifier.** A model call, bought *only* for a goal whose
  *      partitionability is genuinely ambiguous. Its scope is deliberately tiny:
  *      it answers whether the work comes apart and how parallel it looks. It
  *      does not allocate authority, choose a child count, or write subgoals —
  *      those are the planner's job and giving them to a classifier is how a
  *      "cheap" call becomes a planning dispatch in disguise.
- *   3. **Economics.** The existing `decideExecutionPath`, unchanged, consuming
- *      the evidence above plus whatever history says. Serial versus parallel is
- *      decided last, and only a scheduler that actually chose parallel work can
- *      produce `PARALLEL_DELEGATED`.
+ *   3. **The market's outcome.** Whether to delegate is the Action Market's
+ *      decision (`authorizeExecution`), passed in as `outcome` — this module
+ *      names the strategy that outcome is, and never re-decides it. Serial
+ *      versus parallel is named last, and only a scheduler that actually chose
+ *      parallel work can produce `PARALLEL_DELEGATED`.
  *
  *  A classifier that fails is not a task that fails: the gate falls back to the
  *  deterministic answer and says so in a reason code. Deterministic and total
  *  apart from the injected classifier. */
 import { receipt, type DecisionReceipt } from './types.js';
-import { decideExecutionPath, hardGates, type ExecutionPathInput, type DispatchEstimate } from './engine.js';
+import { hardGates, delegationEstimate, type DispatchEstimate } from './engine.js';
+import type { DecisionOutcome } from '../schemas/decision.js';
 import type { DispatchPreparation } from './dispatch-preparation.js';
 
 export type ExecutionStrategy = 'MANAGED' | 'SERIAL_DELEGATED' | 'PARALLEL_DELEGATED';
@@ -68,10 +70,13 @@ export interface StrategyClassification {
   reasonCodes?: string[];
 }
 
-export type StrategyClassifier = (input: { goal: string; taskClass: string }) => StrategyClassification;
+export type StrategyClassifier = (input: { goal: string; mode: string }) => StrategyClassification;
 
 export interface DecideStrategyInput {
   preparation: DispatchPreparation;
+  /** What the Action Market decided. The strategy is the name of that
+   *  decision's shape, so it is an input, never recomputed here. */
+  outcome: DecisionOutcome;
   spentUsd: number;
   dispatch: DispatchEstimate;
   /** Bought only when partitionability is ambiguous. Absent means the gate
@@ -117,73 +122,30 @@ export function sanitizeClassification(raw: unknown): StrategyClassification | n
   };
 }
 
-/** Stage one. What the free signals already settle. */
+/** Stage one. What System-1's typed answer already settles.
+ *
+ *  Nothing here reads the goal: breadth words, conjunctions and "in parallel"
+ *  are guesses about whether work comes apart, and the answer to that question
+ *  is System-1's calibrated P(splits) (`execution.decomposable`). A probability
+ *  past even odds is a "yes" and the doubt it carries is its confidence, so the
+ *  stage needs no threshold of its own. No answer is `UNCERTAIN`, the one shape
+ *  worth buying a classifier's opinion about. */
 export function deterministicEvidence(preparation: DispatchPreparation): StrategyEvidence {
-  const signals = preparation.decompositionSignals;
-  const reasonCodes: string[] = [];
-  const explicit = (signals.explicit_split_request ?? 0) > 0;
-  const workTypes = signals.distinct_work_types ?? 0;
-  const separate = signals.separate_items ?? 0;
-  const anchored = (signals.named_single_targets ?? 0) > 0;
-  const breadth = signals.breadth_terms ?? 0;
-
-  // A person asking for a fan-out outranks every inference about whether the
-  // work comes apart. It is not a heuristic call any more.
-  if (explicit) {
-    reasonCodes.push('explicit_split_request');
-    return { partitionability: 'YES', parallelism: 'HIGH', confidence: 0.95, reasonCodes, deterministic: true };
-  }
-
-  // Several named deliverables in one sentence: a real split, and the case the
-  // economics should be allowed to price.
-  if (workTypes >= 2 && separate >= 1) {
-    reasonCodes.push('multiple_work_types_and_items');
+  const p = preparation.understanding.splitProbability;
+  if (p === undefined) {
     return {
-      partitionability: 'YES',
-      parallelism: separate >= 2 ? 'HIGH' : 'MEDIUM',
-      confidence: 0.8, reasonCodes, deterministic: true,
+      partitionability: 'UNCERTAIN', parallelism: 'LOW', confidence: 0,
+      reasonCodes: ['no_split_judgment'], deterministic: true,
     };
   }
-
-  // One named target, and the decomposition already concluded the goal does
-  // not come apart. The tiny-task case, and the one that must never pay for a
-  // classifier to be told what it already knows. `coherent_single_task` is not
-  // the test here on purpose: "fix the typo in README.md" names two *work
-  // types* (a fix, and a documentation file) and is still one job — which is
-  // exactly why `assessDecomposition` weighs a named target against them.
-  const splittable = preparation.verdict.decomposition.worthSplitting;
-  if (anchored && !splittable) {
-    reasonCodes.push('single_named_target');
-    if (preparation.economics.complexityBand === 'tiny') reasonCodes.push('tiny_task');
-    return { partitionability: 'NO', parallelism: 'LOW', confidence: 0.9, reasonCodes, deterministic: true };
-  }
-
-  // Read-only investigation of one coherent question. Broad, but broad is not
-  // a seam — this is the goal shape that used to be split five ways.
-  if (preparation.economics.readOnly && !splittable) {
-    reasonCodes.push('coherent_investigation');
-    return { partitionability: 'NO', parallelism: 'LOW', confidence: 0.75, reasonCodes, deterministic: true };
-  }
-
-  // The decomposition says it splits and nothing above disagreed. Lower
-  // confidence than the two rules that named their evidence outright, because
-  // this one is a score clearing a threshold.
-  if (splittable) {
-    reasonCodes.push('decomposition_scores_splittable');
-    return {
-      partitionability: 'YES',
-      parallelism: breadth >= 2 ? 'HIGH' : 'MEDIUM',
-      confidence: 0.6, reasonCodes, deterministic: true,
-    };
-  }
-
-  // Broad, coherent, unanchored. Genuinely ambiguous, and the only shape worth
-  // buying an opinion about.
-  reasonCodes.push(breadth > 0 ? 'broad_but_coherent' : 'no_decisive_signal');
+  const splits = p >= 0.5;
   return {
-    partitionability: 'UNCERTAIN',
-    parallelism: breadth >= 2 ? 'MEDIUM' : 'LOW',
-    confidence: 0.4, reasonCodes, deterministic: true,
+    partitionability: splits ? 'YES' : 'NO',
+    // How many pieces can run at once is not something a probability says.
+    parallelism: splits ? 'MEDIUM' : 'LOW',
+    confidence: Math.abs(2 * p - 1),
+    reasonCodes: [splits ? 'system1_says_splits' : 'system1_says_single_unit'],
+    deterministic: true,
   };
 }
 
@@ -209,12 +171,14 @@ export function decideStrategy(input: DecideStrategyInput): StrategyDecision {
     };
   }
 
-  // Stage two. Bought only for a goal the free signals could not settle, and
-  // only when a classifier was actually wired in.
-  if (evidence.partitionability === 'UNCERTAIN' && input.classify) {
+  // Stage two. Bought only for a goal the free signals could not settle, only
+  // when the market actually chose to split it (a model call is not bought to
+  // name a strategy nobody is taking), and only when a classifier was actually
+  // wired in.
+  if (evidence.partitionability === 'UNCERTAIN' && input.outcome === 'DELEGATE' && input.classify) {
     try {
       const classification = sanitizeClassification(
-        input.classify({ goal: preparation.goal, taskClass: preparation.taskClass }),
+        input.classify({ goal: preparation.goal, mode: preparation.mode }),
       );
       evidence = classification
         ? {
@@ -237,35 +201,20 @@ export function decideStrategy(input: DecideStrategyInput): StrategyDecision {
 
   if (input.prior) evidence = { ...evidence, historicalPrior: input.prior };
 
-  // Stage three. The existing economics, in the existing vocabulary — not a
-  // second engine, and not a second set of thresholds.
-  const pathInput: ExecutionPathInput = {
-    goal: preparation.goal,
-    authority: preparation.authority,
-    spentUsd: input.spentUsd,
-    dispatch: input.dispatch,
-    complexity: preparation.complexity,
-    // Structural evidence, not a re-derivation: the gate is what decides
-    // whether the goal comes apart, and economics prices that answer. An
-    // `UNCERTAIN` verdict defers to the decomposition rather than reading as a
-    // yes — treating "we could not tell" as "it splits" is how an ambiguous
-    // goal buys a planner and a fan-out on no evidence at all.
-    worthSplitting: evidence.partitionability === 'UNCERTAIN'
-      ? preparation.verdict.decomposition.worthSplitting
-      : evidence.partitionability === 'YES',
-    signals: preparation.decompositionSignals,
-    ...(input.plannedChildCount === undefined ? {} : { plannedChildCount: input.plannedChildCount }),
-    ...(input.requiresApproval === undefined ? {} : { requiresApproval: input.requiresApproval }),
-  };
-  const economics = decideExecutionPath(pathInput);
-
-  if (economics.chosen !== 'SPAWN_AGENT') {
+  // Stage three: name what the market chose. Recomputing delegation economics
+  // here would be a second answer to a question the market already answered.
+  if (input.outcome !== 'DELEGATE') {
     return {
       strategy: 'MANAGED',
-      evidence: { ...evidence, reasonCodes: [...evidence.reasonCodes, `economics:${economics.chosen}`] },
-      receipt: economics,
+      evidence: { ...evidence, reasonCodes: [...evidence.reasonCodes, `market:${input.outcome}`] },
+      receipt: receipt({ chosen: 'RUN_MODEL', reason: 'the market chose to do this work directly', estimate: input.dispatch }),
     };
   }
+  const economics = receipt({
+    chosen: 'SPAWN_AGENT',
+    reason: 'the market chose to split this work',
+    estimate: delegationEstimate(input.dispatch, input.plannedChildCount ?? 1),
+  });
 
   // Delegated. Serial unless the scheduler actually preferred concurrency —
   // "cannot parallelize" is a scheduling result, never a reason not to delegate.

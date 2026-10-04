@@ -5,58 +5,72 @@ import type { Authority } from '../schemas/node-contract.js';
 
 const WIDE: Authority = { tools: ['read', 'edit'], spawn_children: true, max_child_count: 3, budget_usd: 10 };
 
-function prep(goal: string, authority: Authority = WIDE) {
-  return prepareDispatch({ goal, authority, toolGrant: { allowedTools: null, readOnly: false } });
+function prep(goal: string, authority: Authority = WIDE, splitProbability?: number) {
+  return prepareDispatch({
+    goal, authority, toolGrant: { allowedTools: null, readOnly: false },
+    ...(splitProbability === undefined ? {} : {
+      understanding: { readOnly: false, anchors: [], splitProbability },
+    }),
+  });
 }
 
 const DISPATCH = { tokens: 100_000, latencyMs: 120_000, costUsd: 0.5 };
 
-function decide(goal: string, over: Partial<Parameters<typeof decideStrategy>[0]> = {}) {
-  return decideStrategy({ preparation: prep(goal), spentUsd: 0, dispatch: DISPATCH, ...over });
+function decide(goal: string, over: Partial<Parameters<typeof decideStrategy>[0]> = {}, splitProbability?: number) {
+  return decideStrategy({
+    preparation: prep(goal, WIDE, splitProbability), spentUsd: 0, dispatch: DISPATCH, outcome: 'SELF_EXECUTE', ...over,
+  });
 }
 
-describe('deterministic gate', () => {
-  it('does not invoke the classifier for an obvious one-file edit', () => {
+describe('typed evidence', () => {
+  it('does not invoke the classifier when System-1 has said the work is one unit', () => {
     const classify = vi.fn<StrategyClassifier>();
-    const decision = decide('Fix the typo in README.md', { classify });
-    expect(decision.strategy).toBe('MANAGED');
+    const decision = decide('Fix the typo in README.md', { classify, outcome: 'DELEGATE' }, 0.1);
     expect(classify).not.toHaveBeenCalled();
     expect(decision.evidence.deterministic).toBe(true);
-    expect(decision.evidence.reasonCodes).toContain('single_named_target');
+    expect(decision.evidence.partitionability).toBe('NO');
+    expect(decision.evidence.reasonCodes).toContain('system1_says_single_unit');
   });
 
-  it('does not invoke the classifier for an obvious delegation candidate', () => {
+  it('does not invoke the classifier when System-1 has said the work splits', () => {
     const classify = vi.fn<StrategyClassifier>();
-    const decision = decide('Fix the auth bug, and also add tests for the parser', { classify, parallelSelected: true });
+    const decision = decide('Fix the auth bug, and also add tests for the parser',
+      { classify, parallelSelected: true, outcome: 'DELEGATE' }, 0.9);
     expect(classify).not.toHaveBeenCalled();
     expect(decision.evidence.partitionability).toBe('YES');
   });
 
-  it('treats a coherent read-only investigation as one unit of work', () => {
-    const evidence = deterministicEvidence(prep('Investigate why the scheduler drops retries'));
-    expect(evidence.partitionability).toBe('NO');
-    expect(evidence.reasonCodes).toContain('coherent_investigation');
+  it('reads nothing off the wording: the same goal is uncertain until System-1 answers', () => {
+    const goal = 'Split this across multiple agents: tidy src/a.ts';
+    expect(deterministicEvidence(prep(goal)).partitionability).toBe('UNCERTAIN');
+    expect(deterministicEvidence(prep(goal)).reasonCodes).toContain('no_split_judgment');
+    expect(deterministicEvidence(prep(goal, WIDE, 0.8)).partitionability).toBe('YES');
   });
 
-  it('honours an explicit request to fan out over every inference', () => {
-    const evidence = deterministicEvidence(prep('Split this across multiple agents: tidy src/a.ts'));
-    expect(evidence.partitionability).toBe('YES');
-    expect(evidence.reasonCodes).toContain('explicit_split_request');
+  it('carries the doubt in the probability as its confidence', () => {
+    expect(deterministicEvidence(prep('x', WIDE, 0.5)).confidence).toBeCloseTo(0);
+    expect(deterministicEvidence(prep('x', WIDE, 0.95)).confidence).toBeCloseTo(0.9);
   });
 });
 
 describe('classifier stage', () => {
   const ambiguous = 'Bring the whole service in line with the new error handling approach';
 
-  it('is bought exactly once, and only when partitionability is ambiguous', () => {
+  it('is bought exactly once, and only when partitionability is unknown and the market split the work', () => {
     expect(deterministicEvidence(prep(ambiguous)).partitionability).toBe('UNCERTAIN');
     const classify = vi.fn<StrategyClassifier>(() => ({
       partitionability: 'YES', parallelism: 'HIGH', confidence: 0.8,
     }));
-    const decision = decide(ambiguous, { classify });
+    const decision = decide(ambiguous, { classify, outcome: 'DELEGATE' });
     expect(classify).toHaveBeenCalledTimes(1);
     expect(decision.evidence.deterministic).toBe(false);
     expect(decision.evidence.reasonCodes).toContain('classifier_consulted');
+  });
+
+  it('is never bought to name a strategy the market is not taking', () => {
+    const classify = vi.fn<StrategyClassifier>();
+    decide(ambiguous, { classify, outcome: 'SELF_EXECUTE' });
+    expect(classify).not.toHaveBeenCalled();
   });
 
   it('drops child counts, budgets and subgoals a classifier tries to return', () => {
@@ -83,37 +97,48 @@ describe('classifier stage', () => {
 
   it('falls back to deterministic behaviour when the classifier throws', () => {
     const classify = vi.fn<StrategyClassifier>(() => { throw new Error('classifier down'); });
-    const decision = decide(ambiguous, { classify });
+    const decision = decide(ambiguous, { classify, outcome: 'DELEGATE' });
     expect(decision.strategy).toBeDefined();
     expect(decision.evidence.reasonCodes).toContain('deterministic_fallback');
     expect(decision.evidence.reasonCodes.some((c) => c.startsWith('classifier_failed'))).toBe(true);
   });
 
   it('records a receipt explaining the fallback', () => {
-    const decision = decide(ambiguous, { classify: () => { throw new Error('nope'); } });
+    const decision = decide(ambiguous, { classify: () => { throw new Error('nope'); }, outcome: 'DELEGATE' });
     expect(decision.receipt.chosen).toBeDefined();
     expect(decision.evidence.reasonCodes.join(',')).toMatch(/deterministic_fallback/);
   });
 });
 
-describe('economic stage', () => {
+describe('naming the market’s choice', () => {
+  it('names the market’s outcome and never recomputes delegation economics', () => {
+    // The market decided to do this directly; the gate must not second-guess
+    // it however splittable the goal looks.
+    const goal = 'Fix the auth bug, and also add tests for the parser';
+    const direct = decide(goal, { outcome: 'SELF_EXECUTE', parallelSelected: true });
+    expect(direct.strategy).toBe('MANAGED');
+    expect(direct.evidence.reasonCodes).toContain('market:SELF_EXECUTE');
+  });
+
   it('reaches SERIAL_DELEGATED when the work splits but parallelism is not justified', () => {
-    const decision = decide('Fix the auth bug, and also add tests for the parser', { parallelSelected: false });
+    const decision = decide('Fix the auth bug, and also add tests for the parser', { outcome: 'DELEGATE', parallelSelected: false });
     expect(decision.strategy).toBe('SERIAL_DELEGATED');
     expect(decision.evidence.reasonCodes).toContain('delegate_serial:scheduler_did_not_select_parallel');
   });
 
   it('reaches PARALLEL_DELEGATED only when the scheduler selected parallel work', () => {
     const goal = 'Fix the auth bug, and also add tests for the parser';
-    expect(decide(goal, { parallelSelected: true }).strategy).toBe('PARALLEL_DELEGATED');
-    expect(decide(goal, { parallelSelected: undefined }).strategy).toBe('SERIAL_DELEGATED');
+    expect(decide(goal, { outcome: 'DELEGATE', parallelSelected: true }, 0.9).strategy).toBe('PARALLEL_DELEGATED');
+    expect(decide(goal, { outcome: 'DELEGATE', parallelSelected: undefined }, 0.9).strategy).toBe('SERIAL_DELEGATED');
+    // Nobody has said how parallel the pieces are: serial, never a guess.
+    expect(decide(goal, { outcome: 'DELEGATE', parallelSelected: true }).strategy).toBe('SERIAL_DELEGATED');
   });
 
   it('stays MANAGED when the node may not spawn, however splittable the goal', () => {
     const noSpawn: Authority = { ...WIDE, spawn_children: false, max_child_count: 0 };
     const decision = decideStrategy({
       preparation: prep('Fix the auth bug, and also add tests for the parser', noSpawn),
-      spentUsd: 0, dispatch: DISPATCH, parallelSelected: true,
+      spentUsd: 0, dispatch: DISPATCH, parallelSelected: true, outcome: 'SELF_EXECUTE',
     });
     expect(decision.strategy).toBe('MANAGED');
   });
@@ -122,7 +147,7 @@ describe('economic stage', () => {
     const classify = vi.fn<StrategyClassifier>();
     const decision = decideStrategy({
       preparation: prep('Fix the typo in README.md'), spentUsd: 0, dispatch: DISPATCH,
-      classify, requiresApproval: true,
+      classify, requiresApproval: true, outcome: 'SELF_EXECUTE',
     });
     expect(classify).not.toHaveBeenCalled();
     expect(decision.strategy).toBe('MANAGED');

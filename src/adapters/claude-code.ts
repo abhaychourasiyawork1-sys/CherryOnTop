@@ -12,9 +12,22 @@ import type { RuntimeAdapter, StructuredEvent, ToolGrant, BuildCommandOptions } 
  *  Wait-and-poll tools are simply absent. */
 export const CODING_TOOLS = ['Bash', 'Read', 'Edit', 'Write', 'Glob', 'Grep', 'WebFetch', 'WebSearch'];
 
+/** Claude Code's own model aliases and effort levels (`claude --help`:
+ *  `--model` takes an alias for the latest model of a family, `--effort`
+ *  takes low | medium | high | xhigh | max). Reported, never chosen: which one
+ *  runs is the Action Market's decision. */
+const CLAUDE_MODELS = ['haiku', 'sonnet', 'opus', 'fable'];
+const CLAUDE_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'];
+
 export const claudeCodeAdapter: RuntimeAdapter = {
   name: 'claude-code',
   supportsSession: true,
+
+  discoverCapabilities: () => ({ models: CLAUDE_MODELS, efforts: CLAUDE_EFFORTS }),
+
+  // A Claude harness runs Claude models. Saying so is what stops a GPT model
+  // name being dispatched here, refused, and paid for a second time.
+  servesModel: (model: string) => /^(haiku|sonnet|opus|fable|mythos|claude)/i.test(model.trim()),
 
   buildCommand(goal: string, grant?: ToolGrant, opts: BuildCommandOptions = {}): string[] {
     // --verbose: the real binary refuses `--print --output-format stream-json`
@@ -37,6 +50,7 @@ export const claudeCodeAdapter: RuntimeAdapter = {
       ? ['--allowedTools', runtimeTools.join(','), '--disable-slash-commands']
       : ['--tools', CODING_TOOLS.join(','), '--disable-slash-commands'];
     const model = opts.model ? ['--model', opts.model] : [];
+    const effort = opts.effort ? ['--effort', opts.effort] : [];
     const maxTurns = opts.maxTurns ? ['--max-turns', String(opts.maxTurns)] : [];
     const systemPrompt = opts.systemPrompt ? ['--append-system-prompt', opts.systemPrompt] : [];
     // Session mode: one process, many turns, fed stream-json user messages over
@@ -44,8 +58,9 @@ export const claudeCodeAdapter: RuntimeAdapter = {
     // Nothing is registered as a tool: the private decision capability lives in
     // the conversation, not in the runtime's tool or permission surface.
     const input = opts.session ? ['--input-format', 'stream-json'] : [];
+    const settings = opts.settings ? ['--settings', opts.settings] : [];
     return ['claude', '--print', ...input, '--output-format', 'stream-json', '--verbose',
-      ...permission, ...model, ...maxTurns, ...systemPrompt,
+      ...permission, ...model, ...effort, ...maxTurns, ...systemPrompt, ...settings,
       '--dangerously-skip-permissions', ...(opts.session ? [] : [goal])];
   },
 

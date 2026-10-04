@@ -14,9 +14,11 @@ import type { Db } from '../db/client.js';
 import { getRepoInventory, putRepoInventory } from '../db/queries/repo-map-cache.js';
 import { buildRepoInventory, renderRepoMap, type RepoEntry } from '../intelligence/repo-map.js';
 import { repoHead } from '../execution/git-state.js';
-import { repoMapTokenBudget, runtimeMode } from '../config/efficiency.js';
+import { repoMapTokenBudget } from '../config/efficiency.js';
 import { selectDispatchContext, estimateTokens, type DispatchContext } from './dispatch-context.js';
 import type { ContextPolicy, TaskEconomicsSignals } from '../efficiency/policy-types.js';
+import type { SecurityScope } from './types.js';
+import { projectWorkingSet, recordWorkingSet } from './runtime/working-set.js';
 
 /** The inventory for this worktree's committed HEAD, built once and reused.
  *
@@ -53,31 +55,6 @@ export function warmRepoInventory(db: Db, worktreePath: string): void {
   repoInventoryFor(db, worktreePath);
 }
 
-/** What siblings on one commit have already been shown, keyed by that commit.
- *
- *  A fan-out's children are dispatched within seconds of each other against the
- *  same tree, and each one independently re-scores the repository from its own
- *  subgoal. Two children investigating the same module select overlapping files
- *  and rediscover the same thing — the `shared-information` regime's measured
- *  regression. Feeding the earlier selection in as `previouslySelected` makes
- *  the selector prefer paths a sibling already paid for, which both keeps the
- *  prompt prefix stable (the provider's cache is keyed on it) and stops the
- *  second child from reading its way to the same answer.
- *
- *  Process-local and unbounded-in-principle; bounded in practice by how many
- *  commits one daemon process sees. It is a hint, never a correctness input:
- *  losing it costs tokens, never an answer.
- *
- *  ponytail: in-memory map, per process. If daemons ever shard, this wants to
- *  be the `knowledge` table keyed by (repository, revision). */
-const siblingSelections = new Map<string, Set<string>>();
-
-/** Forgets one commit's shared selections. Called when nothing else will run
- *  against that tree. */
-export function forgetSiblingSelections(head: string): void {
-  siblingSelections.delete(head);
-}
-
 /** The part of the repository this goal is about, bounded by the configured
  *  ceiling. Null when there is nothing to say — the caller then dispatches the
  *  bare goal, exactly as before selection existed. */
@@ -88,8 +65,20 @@ export function dispatchContextFor(
   /** The signals and ceiling the dispatch snapshot already derived. Absent
    *  means derive them here, which is what every pre-snapshot caller did — the
    *  point of passing them is that the selector and the strategy gate reason
-   *  from one answer rather than two. */
-  prepared?: { signals?: TaskEconomicsSignals; policy?: ContextPolicy },
+   *  from one answer rather than two.
+   *
+   *  `working` names the task this dispatch belongs to and the grant it runs
+   *  under. A fan-out's children share one task, and what siblings were already
+   *  shown (on this commit, under a grant this one may inherit) is offered back
+   *  to the selector as "previously selected": choosing the same paths again
+   *  keeps the prompt prefix identical, which is what the provider's cache is
+   *  keyed on, and stops a second child reading its way to what a sibling found.
+   *  Without it nothing is shared — unrelated tasks never see each other. */
+  prepared?: {
+    signals?: TaskEconomicsSignals;
+    policy?: ContextPolicy;
+    working?: { taskId: string; scope: SecurityScope };
+  },
 ): DispatchContext | null {
   // Read the budget before touching git: when context is switched off there is
   // nothing to look up and nothing to build, so do not fork a subprocess to key
@@ -103,7 +92,10 @@ export function dispatchContextFor(
   // Keyed on the committed revision, so a sibling's selection is only ever
   // offered to a dispatch looking at the same tree.
   const head = repoHead(worktreePath);
-  const shared = head ? (siblingSelections.get(head) ?? new Set<string>()) : undefined;
+  const working = prepared?.working;
+  const shared = head && working
+    ? new Set(projectWorkingSet(db, working.taskId, { revision: head, scope: working.scope }).paths)
+    : undefined;
 
   try {
     const context = selectDispatchContext({
@@ -112,26 +104,19 @@ export function dispatchContextFor(
       ...(prepared?.signals ? { signals: prepared.signals } : {}),
       ...(prepared?.policy ? { policy: prepared.policy } : {}),
     });
-    if (head && context.receipt.selected.length > 0) {
-      const seen = siblingSelections.get(head) ?? new Set<string>();
-      for (const path of context.receipt.selected) seen.add(path);
-      siblingSelections.set(head, seen);
+    if (head && working && context.receipt.selected.length > 0) {
+      try {
+        recordWorkingSet(db, working.taskId, {
+          revision: head, scope: working.scope,
+          paths: context.receipt.selected.map((path) => ({ path })),
+        });
+      } catch (err) {
+        // A hint that could not be written costs a sibling some tokens, never
+        // this dispatch its context.
+        console.error(`Failed to record the working set for task ${working.taskId}:`, err);
+      }
     }
-    // `disabled` is the behaviour this branch shipped with: the whole inventory
-    // rendered to the ceiling, on every dispatch. `shadow` runs selection and
-    // publishes its receipt — so a deployment can see what it would have
-    // dropped — but still dispatches the full map, which is what makes a shadow
-    // run comparable to a baseline one.
-    if (runtimeMode() === 'full') {
-      return context.content ? { ...context, receipt: { ...context.receipt, applied: true } } : null;
-    }
-    const full = renderRepoMap(entries, tokenBudget);
-    if (!full) return null;
-    return {
-      content: full,
-      estimatedTokens: estimateTokens(full),
-      receipt: { ...context.receipt, applied: false },
-    };
+    return context.content ? { ...context, receipt: { ...context.receipt, applied: true } } : null;
   } catch (err) {
     // Degrade upwards, never downwards: the whole inventory rendered to the
     // same ceiling is what every dispatch received before selection existed, so

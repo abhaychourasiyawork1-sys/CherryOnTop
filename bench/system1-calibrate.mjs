@@ -19,7 +19,6 @@ const { system1Config } = await import('../dist/config/system1.js');
 const { createHttpProvider } = await import('../dist/system1/laya-client.js');
 const { compileHarnessRequest } = await import('../dist/system1/compiler.js');
 const { layaKey } = await import('../dist/system1/laya-process.js');
-const { assessDecomposition } = await import('../dist/intelligence/decompose.js');
 const { decompositionBoundary, worthSplittingFrom } = await import('../dist/system1/economic-mapping.js');
 const { DECOMPOSABLE_PLATT, plattScale } = await import('../dist/system1/calibration.js');
 
@@ -53,20 +52,27 @@ const auc = (data) => {
   let w = 0; for (const x of pos) for (const y of neg) w += x.p > y.p ? 1 : x.p === y.p ? 0.5 : 0;
   return w / (pos.length * neg.length);
 };
+// The boundary is derived from what the market says each way of doing the work
+// costs; a calibration run has no live market, so it uses one fixed, named
+// pricing for every goal: doing the work whole costs 1, the plan .1, the pieces
+// .3 and the synthesis .1. Only the *calibrator* is under test here.
+const BENCH_PRICING = {
+  solo: { expectedUsd: 1, conservativeUsd: 1 }, plan: { expectedUsd: 0.1, conservativeUsd: 0.1 },
+  children: { expectedUsd: 0.3, conservativeUsd: 0.3 }, synth: { expectedUsd: 0.1, conservativeUsd: 0.1 }, childCount: 2,
+};
 const decide = (r, f) => {
-  const boundary = decompositionBoundary(assessDecomposition(r.goal).complexity);
+  const boundary = decompositionBoundary(BENCH_PRICING);
   return boundary ? worthSplittingFrom(f(r.p), boundary) : false;
 };
 const nll = (r, q) => -Math.log(Math.max(1e-9, r.label ? q : 1 - q));
 
-let loo = 0, looRegex = 0, llPlatt = 0, llIdentity = 0, llCurrent = 0, looCurrent = 0;
+let loo = 0, llPlatt = 0, llIdentity = 0, llCurrent = 0, looCurrent = 0;
 for (let i = 0; i < rows.length; i++) {
   const c = fit(rows.filter((_, j) => j !== i));
   const f = (p) => plattScale(p, c);
   const r = rows[i];
   loo += decide(r, f) === r.label ? 1 : 0;
   looCurrent += decide(r, (p) => plattScale(p, DECOMPOSABLE_PLATT)) === r.label ? 1 : 0;
-  looRegex += assessDecomposition(r.goal).worthSplitting === r.label ? 1 : 0;
   llPlatt += nll(r, f(r.p));
   llIdentity += nll(r, r.p);
   llCurrent += nll(r, plattScale(r.p, DECOMPOSABLE_PLATT));
@@ -74,6 +80,6 @@ for (let i = 0; i < rows.length; i++) {
 const n = rows.length;
 const all = fit(rows);
 console.log(`goals: ${n}   raw AUC: ${auc(rows).toFixed(3)}`);
-console.log(`decision accuracy   regex heuristic: ${(looRegex / n).toFixed(3)}   refit (leave-one-out): ${(loo / n).toFixed(3)}   shipped ${DECOMPOSABLE_PLATT.version}: ${(looCurrent / n).toFixed(3)}`);
+console.log(`decision accuracy   refit (leave-one-out): ${(loo / n).toFixed(3)}   shipped ${DECOMPOSABLE_PLATT.version}: ${(looCurrent / n).toFixed(3)}`);
 console.log(`log loss            identity: ${(llIdentity / n).toFixed(3)}   refit (leave-one-out): ${(llPlatt / n).toFixed(3)}   shipped: ${(llCurrent / n).toFixed(3)}`);
 console.log(`refit on all goals: a=${all.a.toFixed(4)} b=${all.b.toFixed(4)}`);

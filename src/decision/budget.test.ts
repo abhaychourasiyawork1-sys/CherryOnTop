@@ -221,12 +221,13 @@ describe('the books balance', () => {
     const allocation = allocateBudget({
       state: state(),
       opportunities: [
-        of('hungry', 'explore', { expectedTokenBenefit: 90_000, tokenCost: 80_000 }),
+        of('hungry', 'explore', { expectedTokenBenefit: 70_000, tokenCost: 45_000 }),
         of('tiny', 'validate', { expectedQualityBenefit: 0.5, tokenCost: 100 }),
       ],
     });
     expect(allocation.validation).toBeLessThanOrEqual(100);
-    expect(allocation.exploration).toBeGreaterThan(50_000);
+    // Fully funded: its proportional share alone would not have covered it.
+    expect(allocation.exploration).toBeCloseTo(45_000, 6);
   });
 
   it('is deterministic', () => {

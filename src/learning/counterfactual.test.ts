@@ -1,8 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import {
   buildCounterfactualObservation, hasCounterfactual, summarizeCalibration,
-  type CounterfactualInput,
-} from './counterfactual.js';
+  type CounterfactualInput, calibrateTransitions } from './counterfactual.js';
+import type { CandidateOutcomeObservation } from './hierarchical.js';
 
 function input(over: Partial<CounterfactualInput> = {}): CounterfactualInput {
   return {
@@ -107,5 +107,36 @@ describe('summarizeCalibration', () => {
       buildCounterfactualObservation(input({ recoveryCount: 0 }))!,
     ]);
     expect(summary.recoveryRate).toBeCloseTo(0.5);
+  });
+});
+
+describe('transition calibration: predicted against actual, grouped', () => {
+  const obs = (candidateId: string, predicted: number, actual: number, validity: CandidateOutcomeObservation['validity'] = 'VALID'): CandidateOutcomeObservation => ({
+    candidateId, task: [{ level: 'TASK_SHAPE', value: 'refactor:high' }], stateSignature: 's',
+    predicted: { costUsd: predicted, latencyMs: 10, successProbability: 0.9, progress: 1 },
+    actual: { costUsd: actual, latencyMs: 15, succeeded: true, validated: true, progress: 0.8, tokens: 1 },
+    recoveryCount: 0, validationLevel: 'V2', validity,
+  });
+
+  it('detects a candidate that is consistently under-priced for a shape of work', () => {
+    const byCandidate = calibrateTransitions([
+      obs('cheap-model', 0.1, 0.4), obs('cheap-model', 0.1, 0.5), obs('sound-model', 0.3, 0.3),
+    ], (o) => o.candidateId);
+    expect(byCandidate['cheap-model'].meanCostErrorUsd).toBeCloseTo(0.35);
+    expect(byCandidate['sound-model'].meanCostErrorUsd).toBeCloseTo(0);
+    expect(byCandidate['cheap-model'].meanLatencyErrorMs).toBe(5);
+    expect(byCandidate['cheap-model'].meanSuccessError).toBeCloseTo(0.1);
+    expect(byCandidate['cheap-model'].meanProgressError).toBeCloseTo(-0.2);
+  });
+
+  it('groups by any key — task shape, state signature — with the same arithmetic', () => {
+    const byShape = calibrateTransitions([obs('a', 0.1, 0.2), obs('b', 0.2, 0.2)], (o) => o.task[0].value);
+    expect(byShape['refactor:high'].observations).toBe(2);
+  });
+
+  it('keeps invalid observations visible and out of the averages', () => {
+    const result = calibrateTransitions([obs('a', 0.1, 0.2), obs('a', 0.1, 99, 'INVALID_INFRA')], (o) => o.candidateId);
+    expect(result.a).toEqual(expect.objectContaining({ observations: 1, excluded: 1 }));
+    expect(result.a.meanCostErrorUsd).toBeCloseTo(0.1);
   });
 });

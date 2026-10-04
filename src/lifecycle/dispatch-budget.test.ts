@@ -77,7 +77,7 @@ function spend(db: ReturnType<typeof createDb>, nodeId: string, costUsd: number)
 // a run that reported success and produced nothing.
 const ok = {
   succeeded: true, message: 'done',
-  events: successfulRunEvents({ editedPath: '/workspace/README.md' }),
+  events: successfulRunEvents({ editedPath: '/workspace/README.md', verifyCommand: 'npm test' }),
   usage: { ...ZERO_USAGE },
 };
 

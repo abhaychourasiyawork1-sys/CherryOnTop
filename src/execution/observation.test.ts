@@ -143,3 +143,23 @@ describe('isVerifyingCommand', () => {
     ]) expect(isVerifyingCommand(c), c).toBe(false);
   });
 });
+
+describe('where an observation’s output lives', () => {
+  it('records the event that carries the output, distinct from the one that carries the call', () => {
+    const events = [
+      { type: 'assistant', payload: { message: { content: [{ type: 'tool_use', id: 'x', name: 'Bash', input: { command: 'ls' } }] } } },
+      { type: 'system', payload: {} },
+      { type: 'user', payload: { message: { content: [{ type: 'tool_result', tool_use_id: 'x', content: 'a b c' }] } } },
+    ];
+    const [observation] = observationsFromEvents(events, 'n');
+    expect(observation.execution.sequence).toBe(0);
+    expect(observation.execution.resultSequence).toBe(2);
+  });
+
+  it('has no result sequence for a call that never returned', () => {
+    const [observation] = observationsFromEvents([
+      { type: 'assistant', payload: { message: { content: [{ type: 'tool_use', id: 'x', name: 'Bash', input: { command: 'sleep 999' } }] } } },
+    ], 'n');
+    expect(observation.execution.resultSequence).toBeUndefined();
+  });
+});

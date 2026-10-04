@@ -22,10 +22,10 @@
  *     *given that it needs the file*, weighted by how likely that is. A
  *     candidate the goal named outright has a rediscovery cost near zero: the
  *     agent was going to open it first anyway.
- *   - **Quality risk is priced in tokens.** Under a 2:2:1 objective tokens and
- *     quality carry equal weight, so one unit of quality is worth one budget of
- *     tokens. That is not a fudge factor — it is what the approved objective
- *     *means*, written down where it can be checked.
+ *   - **Quality risk is priced in tokens** at the Action Market's own exchange
+ *     rate: a drop in the chance the result is wrong is worth the rework it
+ *     avoids (`reworkCostTokens`). One rate, so context selection and the
+ *     market cannot disagree about what quality is worth.
  *   - **The optimizer charges itself.** Evaluating a candidate costs something,
  *     and it is subtracted here. An optimizer whose own cost is accounted
  *     somewhere it never reads will always look profitable.
@@ -35,7 +35,7 @@ import { clamp01 } from './policy-types.js';
 import { explorationAvoided } from '../context/scoring.js';
 import { artifactRole, type ContextCandidate } from '../context/candidates.js';
 import type { EconomicState } from '../decision/state.js';
-import { DEFAULT_UTILITY_WEIGHTS, type UtilityWeights } from '../decision/utility.js';
+import { reworkCostTokens } from '../decision/utility.js';
 
 export interface InformationEconomics {
   /** Tokens to provide it now, including what deciding to cost. */
@@ -85,10 +85,6 @@ export const DEFAULT_DISCOVERY_MODEL: DiscoveryModel = {
   evaluationCost: 2,
 };
 
-/** The token scale used when a task carries no budget of its own. Matches
- *  `decision/utility.ts` — one nominal scale, not two. */
-const NOMINAL_TOKEN_SCALE = 10_000;
-const NOMINAL_LATENCY_BUDGET_MS = 600_000;
 
 /** How much having this artifact lowers the chance of getting the work wrong.
  *
@@ -115,18 +111,9 @@ export function evaluateInformationOpportunity(input: {
   candidate: ContextCandidate;
   state: EconomicState;
   model?: DiscoveryModel;
-  weights?: UtilityWeights;
 }): InformationEconomics {
   const { candidate, state } = input;
   const model = input.model ?? DEFAULT_DISCOVERY_MODEL;
-  const weights = input.weights ?? DEFAULT_UTILITY_WEIGHTS;
-
-  const tokenScale = state.resources.totalTokenBudget > 0
-    ? state.resources.totalTokenBudget
-    : NOMINAL_TOKEN_SCALE;
-  const latencyScale = state.resources.latencyBudgetMs && state.resources.latencyBudgetMs > 0
-    ? state.resources.latencyBudgetMs
-    : NOMINAL_LATENCY_BUDGET_MS;
 
   // How likely the agent is to need this at all, and therefore how much of the
   // rediscovery cost is really on offer. Reuses the selector's own term rather
@@ -140,24 +127,18 @@ export function evaluateInformationOpportunity(input: {
   const expectedQualityRiskReduction = qualityRiskReduction(candidate, state);
   const expectedLatencyReduction = needed * model.turnsToRediscover * model.msPerExploratoryTurn;
 
-  // Quality and latency, converted into tokens at the objective's own exchange
-  // rate. Under 2:2:1 a unit of quality is worth a whole budget of tokens and a
-  // whole latency budget is worth half of one — which is exactly what giving
-  // tokens and quality equal weight, and latency half, *says*. Writing the
-  // conversion down here is what makes it checkable instead of implicit.
-  const qualityInTokens = weights.tokens <= 0
-    ? 0
-    : expectedQualityRiskReduction * (weights.quality / weights.tokens) * tokenScale;
-  const latencyInTokens = weights.tokens <= 0
-    ? 0
-    : (expectedLatencyReduction / latencyScale) * (weights.latency / weights.tokens) * tokenScale;
+  // Quality in tokens at the market's own exchange rate: a drop in the chance
+  // the result is wrong is worth the rework it avoids. Latency is reported but
+  // not bought with tokens — it is a constraint on the task, not a term in the
+  // cost it minimizes.
+  const qualityInTokens = expectedQualityRiskReduction * reworkCostTokens(state);
 
   return {
     acquisitionCost,
     expectedRediscoveryCost,
     expectedQualityRiskReduction,
     expectedLatencyReduction,
-    expectedNetValue: expectedRediscoveryCost + qualityInTokens + latencyInTokens - acquisitionCost,
+    expectedNetValue: expectedRediscoveryCost + qualityInTokens - acquisitionCost,
     // The candidate's own evidence, capped by how much the orchestrator trusts
     // its reading of the run. Doubt reduces pressure to act, never raises it.
     confidence: clamp01(candidate.confidenceScore * state.trajectory.orchestrationConfidence),

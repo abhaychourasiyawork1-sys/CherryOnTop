@@ -1,0 +1,17 @@
+[
+ {
+  "name": "H2 riskOnly≥q10",
+  "success": 0.9074074074074074,
+  "tokensPerSuccess": 325758.2519015569
+ },
+ {
+  "name": "H2 riskOnly≥q25",
+  "success": 0.9074074074074074,
+  "tokensPerSuccess": 325758.2519015569
+ },
+ {
+  "name": "H2 riskOnly≥q50",
+  "success": 0.9074074074074074,
+  "tokensPerSuccess": 325758.2519015569
+ }
+]

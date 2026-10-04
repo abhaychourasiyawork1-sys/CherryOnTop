@@ -52,12 +52,18 @@ describe('chooseEconomicAction selects generically', () => {
     expect(d.action.kind).toBe('explore');
   });
 
-  it('picks parallelization when latency is what is on offer', () => {
+  it('picks parallelization when the latency budget rules the serial path out', () => {
+    // Latency is a constraint, not a term bought with tokens: the serial path
+    // is infeasible, so the costlier parallel one is what remains.
     const d = chooseEconomicAction({
       state: state(),
-      candidates: mixedCandidates('parallelize', { expectedLatencyBenefit: 550_000, tokenCost: 200, coordinationCost: 100 }),
+      candidates: [
+        of('serial', 'continue', { latencyCost: 700_000, confidence: 1 }),
+        of('parallel', 'parallelize', { tokenCost: 200, coordinationCost: 100, latencyCost: 200_000 }),
+      ],
     });
     expect(d.action.kind).toBe('parallelize');
+    expect(d.reasonCodes).toContain('rejected:serial:latency_budget');
   });
 
   it('picks recovery when a retry is the profitable move', () => {
@@ -131,7 +137,7 @@ describe('hard constraints filter before ranking', () => {
 });
 
 describe('deterministic ranking', () => {
-  it('ranks by utility first', () => {
+  it('ranks by conservative cost-to-go first', () => {
     const d = chooseEconomicAction({
       state: state(),
       candidates: [
@@ -142,13 +148,23 @@ describe('deterministic ranking', () => {
     expect(d.action.id).toBe('large');
   });
 
-  it('breaks a utility tie on confidence', () => {
+  it('prefers the surer of two equal claims, because doubt widens the bound it ranks on', () => {
     const d = chooseEconomicAction({
       state: state(),
       candidates: [
-        // Equal net utility by construction: benefit scaled so confidence*net matches.
-        of('unsure', 'acquire_evidence', { expectedTokenBenefit: 4000, confidence: 0.5 }),
+        of('unsure', 'acquire_evidence', { expectedTokenBenefit: 2000, confidence: 0.5 }),
         of('sure', 'acquire_evidence', { expectedTokenBenefit: 2000, confidence: 1 }),
+      ],
+    });
+    expect(d.action.id).toBe('sure');
+  });
+
+  it('breaks an exact cost tie on confidence', () => {
+    const d = chooseEconomicAction({
+      state: state(),
+      candidates: [
+        of('unsure', 'continue', { confidence: 0.5 }),
+        of('sure', 'continue', { confidence: 0.9 }),
       ],
     });
     expect(d.action.id).toBe('sure');
@@ -167,14 +183,14 @@ describe('deterministic ranking', () => {
 
   it('gives the same answer for the same state and candidates', () => {
     const candidates = mixedCandidates('validate', { expectedQualityBenefit: 0.5 });
-    const a = chooseEconomicAction({ state: state(), candidates });
-    const b = chooseEconomicAction({ state: state(), candidates });
+    const a = chooseEconomicAction({ state: state(), candidates, nowMs: () => 0 });
+    const b = chooseEconomicAction({ state: state(), candidates, nowMs: () => 0 });
     expect({ ...a, decisionId: '' }).toEqual({ ...b, decisionId: '' });
   });
 });
 
 describe('the conservative fallback', () => {
-  it('continues when no candidate has positive justified utility', () => {
+  it('continues when no candidate beats the current trajectory', () => {
     const d = chooseEconomicAction({
       state: state(),
       candidates: [
@@ -231,8 +247,8 @@ describe('decision provenance', () => {
         of('lose', 'explore', { expectedTokenBenefit: 5000, qualityRisk: 0.9 }),
       ],
     });
-    expect(d.reasonCodes).toContain('positive_utility');
-    expect(d.reasonCodes).toContain('chosen_by_utility');
+    expect(d.reasonCodes).toContain('saves_cost');
+    expect(d.reasonCodes).toContain('chosen_by_cost_to_go');
     // What it beat, and why the loser was not eligible, is part of the record.
     expect(d.reasonCodes).toContain('rejected:lose:quality_floor');
   });

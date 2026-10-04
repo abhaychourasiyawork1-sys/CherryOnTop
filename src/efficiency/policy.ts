@@ -20,7 +20,7 @@ import {
   type ContextPolicy, type ExecutionPolicy, type TaskEconomicsSignals,
 } from './policy-types.js';
 import { taskEconomicsFor } from './task-economics.js';
-import type { TaskVerdict } from '../intelligence/task-judge.js';
+import type { TaskUnderstanding } from '../intelligence/task-understanding.js';
 import { repoMapTokenBudget, taskSpendCapUsd, dispatchOptionsFor, contextPlannerEnabled } from '../config/efficiency.js';
 import { policyVersion, CONTEXT_POLICY_VERSION, EXECUTION_POLICY_VERSION } from './policy-version.js';
 
@@ -186,16 +186,15 @@ export function calibrate(policy: ExecutionPolicy, changes?: Record<string, numb
  *  must cost the dispatch its *adaptivity*, never its turn budget, so the catch
  *  returns the fixed defaults this branch already shipped with.
  *
- *  `verdict` is the classification the chokepoint already computed. Judging the
- *  goal twice gives the same answer — both are pure — but paying twice for an
- *  answer in hand is the habit this subsystem exists to break. */
+ *  `understanding` is what System-1 has already answered about the task. Without
+ *  it the task is assumed to write, and nothing is read from the goal's wording. */
 export function executionPolicyForGoal(
   goal: string,
-  verdict?: TaskVerdict,
+  understanding?: Pick<TaskUnderstanding, 'readOnly' | 'anchors'>,
   calibration?: Record<string, number>,
 ): ExecutionPolicy {
   try {
-    return calibrate(executionPolicyFor(taskEconomicsFor(goal, verdict)), calibration);
+    return calibrate(executionPolicyFor(taskEconomicsFor(goal, understanding)), calibration);
   } catch (err) {
     console.error('Falling back to the fixed execution policy:', err);
     return normalizeExecutionPolicy({

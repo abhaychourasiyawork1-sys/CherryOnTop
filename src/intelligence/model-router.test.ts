@@ -1,5 +1,13 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import { routeModel } from './model-router.js';
+import {
+  generateExecutionCandidates, executionEstimate, executionPrior, candidateIdFor, PRIOR_CONFIDENCE, EXECUTION_CAPABILITY,
+} from './model-router.js';
+import { fitCapability, type CapabilityObservation } from './capability.js';
+import { markFeasibility } from './provider-router.js';
+import { chooseEconomicAction } from '../decision/engine.js';
+import { initialEconomicState, normalizeEconomicState } from '../decision/state.js';
+import type { ActionCandidate } from '../decision/actions.js';
+import type { HarnessCapabilitySnapshot } from '../adapters/adapter.js';
 
 afterEach(() => {
   for (const key of ['ORG_MODEL_FAST', 'ORG_MODEL_STANDARD', 'ORG_MODEL_DEEP', 'ORG_MODEL_EXECUTE', 'ORG_MODEL_PLAN']) {
@@ -7,97 +15,222 @@ afterEach(() => {
   }
 });
 
-const healthy = { budgetUsd: 10, spentUsd: 0 };
+const harness = (name: string, over: Partial<HarnessCapabilitySnapshot> = {}): HarnessCapabilitySnapshot => ({
+  harness: name, acceptsModelFlag: true, serves: () => true, efforts: ['default'], models: [],
+  supportsSession: false, health: 'healthy', fingerprint: `fp-${name}`, ...over,
+});
 
-describe('routeModel', () => {
-  it('keeps the two narrow roles on the fast tier', () => {
-    expect(routeModel({ role: 'plan', complexity: 'high', ...healthy }).tier).toBe('fast');
-    expect(routeModel({ role: 'synthesize', complexity: 'high', ...healthy }).tier).toBe('fast');
+const claude = harness('claude-code', {
+  serves: (m) => /haiku|sonnet|opus|fable/.test(m),
+  models: ['haiku', 'sonnet', 'opus', 'fable'], efforts: ['low', 'medium', 'high', 'xhigh', 'max'],
+});
+const codex = harness('codex', { serves: (m) => !/haiku|sonnet|opus|fable|claude/.test(m) });
+
+const unknown = fitCapability([]);
+
+function candidates(
+  difficulty: number,
+  harnesses = [claude],
+  role: 'plan' | 'execute' | 'synthesize' = 'execute',
+  extra: { capability?: ReturnType<typeof fitCapability>; difficultyUpper?: number } = {},
+) {
+  return generateExecutionCandidates({
+    role, difficulty, harnesses, dispatchTokens: 40_000, dispatchLatencyMs: 120_000,
+    ...(extra.capability ? { capability: extra.capability } : {}),
+    ...(extra.difficultyUpper !== undefined ? { difficultyUpper: extra.difficultyUpper } : {}),
   });
+}
 
-  it('leaves low-complexity execute work on the runtime default, not the fast tier', () => {
-    // Measured: a one-line README fix tiered to Haiku took 6x the turns and
-    // cache-read of the same fix on the runtime default, and cost 95% more in
-    // total despite Haiku's lower per-token price. Complexity alone is not a
-    // reliable signal that the fast tier will finish the job cheaply.
-    const route = routeModel({ role: 'execute', complexity: 'low', ...healthy });
-    expect(route.tier).toBe('standard');
-    expect(route.model).toBeUndefined();
-    expect(route.reason).toContain('low');
-  });
+const state = () => initialEconomicState({ goal: 'g', totalTokenBudget: 4_000_000 });
 
-  it('leaves real work on the runtime default', () => {
-    for (const complexity of ['low', 'medium', 'high'] as const) {
-      const route = routeModel({ role: 'execute', complexity, ...healthy });
-      expect(route.tier).toBe('standard');
-      // Undefined means no --model flag at all: whatever the runtime would have
-      // used anyway. Tiering up is a cost increase nobody asked for.
-      expect(route.model).toBeUndefined();
+/** What the market picks, with every estimate from the router's own priors —
+ *  the production pairing before any history exists. */
+function choose(cands: ActionCandidate[], s = state()) {
+  const executable = markFeasibility({ candidates: cands, harnesses: [claude, codex] });
+  const estimates = Object.fromEntries(executable.map((c) => [c.id, executionEstimate(c, s)]));
+  return chooseEconomicAction({ state: s, candidates: executable, estimates });
+}
+
+const passes = (model: string, difficulty: number, n: number, validated = true): CapabilityObservation[] =>
+  Array.from({ length: n }, () => ({
+    modelKey: `execute|claude-code|${model}`, candidateKey: `execute|claude-code|${model}|high`,
+    facts: {}, difficulty, validated, weight: 1,
+  }));
+
+describe('execution candidates are atomic Harness × Model × Effort', () => {
+  it('proposes every model and effort each harness offers, each with its own identity', () => {
+    const cands = candidates(0.5, [claude, codex]);
+    const ids = cands.map((c) => c.id);
+    for (const model of ['haiku', 'sonnet', 'opus', 'fable']) {
+      for (const effort of ['low', 'max']) expect(ids).toContain(candidateIdFor('claude-code', model, effort));
     }
+    expect(ids).toContain(candidateIdFor('codex', undefined, 'default'));
+    expect(new Set(cands.map((c) => c.metadata.fingerprint)).size).toBe(cands.length);
+    expect(cands.every((c) => c.capability === EXECUTION_CAPABILITY)).toBe(true);
   });
 
-  it('uses a deep tier only when an operator has named one', () => {
-    expect(routeModel({ role: 'execute', complexity: 'high', ...healthy }).tier).toBe('standard');
-    process.env.ORG_MODEL_DEEP = 'opus';
-    const route = routeModel({ role: 'execute', complexity: 'high', ...healthy });
-    expect(route.tier).toBe('deep');
-    expect(route.model).toBe('opus');
+  it('adds a model an operator configured, and never drops the harness default', () => {
+    process.env.ORG_MODEL_DEEP = 'claude-opus-5-5';
+    const models = new Set(candidates(0.5).map((c) => c.metadata.model));
+    expect(models.has('claude-opus-5-5')).toBe(true);
+    expect(models.has(undefined)).toBe(true);
   });
 
-  it('drops to the fast tier when the budget is nearly gone', () => {
-    process.env.ORG_MODEL_DEEP = 'opus';
-    const route = routeModel({ role: 'execute', complexity: 'high', budgetUsd: 10, spentUsd: 9.5 });
-    expect(route.tier).toBe('fast');
-    expect(route.reason).toContain('budget');
-  });
-
-  it('does not read budget pressure into a node with no budget at all', () => {
-    // budget_usd of 0 is "no budget assigned", not "budget exhausted" — the
-    // difference between a node nobody costed and a node that overspent.
-    const route = routeModel({ role: 'execute', complexity: 'medium', budgetUsd: 0, spentUsd: 0 });
-    expect(route.tier).toBe('standard');
-  });
-
-  it('lets an explicit per-role model override the routing entirely', () => {
+  it('narrows the set to an explicitly named model rather than bypassing the market', () => {
     process.env.ORG_MODEL_EXECUTE = 'sonnet';
-    const route = routeModel({ role: 'execute', complexity: 'low', ...healthy });
-    expect(route.model).toBe('sonnet');
-    expect(route.reason).toContain('ORG_MODEL_EXECUTE');
+    const cands = candidates(0.5, [claude, codex]);
+    expect(new Set(cands.map((c) => c.metadata.model))).toEqual(new Set(['sonnet']));
+    expect(cands.every((c) => c.metadata.constraint === 'operator_model')).toBe(true);
+    const decision = choose(cands);
+    expect(decision.action.metadata.harness).toBe('claude-code');
+    expect(decision.reasonCodes.some((c) => c.includes('harness_cannot_serve_model'))).toBe(true);
+  });
+});
+
+describe('nothing is ranked before there is evidence', () => {
+  it('gives every candidate the same capability belief, whatever its name, price or position', () => {
+    const means = new Set(candidates(0.5).map((c) => (c.metadata.capabilityMean as number).toFixed(6)));
+    expect(means.size).toBe(1);
   });
 
-  it('honours an explicit override even when it names no model', () => {
-    process.env.ORG_MODEL_EXECUTE = 'none';
-    const route = routeModel({ role: 'execute', complexity: 'low', ...healthy });
-    expect(route.model).toBeUndefined();
+  it('carries the adapter-reported facts and the identity used to learn', () => {
+    const custom = harness('h', { models: ['m1'], efforts: ['e1'], candidateFacts: () => ({ ctx: 8 }) });
+    const c = candidates(0.5, [custom]).find((x) => x.metadata.model === 'm1')!;
+    expect(c.metadata.facts).toMatchObject({ ctx: 8 });
+    expect(typeof (c.metadata.facts as Record<string, number>).logUsdPerToken).toBe('number');
+    expect(c.metadata.candidateKey).toBe('execute|h|m1|e1');
   });
 
-  it('lets the tier models be renamed', () => {
-    process.env.ORG_MODEL_FAST = 'claude-haiku-4-5-20251001';
-    expect(routeModel({ role: 'plan', complexity: 'low', ...healthy }).model).toBe('claude-haiku-4-5-20251001');
+  it('prices every effort of a model the same until something is measured', () => {
+    const sonnet = candidates(0.5).filter((c) => c.metadata.model === 'sonnet');
+    expect(new Set(sonnet.map((c) => c.tokenCost)).size).toBe(1);
+  });
+});
+
+describe('model and effort follow the task’s difficulty through learned capability', () => {
+  // Haiku is seen passing easy work and failing hard work; opus is seen passing hard work.
+  const learned = fitCapability([
+    ...passes('haiku', 0.1, 12), ...passes('haiku', 0.8, 12, false), ...passes('opus', 0.8, 12),
+  ]);
+  const pick = (difficulty: number) => choose(candidates(
+    difficulty, [claude], 'execute', { capability: learned, difficultyUpper: Math.min(1, difficulty + 0.05) },
+  )).action;
+
+  it('picks a cheap candidate for easy work and one that has shown it can do hard work as it gets harder', () => {
+    expect(pick(0.1).metadata.model).toBe('haiku');
+    expect(pick(0.8).metadata.model).toBe('opus');
   });
 
-  it('does not tier an investigation down to the fast model on complexity alone', () => {
-    // "Investigate the root cause of this bug" names no breadth and no file
-    // list, so it scores low. A diagnosis is the last work that should be
-    // cheapened: a wrong root cause does not look like a failure the way a
-    // broken edit does — and low-complexity execute work stays on the
-    // runtime default either way now (see the routeModel comment).
-    const route = routeModel({ role: 'execute', complexity: 'low', investigative: true, ...healthy });
-    expect(route.tier).toBe('standard');
-  });
-
-  it('leaves plain low-complexity work on the runtime default too', () => {
-    expect(routeModel({ role: 'execute', complexity: 'low', investigative: false, ...healthy }).tier).toBe('standard');
-  });
-
-  it('lets budget pressure override that: out of money is out of money', () => {
-    const route = routeModel({ role: 'execute', complexity: 'low', investigative: true, budgetUsd: 10, spentUsd: 9 });
-    expect(route.tier).toBe('fast');
-  });
-
-  it('always explains itself', () => {
-    for (const complexity of ['low', 'medium', 'high'] as const) {
-      expect(routeModel({ role: 'execute', complexity, ...healthy }).reason.length).toBeGreaterThan(0);
+  it('keeps the delivered-correct probability at or above the floor, so it does not gamble on quality', () => {
+    for (const d of [0.2, 0.5, 0.8]) {
+      const decision = choose(candidates(d));
+      expect(decision.successLowerBound).toBeGreaterThanOrEqual(0.7);
     }
+  });
+
+  it('prices a shortfall as retries and wrong answers, not as a rule', () => {
+    const weakOnHard = executionPrior({ difficulty: 0.9, capability: 0.1 });
+    const strongOnHard = executionPrior({ difficulty: 0.9, capability: 1 });
+    expect(weakOnHard.success).toBeLessThan(strongOnHard.success);
+    expect(weakOnHard.qualityRisk).toBeGreaterThan(strongOnHard.qualityRisk);
+  });
+
+  it('replaces the token guess with what the ledger measured for that model', () => {
+    const measured = generateExecutionCandidates({
+      role: 'execute', difficulty: 0.2, harnesses: [claude], dispatchTokens: 40_000, dispatchLatencyMs: 1,
+      measuredTokens: { haiku: 240_000 },
+    });
+    const haiku = measured.find((c) => c.id === candidateIdFor('claude-code', 'haiku', 'medium'))!;
+    const sonnet = measured.find((c) => c.id === candidateIdFor('claude-code', 'sonnet', 'medium'))!;
+    // Measured: six times the tokens. The cheap model is now priced as what it
+    // actually cost here — and the market moves off it without a rule.
+    expect(haiku.tokenCost).toBeGreaterThan(sonnet.tokenCost * 4);
+    expect(choose(measured).action.metadata.model).not.toBe('haiku');
+  });
+});
+
+describe('a measured estimate can be conditioned on more than the model', () => {
+  it('prefers a per-effort estimate to the per-model one, and records what it rested on', () => {
+    const quantiles = { p50: 100_000, p75: 130_000, p90: 200_000, sampleCount: 12, modelVersion: 'segmented-quantile-v1', segment: 'role+model+effort' };
+    const measured = generateExecutionCandidates({
+      role: 'execute', difficulty: 0.2, harnesses: [claude], dispatchTokens: 40_000, dispatchLatencyMs: 1,
+      measuredTokens: { sonnet: 40_000 },
+      measuredTokensOf: (model, effort) => (model === 'sonnet' && effort === 'high' ? { tokens: 160_000, quantiles } : undefined),
+    });
+    const high = measured.find((c) => c.id === candidateIdFor('claude-code', 'sonnet', 'high'))!;
+    const low = measured.find((c) => c.id === candidateIdFor('claude-code', 'sonnet', 'low'))!;
+    expect(high.tokenCost).toBe(160_000);
+    expect(high.metadata.costQuantiles).toEqual(quantiles);
+    // Every other effort falls back to the model-level figure.
+    expect(low.tokenCost).toBe(40_000);
+    expect(low.metadata.costQuantiles).toBeUndefined();
+  });
+});
+
+describe('a wrong result costs more the worse it can be detected', () => {
+  it('prices undetected error above detected error', () => {
+    const c = candidates(0.9)[0];
+    const at = (qualityFloor: number) => normalizeEconomicState({ ...state(), constraints: { ...state().constraints, qualityFloor } });
+    const strict = executionEstimate(c, at(0.9));
+    const lax = executionEstimate(c, at(0.3));
+    expect(lax.expectedRemainingCost.usd).toBeGreaterThan(strict.expectedRemainingCost.usd);
+  });
+});
+
+describe('doubt widens the pessimistic bounds', () => {
+  it('a candidate with more evidence has a tighter cost upper bound', () => {
+    const pickSonnet = (n: number) => candidates(0.5, [claude], 'execute', {
+      capability: fitCapability(passes('sonnet', 0.5, n)), difficultyUpper: 0.6,
+    }).find((c) => c.id === candidateIdFor('claude-code', 'sonnet', 'high'))!;
+    const few = executionEstimate(pickSonnet(1), state());
+    const many = executionEstimate(pickSonnet(30), state());
+    expect(many.bounds.costUpperBoundUsd - many.immediateCost.usd)
+      .toBeLessThan(few.bounds.costUpperBoundUsd - few.immediateCost.usd);
+  });
+
+  it('a higher upper difficulty widens the bound', () => {
+    const at = (upper: number) => candidates(0.5, [claude], 'execute', { difficultyUpper: upper })[0];
+    expect(executionEstimate(at(0.95), state()).bounds.costUpperBoundUsd)
+      .toBeGreaterThan(executionEstimate(at(0.5), state()).bounds.costUpperBoundUsd);
+  });
+});
+
+describe('estimates', () => {
+  it('starts at low confidence, and lets history take over as it accumulates', () => {
+    const [c] = candidates(0.5);
+    expect(executionEstimate(c, state()).confidence).toBe(PRIOR_CONFIDENCE);
+    expect(executionEstimate(c, state()).provenance).toBe('hybrid');
+    const learned = executionEstimate(c, state(), {
+      success: 0.99, qualityRisk: 0, tokens: 1_000, costUsd: 0.001, latencyMs: 1, effectiveObservations: 40,
+    });
+    expect(learned.provenance).toBe('empirical');
+    expect(learned.confidence).toBeGreaterThan(0.8);
+    expect(learned.immediateCost.usd).toBeLessThan(executionEstimate(c, state()).immediateCost.usd);
+  });
+
+  it('prices a candidate that keeps coming in over estimate higher next time', () => {
+    const [c] = candidates(0.5);
+    const evidence = { success: 0.8, qualityRisk: 0.05, tokens: 40_000, costUsd: 0.2, latencyMs: 1, effectiveObservations: 20 };
+    const unbiased = executionEstimate(c, state(), evidence);
+    const underPriced = executionEstimate(c, state(), { ...evidence, costBiasUsd: 0.1 });
+    expect(underPriced.immediateCost.usd).toBeGreaterThan(unbiased.immediateCost.usd);
+  });
+
+  it('prices a budget-capped run as cheaper but less likely to finish', () => {
+    const c = candidates(0.5).find((x) => x.metadata.model === 'sonnet' && x.metadata.effort === 'medium')!;
+    const full = executionEstimate(c, state());
+    const capped = executionEstimate({
+      ...c, tokenCost: Math.floor(c.tokenCost / 2), metadata: { ...c.metadata, budgetShare: 0.5, budgetCapUsd: 0.01 },
+    }, state());
+    expect(capped.immediateCost.usd).toBeLessThanOrEqual(0.01);
+    expect(capped.outcomes[0].probability).toBeLessThan(full.outcomes[0].probability);
+  });
+
+  it('refuses an uncapped candidate that exceeds the budget — capping is the runtime’s job', () => {
+    const tight = normalizeEconomicState({ ...state(), resources: { ...state().resources, budgetUsd: 1, spentUsd: 0.99 } });
+    // Uncapped, everything costs more than the cent that is left. The runtime
+    // path caps them first (execution-market.test.ts) so it never blocks.
+    const decision = choose(candidates(0.5), tight);
+    expect(decision.reasonCodes.some((c) => c.endsWith('insufficient_budget_usd'))).toBe(true);
   });
 });

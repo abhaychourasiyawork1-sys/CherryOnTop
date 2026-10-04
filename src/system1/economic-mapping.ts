@@ -8,11 +8,8 @@
  *     about that fact in either direction.
  *   - A Choice preference is never a success probability, so nothing here
  *     accepts one. */
-import { defaultEconomicsInput, type DecideExecutionInput } from '../engines/decide-execution.js';
-import { scoreDelegation } from '../engines/economics.js';
+import type { DelegationPricing } from '../engines/decide-execution.js';
 import type { ActionCandidate } from '../decision/actions.js';
-
-type Complexity = DecideExecutionInput['complexity'];
 
 export interface DecompositionBoundary {
   /** What the economics says a split is worth when the work really does split. */
@@ -24,18 +21,22 @@ export interface DecompositionBoundary {
   threshold: number;
 }
 
-/** The decision boundary for `execution.decomposable`, derived from the
- *  existing delegation economics rather than chosen: try splitting when
- *  `p·gain ≥ (1−p)·waste`, i.e. `p ≥ waste / (gain + waste)`.
+/** The decision boundary for `execution.decomposable`, derived from what the
+ *  market says each way of getting the work done costs rather than chosen:
+ *  try splitting when `p·gain ≥ (1−p)·waste`, i.e. `p ≥ waste / (gain + waste)`.
  *
- *  Null when even a certain "yes" could not make economics delegate. The
- *  answer cannot change the action, so the question is not worth asking. */
-export function decompositionBoundary(complexity: Complexity): DecompositionBoundary | null {
-  const input = defaultEconomicsInput(complexity);
-  const economics = scoreDelegation(input);
-  if (!economics.delegate || economics.score <= 0) return null;
-  const waste = input.modelCost + input.latencyCost;
-  return { gain: economics.score, waste, threshold: waste / (economics.score + waste) };
+ *  `gain` is what a real split saves once the planner has been paid (solo work
+ *  avoided, less the plan, the pieces and their combination); `waste` is the
+ *  plan alone, spent when the work turns out not to split.
+ *
+ *  Null when even a certain "yes" could not make delegating cheaper. The answer
+ *  cannot change the action, so the question is not worth asking. */
+export function decompositionBoundary(pricing: DelegationPricing): DecompositionBoundary | null {
+  const waste = pricing.plan.expectedUsd;
+  const gain = pricing.solo.expectedUsd - pricing.plan.expectedUsd
+    - pricing.children.expectedUsd - pricing.synth.expectedUsd;
+  if (!Number.isFinite(gain) || !Number.isFinite(waste) || gain <= 0) return null;
+  return { gain, waste, threshold: waste / (gain + waste) };
 }
 
 const TOLERANCE = 1e-9;

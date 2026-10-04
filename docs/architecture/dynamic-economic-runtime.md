@@ -272,32 +272,14 @@ one is found:
 
 ## Product modes
 
-Exactly two, and this is a hard invariant rather than a current state of affairs.
-
-| Mode | `ORG_EFFICIENCY_MODE` | Behaviour |
-|---|---|---|
-| **Baseline** | `disabled`, `off`, `0`, `false`, `baseline`, `shadow` | Fixed per-role models, lexical context, nothing decided from the state of a run. The behaviour this branch shipped with. |
-| **Full Architecture** | anything else, including unset | The architecture acting on its decisions. |
-
-`shadow` was a third mode and is now an alias for Baseline — which is exactly
-what a shadow run dispatched as, so a deployment that set it keeps the behaviour
-it had. A shadow's whole value is being inert, and a *product* mode cannot be
-inert: it is one more thing an operator can be running, one more combination to
-test, and one more thing a bug report has to establish before it can be read. The
-measurement it existed for now happens in `src/learning/shadow.ts`, which is not
-reachable from configuration at all, and in the benchmark harness, which compares
-matched runs of the two real modes.
-
-Baseline is also the **fallback**. There is one fallback with many reasons rather
-than a degraded mode per fault, because every alternative is a new behaviour to
-test and a new state for a run to be in — and the value of having a Baseline is
-that it is the behaviour that already works.
-
-The one exception: **a safety failure is not a reason to fall back.** Falling
-back means running unoptimized, and an action that violates a hard safety
-constraint is just as unsafe unoptimized. `FallbackDecision.safetyPreserved` is a
-separate answer from `mode` precisely so a caller checking only the mode cannot
-lose that distinction.
+None. The two modes this section used to describe, Baseline and Full Architecture
+(`ORG_EFFICIENCY_MODE`), have been removed. Routing is a permanent subsystem, and
+every execution choice is made by the Action Market
+([economic-action-market.md](economic-action-market.md)). A fault such as missing
+telemetry, a stale graph, invalid memory or a broken mechanism no longer switches to
+a fallback mode. It makes every *intervention* infeasible, and the market chooses
+the null action. A safety violation is still refused by the action's own hard
+constraint.
 
 ---
 
@@ -307,13 +289,14 @@ lose that distinction.
 |---|---|
 | State and its reducer | `src/decision/state.ts` |
 | Action contract | `src/decision/actions.ts` |
-| Utility and hard constraints | `src/decision/utility.ts` |
+| Cost-to-go and hard constraints | `src/decision/utility.ts` |
+| Transition contract, commitment | `src/decision/transition.ts`, `commitment.ts` |
 | Ranking and provenance | `src/decision/engine.ts` |
 | Screen and proposal | `src/decision/fast-path.ts`, `deep-path.ts` |
 | Uncertainty and trajectory | `src/decision/uncertainty.ts`, `trajectory.ts` |
 | Budget allocation | `src/decision/budget.ts` |
 | Orchestration loop and its cost | `src/decision/orchestration-loop.ts`, `orchestration-cost.ts` |
-| Trust and fallback | `src/decision/trust.ts`, `fallback.ts` |
+| Trust and fault detection | `src/decision/trust.ts`, `fallback.ts` |
 | Information economics | `src/efficiency/information-economics.ts` |
 | Context candidates and selection | `src/context/candidates.ts`, `scoring.ts`, `selector.ts` |
 | Reactive acquisition | `src/context/evidence-actions.ts` |

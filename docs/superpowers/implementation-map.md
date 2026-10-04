@@ -183,3 +183,28 @@ Two things the audit changed rather than merely recorded:
   them, and `evaluateExperiment` refuses an arm that stopped more tasks than
   its baseline — the one way an arm can look cheap by refusing to work while
   its success rate still matches.
+
+
+---
+
+# Context runtime (2026-09-30)
+
+Decisions and deviations: [`docs/architecture/context-runtime-decisions.md`](../architecture/context-runtime-decisions.md).
+Measured by `npm run bench:context`. Owners added by this work — do not duplicate these:
+
+| Concern | File | Symbols |
+|---|---|---|
+| Prompt as blocks, one budget | `src/prompt/{prompt-ir,prompt-budget,prompt-compiler,cache-layout}.ts` | `compilePrompt`, `PromptBudget`, `pressureOf`, `cacheReceipt` |
+| Lifecycle-facing prompt assembly | `src/prompt/prompt-runtime.ts` | `assembleExecutePrompt`, `assemblePlanPrompt`, `assembleSynthesisPrompt`, `compileWithFallback` |
+| Task context index | `src/context/runtime/{manifest-types,task-context-manifest}.ts` | `applyManifestDelta`, `getManifest`, `describeManifest` |
+| What a task's dispatches were shown | `src/context/runtime/working-set.ts` | `recordWorkingSet`, `projectWorkingSet`, `repoFileId` |
+| Declaration / line-range extraction | `src/context/runtime/materializer.ts` | `findSymbolBody`, `extractLines`, `describeExcerpt` |
+| Per-dispatch context trace | `src/observability/context-ledger.ts` | `createDispatchLedger`, `summarizeContextLedger` |
+| Model/account availability | `src/execution/model-capability.ts` | `modelCapabilities`, `classifyRuntimeFailure` |
+| Dispatch cost as a distribution | `src/efficiency/execution-cost-model.ts` | `estimateQuantiles`, `riskAdjusted`, `riskAversion`, `coverageOf` |
+| What the model could see per turn | `src/execution/tokens.ts` | `visibleContextProfile` |
+| What System-1 was worth | `src/decision/system1-value.ts` | `summarizeSystem1Value` |
+
+Reused rather than rebuilt: `ContextRef`/context store (manifest and working set are indexes over it), the
+`representations.ts` ladder (gained `symbol`), `AgentEnvelope`, `decideIntegration`, `refineWithSystem1`,
+`observeHarnessHealth`, `indexRunObservations`.

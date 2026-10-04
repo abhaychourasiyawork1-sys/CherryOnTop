@@ -1,22 +1,19 @@
-/** The cheapest next thing to find out — or the decision to stop finding out.
+/** Ways of closing one knowledge gap, offered to the Action Market.
  *
- *  Most of the cost of an agent run is evidence gathering, and most of the waste
- *  in it is gathering evidence that was already held, or that would not have
- *  changed the answer. This ranks the available ways of closing one gap by what
- *  they are expected to teach divided by what they cost, and — the part that
- *  actually saves money — declines to gather anything when the frontier is
- *  already closed.
+ *  This used to rank them itself — expected gain over normalized cost, with a
+ *  floor below which it declined to gather — and return *the* choice. That was
+ *  a second market with its own objective. Now it only proposes: each way of
+ *  settling a gap becomes an `ActionCandidate` priced in the market's units,
+ *  and `chooseEconomicAction` decides whether any of them beats carrying on.
+ *  A closed frontier proposes nothing, which is how "nothing outstanding to
+ *  find out" becomes the null action rather than a special case.
  *
- *  Deterministic and model-free. A planner that needed a model call to decide
- *  whether to make a model call would be a tax on every decision, paid whether
- *  or not it found a saving.
- */
+ *  Deterministic and model-free. */
 import type { ContextRef } from '../context/types.js';
 import { isClosed, type KnowledgeFrontier } from '../context/frontier.js';
+import { actionCandidate, type ActionCandidate, type ActionKind } from '../decision/actions.js';
 
-/** Ordered by what they cost, cheapest first. The order is not the policy —
- *  the score is — but it is the tie-break, so an action that teaches the same
- *  thing for less always wins. */
+/** Every way of closing a gap, cheapest kind first. */
 export const EVIDENCE_ACTIONS = [
   'reuse', 'expand', 'search', 'read_symbol', 'run_test', 'run_model', 'spawn_agent',
 ] as const;
@@ -38,73 +35,40 @@ export interface EvidenceCandidate {
   reason: string;
 }
 
-export interface EvidenceDecision {
-  /** Null when the right move is to gather nothing. */
-  chosen: EvidenceCandidate | null;
-  stop: boolean;
-  /** Why, in words that name the alternative rather than restating the choice. */
-  reason: string;
-  /** Every candidate with its score, best first. The receipt. */
-  ranked: { candidate: EvidenceCandidate; score: number }[];
-}
+const KIND: Record<EvidenceAction, { kind: ActionKind; capability: string }> = {
+  reuse: { kind: 'reuse_evidence', capability: 'evidence.reuse' },
+  expand: { kind: 'acquire_evidence', capability: 'context.expand' },
+  search: { kind: 'acquire_evidence', capability: 'evidence.search' },
+  read_symbol: { kind: 'acquire_evidence', capability: 'context.read-symbol' },
+  run_test: { kind: 'validate', capability: 'validation.test' },
+  run_model: { kind: 'acquire_evidence', capability: 'evidence.dispatch' },
+  spawn_agent: { kind: 'parallelize', capability: 'evidence.delegate' },
+};
 
-/** Tokens and milliseconds are not comparable, so both are normalized against
- *  what a middling instance of each costs before they are added. The constants
- *  are order-of-magnitude anchors from the measured run, not calibrations. */
-const TOKEN_ANCHOR = 10_000;
-const LATENCY_ANCHOR = 30_000;
-
-export function scoreCandidate(candidate: EvidenceCandidate): number {
-  const cost = candidate.estimatedTokens / TOKEN_ANCHOR + candidate.estimatedLatencyMs / LATENCY_ANCHOR;
-  // A free action with any expected gain is unboundedly good, which is correct:
-  // reusing something already held should always beat fetching it again.
-  if (cost <= 0) return candidate.expectedGain > 0 ? Number.POSITIVE_INFINITY : 0;
-  return candidate.expectedGain / cost;
-}
-
-/** The floor below which gathering is not worth its own cost. A candidate that
- *  would spend a whole dispatch to close a tenth of one gap is how an agent
- *  ends up with forty turns and no answer. */
-export const MIN_WORTHWHILE_SCORE = 0.05;
-
-export function planEvidence(
+/** The ways of settling the frontier's open gaps, as market candidates.
+ *
+ *  What a way is worth is the rediscovery it makes unnecessary: the share of
+ *  the gap it is expected to close, times what finding the answer by
+ *  exploration would otherwise cost (`gapValueTokens`, the caller's
+ *  measurement). Its cost is what it spends. Everything else is the market's. */
+export function evidenceActions(
   frontier: KnowledgeFrontier,
   candidates: EvidenceCandidate[],
-): EvidenceDecision {
-  const ranked = candidates
-    .map((candidate) => ({ candidate, score: scoreCandidate(candidate) }))
-    .sort((a, b) => b.score - a.score
-      || EVIDENCE_ACTIONS.indexOf(a.candidate.action) - EVIDENCE_ACTIONS.indexOf(b.candidate.action));
-
-  // Closed first, and before looking at candidates at all: the whole point is
-  // that a closed frontier makes every candidate irrelevant however good it
-  // looks on its own.
-  if (isClosed(frontier)) {
-    return { chosen: null, stop: true, reason: 'the knowledge frontier is closed — nothing outstanding to find out', ranked };
-  }
-  if (ranked.length === 0) {
-    return { chosen: null, stop: true, reason: 'nothing outstanding can be settled by any available action', ranked };
-  }
-
-  const best = ranked[0];
-  if (best.score < MIN_WORTHWHILE_SCORE) {
-    return {
-      chosen: null,
-      stop: true,
-      reason: `the best available evidence (${best.candidate.action}) would cost more than it is expected to be worth`,
-      ranked,
-    };
-  }
-
-  const runnerUp = ranked[1];
-  return {
-    chosen: best.candidate,
-    stop: false,
-    reason: runnerUp
-      ? `${best.candidate.action} over ${runnerUp.candidate.action}: ${best.candidate.reason}`
-      : best.candidate.reason,
-    ranked,
-  };
+  gapValueTokens: number,
+): ActionCandidate[] {
+  if (isClosed(frontier)) return [];
+  return candidates.map((candidate, index) => actionCandidate({
+    id: `evidence:${candidate.action}:${candidate.ref?.semanticId ?? index}`,
+    ...KIND[candidate.action],
+    tokenCost: candidate.estimatedTokens,
+    latencyCost: candidate.estimatedLatencyMs,
+    expectedInformationGain: candidate.expectedGain,
+    expectedTokenBenefit: candidate.expectedGain * Math.max(0, gapValueTokens),
+    // Reuse is of something already held at this version: its effect is as
+    // certain as anything the runtime knows.
+    confidence: candidate.action === 'reuse' ? 1 : 0.8,
+    metadata: { evidenceAction: candidate.action, reason: candidate.reason, ...(candidate.ref ? { ref: candidate.ref } : {}) },
+  }));
 }
 
 export interface CandidateInputs {

@@ -3,8 +3,8 @@
    needs them, one accent. The single bold move is the live run's phase track;
    everything around it stays quiet. */
 
-:root { --well: #0d1318; }
-:root[data-theme='light'] { --well: #eaeef3; }
+:root { --well: #0e0e10; }
+:root[data-theme='light'] { --well: #ececef; }
 
 body { font-size: var(--text-md); line-height: var(--leading); }
 
@@ -1170,10 +1170,7 @@ body { font-size: var(--text-md); line-height: var(--leading); }
   color: var(--ink); font-weight: 600; text-align: left;
 }
 .brand:hover { background: var(--surface); }
-.brand-mark {
-  display: inline-grid; place-items: center; width: 24px; height: 24px; flex: none;
-  border-radius: 7px; background: var(--accent); color: var(--ink-inverse); font-size: 12.5px; font-weight: 700;
-}
+.brand-mark { width: 28px; height: 22px; flex: none; color: var(--ink); }
 .sidebar[data-collapsed='true'] .brand { justify-content: center; padding: 0; }
 
 .icon-button.tiny { width: 22px; height: 22px; border-radius: 5px; }

@@ -24,7 +24,7 @@
  *  no clock, no database, no model. */
 import type { ExecutionStrategy, StrategyPrior } from '../decision/strategy-gate.js';
 import type { ValidationLevel } from '../validation/contract.js';
-import { comparable, type PolicyVersion } from '../efficiency/policy-version.js';
+import type { PolicyVersion } from '../efficiency/policy-version.js';
 
 export type LearningLevel = 'GLOBAL' | 'TASK_CLASS' | 'TASK_SHAPE' | 'REPOSITORY' | 'EXACT_PATTERN';
 
@@ -171,8 +171,12 @@ function usable(
       census.excluded[observation.validity] = (census.excluded[observation.validity] ?? 0) + 1;
       return false;
     }
+    // What a strategy *did* on a task does not depend on which decision engine
+    // chose it, so only the policy generation (the weights the run executed
+    // under) must match — an engine upgrade must not throw away every outcome
+    // the organization has learned from.
     if (input.policyVersion && observation.policyVersion
-        && !comparable(observation.policyVersion, input.policyVersion)) {
+        && observation.policyVersion.version !== input.policyVersion.version) {
       census.excluded.INCOMPARABLE_POLICY = (census.excluded.INCOMPARABLE_POLICY ?? 0) + 1;
       return false;
     }
@@ -246,4 +250,121 @@ export function estimateStrategyPrior(input: EstimateInput): HierarchicalPrior {
     census,
     outcomes,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Candidate × task × state
+//
+// The strategy memory above answers "does delegating work for tasks like
+// this?". The Action Market needs the finer question: "how does *this
+// execution candidate* (harness × model × effort) behave on tasks like this,
+// from states like this?" — keyed on the same five levels, shrunk the same way,
+// and with the same refusal to learn from invalid observations.
+// ---------------------------------------------------------------------------
+
+export interface CandidateOutcomeObservation {
+  /** The candidate fingerprint: harness × model × effort × capability. */
+  candidateId: string;
+  task: LearningKey[];
+  /** `stateSignatureKey` of the routing state the decision was made in. */
+  stateSignature: string;
+  predicted: { costUsd: number; latencyMs: number; successProbability: number; progress: number };
+  actual: {
+    costUsd: number;
+    latencyMs: number;
+    /** The dispatch finished without needing a retry. */
+    succeeded: boolean;
+    /** Its result then passed validation. */
+    validated: boolean;
+    progress: number;
+    tokens: number;
+  };
+  recoveryCount: number;
+  validationLevel: ValidationLevel;
+  validity: ObservationValidity;
+  /** What the outcome says *about*: the difficulty it was dispatched at, which
+   *  model family (role | harness | model — shared across efforts) and which
+   *  exact candidate it was, the numeric facts its adapter reported, and the
+   *  dispatch size it was priced against. `intelligence/capability.ts` learns
+   *  from these. Older observations lack some of them and still count as plain
+   *  rates. */
+  difficulty?: number;
+  modelKey?: string;
+  candidateKey?: string;
+  facts?: Record<string, number>;
+  unitTokens?: number;
+  /** [0,1]: how well the check that labelled this outcome could tell right from
+   *  wrong. Zero means the result was never really checked, so `validated` is
+   *  a claim and teaches nothing about capability. Absent on older rows, which
+   *  are read the same way. */
+  validationStrength?: number;
+}
+
+export interface CandidateEstimate {
+  success: number;
+  /** Of the dispatches that finished, the share whose result failed validation. */
+  qualityRisk: number;
+  tokens: number;
+  costUsd: number;
+  latencyMs: number;
+  /** Mean (actual − predicted) cost. The calibration correction. */
+  costBiasUsd: number;
+  effectiveObservations: number;
+  census: EvidenceCensus;
+  sourceLevels: LearningKey[];
+}
+
+/** Shrunk estimate for one candidate, from its observations at each level.
+ *  Invalid observations are counted in the census and excluded — never
+ *  silently dropped, never learned from. */
+export function estimateCandidateOutcome(input: {
+  candidateId: string;
+  byLevel: Partial<Record<LearningLevel, CandidateOutcomeObservation[]>>;
+}): CandidateEstimate {
+  const census: EvidenceCensus = { total: 0, used: 0, excluded: {} };
+  const keep = (observations: CandidateOutcomeObservation[] = []) => observations.filter((o) => {
+    census.total += 1;
+    if (o.validity !== 'VALID') {
+      census.excluded[o.validity] = (census.excluded[o.validity] ?? 0) + 1;
+      return false;
+    }
+    if (o.candidateId !== input.candidateId) {
+      census.excluded.OTHER_CANDIDATE = (census.excluded.OTHER_CANDIDATE ?? 0) + 1;
+      return false;
+    }
+    census.used += 1;
+    return true;
+  });
+
+  let estimate = { success: 0.5, qualityRisk: 0, tokens: 0, costUsd: 0, latencyMs: 0, costBiasUsd: 0 };
+  let effective = 0;
+  const sourceLevels: LearningKey[] = [];
+  for (const level of LEARNING_LEVELS) {
+    const observations = keep(input.byLevel[level]);
+    if (observations.length === 0) continue;
+    const finished = observations.filter((o) => o.actual.succeeded);
+    const weight = levelWeight(observations.length);
+    const here = {
+      success: mean(observations.map((o) => (o.actual.succeeded ? 1 : 0)), estimate.success),
+      qualityRisk: mean(finished.map((o) => (o.actual.validated ? 0 : 1)), estimate.qualityRisk),
+      tokens: mean(observations.map((o) => o.actual.tokens), estimate.tokens),
+      costUsd: mean(observations.map((o) => o.actual.costUsd), estimate.costUsd),
+      latencyMs: mean(observations.map((o) => o.actual.latencyMs), estimate.latencyMs),
+      costBiasUsd: mean(observations.map((o) => o.actual.costUsd - o.predicted.costUsd), estimate.costBiasUsd),
+    };
+    // The first level with evidence *is* the estimate; later ones pull it.
+    const w = effective === 0 ? 1 : weight;
+    estimate = {
+      success: estimate.success * (1 - w) + here.success * w,
+      qualityRisk: estimate.qualityRisk * (1 - w) + here.qualityRisk * w,
+      tokens: estimate.tokens * (1 - w) + here.tokens * w,
+      costUsd: estimate.costUsd * (1 - w) + here.costUsd * w,
+      latencyMs: estimate.latencyMs * (1 - w) + here.latencyMs * w,
+      costBiasUsd: estimate.costBiasUsd * (1 - w) + here.costBiasUsd * w,
+    };
+    effective += observations.length * weight;
+    sourceLevels.push({ level, value: observations[0].task.find((k) => k.level === level)?.value ?? level });
+  }
+
+  return { ...estimate, effectiveObservations: Number(effective.toFixed(4)), census, sourceLevels };
 }

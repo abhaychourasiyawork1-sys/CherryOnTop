@@ -7,7 +7,7 @@ import { describe, it, expect } from 'vitest';
 import { chooseEconomicAction, authorizeExecution, hardGates } from './engine.js';
 import { actionCandidate } from './actions.js';
 import { initialEconomicState, normalizeEconomicState, type EconomicState } from './state.js';
-import { decideExecution } from '../engines/decide-execution.js';
+import { decideExecution, type DelegationPricing } from '../engines/decide-execution.js';
 import { nextAfterValidation, MAX_EXECUTION_ATTEMPTS } from '../validation/engine.js';
 import { selectContext } from '../context/selector.js';
 import { createContextScorer } from '../context/scoring.js';
@@ -19,6 +19,12 @@ function state(over: Partial<EconomicState> = {}): EconomicState {
   const base = initialEconomicState({ goal: 'g', totalTokenBudget: 10_000, qualityFloor: 0.5 });
   return normalizeEconomicState({ ...base, ...over, constraints: { ...base.constraints, ...over.constraints } });
 }
+
+const price = (expectedUsd: number) => ({ expectedUsd, conservativeUsd: expectedUsd * 1.2 });
+/** Work worth splitting: doing it whole costs several times what its pieces do. */
+const DEARER_WHOLE: DelegationPricing = {
+  solo: price(1), plan: price(0.05), children: price(0.3), synth: price(0.05), childCount: 2,
+};
 
 const authority = (over: Partial<Authority> = {}): Authority => ({
   budget_usd: 5, spawn_children: true, max_child_count: 4, tools: [], ...over,
@@ -47,18 +53,18 @@ describe('System-1 preservation: hard control stays deterministic', () => {
   it('no spawn authority means self-execution before any splitting signal is read', () => {
     const r = decideExecution({
       goal: 'split this across 4 agents in parallel', authority: authority({ spawn_children: false }),
-      complexity: 'high', worthSplitting: true,
+      splitProbability: 1, pricing: DEARER_WHOLE,
     });
     expect(r.outcome).toBe('SELF_EXECUTE');
     expect(r.breakdown.reason_no_spawn_authority).toBe(1);
   });
 
   it('the market vetoes delegation under a hard stop even when economics wants it', () => {
-    const economics = decideExecution({ goal: 'g', authority: authority(), complexity: 'high', worthSplitting: true });
+    const economics = decideExecution({ goal: 'g', authority: authority(), splitProbability: 0.9, pricing: DEARER_WHOLE });
     expect(economics.outcome).toBe('DELEGATE');
     const authorized = authorizeExecution({
       state: state({ constraints: { hardStop: true } as EconomicState['constraints'] }),
-      economics, dispatch: { tokens: 1000, latencyMs: 60_000, costUsd: 0.1 }, plannedChildCount: 4,
+      economics, pricing: DEARER_WHOLE, splitProbability: 0.9,
     });
     expect(authorized.outcome).toBe('SELF_EXECUTE');
   });

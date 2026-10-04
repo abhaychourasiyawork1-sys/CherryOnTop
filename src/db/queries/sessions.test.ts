@@ -51,3 +51,33 @@ describe('session memory', () => {
     expect(sessionRuns(db, 's')).toEqual([]);
   });
 });
+
+describe('a long session keeps what a follow-up depends on', () => {
+  const long = (n: number) => Array.from({ length: n }, (_, i) => turn(i + 1, `answer ${i + 1} ${'y'.repeat(2_000)}`));
+  const firstRequest = 'request 1';
+
+  it.each([
+    ['the default budget', undefined],
+    ['a tight one', { recentTurns: 2, answerChars: 1500, totalChars: 8000 }],
+    ['the tightest rung', { recentTurns: 1, answerChars: 400, totalChars: 2000 }],
+  ])('with %s and 300 turns, still has the first turn and the newest, and stays bounded', (_name, budget) => {
+    const memory = renderSessionMemory(long(300), budget);
+    const limit = (budget?.totalChars ?? 24_000) + 1_000; // the header and footer around the body
+    expect(memory.length).toBeLessThan(limit);
+    expect(memory).toContain(firstRequest);
+    expect(memory).toContain('request 300');
+    // The newest turn is the one "it" and "again" refer to: it survives as the
+    // whole turn, not as a stub cut off by the clip.
+    expect(memory).toContain('### Turn 300');
+  });
+
+  it('says how many turns it left out, rather than pretending there were none', () => {
+    const memory = renderSessionMemory(long(300), { recentTurns: 1, answerChars: 400, totalChars: 2000 });
+    expect(memory).toMatch(/\(\d+ earlier turns not listed here\)/);
+  });
+
+  it('is untouched when everything fits', () => {
+    const memory = renderSessionMemory([1, 2, 3].map((n) => turn(n)));
+    expect(memory).not.toContain('not listed here');
+  });
+});

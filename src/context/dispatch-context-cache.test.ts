@@ -7,6 +7,9 @@ import { createDb } from '../db/client.js';
 import { getRepoInventory } from '../db/queries/repo-map-cache.js';
 import { repoHead } from '../execution/git-state.js';
 import { dispatchContextFor, repoInventoryFor, warmRepoInventory } from './dispatch-context-cache.js';
+import { scopeOf } from './types.js';
+import { getManifest } from './runtime/task-context-manifest.js';
+import { parseRepoFileId } from './runtime/working-set.js';
 
 const DB = './test-dispatch-context.db';
 const dirs: string[] = [];
@@ -126,43 +129,18 @@ describe('dispatchContextFor', () => {
 });
 
 describe('dispatchContextFor — modes, stability and failing upward', () => {
-  it('applies the selection when enabled', () => {
-    const db = createDb(DB);
-    const dir = tmpRepo();
-    process.env.ORG_REPO_MAP_TOKENS = '6000';
-    process.env.ORG_EFFICIENCY_MODE = 'enabled';
+  it('always applies the selection — the retired switch changes nothing', () => {
+    for (const mode of ['enabled', 'shadow', 'disabled']) {
+      const db = createDb(DB);
+      const dir = tmpRepo();
+      process.env.ORG_REPO_MAP_TOKENS = '6000';
+      process.env.ORG_EFFICIENCY_MODE = mode;
 
-    const context = dispatchContextFor(db, dir, 'fix the session refresh bug')!;
-    expect(context.receipt.applied).toBe(true);
-    expect(context.receipt.selected).toContain('src/auth/session.ts');
-    expect(context.receipt.dropped.length).toBeGreaterThan(0);
-  });
-
-  it('computes the receipt but dispatches the full map under Baseline', () => {
-    const db = createDb(DB);
-    const dir = tmpRepo();
-    process.env.ORG_REPO_MAP_TOKENS = '6000';
-    // 'shadow' is a retired alias that resolves to Baseline; asserting on it
-    // here is what stops the alias from quietly changing meaning.
-    process.env.ORG_EFFICIENCY_MODE = 'shadow';
-
-    const context = dispatchContextFor(db, dir, 'fix the session refresh bug')!;
-    // The receipt says what it *would* have dropped — the whole point of a
-    // shadow — while the content handed over is still the unselected map.
-    expect(context.receipt.applied).toBe(false);
-    expect(context.receipt.dropped.length).toBeGreaterThan(0);
-    expect(context.content).toContain('src/cart/discount.ts');
-  });
-
-  it('dispatches the full map when disabled, with the receipt still recorded', () => {
-    const db = createDb(DB);
-    const dir = tmpRepo();
-    process.env.ORG_REPO_MAP_TOKENS = '6000';
-    process.env.ORG_EFFICIENCY_MODE = 'disabled';
-
-    const context = dispatchContextFor(db, dir, 'fix the session refresh bug')!;
-    expect(context.receipt.applied).toBe(false);
-    expect(context.content).toContain('src/cart/discount.ts');
+      const context = dispatchContextFor(db, dir, 'fix the session refresh bug')!;
+      expect(context.receipt.applied, mode).toBe(true);
+      expect(context.receipt.selected, mode).toContain('src/auth/session.ts');
+      expect(context.receipt.dropped.length, mode).toBeGreaterThan(0);
+    }
   });
 
   it('gives the same bytes for the same goal, commit and policy', () => {
@@ -223,5 +201,67 @@ describe('dispatchContextFor — modes, stability and failing upward', () => {
     expect(small.estimatedTokens).toBeLessThanOrEqual(400);
     // Same rows, unbudgeted: the budget is applied at selection, not at scan.
     expect(getRepoInventory(db, repoHead(dir)!)).toEqual(scanned);
+  });
+});
+
+describe('dispatchContextFor — the task working set', () => {
+  const readOnly = scopeOf(['Read', 'Grep'], true);
+  const writer = scopeOf(null, false);
+
+  it('records what a dispatch was shown against its task, as references, once per revision', () => {
+    const db = createDb(DB);
+    const dir = tmpRepo();
+    process.env.ORG_REPO_MAP_TOKENS = '6000';
+    const context = dispatchContextFor(db, dir, 'fix the session refresh bug', { working: { taskId: 't1', scope: readOnly } })!;
+
+    const manifest = getManifest(db, 't1')!;
+    expect(manifest.repositoryRevision).toBe(repoHead(dir));
+    expect(manifest.workingSet.map((r) => parseRepoFileId(r.semanticId)!.path).sort()).toEqual([...context.receipt.selected].sort());
+    expect(manifest.revision).toBe(1);
+
+    // The same dispatch again adds nothing new, so the revision does not move.
+    dispatchContextFor(db, dir, 'fix the session refresh bug', { working: { taskId: 't1', scope: readOnly } });
+    expect(getManifest(db, 't1')!.revision).toBe(1);
+  });
+
+  it('keeps a sibling on the paths the first sibling was shown, so their prefixes match', () => {
+    const db = createDb(DB);
+    const dir = tmpRepo();
+    process.env.ORG_REPO_MAP_TOKENS = '6000';
+    const working = { taskId: 't1', scope: readOnly };
+    const first = dispatchContextFor(db, dir, 'fix the session refresh bug', { working })!;
+    const second = dispatchContextFor(db, dir, 'review the session refresh bug report', { working })!;
+    for (const path of first.receipt.selected) expect(second.receipt.selected).toContain(path);
+  });
+
+  it('shares nothing with an unrelated task on the same commit', () => {
+    const db = createDb(DB);
+    const dir = tmpRepo();
+    process.env.ORG_REPO_MAP_TOKENS = '6000';
+    dispatchContextFor(db, dir, 'fix the session refresh bug', { working: { taskId: 'a', scope: readOnly } });
+    const alone = dispatchContextFor(db, dir, 'applyDiscount rounds the total wrong')!;
+    const other = dispatchContextFor(db, dir, 'applyDiscount rounds the total wrong', { working: { taskId: 'b', scope: readOnly } })!;
+    expect(other.receipt.selected).toEqual(alone.receipt.selected);
+    expect(other.content).toBe(alone.content);
+  });
+
+  it('does not let a broader grant’s selection steer a narrower dispatch', () => {
+    const db = createDb(DB);
+    const dir = tmpRepo();
+    process.env.ORG_REPO_MAP_TOKENS = '6000';
+    dispatchContextFor(db, dir, 'fix the session refresh bug', { working: { taskId: 't', scope: writer } });
+    const narrow = dispatchContextFor(db, dir, 'applyDiscount rounds the total wrong', { working: { taskId: 't', scope: readOnly } })!;
+    const cold = dispatchContextFor(db, dir, 'applyDiscount rounds the total wrong')!;
+    expect(narrow.receipt.selected).toEqual(cold.receipt.selected);
+  });
+
+  it('still selects when the manifest cannot be written', () => {
+    const db = createDb(DB);
+    const dir = tmpRepo();
+    process.env.ORG_REPO_MAP_TOKENS = '6000';
+    // Only the context store refuses writes; the inventory cache is fine.
+    db.$client.exec("CREATE TRIGGER refuse_context BEFORE INSERT ON memory WHEN NEW.kind = 'context_object' BEGIN SELECT RAISE(ABORT, 'refused'); END;");
+    const context = dispatchContextFor(db, dir, 'fix the session refresh bug', { working: { taskId: 't', scope: readOnly } });
+    expect(context).not.toBeNull();
   });
 });

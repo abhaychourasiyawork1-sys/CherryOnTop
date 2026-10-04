@@ -8,7 +8,7 @@ import { ZERO_USAGE } from '../execution/tokens.js';
 import type { ValidationResult } from '../validation/engine.js';
 
 function machineWithMocks(overrides: {
-  assessUncertainty?: Partial<IntelligenceBundle> & { sufficientContext: boolean; complexity: 'low' | 'medium' | 'high' };
+  assessUncertainty?: Partial<IntelligenceBundle> & { sufficientContext: boolean };
   decideExecution?: { outcome: 'SELF_EXECUTE' | 'DELEGATE' | 'ESCALATE'; breakdown: Record<string, number> };
   executeStep?: { succeeded: boolean; rateLimited?: boolean };
   /** What validation concluded. Defaults to a passing V2 — these tests are
@@ -18,8 +18,8 @@ function machineWithMocks(overrides: {
   return nodeMachine.provide({
     actors: {
       assessUncertainty: fromPromise(async (): Promise<IntelligenceBundle> => ({
-        worthSplitting: true, signals: {},
-        ...(overrides.assessUncertainty ?? { sufficientContext: true, complexity: 'low' as const }),
+        difficulty: 0.5, signals: {},
+        ...(overrides.assessUncertainty ?? { sufficientContext: true }),
       })),
       decideExecution: fromPromise(async () => overrides.decideExecution ?? { outcome: 'SELF_EXECUTE' as const, breakdown: {} }),
       executeStep: fromPromise(async (): Promise<ExecuteStepResult> => ({ message: 'ok', events: [], usage: { ...ZERO_USAGE }, ...(overrides.executeStep ?? { succeeded: true }) })),
@@ -44,7 +44,7 @@ describe('nodeMachine', () => {
   });
 
   it('loops back to PLAN on insufficient context, but gives up after a bounded number of retries', async () => {
-    const actor = createActor(machineWithMocks({ assessUncertainty: { sufficientContext: false, complexity: 'low' } }), { input: { nodeId: 'n1', goal: 'test' } });
+    const actor = createActor(machineWithMocks({ assessUncertainty: { sufficientContext: false } }), { input: { nodeId: 'n1', goal: 'test' } });
     actor.start();
     actor.send({ type: 'START' });
     // PLAN -> INTELLIGENCE_GATE -> (insufficient) -> PLAN is a real loop, and with a
@@ -53,12 +53,13 @@ describe('nodeMachine', () => {
     expect(actor.getSnapshot().context.gateAttempts).toBe(3);
   });
 
-  it('carries complexity into context from the coordinator', async () => {
-    const actor = createActor(machineWithMocks({ assessUncertainty: { sufficientContext: true, complexity: 'high' } }), { input: { nodeId: 'n1', goal: 'test' } });
+  it('carries difficulty and the probability the work splits into context from the coordinator', async () => {
+    const actor = createActor(machineWithMocks({ assessUncertainty: { sufficientContext: true, difficulty: 0.9, splitProbability: 0.7 } }), { input: { nodeId: 'n1', goal: 'test' } });
     actor.start();
     actor.send({ type: 'START' });
     await vi.waitFor(() => expect(actor.getSnapshot().value).toBe('COMPLETE'));
-    expect(actor.getSnapshot().context.complexity).toBe('high');
+    expect(actor.getSnapshot().context.difficulty).toBe(0.9);
+    expect(actor.getSnapshot().context.splitProbability).toBe(0.7);
   });
 
   it('records the decision breakdown in context', async () => {
@@ -183,7 +184,7 @@ describe('nodeMachine', () => {
     const executed: string[] = [];
     const machine = nodeMachine.provide({
       actors: {
-        assessUncertainty: fromPromise(async (): Promise<IntelligenceBundle> => ({ sufficientContext: true, complexity: 'high', worthSplitting: true, signals: {} })),
+        assessUncertainty: fromPromise(async (): Promise<IntelligenceBundle> => ({ sufficientContext: true, difficulty: 0.9, splitProbability: 0.9, signals: {} })),
         decideExecution: fromPromise(async (): Promise<DecideExecutionResult> => ({ outcome: 'DELEGATE', breakdown: {} })),
         delegateToChild: fromPromise(async (): Promise<ExecuteStepResult> => ({
           succeeded: false, notDelegatable: true, message: 'did not split', events: [], usage: { ...ZERO_USAGE },

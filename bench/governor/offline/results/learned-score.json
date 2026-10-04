@@ -1,0 +1,50 @@
+{
+ "unadjusted": {
+  "labelled": 629,
+  "heldWithData": 224,
+  "aucHeld": 0.5508591065292097,
+  "aucWithinCapability": {
+   "acquire_evidence|evidence.read-file": {
+    "n": 214,
+    "auc": 0.5641304347826087
+   }
+  },
+  "meanLearnedAdv": {
+   "acquire_evidence|evidence.read-file": -64213,
+   "recover|recovery.evidence-preserving": -30333
+  },
+  "meanRealized": {
+   "acquire_evidence|evidence.read-file": -2026,
+   "recover|recovery.evidence-preserving": -4281
+  },
+  "ctgSdNormalized": 0.4419623988607738
+ },
+ "adjusted": {
+  "labelled": 629,
+  "heldWithData": 224,
+  "aucHeld": 0.5733676975945017,
+  "aucWithinCapability": {
+   "acquire_evidence|evidence.read-file": {
+    "n": 214,
+    "auc": 0.6045289855072464
+   }
+  },
+  "meanLearnedAdv": {
+   "acquire_evidence|evidence.read-file": -78502,
+   "recover|recovery.evidence-preserving": 18355
+  },
+  "meanRealized": {
+   "acquire_evidence|evidence.read-file": -2026,
+   "recover|recovery.evidence-preserving": -4281
+  },
+  "ctgSdNormalized": 0.4419623988607738
+ },
+ "power:recover": {
+  "effectNormalized": 0.00901904761904762,
+  "perArmFor2SE": 9606
+ },
+ "power:acquire_evidence": {
+  "effectNormalized": 0.0020714285714285713,
+  "perArmFor2SE": 182092
+ }
+}

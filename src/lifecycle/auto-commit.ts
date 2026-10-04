@@ -9,6 +9,7 @@
  *  Opt-in (`ORG_AUTO_COMMIT=1`) and best-effort: a failure here must not take
  *  the node down or hide its own outcome, so every path returns a result
  *  instead of throwing. */
+import { forksRoot } from '../execution/workspace-fork.js';
 import { execFileSync } from 'node:child_process';
 import { homedir } from 'node:os';
 import { join, sep } from 'node:path';
@@ -32,8 +33,7 @@ export function autoCommitEnabled(env: NodeJS.ProcessEnv = process.env): boolean
  *  nothing. Only the real, shared checkout a node's `repoPath` may also be
  *  should ever be auto-committed. */
 export function isDisposableFork(repoPath: string): boolean {
-  const forksRoot = join(homedir(), '.org-forks') + sep;
-  return hostRepoPath(repoPath).startsWith(forksRoot);
+  return hostRepoPath(repoPath).startsWith(forksRoot() + sep);
 }
 
 /** The host path behind a node's `repoPath`. A node stores the path its

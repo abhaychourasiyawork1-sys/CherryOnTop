@@ -81,7 +81,7 @@ button {
   cursor: grab;
   /* A faint field grid: the graph reads as sitting in space rather than on a
      page, and it gives movement a sense of distance. */
-  background-image: radial-gradient(circle at 1px 1px, #1c2836 1px, transparent 0);
+  background-image: radial-gradient(circle at 1px 1px, #242429 1px, transparent 0);
   background-size: 32px 32px;
   touch-action: none;
 }

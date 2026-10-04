@@ -154,6 +154,21 @@ export function renderRepoMap(entries: RepoEntry[], tokenBudget: number): string
     : treeBlock;
 }
 
+/** Everything `withRepoContext` puts in front of the goal, without the goal. The
+ *  prompt compiler renders it as its own block, so the framing and the context
+ *  it frames are one unit that is kept or dropped together. */
+export function repoContextPreamble(context: string): string {
+  return [
+    'Repository context, selected for this task. Use it to navigate instead of',
+    're-deriving it. It is a starting point, not a complete listing — other files',
+    'exist, and you can read anything you need.',
+    '',
+    context,
+    '',
+    '---',
+  ].join('\n');
+}
+
 /** Wraps a goal in whatever repository context was selected for it.
  *
  *  The wording matters more than it looks. What follows is now a *selection* —
@@ -163,15 +178,5 @@ export function renderRepoMap(entries: RepoEntry[], tokenBudget: number): string
  *  there is what keeps a lossy projection from becoming a wrong answer. */
 export function withRepoContext(goal: string, context: string): string {
   if (!context.trim()) return goal;
-  return [
-    'Repository context, selected for this task. Use it to navigate instead of',
-    're-deriving it. It is a starting point, not a complete listing — other files',
-    'exist, and you can read anything you need.',
-    '',
-    context,
-    '',
-    '---',
-    '',
-    goal,
-  ].join('\n');
+  return `${repoContextPreamble(context)}\n\n${goal}`;
 }

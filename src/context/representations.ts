@@ -22,10 +22,11 @@ import { eq } from 'drizzle-orm';
 import type { Db } from '../db/client.js';
 import { events, artifacts } from '../db/schema.js';
 import type { ContextObject } from './types.js';
+import { findSymbolBody } from './runtime/materializer.js';
 
 /** Ordered cheapest to most expensive. The order is the policy. */
 export const REPRESENTATIONS = [
-  'reference', 'metadata', 'signature', 'summary', 'snippet', 'hunk', 'full',
+  'reference', 'metadata', 'signature', 'summary', 'snippet', 'symbol', 'hunk', 'full',
 ] as const;
 
 export type Representation = typeof REPRESENTATIONS[number];
@@ -71,7 +72,7 @@ export function resolveContent(db: Db, object: ContextObject, worktreePath?: str
 
 /** Exported top-level names. The same regex `repo-map.ts` scans with — one
  *  definition of "what counts as a symbol here", not two that can disagree. */
-const SYMBOL = /^\s*(?:export\s+)?(?:default\s+)?(?:async\s+)?(?:function|class|interface|type|const\s+[A-Za-z_$][\w$]*\s*=\s*(?:async\s*)?\(|def|func)\s+([A-Za-z_$][\w$]*)/;
+export const SYMBOL = /^\s*(?:export\s+)?(?:default\s+)?(?:async\s+)?(?:function|class|interface|type|const\s+[A-Za-z_$][\w$]*\s*=\s*(?:async\s*)?\(|def|func)\s+([A-Za-z_$][\w$]*)/;
 
 function signatureOf(content: string): string[] {
   const names: string[] = [];
@@ -112,7 +113,7 @@ export function isRefusal(result: MaterializeResult): result is RepresentationRe
  *  a projection can always fall back to them rather than to nothing. */
 export function availableRepresentations(content: string | null): Representation[] {
   if (content === null) return ['reference', 'metadata'];
-  const available: Representation[] = ['reference', 'metadata', 'summary', 'snippet', 'hunk', 'full'];
+  const available: Representation[] = ['reference', 'metadata', 'summary', 'snippet', 'symbol', 'hunk', 'full'];
   if (signatureOf(content).length > 0) available.splice(2, 0, 'signature');
   return available;
 }
@@ -123,6 +124,8 @@ export interface MaterializeOptions {
   tokenBudget?: number;
   /** For `hunk`: the 1-based, inclusive line range. */
   lines?: { from: number; to: number };
+  /** For `symbol`: the declaration whose body is wanted. */
+  symbol?: string;
   worktreePath?: string;
 }
 
@@ -146,6 +149,12 @@ function render(
       return content === null ? null : content.split('\n').slice(0, SUMMARY_LINES).join('\n');
     case 'snippet':
       return content === null ? null : content.split('\n').slice(0, SNIPPET_LINES).join('\n');
+    case 'symbol': {
+      // Refused, not approximated, when the declaration cannot be delimited:
+      // `cheapestSufficient` then moves on to a rung it can produce.
+      if (content === null || !options.symbol) return null;
+      return findSymbolBody(content, options.symbol)?.text ?? null;
+    }
     case 'hunk': {
       if (content === null || !options.lines) return null;
       const lines = content.split('\n');

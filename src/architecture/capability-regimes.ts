@@ -18,8 +18,8 @@
  *  it except the benchmark manifest. Deterministic and total: no clock, no I/O,
  *  no model. */
 import type { Authority } from '../schemas/node-contract.js';
-import { decideExecutionPath } from '../decision/engine.js';
-import { judgeTask } from '../intelligence/task-judge.js';
+import { authorizeExecution } from '../decision/engine.js';
+import { decideExecution, type DecideExecutionInput, type DelegationPricing } from '../engines/decide-execution.js';
 import { taskEconomicsFor } from '../efficiency/task-economics.js';
 import { planWorkstreams, schedulingCandidates, dependentsOf, type WorkstreamNode } from '../execution/workstreams.js';
 import { evaluateRecovery, recoveryCandidate } from '../recovery/engine.js';
@@ -61,7 +61,15 @@ const NARROW_AUTHORITY: Authority = {
   tools: ['read', 'edit'], spawn_children: false, max_child_count: 0, budget_usd: 5,
 };
 
-const DISPATCH = { tokens: 100_000, latencyMs: 120_000, costUsd: 0.5 };
+const price = (expectedUsd: number, conservativeUsd = expectedUsd * 1.2) => ({ expectedUsd, conservativeUsd });
+/** Work worth splitting: doing it whole costs several times what its pieces do. */
+const DEARER_WHOLE: DelegationPricing = {
+  solo: price(1), plan: price(0.05), children: price(0.3), synth: price(0.05), childCount: 2,
+};
+/** Work not worth splitting: the plan alone costs more than a split could save. */
+const CHEAPER_WHOLE: DelegationPricing = {
+  solo: price(0.2), plan: price(0.1), children: price(0.15), synth: price(0.05), childCount: 2,
+};
 
 function evidence(over: Partial<ValidationEvidence> = {}): ValidationEvidence {
   return { claimedSuccess: true, artifactIds: [], observedChecks: [], requiredChecks: [], ...over };
@@ -77,27 +85,32 @@ function twoStreams(dependent: boolean): WorkstreamNode[] {
   return dependent ? [a, { ...b, inputDependencies: ['a'] }] : [a, b];
 }
 
+/** Self vs delegate, answered by the market exactly as the lifecycle asks it. */
+function marketOutcome(input: DecideExecutionInput & { splitProbability: number; pricing: DelegationPricing }): string {
+  return authorizeExecution({
+    state: novelState({ goal: input.goal }),
+    economics: decideExecution(input),
+    pricing: input.pricing,
+    splitProbability: input.splitProbability,
+  }).outcome;
+}
+
 /** One regime, built from deterministic inputs and answered by the real module. */
 export function buildScenario(regime: CapabilityRegime): RegimeScenario {
   switch (regime) {
     case 'MANAGED_SIMPLE': {
+      // Work whose whole cost is below what finding out it splits would cost:
+      // however sure the split, the node does it itself.
       const goal = 'Fix the typo in README.md';
-      const verdict = judgeTask(goal);
-      const chosen = decideExecutionPath({
-        goal, authority: WIDE_AUTHORITY, spentUsd: 0, dispatch: DISPATCH,
-        complexity: verdict.decomposition.complexity,
-        worthSplitting: verdict.decomposition.worthSplitting,
-        signals: verdict.decomposition.signals,
-      }).chosen;
-      return { regime, capability: 'RUN_MODEL', reachable: chosen === 'RUN_MODEL', observed: chosen };
+      const chosen = marketOutcome({ goal, authority: WIDE_AUTHORITY, splitProbability: 0.9, pricing: CHEAPER_WHOLE });
+      return { regime, capability: 'RUN_MODEL', reachable: chosen === 'SELF_EXECUTE', observed: chosen };
     }
 
     case 'MANAGED_NORMAL': {
+      // No authority to spawn: the node does the work whatever it would cost.
       const goal = 'Add retry handling to the session refresh path in src/auth/session.ts';
-      const chosen = decideExecutionPath({
-        goal, authority: NARROW_AUTHORITY, spentUsd: 0, dispatch: DISPATCH, complexity: 'medium',
-      }).chosen;
-      return { regime, capability: 'RUN_MODEL', reachable: chosen === 'RUN_MODEL', observed: chosen };
+      const chosen = marketOutcome({ goal, authority: NARROW_AUTHORITY, splitProbability: 0.9, pricing: DEARER_WHOLE });
+      return { regime, capability: 'RUN_MODEL', reachable: chosen === 'SELF_EXECUTE', observed: chosen };
     }
 
     case 'MANAGED_RISKY': {
@@ -172,7 +185,8 @@ export function buildScenario(regime: CapabilityRegime): RegimeScenario {
     }
 
     case 'INVESTIGATION_READ_ONLY': {
-      const signals = taskEconomicsFor('Investigate why the scheduler drops the second retry');
+      // Read-only is System-1's typed answer, carried in the understanding.
+      const signals = taskEconomicsFor('Investigate why the scheduler drops the second retry', { readOnly: true, anchors: [] });
       return {
         regime, capability: 'task.read-only',
         reachable: signals.readOnly && signals.expectedModificationScope === 0,

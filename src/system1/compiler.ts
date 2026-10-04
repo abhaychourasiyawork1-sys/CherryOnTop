@@ -51,11 +51,36 @@ export const HARNESS_QUESTIONS = {
       { id: 'explain', action: 'read-only-grant', description: 'only an answer: an explanation, review or report, and nothing in the repository should be modified' },
     ],
   },
+  // How much capability finishing the task correctly takes. A difficulty the
+  // market prices candidates against — never a model choice: the options
+  // describe the work, not which model to use. Ordered easiest first, and the
+  // expected difficulty is read off the whole distribution, not the argmax.
+  // Asked only when the answer could change which candidate the market picks
+  // (execution-market.ts). Uncalibrated until a labelled set exists.
+  'execution.difficulty': {
+    version: 'execution.difficulty@1',
+    text: 'How demanding is it to complete this task correctly?',
+    options: [
+      { id: 'routine', action: 'lower-capability', description: 'routine: a small, well-specified change or answer that is hard to get wrong' },
+      { id: 'substantial', action: 'standard-capability', description: 'substantial: careful multi-step work across several places, with real room for mistakes' },
+      { id: 'hard', action: 'higher-capability', description: 'hard: subtle, ambiguous or deeply interdependent work where only very careful reasoning gets it right' },
+    ],
+  },
   'action.helpful': {
     version: 'action.helpful@1',
     // Conditioned on the action being carried out, so this composes with the
     // candidate's own failure risk instead of counting failure a second time.
     text: 'Assuming this action is carried out as described, would it materially improve the expected outcome of the task compared with continuing without it?',
+  },
+  // Information control (src/infocontrol). Both are yes-probabilities that feed
+  // an expected-loss comparison; neither decides on its own.
+  'info.finish': {
+    version: 'info.finish@1',
+    text: 'If the agent stops now, without running anything after its last edit, is the task likely to fail its hidden checks?',
+  },
+  'info.elide': {
+    version: 'info.elide@1',
+    text: 'Will the agent likely need the omitted middle part of this tool output for its next steps on the task?',
   },
   'runtime.next_action': {
     version: 'runtime.next_action@1',
@@ -150,6 +175,8 @@ export function compileRequest(input: CompileInput): DecisionRequest {
   return request;
 }
 
+const NOUL_SURFACES: ReadonlySet<DecisionSurface> = new Set(['action.helpful', 'info.finish', 'info.elide']);
+
 /** A harness surface, with its versioned question. */
 export function compileHarnessRequest(input: Omit<CompileInput, 'source' | 'question' | 'questionVersion' | 'primitive'> & {
   surface: keyof typeof HARNESS_QUESTIONS;
@@ -164,7 +191,7 @@ export function compileHarnessRequest(input: Omit<CompileInput, 'source' | 'ques
     ...rest,
     ...(q.options ? { candidates: [...q.options], fixedOrder: true } : {}),
     source: 'harness',
-    primitive: input.surface === 'action.helpful' ? 'noul' : 'choice',
+    primitive: NOUL_SURFACES.has(input.surface) ? 'noul' : 'choice',
     question: subject ? `${q.text} Action: ${subject.slice(0, 200)}` : q.text,
     questionVersion: q.version,
   });

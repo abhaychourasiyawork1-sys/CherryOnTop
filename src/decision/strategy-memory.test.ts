@@ -31,7 +31,7 @@ function store(
   recordStrategyOutcome(db, {
     id, nodeId: `n-${id}`, createdAt: 't0',
     observation: observationFrom({
-      strategy: 'MANAGED', taskClass: prep.taskClass, taskShape: prep.taskShape,
+      strategy: 'MANAGED', taskClass: prep.mode, taskShape: prep.taskShape,
       repository: prep.repository, exactPattern: `${prep.repository}@${prep.taskShape}`,
       validated: true, qualityDelta: 0.1, costUsd: 0.2, latencyMs: 60_000,
       recoveryCount: 0, validationLevel: 'V2', ...over,
@@ -76,7 +76,7 @@ describe('strategyPriorFor', () => {
     store(db, '1');
     const prep = snapshot();
     expect(getStrategyOutcomes(db, 'GLOBAL', 'all')).toHaveLength(1);
-    expect(getStrategyOutcomes(db, 'TASK_CLASS', prep.taskClass)).toHaveLength(1);
+    expect(getStrategyOutcomes(db, 'TASK_CLASS', prep.mode)).toHaveLength(1);
     expect(getStrategyOutcomes(db, 'REPOSITORY', 'github.com/acme/thing')).toHaveLength(1);
   });
 

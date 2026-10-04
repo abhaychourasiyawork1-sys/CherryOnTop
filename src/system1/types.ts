@@ -8,8 +8,13 @@
 export type DecisionSurface =
   | 'execution.decomposable'
   | 'execution.change_requested'
+  | 'execution.difficulty'
   | 'runtime.next_action'
   | 'action.helpful'
+  /** Information control: would finishing now likely fail the task's checks? */
+  | 'info.finish'
+  /** Information control: is the elided part of an observation likely needed? */
+  | 'info.elide'
   /** A bounded question the execution model asked through `<cto_decide>`. */
   | 'model.request';
 

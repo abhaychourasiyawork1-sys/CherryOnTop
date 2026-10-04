@@ -1,0 +1,344 @@
+{
+ "H0": {
+  "all": {
+   "runs": 360,
+   "success": 0.8805555555555555,
+   "tokensPerTask": 295992.8980627429,
+   "tokensPerSuccess": 336143.35426683736,
+   "looksPerTask": 0,
+   "selectedPerTask": 0,
+   "abstainedPerTask": 0,
+   "interventionsPerTask": 0,
+   "autonomy": 1,
+   "zeroInterventionTasks": 1,
+   "interventionPrecision": null,
+   "interventionROI": null,
+   "netSavingPerLabelled": null,
+   "interventionTokensPerTask": 0,
+   "controlFrictionPerTask": 0,
+   "discoveryTokensPerTask": 0,
+   "replayTokensPerTask": 0,
+   "candidateRecall3": null,
+   "generationMissRate": null,
+   "preventionDebtPerTask": 0,
+   "unavoidableInterventions": 0,
+   "brier": null,
+   "meanP": null,
+   "meanY": null
+  },
+  "vsH25": {
+   "all": {
+    "cps": 0.058146355464495425,
+    "cpsCI": [
+     0.03427296980000327,
+     0.08700596760053614
+    ],
+    "success": -0.030555555555555555,
+    "successCI": [
+     -0.05277777777777778,
+     -0.011111111111111112
+    ],
+    "tasks": 120
+   },
+   "held": {
+    "cps": 0.05505638525181866,
+    "cpsCI": [
+     0.0210787239162733,
+     0.09947732193466874
+    ],
+    "success": -0.034722222222222224,
+    "successCI": [
+     -0.06944444444444445,
+     -0.006944444444444444
+    ],
+    "tasks": 48
+   }
+  },
+  "recoverPerTask": 0
+ },
+ "H2": {
+  "all": {
+   "runs": 360,
+   "success": 0.9138888888888889,
+   "tokensPerTask": 290028.24252256355,
+   "tokensPerSuccess": 317356.13163563184,
+   "looksPerTask": 20.358333333333334,
+   "selectedPerTask": 14.747222222222222,
+   "abstainedPerTask": 0,
+   "interventionsPerTask": 3.65,
+   "autonomy": 0.903474619848674,
+   "zeroInterventionTasks": 0.375,
+   "interventionPrecision": 0.11908396946564885,
+   "interventionROI": 0.13845728347025668,
+   "netSavingPerLabelled": 301.0101152020765,
+   "interventionTokensPerTask": 6111.131475243177,
+   "controlFrictionPerTask": 2683.616666666667,
+   "discoveryTokensPerTask": 0,
+   "replayTokensPerTask": 0,
+   "candidateRecall3": null,
+   "generationMissRate": null,
+   "preventionDebtPerTask": 0,
+   "unavoidableInterventions": 4.166666666666667,
+   "brier": null,
+   "meanP": null,
+   "meanY": null
+  },
+  "vsH25": {
+   "all": {
+    "cps": -0.0009939812524663028,
+    "cpsCI": [
+     -0.00829167909930062,
+     0.0031960389122012156
+    ],
+    "success": 0.002777777777777778,
+    "successCI": [
+     0,
+     0.008333333333333333
+    ],
+    "tasks": 120
+   },
+   "held": {
+    "cps": 0.0011438013190334662,
+    "cpsCI": [
+     -0.0005134766119788692,
+     0.00306061765279253
+    ],
+    "success": 0,
+    "successCI": [
+     0,
+     0
+    ],
+    "tasks": 48
+   }
+  },
+  "recoverPerTask": 1.3444444444444446
+ },
+ "H2.5": {
+  "all": {
+   "runs": 360,
+   "success": 0.9111111111111111,
+   "tokensPerTask": 289434.3900700133,
+   "tokensPerSuccess": 317671.8915402585,
+   "looksPerTask": 9.025,
+   "selectedPerTask": 2.952777777777778,
+   "abstainedPerTask": 0,
+   "interventionsPerTask": 2.952777777777778,
+   "autonomy": 0.9217864763446398,
+   "zeroInterventionTasks": 0.3888888888888889,
+   "interventionPrecision": 0.15805946791862285,
+   "interventionROI": 0.45181274140096805,
+   "netSavingPerLabelled": 1038.1877877235584,
+   "interventionTokensPerTask": 6020.686543532193,
+   "controlFrictionPerTask": 1186.6944444444443,
+   "discoveryTokensPerTask": 0,
+   "replayTokensPerTask": 0,
+   "candidateRecall3": null,
+   "generationMissRate": null,
+   "preventionDebtPerTask": 0,
+   "unavoidableInterventions": 3.4166666666666665,
+   "brier": null,
+   "meanP": null,
+   "meanY": null
+  },
+  "vsH25": {
+   "all": {
+    "cps": 0,
+    "cpsCI": [
+     0,
+     0
+    ],
+    "success": 0,
+    "successCI": [
+     0,
+     0
+    ],
+    "tasks": 120
+   },
+   "held": {
+    "cps": 0,
+    "cpsCI": [
+     0,
+     0
+    ],
+    "success": 0,
+    "successCI": [
+     0,
+     0
+    ],
+    "tasks": 48
+   }
+  },
+  "recoverPerTask": 0.5722222222222222
+ },
+ "never-recover": {
+  "all": {
+   "runs": 360,
+   "success": 0.8944444444444445,
+   "tokensPerTask": 287601.8163268134,
+   "tokensPerSuccess": 321542.403346748,
+   "looksPerTask": 8.066666666666666,
+   "selectedPerTask": 2.7222222222222223,
+   "abstainedPerTask": 0,
+   "interventionsPerTask": 2.425,
+   "autonomy": 0.9353859817926135,
+   "zeroInterventionTasks": 0.39166666666666666,
+   "interventionPrecision": 0.06634304207119741,
+   "interventionROI": 0.16230021013797025,
+   "netSavingPerLabelled": 389.52735891207027,
+   "interventionTokensPerTask": 5873.039424862538,
+   "controlFrictionPerTask": 1060.3944444444444,
+   "discoveryTokensPerTask": 0,
+   "replayTokensPerTask": 0,
+   "candidateRecall3": null,
+   "generationMissRate": null,
+   "preventionDebtPerTask": 0,
+   "unavoidableInterventions": 3.3333333333333335,
+   "brier": null,
+   "meanP": null,
+   "meanY": null
+  },
+  "vsH25": {
+   "all": {
+    "cps": 0.012183992067170024,
+    "cpsCI": [
+     0.00156193458864462,
+     0.02723988441586167
+    ],
+    "success": -0.016666666666666666,
+    "successCI": [
+     -0.03333333333333333,
+     -0.002777777777777778
+    ],
+    "tasks": 120
+   },
+   "held": {
+    "cps": 0.022922153886251184,
+    "cpsCI": [
+     0.0014412893161648288,
+     0.05637973779871053
+    ],
+    "success": -0.020833333333333332,
+    "successCI": [
+     -0.05555555555555555,
+     0
+    ],
+    "tasks": 48
+   }
+  },
+  "recoverPerTask": 0
+ },
+ "learned adjusted": {
+  "all": {
+   "runs": 360,
+   "success": 0.9,
+   "tokensPerTask": 297379.09391115024,
+   "tokensPerSuccess": 330421.2154568336,
+   "looksPerTask": 5.727777777777778,
+   "selectedPerTask": 2.2527777777777778,
+   "abstainedPerTask": 0,
+   "interventionsPerTask": 0.3333333333333333,
+   "autonomy": 0.9915771741419246,
+   "zeroInterventionTasks": 0.8694444444444445,
+   "interventionPrecision": 0.1724137931034483,
+   "interventionROI": -0.08675760065288897,
+   "netSavingPerLabelled": -84.52040972752796,
+   "interventionTokensPerTask": 368.477948010108,
+   "controlFrictionPerTask": 755.4222222222222,
+   "discoveryTokensPerTask": 0,
+   "replayTokensPerTask": 0,
+   "candidateRecall3": null,
+   "generationMissRate": null,
+   "preventionDebtPerTask": 0,
+   "unavoidableInterventions": 0.4166666666666667,
+   "brier": null,
+   "meanP": null,
+   "meanY": null
+  },
+  "vsH25": {
+   "all": {
+    "cps": 0.040133622949008574,
+    "cpsCI": [
+     0.022420200792725886,
+     0.06235574274245148
+    ],
+    "success": -0.011111111111111112,
+    "successCI": [
+     -0.025,
+     0
+    ],
+    "tasks": 120
+   },
+   "held": {
+    "cps": 0.02459472339855706,
+    "cpsCI": [
+     0.011043349960107696,
+     0.04464206050195374
+    ],
+    "success": -0.006944444444444444,
+    "successCI": [
+     -0.020833333333333332,
+     0
+    ],
+    "tasks": 48
+   }
+  },
+  "recoverPerTask": 0.23333333333333334
+ },
+ "learned unadjusted": {
+  "all": {
+   "runs": 360,
+   "success": 0.8972222222222223,
+   "tokensPerTask": 296171.1108457174,
+   "tokensPerSuccess": 330097.8325215426,
+   "looksPerTask": 5.863888888888889,
+   "selectedPerTask": 2.3333333333333335,
+   "abstainedPerTask": 0,
+   "interventionsPerTask": 0.48333333333333334,
+   "autonomy": 0.9877127321516842,
+   "zeroInterventionTasks": 0.8583333333333333,
+   "interventionPrecision": 0.24347826086956523,
+   "interventionROI": 1.184749855976125,
+   "netSavingPerLabelled": 1927.7292493183913,
+   "interventionTokensPerTask": 804.409192105254,
+   "controlFrictionPerTask": 772.9611111111111,
+   "discoveryTokensPerTask": 0,
+   "replayTokensPerTask": 0,
+   "candidateRecall3": null,
+   "generationMissRate": null,
+   "preventionDebtPerTask": 0,
+   "unavoidableInterventions": 0.3333333333333333,
+   "brier": null,
+   "meanP": null,
+   "meanY": null
+  },
+  "vsH25": {
+   "all": {
+    "cps": 0.039115645142652644,
+    "cpsCI": [
+     0.022525700913275992,
+     0.05819803916175115
+    ],
+    "success": -0.013888888888888888,
+    "successCI": [
+     -0.025,
+     -0.002777777777777778
+    ],
+    "tasks": 120
+   },
+   "held": {
+    "cps": 0.03939785288917319,
+    "cpsCI": [
+     0.01446284088131744,
+     0.074121416830502
+    ],
+    "success": -0.020833333333333332,
+    "successCI": [
+     -0.04861111111111111,
+     0
+    ],
+    "tasks": 48
+   }
+  },
+  "recoverPerTask": 0.21388888888888888
+ }
+}

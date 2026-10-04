@@ -21,12 +21,12 @@ import { randomUUID } from 'node:crypto';
 import { eq } from 'drizzle-orm';
 import type { Db } from '../db/client.js';
 import { memory } from '../db/schema.js';
-import type { TaskClass } from '../intelligence/task-judge.js';
+import type { TaskMode } from '../intelligence/task-understanding.js';
 
 const KIND = 'context_utility';
 
 export interface ContextUtilityObservation {
-  taskClass: TaskClass;
+  taskClass: TaskMode;
   nodeId: string;
   /** Paths selection offered. */
   selected: string[];
@@ -89,7 +89,7 @@ export function recordContextUtility(db: Db, observation: ContextUtilityObservat
 }
 
 export interface TaskClassUtility {
-  taskClass: TaskClass;
+  taskClass: TaskMode;
   observations: number;
   meanPrecision: number;
   meanRecall: number;
@@ -102,8 +102,7 @@ export interface TaskClassUtility {
 const mean = (values: number[]): number =>
   values.length === 0 ? 0 : values.reduce((sum, v) => sum + v, 0) / values.length;
 
-/** Below this, a class's history is a coincidence rather than evidence — the
- *  same bar `selectRuntime` sets, for the same reason. */
+/** Below this, a class's history is a coincidence rather than evidence. */
 export const MIN_OBSERVATIONS = 3;
 
 export function contextUtilityByTaskClass(db: Db): TaskClassUtility[] {
@@ -124,7 +123,7 @@ export function contextUtilityByTaskClass(db: Db): TaskClassUtility[] {
       }
     }
     return {
-      taskClass: taskClass as TaskClass,
+      taskClass: taskClass as TaskMode,
       observations: observations.length,
       meanPrecision: mean(observations.map((o) => o.scores.precision)),
       meanRecall: mean(observations.map((o) => o.scores.recall)),
@@ -142,7 +141,7 @@ export function contextUtilityByTaskClass(db: Db): TaskClassUtility[] {
  *  Returns nothing until there is enough history, and nothing that was missed
  *  only once. A prior built from a single run is superstition, and the scorer
  *  would carry it into every future projection. */
-export function promotionHints(db: Db, taskClass: TaskClass): string[] {
+export function promotionHints(db: Db, taskClass: TaskMode): string[] {
   const stats = contextUtilityByTaskClass(db).find((s) => s.taskClass === taskClass);
   if (!stats || stats.observations < MIN_OBSERVATIONS) return [];
   return stats.frequentlyMissed.filter((entry) => entry.count >= 2).map((entry) => entry.path);

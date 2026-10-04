@@ -160,8 +160,12 @@ describe('a read-only question asked twice against the same commit', () => {
     await run(db, add(db, path, READ_ONLY));
     // Same goal, same commit — but this node could change something, and the
     // change is what a reused answer would silently skip.
-    await run(db, add(db, path, ['Read', 'Edit', 'Write']));
-    expect(stub).toHaveBeenCalledTimes(2);
+    const writer = add(db, path, ['Read', 'Edit', 'Write']);
+    await run(db, writer);
+    // It ran its own sandbox (as many attempts as its validation needed), and
+    // nothing was served from the cache.
+    expect(stub.mock.calls.some(([input]) => (input as { nodeId?: string }).nodeId === writer)).toBe(true);
+    expect(tokensByRole(db).resultCacheHits).toBe(0);
   });
 
   it('survives a commit that touched nothing the answer depended on', async () => {

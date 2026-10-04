@@ -68,6 +68,11 @@ export interface ContextCandidate {
    *  cached before sizes were recorded — and an unpriceable level is never
    *  offered. */
   fullArtifactTokens?: number;
+  /** The symbols the goal named outright that this file declares — what makes a
+   *  targeted read possible. Absent when the file was reached by path, by
+   *  neighbourhood or by words, since "the part of the file the goal is about"
+   *  has no meaning then. */
+  anchoredSymbols?: string[];
   estimatedTokens: number;
   lexicalScore: number;
   structuralScore: number;
@@ -372,6 +377,34 @@ export function estimateTokens(text: string): number {
   return Math.ceil(text.length / CHARS_PER_TOKEN);
 }
 
+/** What one named declaration would cost to send, when that can be guessed from
+ *  the inventory alone.
+ *
+ *  The selector must not read the file, so this is an estimate, and it is only
+ *  an estimate of *whether targeting is worth attempting*: the boundary measures
+ *  the real excerpt and re-prices against it. The guess is the file's cost
+ *  shared by its declared symbols, with a quarter more for the comment above and
+ *  the body being longer than average, floored so a one-liner is not priced at
+ *  nothing. It is offered only when it comes in clearly under the file — a
+ *  saving smaller than that is inside the estimate's own error and not worth a
+ *  second representation to be wrong about.
+ *
+ *  ponytail: a per-symbol line span in the inventory would replace the average
+ *  with a fact. The inventory scan already reads every file. */
+export const SYMBOL_MIN_TOKENS = 40;
+export const SYMBOL_WORTHWHILE_SHARE = 0.6;
+
+export function symbolTokensEstimate(
+  candidate: Pick<ContextCandidate, 'fullArtifactTokens' | 'symbols' | 'anchoredSymbols'>,
+): number | undefined {
+  const full = candidate.fullArtifactTokens;
+  const named = candidate.anchoredSymbols?.length ?? 0;
+  if (!Number.isFinite(full) || (full as number) < MIN_FULL_ARTIFACT_TOKENS || named === 0) return undefined;
+  const declared = Math.max(candidate.symbols.length, named);
+  const estimate = Math.max(SYMBOL_MIN_TOKENS, Math.ceil((full as number) * (named / declared) * 1.25));
+  return estimate <= (full as number) * SYMBOL_WORTHWHILE_SHARE ? estimate : undefined;
+}
+
 /** Does this path answer to this anchor? Suffix-matched, so a goal saying
  *  `session.ts` finds `src/auth/session.ts`, and a goal saying the whole path
  *  finds only that. Symbol anchors match the file that declares them. */
@@ -457,6 +490,9 @@ export function buildCandidates(input: CandidateInput): ContextCandidate[] {
       : undefined;
     const described: EvidenceLevel = relationships.length > (isAnchor ? 1 : 0) ? 'L2' : 'L1';
     const evidenceLevel: EvidenceLevel = fullArtifactTokens === undefined ? described : 'L3';
+    // Which declared symbols the goal named, in the order the file declares
+    // them (stable: the selection must not depend on how anchors were listed).
+    const namedSymbols = isAnchor ? entry.symbols.filter((symbol) => input.anchors.includes(symbol)) : [];
     const shape = { path: entry.path, symbols: entry.symbols, relationships, fullArtifactTokens };
 
     candidates.push({
@@ -465,6 +501,7 @@ export function buildCandidates(input: CandidateInput): ContextCandidate[] {
       symbols: entry.symbols,
       evidenceLevel,
       fullArtifactTokens,
+      ...(namedSymbols.length > 0 ? { anchoredSymbols: namedSymbols } : {}),
       // What it costs at the level its *description* supports — the cheap,
       // inventory-only view. L3's price is carried separately so that including
       // a candidate never accidentally prices in a file read nobody asked for.

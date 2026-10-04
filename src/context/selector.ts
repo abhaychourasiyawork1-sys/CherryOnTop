@@ -18,7 +18,7 @@
  *     test is relaxed, because pruning a goal we do not understand is how an
  *     agent ends up re-deriving by grep what it was nearly handed — at a cost
  *     measured in turns, each of which re-reads the entire conversation. */
-import { tokensAt, offersFullArtifact, materializationFor, type ContextCandidate, type EvidenceLevel } from './candidates.js';
+import { tokensAt, offersFullArtifact, materializationFor, symbolTokensEstimate, type ContextCandidate, type EvidenceLevel } from './candidates.js';
 import { marginalValue, type ContextScorer, type ContextScoreSignals, DEFAULT_SCORE_WEIGHTS } from './scoring.js';
 import type { ContextPolicy } from '../efficiency/policy-types.js';
 import type { EconomicState } from '../decision/state.js';
@@ -49,8 +49,19 @@ export interface SelectedCandidate extends ContextCandidate {
 export interface FullArtifactRequest {
   candidateKey: string;
   path: string;
+  /** What the requested representation is expected to cost — the whole file's
+   *  price for `full`, the estimated excerpt's for `symbol`. */
   tokens: number;
   expectedNetValue: number;
+  /** The cheapest representation whose expected value pays for itself. `symbol`
+   *  is a *first attempt*: the boundary measures the real excerpt, and if the
+   *  declaration cannot be delimited it re-prices the whole file at
+   *  `fullTokens` and buys that only if it is still worth it. */
+  representation: 'full' | 'symbol';
+  symbol?: string;
+  /** The whole file's price, kept beside a targeted request so escalation is
+   *  priced from the same figure the selector used. */
+  fullTokens: number;
 }
 
 export interface ContextSelectionResult {
@@ -97,9 +108,8 @@ export interface SelectContextInput {
    *  so no caller has to know the weights exist. */
   weights?: ContextScoreSignals;
   /** What the run currently knows. Optional because the deterministic benchmark
-   *  and the Baseline path select without one, and a selection made without a
-   *  state must score exactly as it did before the economics existed — that
-   *  equivalence is what makes the two arms comparable. */
+   *  selects without one, and a selection made without a state must score
+   *  exactly as it did before the economics existed. */
   state?: EconomicState;
 }
 
@@ -190,12 +200,25 @@ export function selectContext(input: SelectContextInput): ContextSelectionResult
     let fullArtifactValue: number | undefined;
     if (input.state && offersFullArtifact(candidate)) {
       const fullTokens = tokensAt(candidate, 'L3');
-      const value = netValueAt(candidate, fullTokens, input.state);
-      if (value > 0) {
-        fullArtifactValue = value;
+      const wholeValue = netValueAt(candidate, fullTokens, input.state);
+      // The cheapest representation that pays: a named declaration first, when
+      // the goal named one and it would come in clearly under the file. The
+      // whole file is the escalation, not the default.
+      const symbolTokens = symbolTokensEstimate(candidate);
+      const symbolValue = symbolTokens === undefined ? undefined : netValueAt(candidate, symbolTokens, input.state);
+      if (symbolTokens !== undefined && symbolValue !== undefined && symbolValue > 0) {
+        fullArtifactValue = symbolValue;
         fullArtifactRequests.push({
           candidateKey: candidate.key, path: candidate.path,
-          tokens: fullTokens, expectedNetValue: value,
+          tokens: symbolTokens, expectedNetValue: symbolValue,
+          representation: 'symbol', symbol: candidate.anchoredSymbols![0], fullTokens,
+        });
+      } else if (wholeValue > 0) {
+        fullArtifactValue = wholeValue;
+        fullArtifactRequests.push({
+          candidateKey: candidate.key, path: candidate.path,
+          tokens: fullTokens, expectedNetValue: wholeValue,
+          representation: 'full', fullTokens,
         });
       }
     }

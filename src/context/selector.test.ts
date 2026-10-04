@@ -287,3 +287,49 @@ describe('selectContext — full-artifact requests', () => {
     expect(run([openable]).selected[0].materialization).toBe('inventory');
   });
 });
+
+describe('selectContext — buying the cheapest sufficient representation', () => {
+  const s = normalizeEconomicState({
+    ...initialEconomicState({ goal: 'g', totalTokenBudget: 50_000 }),
+    uncertainty: { target: 0.8, structural: 0.8, behavioral: 0.8, validation: 0.8 },
+  });
+  const multi = candidate({
+    path: 'src/auth/session.ts', structuralScore: 1, confidenceScore: 1,
+    relationships: ['tested-by:src/auth/session.test.ts'], evidenceLevel: 'L3', fullArtifactTokens: 1_000,
+    symbols: ['refreshSession', 'createSession', 'destroySession', 'listSessions', 'Session'],
+    anchoredSymbols: ['refreshSession'],
+  });
+  const run = (candidates: ContextCandidate[]) =>
+    selectContext({ candidates, policy: policy({ tokenBudget: 5000 }), scorer: createContextScorer(s), state: s });
+
+  it('asks for the named symbol rather than the whole file when the file has many', () => {
+    const [request] = run([multi]).fullArtifactRequests;
+    expect(request.representation).toBe('symbol');
+    expect(request.symbol).toBe('refreshSession');
+    expect(request.fullTokens).toBe(1_000);
+    expect(request.tokens).toBeLessThan(request.fullTokens * 0.6);
+  });
+
+  it('prices the targeted request lower and so values it higher than the whole file', () => {
+    const targeted = run([multi]).fullArtifactRequests[0];
+    const whole = run([{ ...multi, anchoredSymbols: undefined }]).fullArtifactRequests[0];
+    expect(whole.representation).toBe('full');
+    expect(targeted.expectedNetValue).toBeGreaterThan(whole.expectedNetValue);
+  });
+
+  it.each([
+    ['names no symbol', { anchoredSymbols: undefined }],
+    ['names every symbol it has, so a symbol saves nothing', { symbols: ['only'], anchoredSymbols: ['only'] }],
+    ['is a file whose symbols we could not read', { symbols: [], anchoredSymbols: ['x'] }],
+  ])('asks for the whole file when the goal %s', (_name, over) => {
+    const [request] = run([{ ...multi, ...over }]).fullArtifactRequests;
+    expect(request.representation).toBe('full');
+    expect(request.symbol).toBeUndefined();
+  });
+
+  it('chooses the first named symbol in a stable order', () => {
+    const [request] = run([{ ...multi, anchoredSymbols: ['destroySession', 'refreshSession'] }]).fullArtifactRequests;
+    expect(request.symbol).toBe('destroySession');
+  });
+});
+

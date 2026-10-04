@@ -104,13 +104,23 @@ describe('meetsMinimumLevel', () => {
 });
 
 describe('derived from a real goal', () => {
-  it('routes a typo fix to the cheap rung and a bug fix to the observed one', () => {
+  it('does not lower the rung because the wording sounds small', () => {
+    // "typo" is a word, not evidence of size. Size comes from the difficulty
+    // belief; until something measured it, a change gets the observed rung.
     const typo = validationProfileFor({ strategy: 'MANAGED', economics: taskEconomicsFor('Fix the typo in README.md') });
     const bug = validationProfileFor({
       strategy: 'MANAGED',
       economics: taskEconomicsFor('Fix the failing session refresh across every auth module in the repository'),
     });
-    expect(typo.minimumLevel).toBe('V1');
+    expect(typo.minimumLevel).toBe('V2');
     expect(bug.minimumLevel).toBe('V2');
+  });
+
+  it('routes a read-only answer to the cheap rung once System-1 has said it changes nothing', () => {
+    const answer = validationProfileFor({
+      strategy: 'MANAGED',
+      economics: taskEconomicsFor('Why does refreshSession return a stale token?', { readOnly: true, anchors: [] }),
+    });
+    expect(answer.minimumLevel).toBe('V1');
   });
 });

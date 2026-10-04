@@ -65,7 +65,7 @@ function machine(overrides: {
   return nodeMachine.provide({
     actors: {
       assessUncertainty: fromPromise(async (): Promise<IntelligenceBundle> => ({
-        sufficientContext: true, complexity: 'low', worthSplitting: false, signals: {},
+        sufficientContext: true, difficulty: 0.2, signals: {},
       })),
       decideExecution: fromPromise(async (): Promise<DecideExecutionResult> => ({ outcome: 'SELF_EXECUTE', breakdown: {} })),
       executeStep: fromPromise(async (): Promise<ExecuteStepResult> => ({

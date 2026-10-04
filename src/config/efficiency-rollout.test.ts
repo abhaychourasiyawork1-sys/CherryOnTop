@@ -1,48 +1,17 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import { parseRuntimeMode, runtimeMode, modelForTier } from './efficiency.js';
+import { modelForTier } from './efficiency.js';
 
 afterEach(() => {
-  delete process.env.ORG_EFFICIENCY_MODE;
   for (const key of ['ORG_MODEL_FAST', 'ORG_MODEL_STANDARD', 'ORG_MODEL_DEEP']) delete process.env[key];
 });
 
-describe('parseRuntimeMode', () => {
-  it('exposes exactly two product modes', () => {
-    // The architectural invariant, asserted where it is decided. A third mode
-    // is one more behaviour an operator can be in, one more combination to
-    // test, and one more thing a bug report has to establish before it can be
-    // read.
-    const modes = new Set(
-      ['disabled', 'off', '0', 'false', 'baseline', 'shadow', 'enabled', 'full', '', 'anything', undefined]
-        .map((value) => parseRuntimeMode(value as string | undefined)),
-    );
-    expect([...modes].sort()).toEqual(['baseline', 'full']);
-  });
-
-  it('accepts the ways people actually write "off"', () => {
-    for (const value of ['off', '0', 'false', 'DISABLED', ' disabled ', 'baseline']) {
-      expect(parseRuntimeMode(value)).toBe('baseline');
-    }
-  });
-
-  it('resolves the retired shadow mode to the behaviour it actually had', () => {
-    // A shadow run decided, recorded, and then dispatched exactly as a disabled
-    // run would. A deployment that set it keeps what it had and stops being in
-    // a mode nobody else is in.
-    expect(parseRuntimeMode('shadow')).toBe('baseline');
-  });
-
-  it('defaults to full, including for an unset or unrecognised value', () => {
-    // Every component this gates degrades to Baseline on failure, and a flag
-    // nobody turns on measures nothing.
-    expect(parseRuntimeMode(undefined)).toBe('full');
-    expect(parseRuntimeMode('')).toBe('full');
-    expect(parseRuntimeMode('yes-please')).toBe('full');
-  });
-
-  it('reads the environment', () => {
-    process.env.ORG_EFFICIENCY_MODE = 'disabled';
-    expect(runtimeMode()).toBe('baseline');
+describe('there is no runtime mode', () => {
+  it('exports no switch that selects a different architecture', async () => {
+    // One production architecture. A mode switch — baseline/full, shadow,
+    // routing on/off — is exactly what the Action Market replaced.
+    const config = await import('./efficiency.js') as Record<string, unknown>;
+    expect(config.runtimeMode).toBeUndefined();
+    expect(config.parseRuntimeMode).toBeUndefined();
   });
 });
 

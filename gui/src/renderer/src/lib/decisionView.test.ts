@@ -47,6 +47,11 @@ describe('decision view', () => {
     expect(keyDecisions(views).map((v) => v.title)).toEqual(['Split the work across agents']);
     expect(views[0].why).toBe('77% of 253 earlier runs succeeded with it.');
   });
+
+  it('explains a market decision by what it was expected to cost', () => {
+    const [view] = decisionsOf([row('codex', { expected_cost_usd: 0.123, candidates: 4, margin_usd: 0.05 }, 'runtime_selection')], []);
+    expect(view.why).toBe('The cheapest way to finish of 4 candidates — about $0.12 expected, $0.05 under the next.');
+  });
 });
 
 describe('evidence', () => {

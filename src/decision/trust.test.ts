@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { assessDecisionTrust, trustAdjusted, evidenceConfidenceOf } from './trust.js';
+import { assessDecisionTrust, evidenceConfidenceOf } from './trust.js';
+import { evaluateAction } from './utility.js';
 import { chooseEconomicAction } from './engine.js';
 import { actionCandidate, type ActionCandidate, type ActionKind } from './actions.js';
 import { initialEconomicState, normalizeEconomicState, type EconomicState } from './state.js';
@@ -38,22 +39,23 @@ describe('doubt narrows what may be done, rather than widening it', () => {
   it('makes the expensive options uncompetitive first as confidence falls', () => {
     // The architectural claim: an orchestrator that knows less does *less*, and
     // what it stops doing is the expensive things.
-    const eligible = (orchestrationConfidence: number) => {
+    // The doubt penalty: how far the conservative bound sits above the mean.
+    const penalty = (tokenCost: number, orchestrationConfidence: number) => {
       const s = state({ trajectory: { ...state().trajectory, orchestrationConfidence } });
-      return [1_000, 20_000, 60_000].filter((tokenCost) => {
-        const action = of({ tokenCost, expectedTokenBenefit: tokenCost * 1.5 });
-        return trustAdjusted(1, assessDecisionTrust({ state: s, action })) > 0.7;
-      }).length;
+      const e = evaluateAction(of({ tokenCost, expectedTokenBenefit: tokenCost * 1.2, confidence: 1 }), s);
+      return e.conservativeCostUsd - e.expectedCostUsd;
     };
-    expect(eligible(0.95)).toBeGreaterThan(eligible(0.2));
+    const growth = (tokenCost: number) => penalty(tokenCost, 0.2) - penalty(tokenCost, 0.95);
+    expect(growth(40_000)).toBeGreaterThan(growth(10_000));
+    expect(growth(10_000)).toBeGreaterThan(growth(1_000));
   });
 
   it('never turns a loss into a gain by distrusting it', () => {
-    const distrusted = trust(of({ tokenCost: 90_000 }), state({
-      trajectory: { ...state().trajectory, orchestrationConfidence: 0.01 },
-    }));
-    expect(trustAdjusted(-5, distrusted)).toBeLessThan(0);
-    expect(trustAdjusted(-5, distrusted)).toBeGreaterThan(-5);
+    const blind = state({ trajectory: { ...state().trajectory, orchestrationConfidence: 0.01 } });
+    const loss = evaluateAction(of({ tokenCost: 90_000 }), blind);
+    expect(loss.advantageUsd).toBeLessThan(0);
+    // Doubt may only make it look worse.
+    expect(loss.conservativeCostUsd).toBeGreaterThanOrEqual(loss.expectedCostUsd);
   });
 });
 
@@ -142,7 +144,7 @@ describe('evidenceConfidenceOf', () => {
   });
 });
 
-describe('the engine ranks on trust-adjusted utility', () => {
+describe('the engine ranks on a trust-widened cost bound', () => {
   const lost = state({ trajectory: { ...state().trajectory, orchestrationConfidence: 0.05 } });
 
   /** Two options whose raw utility is all but identical — the gamble nets 8,000
@@ -173,7 +175,7 @@ describe('the engine ranks on trust-adjusted utility', () => {
     // wrong as one that took every cheap one.
     const decisive = [
       of({ id: 'cheap', tokenCost: 100, expectedTokenBenefit: 8_000, confidence: 1 }),
-      of({ id: 'dear', tokenCost: 70_000, expectedTokenBenefit: 90_000, confidence: 1 }),
+      of({ id: 'dear', tokenCost: 20_000, expectedTokenBenefit: 60_000, confidence: 1 }),
     ];
     expect(chooseEconomicAction({ state: lost, candidates: decisive }).action.id).toBe('dear');
   });

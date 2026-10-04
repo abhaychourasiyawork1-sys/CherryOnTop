@@ -1,0 +1,570 @@
+[
+  {
+    "run": "g-T1-H0-r1",
+    "task": "T1",
+    "arm": "H0",
+    "rep": 1,
+    "state": "COMPLETE",
+    "wallMin": 1.9189166666666666,
+    "files": 2,
+    "resolved": true,
+    "usage": [
+      {
+        "role": "execute",
+        "n": 1,
+        "usd": 0.25462819999999997,
+        "turns": 34
+      }
+    ],
+    "packets": 0,
+    "chosen": [],
+    "faults": 0,
+    "interventionsCarried": 0,
+    "validations": 1,
+    "experiences": 0,
+    "governorTextJobs": 0,
+    "noFeasibleCandidate": false
+  },
+  {
+    "run": "g-T1-H0-r2",
+    "task": "T1",
+    "arm": "H0",
+    "rep": 2,
+    "state": "COMPLETE",
+    "wallMin": 0.91995,
+    "files": 2,
+    "resolved": true,
+    "usage": [
+      {
+        "role": "execute",
+        "n": 1,
+        "usd": 0.09604309999999999,
+        "turns": 18
+      }
+    ],
+    "packets": 0,
+    "chosen": [],
+    "faults": 0,
+    "interventionsCarried": 0,
+    "validations": 1,
+    "experiences": 0,
+    "governorTextJobs": 0,
+    "noFeasibleCandidate": false
+  },
+  {
+    "run": "g-T1-H4-r1",
+    "task": "T1",
+    "arm": "H4",
+    "rep": 1,
+    "state": "COMPLETE",
+    "wallMin": 1.3202333333333334,
+    "files": 2,
+    "resolved": true,
+    "usage": [
+      {
+        "role": "execute",
+        "n": 1,
+        "usd": 0.21758520000000003,
+        "turns": 23
+      }
+    ],
+    "packets": 1,
+    "chosen": [
+      "continue"
+    ],
+    "faults": 5,
+    "interventionsCarried": 0,
+    "validations": 1,
+    "experiences": 2,
+    "governorTextJobs": 0,
+    "noFeasibleCandidate": false
+  },
+  {
+    "run": "g-T1-H4-r2",
+    "task": "T1",
+    "arm": "H4",
+    "rep": 2,
+    "state": "COMPLETE",
+    "wallMin": 1.2197,
+    "files": 2,
+    "resolved": true,
+    "usage": [
+      {
+        "role": "execute",
+        "n": 1,
+        "usd": 0.17686810000000006,
+        "turns": 21
+      }
+    ],
+    "packets": 1,
+    "chosen": [
+      "continue"
+    ],
+    "faults": 5,
+    "interventionsCarried": 0,
+    "validations": 1,
+    "experiences": 2,
+    "governorTextJobs": 0,
+    "noFeasibleCandidate": false
+  },
+  {
+    "run": "g-T2-H0-r1",
+    "task": "T2",
+    "arm": "H0",
+    "rep": 1,
+    "state": "FAILED",
+    "wallMin": 0.42201666666666665,
+    "files": 0,
+    "resolved": false,
+    "usage": [
+      {
+        "role": "plan",
+        "n": 1,
+        "usd": 0.0166976,
+        "turns": 3
+      }
+    ],
+    "packets": 0,
+    "chosen": [],
+    "faults": 0,
+    "interventionsCarried": 0,
+    "validations": 2,
+    "experiences": 0,
+    "governorTextJobs": 0,
+    "noFeasibleCandidate": true
+  },
+  {
+    "run": "g-T2-H0-r2",
+    "task": "T2",
+    "arm": "H0",
+    "rep": 2,
+    "state": "COMPLETE",
+    "wallMin": 1.5118333333333334,
+    "files": 1,
+    "resolved": true,
+    "usage": [
+      {
+        "role": "execute",
+        "n": 1,
+        "usd": 0.1148975,
+        "turns": 15
+      },
+      {
+        "role": "plan",
+        "n": 1,
+        "usd": 0.0057001000000000005,
+        "turns": 1
+      }
+    ],
+    "packets": 0,
+    "chosen": [],
+    "faults": 0,
+    "interventionsCarried": 0,
+    "validations": 1,
+    "experiences": 0,
+    "governorTextJobs": 0,
+    "noFeasibleCandidate": false
+  },
+  {
+    "run": "g-T2-H4-r1",
+    "task": "T2",
+    "arm": "H4",
+    "rep": 1,
+    "state": "COMPLETE",
+    "wallMin": 2.0141166666666668,
+    "files": 1,
+    "resolved": true,
+    "usage": [
+      {
+        "role": "execute",
+        "n": 1,
+        "usd": 0.17319529999999997,
+        "turns": 22
+      },
+      {
+        "role": "plan",
+        "n": 1,
+        "usd": 0.043276,
+        "turns": 1
+      }
+    ],
+    "packets": 1,
+    "chosen": [
+      "continue"
+    ],
+    "faults": 64,
+    "interventionsCarried": 0,
+    "validations": 1,
+    "experiences": 2,
+    "governorTextJobs": 0,
+    "noFeasibleCandidate": false
+  },
+  {
+    "run": "g-T2-H4-r2",
+    "task": "T2",
+    "arm": "H4",
+    "rep": 2,
+    "state": "COMPLETE",
+    "wallMin": 1.9149833333333333,
+    "files": 1,
+    "resolved": true,
+    "usage": [
+      {
+        "role": "execute",
+        "n": 1,
+        "usd": 0.14836190000000002,
+        "turns": 19
+      },
+      {
+        "role": "plan",
+        "n": 1,
+        "usd": 0.017638599999999997,
+        "turns": 1
+      }
+    ],
+    "packets": 1,
+    "chosen": [
+      "continue"
+    ],
+    "faults": 64,
+    "interventionsCarried": 0,
+    "validations": 1,
+    "experiences": 2,
+    "governorTextJobs": 0,
+    "noFeasibleCandidate": false
+  },
+  {
+    "run": "g-T3-H0-r1",
+    "task": "T3",
+    "arm": "H0",
+    "rep": 1,
+    "state": "FAILED",
+    "wallMin": 0.7108166666666667,
+    "files": 0,
+    "resolved": false,
+    "usage": [
+      {
+        "role": "plan",
+        "n": 1,
+        "usd": 0.054658,
+        "turns": 9
+      }
+    ],
+    "packets": 0,
+    "chosen": [],
+    "faults": 0,
+    "interventionsCarried": 0,
+    "validations": 2,
+    "experiences": 0,
+    "governorTextJobs": 0,
+    "noFeasibleCandidate": true
+  },
+  {
+    "run": "g-T3-H0-r2",
+    "task": "T3",
+    "arm": "H0",
+    "rep": 2,
+    "state": "COMPLETE",
+    "wallMin": 4.358833333333333,
+    "files": 2,
+    "resolved": false,
+    "usage": [
+      {
+        "role": "execute",
+        "n": 1,
+        "usd": 0.4065996000000001,
+        "turns": 60
+      },
+      {
+        "role": "plan",
+        "n": 1,
+        "usd": 0.0096118,
+        "turns": 1
+      }
+    ],
+    "packets": 0,
+    "chosen": [],
+    "faults": 0,
+    "interventionsCarried": 0,
+    "validations": 1,
+    "experiences": 0,
+    "governorTextJobs": 0,
+    "noFeasibleCandidate": false
+  },
+  {
+    "run": "g-T3-H4-r1",
+    "task": "T3",
+    "arm": "H4",
+    "rep": 1,
+    "state": "FAILED",
+    "wallMin": 5.661033333333333,
+    "files": 2,
+    "resolved": false,
+    "usage": [
+      {
+        "role": "execute",
+        "n": 1,
+        "usd": 0.6483696999999999,
+        "turns": 81
+      },
+      {
+        "role": "plan",
+        "n": 1,
+        "usd": 0.005784,
+        "turns": 1
+      }
+    ],
+    "packets": 1,
+    "chosen": [
+      "continue"
+    ],
+    "faults": 55,
+    "interventionsCarried": 0,
+    "validations": 2,
+    "experiences": 4,
+    "governorTextJobs": 0,
+    "noFeasibleCandidate": false
+  },
+  {
+    "run": "g-T3-H4-r2",
+    "task": "T3",
+    "arm": "H4",
+    "rep": 2,
+    "state": "FAILED",
+    "wallMin": 0.3151333333333333,
+    "files": 0,
+    "resolved": false,
+    "usage": [
+      {
+        "role": "plan",
+        "n": 1,
+        "usd": 0.013632600000000002,
+        "turns": 1
+      }
+    ],
+    "packets": 0,
+    "chosen": [],
+    "faults": 0,
+    "interventionsCarried": 0,
+    "validations": 2,
+    "experiences": 0,
+    "governorTextJobs": 0,
+    "noFeasibleCandidate": true
+  },
+  {
+    "run": "g-T4-H0-r1",
+    "task": "T4",
+    "arm": "H0",
+    "rep": 1,
+    "state": "COMPLETE",
+    "wallMin": 1.6960333333333333,
+    "files": 1,
+    "resolved": true,
+    "usage": [
+      {
+        "role": "execute",
+        "n": 1,
+        "usd": 0.15333909999999998,
+        "turns": 22
+      }
+    ],
+    "packets": 0,
+    "chosen": [],
+    "faults": 0,
+    "interventionsCarried": 0,
+    "validations": 1,
+    "experiences": 0,
+    "governorTextJobs": 0,
+    "noFeasibleCandidate": false
+  },
+  {
+    "run": "g-T4-H0-r2",
+    "task": "T4",
+    "arm": "H0",
+    "rep": 2,
+    "state": "COMPLETE",
+    "wallMin": 2.0800833333333335,
+    "files": 4,
+    "resolved": true,
+    "usage": [
+      {
+        "role": "execute",
+        "n": 1,
+        "usd": 0.20844150000000003,
+        "turns": 28
+      }
+    ],
+    "packets": 0,
+    "chosen": [],
+    "faults": 0,
+    "interventionsCarried": 0,
+    "validations": 1,
+    "experiences": 0,
+    "governorTextJobs": 0,
+    "noFeasibleCandidate": false
+  },
+  {
+    "run": "g-T4-H4-r1",
+    "task": "T4",
+    "arm": "H4",
+    "rep": 1,
+    "state": "COMPLETE",
+    "wallMin": 3.5488333333333335,
+    "files": 3,
+    "resolved": true,
+    "usage": [
+      {
+        "role": "execute",
+        "n": 1,
+        "usd": 0.4423813000000001,
+        "turns": 52
+      }
+    ],
+    "packets": 1,
+    "chosen": [
+      "continue"
+    ],
+    "faults": 48,
+    "interventionsCarried": 0,
+    "validations": 1,
+    "experiences": 2,
+    "governorTextJobs": 0,
+    "noFeasibleCandidate": false
+  },
+  {
+    "run": "g-T4-H4-r2",
+    "task": "T4",
+    "arm": "H4",
+    "rep": 2,
+    "state": "COMPLETE",
+    "wallMin": 2.2834833333333333,
+    "files": 3,
+    "resolved": true,
+    "usage": [
+      {
+        "role": "execute",
+        "n": 1,
+        "usd": 0.24445920000000004,
+        "turns": 42
+      }
+    ],
+    "packets": 1,
+    "chosen": [
+      "continue"
+    ],
+    "faults": 48,
+    "interventionsCarried": 0,
+    "validations": 1,
+    "experiences": 2,
+    "governorTextJobs": 0,
+    "noFeasibleCandidate": false
+  },
+  {
+    "run": "g-T5-H0-r1",
+    "task": "T5",
+    "arm": "H0",
+    "rep": 1,
+    "state": "COMPLETE",
+    "wallMin": 1.4016666666666666,
+    "files": 2,
+    "resolved": true,
+    "usage": [
+      {
+        "role": "execute",
+        "n": 1,
+        "usd": 0.23388630000000005,
+        "turns": 23
+      }
+    ],
+    "packets": 0,
+    "chosen": [],
+    "faults": 0,
+    "interventionsCarried": 0,
+    "validations": 1,
+    "experiences": 0,
+    "governorTextJobs": 0,
+    "noFeasibleCandidate": false
+  },
+  {
+    "run": "g-T5-H0-r2",
+    "task": "T5",
+    "arm": "H0",
+    "rep": 2,
+    "state": "COMPLETE",
+    "wallMin": 2.3741,
+    "files": 2,
+    "resolved": true,
+    "usage": [
+      {
+        "role": "execute",
+        "n": 1,
+        "usd": 0.33388880000000004,
+        "turns": 35
+      }
+    ],
+    "packets": 0,
+    "chosen": [],
+    "faults": 0,
+    "interventionsCarried": 0,
+    "validations": 1,
+    "experiences": 0,
+    "governorTextJobs": 0,
+    "noFeasibleCandidate": false
+  },
+  {
+    "run": "g-T5-H4-r1",
+    "task": "T5",
+    "arm": "H4",
+    "rep": 1,
+    "state": "COMPLETE",
+    "wallMin": 2.3732,
+    "files": 2,
+    "resolved": true,
+    "usage": [
+      {
+        "role": "execute",
+        "n": 1,
+        "usd": 0.34776860000000004,
+        "turns": 36
+      }
+    ],
+    "packets": 1,
+    "chosen": [
+      "continue"
+    ],
+    "faults": 1,
+    "interventionsCarried": 0,
+    "validations": 1,
+    "experiences": 2,
+    "governorTextJobs": 0,
+    "noFeasibleCandidate": false
+  },
+  {
+    "run": "g-T5-H4-r2",
+    "task": "T5",
+    "arm": "H4",
+    "rep": 2,
+    "state": "COMPLETE",
+    "wallMin": 1.59295,
+    "files": 2,
+    "resolved": true,
+    "usage": [
+      {
+        "role": "execute",
+        "n": 1,
+        "usd": 0.2207111,
+        "turns": 21
+      }
+    ],
+    "packets": 1,
+    "chosen": [
+      "continue"
+    ],
+    "faults": 1,
+    "interventionsCarried": 0,
+    "validations": 1,
+    "experiences": 2,
+    "governorTextJobs": 0,
+    "noFeasibleCandidate": false
+  }
+]

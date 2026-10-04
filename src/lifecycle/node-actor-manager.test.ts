@@ -8,7 +8,9 @@ import { createDb } from '../db/client.js';
 import { getNode, insertNode } from '../db/queries/nodes.js';
 import { listEventsForNode } from '../db/queries/events.js';
 import { repoHead } from '../execution/git-state.js';
-import { startNodeActor, sendToNode, honoursSystemPrompt, modelFor } from './node-actor-manager.js';
+import { startNodeActor, sendToNode, honoursSystemPrompt } from './node-actor-manager.js';
+import { subscribeToNode } from '../events/bus.js';
+import { capabilitiesOf } from './execution-market.js';
 import { stopgapAdapter } from '../adapters/stopgap.js';
 import { claudeCodeAdapter } from '../adapters/claude-code.js';
 import { codexAdapter } from '../adapters/codex.js';
@@ -68,6 +70,35 @@ describe('node-actor-manager', () => {
     expect(receipt?.payload).toMatchObject({ surface: 'execution.decomposable', source: 'harness', fallback: false });
   });
 
+  it('keeps a re-entered node\'s actor registered when the finished run\'s deferred cleanup fires', async () => {
+    // Same-child rework re-enters a node that just reached a terminal state. The
+    // finished actor's cleanup is deferred a tick so anything awaiting its last
+    // transition still resolves; it must only ever remove *its own* entry, or it
+    // deletes the actor the rework just started and the parent's next wait
+    // fails with "no active actor".
+    const db = createDb(TEST_DB);
+    insertNode(db, { id: 'n1', parentId: null, goal: GOAL, contract: CONTRACT, state: 'CREATED', createdAt: 't0', updatedAt: 't0' });
+
+    let restarted = false;
+    const off = subscribeToNode('n1', (event) => {
+      const state = (event.payload as { state?: string } | undefined)?.state;
+      if (event.type === 'state.transition' && state === 'CANCELLED' && !restarted) {
+        restarted = true;
+        startNodeActor(db, 'n1', GOAL); // synchronously, as a rework does
+      }
+    });
+
+    startNodeActor(db, 'n1', GOAL);
+    await vi.waitFor(() => expect(getNode(db, 'n1')?.state).toBe('WAIT_APPROVAL'));
+    sendToNode('n1', { type: 'CANCEL' });
+    await vi.waitFor(() => expect(restarted).toBe(true));
+    await vi.waitFor(() => expect(getNode(db, 'n1')?.state).toBe('WAIT_APPROVAL'));
+    await new Promise((resolve) => setTimeout(resolve, 20)); // let the first run's deferred cleanup fire
+
+    expect(() => sendToNode('n1', { type: 'CANCEL' })).not.toThrow();
+    off();
+  });
+
   it('throws when sending to a node with no active actor', () => {
     expect(() => sendToNode('missing', { type: 'APPROVED' })).toThrow();
   });
@@ -81,18 +112,22 @@ describe('retired prompt module', () => {
   });
 });
 
-describe('modelFor', () => {
-  it('drops a model the runtime cannot serve, and keeps one it can', () => {
+describe('capability discovery', () => {
+  it('asks each adapter what it can serve rather than hardcoding it by name', () => {
     // `plan` and `synthesize` default to haiku. Codex takes --model, so the flag
-    // survives into argv — but the model does not exist there, and the run dies
-    // before it can emit the result event the no-model fallback reads. Sending
-    // it costs delegation and synthesis entirely, so it is refused up front.
-    expect(modelFor(claudeCodeAdapter, 'haiku')).toBe('haiku');
-    expect(modelFor(codexAdapter, 'haiku')).toBeUndefined();
-    expect(modelFor(codexAdapter, 'gpt-5-codex')).toBe('gpt-5-codex');
-    // No model flag at all: the sentinel never reaches argv.
-    expect(modelFor(stopgapAdapter, 'haiku')).toBeUndefined();
-    expect(modelFor(claudeCodeAdapter, undefined)).toBeUndefined();
+    // survives into argv — but the model does not exist there. The snapshot
+    // says so, and the market's feasibility step rules that candidate out.
+    const claude = capabilitiesOf(claudeCodeAdapter);
+    const codex = capabilitiesOf(codexAdapter);
+    const stopgap = capabilitiesOf(stopgapAdapter);
+    expect(claude.acceptsModelFlag && claude.serves('haiku')).toBe(true);
+    expect(codex.acceptsModelFlag).toBe(true);
+    expect(codex.serves('haiku')).toBe(false);
+    expect(codex.serves('gpt-5-codex')).toBe(true);
+    // No model flag at all: the probe never reaches argv.
+    expect(stopgap.acceptsModelFlag).toBe(false);
+    // Different semantics, different fingerprints — evidence never pools across them.
+    expect(new Set([claude.fingerprint, codex.fingerprint, stopgap.fingerprint]).size).toBe(3);
   });
 });
 

@@ -151,3 +151,15 @@ export function contractFor(input: {
     allowedUncertainty: 1 - floor,
   };
 }
+
+/** How well the ladder would catch a wrong result for a task with this floor:
+ *  the engine buys the cheapest level that clears the floor, so that level's
+ *  confidence is what stands between a wrong result and a delivered one. A
+ *  floor above every level is unsatisfiable, and the strongest level's
+ *  confidence — below the floor — is what keeps it so. */
+export function detectionStrength(floor: number): number {
+  const f = Math.min(1, Math.max(0, Number.isFinite(floor) ? floor : 0));
+  const level = VALIDATION_LEVELS.find((l) => LEVEL_MODEL[l].confidence >= f)
+    ?? VALIDATION_LEVELS[VALIDATION_LEVELS.length - 1];
+  return LEVEL_MODEL[level].confidence;
+}

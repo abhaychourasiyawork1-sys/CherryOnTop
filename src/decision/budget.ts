@@ -27,7 +27,7 @@
  *     a bucket like any other, filled from recovery opportunities. When the run
  *     stops failing there are none, and the reserve is zero without anything
  *     having to remember to release it. */
-import { evaluateActionUtility, type UtilityWeights } from './utility.js';
+import { evaluateAction } from './utility.js';
 import type { ActionCandidate } from './actions.js';
 import type { EconomicState } from './state.js';
 
@@ -85,7 +85,6 @@ function bucketFor(candidate: ActionCandidate): SpendBucket | null {
 export interface AllocateBudgetInput {
   state: EconomicState;
   opportunities: ActionCandidate[];
-  weights?: UtilityWeights;
 }
 
 export function allocateBudget(input: AllocateBudgetInput): BudgetAllocation {
@@ -113,12 +112,13 @@ export function allocateBudget(input: AllocateBudgetInput): BudgetAllocation {
   for (const candidate of opportunities) {
     const bucket = bucketFor(candidate);
     if (!bucket) continue;
-    const verdict = evaluateActionUtility(candidate, state, input.weights);
-    // A forbidden or worthless opportunity funds nothing. Allocating against it
-    // would hold back budget for something that will never be chosen.
-    if (!verdict.allowed || verdict.score <= 0) continue;
+    const verdict = evaluateAction(candidate, state);
+    // A forbidden opportunity, or one that saves nothing over carrying on,
+    // funds nothing: allocating against it would hold back budget for
+    // something the market will never choose.
+    if (!verdict.allowed || verdict.advantageUsd <= 0) continue;
     demand.set(bucket, (demand.get(bucket) ?? 0) + candidate.tokenCost + candidate.coordinationCost);
-    value.set(bucket, (value.get(bucket) ?? 0) + verdict.score);
+    value.set(bucket, (value.get(bucket) ?? 0) + verdict.advantageUsd);
   }
 
   const totalValue = [...value.values()].reduce((sum, v) => sum + v, 0);

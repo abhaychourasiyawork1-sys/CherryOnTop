@@ -274,3 +274,28 @@ describe('buildCandidates and evidence levels', () => {
     expect(sized.estimatedTokens).toBeLessThan(100);
   });
 });
+
+describe('anchored symbols', () => {
+  const entries: RepoEntry[] = [
+    { path: 'src/auth/session.ts', symbols: ['refreshSession', 'Session', 'expire'], imports: [], bytes: 4_000 },
+    { path: 'src/billing/invoice.ts', symbols: ['renderInvoice'], imports: [], bytes: 800 },
+  ];
+
+  it('records which of a file’s symbols the goal named outright', () => {
+    const found = buildCandidates({
+      entries, goal: 'fix refreshSession', anchors: ['refreshSession'],
+      taskFit: { verificationNeed: 0.5, investigationLikelihood: 0.5, readOnly: false },
+    });
+    const session = found.find((c) => c.path === 'src/auth/session.ts')!;
+    expect(session.anchoredSymbols).toEqual(['refreshSession']);
+  });
+
+  it('records nothing for a file the goal named by path, not by symbol', () => {
+    const found = buildCandidates({
+      entries, goal: 'fix session.ts', anchors: ['session.ts'],
+      taskFit: { verificationNeed: 0.5, investigationLikelihood: 0.5, readOnly: false },
+    });
+    expect(found.find((c) => c.path === 'src/auth/session.ts')!.anchoredSymbols).toBeUndefined();
+  });
+});
+

@@ -14,13 +14,13 @@ function loadMermaid() {
       // Matches the harbour palette, so a diagram belongs to the page rather
       // than arriving from a different application.
       themeVariables: {
-        background: '#182230',
-        primaryColor: '#1e2a3a',
-        primaryTextColor: '#e4eaf0',
-        primaryBorderColor: '#5fd3c4',
-        lineColor: '#8fa0b4',
-        secondaryColor: '#243244',
-        tertiaryColor: '#131a22',
+        background: '#17171a',
+        primaryColor: '#1e1e22',
+        primaryTextColor: '#eeeef0',
+        primaryBorderColor: '#ff4d66',
+        lineColor: '#aaaab2',
+        secondaryColor: '#26262b',
+        tertiaryColor: '#121214',
         fontFamily: 'Instrument Sans, system-ui, sans-serif',
         fontSize: '13px',
       },

@@ -39,6 +39,13 @@ npm run bench efficiency      # Baseline vs Full Architecture
 node bench/run.mjs efficiency --regimes   # the regime suite (bench/regimes.md)
 ```
 
+## The context-runtime arm (no cluster, no model)
+
+`npm run bench:context` measures the prompt compiler, session-memory ladder, targeted evidence, sibling
+prefix sharing and the cost-model estimator against the assembly they replaced, and can save the tables with
+`--write <path>`. The last run is in `docs/benchmarks/2026-09-30-context-runtime-deterministic.md`. It measures
+bytes, tokens and limits — never task success, which is what the matrix below is for.
+
 ## Matched runs
 
 A benchmark comparison is only as good as its pairing. Two arms that ran
