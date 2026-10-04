@@ -134,6 +134,32 @@ export interface Transcript {
   messages: MessageParam[];
 }
 
+/** Where the context's tokens went over a session: the information-flow
+ *  receipt. Token reduction is not the objective (quality × cost × latency
+ *  is); these are what lets a run's context policy be judged against it. */
+export interface ContextTelemetry {
+  /** Tokens the tools produced, before any bound or projection. */
+  toolRawTokens: number;
+  /** Tokens of tool output the model was handed. */
+  toolShownTokens: number;
+  /** Micro-compaction (L2): outputs moved behind references, and the tokens that saved. */
+  microCompactions: number;
+  microSavedTokens: number;
+  /** Compaction (L3 and the window rule): tokens dropped, and the state that replaced them. */
+  compactions: number;
+  compactionDroppedTokens: number;
+  compactionStateTokens: number;
+  /** What the semantic summaries cost. */
+  summaryUsd: number;
+  /** FetchResult calls, and the tokens they brought back: what externalizing cost in recovery. */
+  fetches: number;
+  fetchedTokens: number;
+  cacheReadTokens: number;
+  cacheCreationTokens: number;
+  /** The result store at the end of the session, when there is one. */
+  results?: import('./result-store.js').ResultStoreStats;
+}
+
 export interface AgentSessionResult {
   /** The conversation as it ended, for a retry to continue. */
   transcript: Transcript;
@@ -144,6 +170,7 @@ export interface AgentSessionResult {
   usage: DispatchUsage;
   costUsd: number;
   compactions: number;
+  context: ContextTelemetry;
   error?: ModelError;
 }
 
@@ -249,8 +276,13 @@ export async function runAgentSession(input: AgentSessionInput): Promise<AgentSe
   const usage: DispatchUsage = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, numTurns: 0 };
   const calls = new Map<string, CallRecord>();
   /** Each tool output as produced, for micro-compaction's placeholders. */
-  const outputs = new Map<string, { raw: string; tool: string; filePath?: string; spilledTo?: string }>();
+  const outputs = new Map<string, { raw: string; tool: string; filePath?: string; spilledTo?: string; resultUri?: string; fetched?: string }>();
+  const resultStore = input.broker.results;
   let microCompactions = 0;
+  const flow = {
+    toolRawTokens: 0, toolShownTokens: 0, microSavedTokens: 0, compactionDroppedTokens: 0, compactionStateTokens: 0,
+    summaryUsd: 0, fetches: 0, fetchedTokens: 0,
+  };
   const opening = input.orientation ? `${input.goal}\n\n${input.orientation}` : input.goal;
   const toolsJson = JSON.stringify(tools);
   // A retry continues the previous attempt's conversation when nothing that
@@ -312,7 +344,9 @@ export async function runAgentSession(input: AgentSessionInput): Promise<AgentSe
       const su = reply.usage;
       const summaryUsage = { inputTokens: su.input_tokens ?? 0, outputTokens: su.output_tokens ?? 0, cacheReadTokens: su.cache_read_input_tokens ?? 0, cacheCreationTokens: su.cache_creation_input_tokens ?? 0 };
       // Billed at the summarizer's own prices, counted in this dispatch.
-      extraUsd += estimateCostUsd(summaryUsage, SUMMARY_MODEL);
+      const summaryUsd = estimateCostUsd(summaryUsage, SUMMARY_MODEL);
+      extraUsd += summaryUsd;
+      flow.summaryUsd += summaryUsd;
       const text = textOf(reply);
       emit('owned.summary', { ok: text.length > 0, model: SUMMARY_MODEL, usage: su, summaryTokens: estimateTokens(text) });
       return text || undefined;
@@ -329,6 +363,8 @@ export async function runAgentSession(input: AgentSessionInput): Promise<AgentSe
     if (!result) return false;
     messages = result.messages;
     compactions++;
+    flow.compactionDroppedTokens += result.droppedTokens;
+    flow.compactionStateTokens += result.stateTokens;
     compactedBeforeTurn = true;
     appendedSince = result.keptTokens + result.stateTokens + estimateTokens(input.goal);
     lastContext = fixedTokens;
@@ -343,6 +379,11 @@ export async function runAgentSession(input: AgentSessionInput): Promise<AgentSe
     const o = outputs.get(id);
     if (!o) return null;
     const head = `${MOVED_MARK} (~${tokens} tokens) was moved out of the context to keep it small.`;
+    if (o.fetched) return `${head} It was a FetchResult of ${o.fetched}; fetch it again if you need it.]`;
+    // The output exactly as it was seen, one call away.
+    if (o.resultUri && resultStore?.has(o.resultUri)) {
+      return `${head} Full output: ${o.resultUri} — FetchResult it (offset/limit, or pattern)${o.filePath ? `, or Read ${o.filePath} again for its current content` : ''}.]`;
+    }
     if (o.filePath) return `${head} It was a Read of ${o.filePath}; Read it again if you need it (the file may have changed since).]`;
     return `${head} The full output is saved at ${o.spilledTo ?? `${SPILL_DIR}/${id.replace(/[^A-Za-z0-9_-]/g, '')}.out`}; Read it (with offset/limit) if you need it.]`;
   };
@@ -363,7 +404,7 @@ export async function runAgentSession(input: AgentSessionInput): Promise<AgentSe
     const failed = new Set<string>();
     for (const id of preview.movedIds) {
       const o = outputs.get(id)!;
-      if (o.filePath || o.spilledTo) continue;
+      if (o.filePath || o.fetched || o.spilledTo || (o.resultUri && resultStore?.has(o.resultUri))) continue;
       const saved = await input.broker.saveOutput(id, o.raw);
       if (saved) o.spilledTo = saved; else failed.add(id);
     }
@@ -373,6 +414,7 @@ export async function runAgentSession(input: AgentSessionInput): Promise<AgentSe
     if (!final) return;
     messages = final.messages;
     microCompactions++;
+    flow.microSavedTokens += final.savedTokens;
     compactedBeforeTurn = true;
     lastContext = Math.max(fixedTokens, lastContext - final.savedTokens);
     void input.state.handle({ hook_event_name: 'PostCompact' }).catch(() => {});
@@ -381,6 +423,10 @@ export async function runAgentSession(input: AgentSessionInput): Promise<AgentSe
 
   const finish = (stop: StopKind, error?: ModelError): AgentSessionResult => {
     const succeeded = stop === 'end_turn';
+    const context: ContextTelemetry = {
+      ...flow, microCompactions, compactions, cacheReadTokens: usage.cacheReadTokens, cacheCreationTokens: usage.cacheCreationTokens,
+      ...(resultStore ? { results: resultStore.stats() } : {}),
+    };
     const message = stop === 'spend_limit' ? `Stopped: this run reached its $${(input.spendLimitUsd ?? 0).toFixed(2)} spend limit`
       : stop === 'max_turns' ? 'Stopped: reached the maximum number of turns'
       : stop === 'refusal' ? 'The model declined to continue (refusal)'
@@ -389,12 +435,12 @@ export async function runAgentSession(input: AgentSessionInput): Promise<AgentSe
     emit('result', {
       subtype: succeeded ? 'success' : stop === 'max_turns' ? 'error_max_turns' : 'error_during_execution',
       is_error: !succeeded, result: succeeded ? finalText : message, stop_reason: stop,
-      num_turns: usage.numTurns, duration_ms: Date.now() - started, total_cost_usd: cost(), compactions, micro_compactions: microCompactions,
+      num_turns: usage.numTurns, duration_ms: Date.now() - started, total_cost_usd: cost(), compactions, micro_compactions: microCompactions, context,
       usage: { input_tokens: usage.inputTokens, output_tokens: usage.outputTokens, cache_read_input_tokens: usage.cacheReadTokens, cache_creation_input_tokens: usage.cacheCreationTokens },
       ...(error ? { error_kind: error.kind } : {}),
     });
     return {
-      stop, succeeded, finalText, events, usage: { ...usage }, costUsd: cost(), compactions, ...(error ? { error } : {}),
+      stop, succeeded, finalText, events, usage: { ...usage }, costUsd: cost(), compactions, context, ...(error ? { error } : {}),
       transcript: { model, system, toolsJson, messages: [...messages] },
     };
   };
@@ -475,6 +521,8 @@ export async function runAgentSession(input: AgentSessionInput): Promise<AgentSe
     let next: MessageParam | null = null;
     const receipt = () => {
       const history = messages.slice(0, -1);
+      const sized = (m: MessageParam) => estimateTokens(typeof m.content === 'string' ? m.content : JSON.stringify(m.content));
+      const opener = history.length ? sized(history[0]) : 0;
       emit('owned.turn', {
         turn: usage.numTurns, model, effort: input.effort ?? null, stopReason: message.stop_reason,
         usage: u, costUsd: estimateCostUsd({ inputTokens: u.input_tokens ?? 0, outputTokens: u.output_tokens ?? 0, cacheReadTokens: u.cache_read_input_tokens ?? 0, cacheCreationTokens: u.cache_creation_input_tokens ?? 0 }, model),
@@ -483,6 +531,13 @@ export async function runAgentSession(input: AgentSessionInput): Promise<AgentSe
           systemTokens: estimateTokens(system), toolTokens: estimateTokens(JSON.stringify(tools)),
           historyTokens: history.reduce((s, m) => s + estimateTokens(typeof m.content === 'string' ? m.content : JSON.stringify(m.content)), 0),
           historyMessages: history.length,
+        },
+        // The request in cache zones: the fixed prefix (policy, contract,
+        // tools), the opening message (goal, orientation, or the state a
+        // compaction left), and the hot history every compaction acts on.
+        zones: {
+          stable: fixedTokens, semiStable: opener,
+          hot: history.slice(1).reduce((s, m) => s + sized(m), 0),
         },
         tools: decisions,
       });
@@ -522,14 +577,23 @@ export async function runAgentSession(input: AgentSessionInput): Promise<AgentSe
           id: call.id, name: call.name, target: describeTarget(call.name, call.input), isError: outcome.isError,
           ...(outcome.isError ? { error: outcome.content.trim().split('\n').find((l) => l.trim())?.slice(0, 160) ?? '' } : {}),
           ...(outcome.spilledTo ? { spilledTo: outcome.spilledTo } : {}),
+          ...(outcome.resultRef ? { resultUri: outcome.resultRef.uri } : {}),
         });
+        flow.toolRawTokens += estimateTokens(outcome.raw);
+        flow.toolShownTokens += estimateTokens(outcome.content);
+        if (call.name === 'FetchResult') {
+          flow.fetches++;
+          flow.fetchedTokens += estimateTokens(outcome.content);
+        }
         const callInput = (call.input ?? {}) as Record<string, unknown>;
         outputs.set(call.id, {
           raw: outcome.raw, tool: call.name,
           ...(call.name === 'Read' && typeof callInput.file_path === 'string' ? { filePath: callInput.file_path } : {}),
+          ...(call.name === 'FetchResult' && typeof callInput.ref === 'string' && !outcome.isError ? { fetched: callInput.ref } : {}),
           ...(outcome.spilledTo ? { spilledTo: outcome.spilledTo } : {}),
+          ...(outcome.resultRef ? { resultUri: outcome.resultRef.uri } : {}),
         });
-        decisions.push({ id: call.id, name: call.name, isError: outcome.isError, refusal: outcome.refusal ?? null, projected: outcome.projected, rawChars: outcome.raw.length, shownChars: outcome.content.length, ...(outcome.spilledTo ? { spilledTo: outcome.spilledTo } : {}) });
+        decisions.push({ id: call.id, name: call.name, isError: outcome.isError, refusal: outcome.refusal ?? null, projected: outcome.projected, rawChars: outcome.raw.length, shownChars: outcome.content.length, ...(outcome.spilledTo ? { spilledTo: outcome.spilledTo } : {}), ...(outcome.resultRef ? { resultUri: outcome.resultRef.uri } : {}) });
       }
       // All results in one user message: splitting them teaches the model to
       // stop making parallel calls.

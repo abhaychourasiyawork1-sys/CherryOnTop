@@ -29,6 +29,15 @@ describe('compact', () => {
     expect(r.messages[2]).toEqual(messages.at(-1));
   });
 
+  it('indexes a kept output by its result:// reference and says it can be fetched', () => {
+    const withRefs = new Map(calls);
+    withRefs.set('a', { ...calls.get('a')!, resultUri: 'result://a' });
+    const r = compact({ goal: 'goal', messages, activeState: '', calls: withRefs })!;
+    expect(r.messages[0].content).toContain('1. Read a.py — full output: result://a');
+    expect(r.messages[0].content).toContain('FetchResult a result:// output listed below');
+    expect(compact({ goal: 'goal', messages, activeState: '', calls })!.messages[0].content).not.toContain('FetchResult');
+  });
+
   it('refuses when there is nothing before the last exchange to drop', () => {
     const short: MessageParam[] = [{ role: 'user', content: 'goal' }, ...exchange('a', 'x')];
     expect(canCompact(short)).toBe(false);

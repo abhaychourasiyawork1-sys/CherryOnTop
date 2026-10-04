@@ -24,7 +24,8 @@ import { InfoSession } from '../infocontrol/controller.js';
 import { AnthropicModelClient, anthropicConfigured } from '../agent/anthropic-model-client.js';
 import { resolveModelId, type ModelClient } from '../agent/model-client.js';
 import { containerSandbox, podSandbox, workdirSnapshot, type Sandbox } from '../agent/sandbox.js';
-import { ToolBroker } from '../agent/tools.js';
+import { HARNESS_TOOLS, ToolBroker } from '../agent/tools.js';
+import { ToolResultStore } from '../agent/result-store.js';
 import { ownedPrices, runAgentSession, type SessionState, type Transcript } from '../agent/loop.js';
 
 /** The last owned conversation per node, so the node's next dispatch (a
@@ -32,20 +33,30 @@ import { ownedPrices, runAgentSession, type SessionState, type Transcript } from
  *  Measured: a restarted retry re-explored from scratch, cost a second full
  *  run and produced worse work. In memory only, kept within the prompt cache's
  *  hour, bounded in count. */
-const transcripts = new Map<string, { transcript: Transcript; at: number }>();
+const transcripts = new Map<string, { transcript: Transcript; results?: ToolResultStore; at: number }>();
 const TRANSCRIPT_TTL_MS = 55 * 60_000;
 const TRANSCRIPTS_KEPT = 64;
+/** Result-store contents kept with a remembered transcript, so the
+ *  `result://` references in it still resolve when it is resumed. */
+const RESULTS_KEPT_CHARS = 2_000_000;
 
-export function rememberTranscript(nodeId: string, transcript: Transcript, now = Date.now()): void {
+export function rememberTranscript(nodeId: string, transcript: Transcript, now = Date.now(), results?: ToolResultStore): void {
+  results?.evictTo(RESULTS_KEPT_CHARS);
   transcripts.delete(nodeId);
-  transcripts.set(nodeId, { transcript, at: now });
+  transcripts.set(nodeId, { transcript, at: now, ...(results ? { results } : {}) });
   while (transcripts.size > TRANSCRIPTS_KEPT) transcripts.delete(transcripts.keys().next().value!);
 }
 
 export function takeTranscript(nodeId: string, now = Date.now()): Transcript | undefined {
+  return takeResume(nodeId, now)?.transcript;
+}
+
+/** A remembered attempt and the result store its references point into. */
+export function takeResume(nodeId: string, now = Date.now()): { transcript: Transcript; results?: ToolResultStore } | undefined {
   const entry = transcripts.get(nodeId);
   transcripts.delete(nodeId);
-  return entry && now - entry.at < TRANSCRIPT_TTL_MS ? entry.transcript : undefined;
+  if (!entry || now - entry.at >= TRANSCRIPT_TTL_MS) return undefined;
+  return { transcript: entry.transcript, ...(entry.results ? { results: entry.results } : {}) };
 }
 import { ZERO_USAGE } from '../execution/tokens.js';
 import { toolNamesFromEvent } from '../execution/tool-calls.js';
@@ -194,6 +205,12 @@ export function createOwnedAdapter(deps: OwnedDeps = defaultDeps, configured: ()
         confirmFinish: process.env.ORG_OWNED_CONFIRM_FINISH !== 'off',
         signal: abort.signal,
       };
+      const remembered = process.env.ORG_OWNED_RESUME === 'off' ? undefined : takeResume(input.nodeId);
+      const resume = remembered?.transcript;
+      // One store per dispatch, shared with its sub-agents: a result is held
+      // once and referenced by every agent that needs it. A resumed attempt
+      // keeps the store its transcript's references point into.
+      const results = process.env.ORG_OWNED_RESULT_STORE === 'off' ? undefined : remembered?.results ?? new ToolResultStore();
       // Claude Code's Task tool: a sub-agent with a fresh context in the same
       // sandbox, under the same mandate, bounded by what is left of the
       // parent's spend limit. It cannot spawn sub-agents of its own.
@@ -203,13 +220,12 @@ export function createOwnedAdapter(deps: OwnedDeps = defaultDeps, configured: ()
           ...shared,
           sessionId: `owned-${input.nodeId}-${requestedAt}-sub-${toolUseId}`,
           goal: prompt,
-          broker: new ToolBroker({ sandbox, ...(input.grant ? { grant: input.grant } : {}), infoControl: childState, ...(refusalCap !== undefined ? { refusalCap } : {}) }),
+          broker: new ToolBroker({ sandbox, ...(input.grant ? { grant: input.grant } : {}), infoControl: childState, ...(refusalCap !== undefined ? { refusalCap } : {}), ...(results ? { results } : {}) }),
           state: childState,
           ...(budget.remainingUsd !== undefined ? { spendLimitUsd: budget.remainingUsd } : {}),
         });
         return { text: child.finalText || (child.events.at(-1)?.payload as { result?: string } | undefined)?.result || '', failed: !child.succeeded, usage: child.usage, costUsd: child.costUsd, events: child.events };
       };
-      const resume = process.env.ORG_OWNED_RESUME === 'off' ? undefined : takeTranscript(input.nodeId);
       try {
         const result = await runAgentSession({
           ...(resume ? { resume } : {}),
@@ -221,6 +237,7 @@ export function createOwnedAdapter(deps: OwnedDeps = defaultDeps, configured: ()
             sandbox, ...(input.grant ? { grant: input.grant } : {}), infoControl: state,
             ...(refusalCap !== undefined ? { refusalCap } : {}),
             ...(process.env.ORG_OWNED_SUBAGENTS !== 'off' ? { subagent } : {}),
+            ...(results ? { results } : {}),
           }),
           state,
           ...(input.maxTurns ? { maxTurns: input.maxTurns } : {}),
@@ -230,7 +247,7 @@ export function createOwnedAdapter(deps: OwnedDeps = defaultDeps, configured: ()
             // is still reported, as a Claude Code dispatch's would be.
             if (input.grant?.allowedTools) {
               for (const tool of toolNamesFromEvent(event)) {
-                if (isToolAllowed({ tools: input.grant.allowedTools }, tool) || reported.has(tool)) continue;
+                if (HARNESS_TOOLS.has(tool) || isToolAllowed({ tools: input.grant.allowedTools }, tool) || reported.has(tool)) continue;
                 reported.add(tool);
                 input.onViolation?.(tool);
               }
@@ -239,7 +256,7 @@ export function createOwnedAdapter(deps: OwnedDeps = defaultDeps, configured: ()
           },
         });
         // Only a conversation that ended in turn order can be continued.
-        if (result.stop !== 'model_error' && result.stop !== 'aborted') rememberTranscript(input.nodeId, result.transcript);
+        if (result.stop !== 'model_error' && result.stop !== 'aborted') rememberTranscript(input.nodeId, result.transcript, Date.now(), results);
         const final = result.events.at(-1)?.payload as { result?: string } | undefined;
         return {
           succeeded: result.succeeded,

@@ -5,6 +5,7 @@ import path from 'node:path';
 import { hostSandbox } from './sandbox.js';
 import { ToolBroker, toolDefinitions, authorityRefusal, OUTPUT_CAP, WEB_CAP, BREAKER_FAILURES, SUBAGENT_REPORT_CAP, recoverArgs, htmlToText, type HookHandler } from './tools.js';
 import { InfoSession, SPILL_DIR } from '../infocontrol/controller.js';
+import { ToolResultStore } from './result-store.js';
 
 let dir: string;
 beforeEach(() => {
@@ -238,6 +239,47 @@ describe('Claude Code parity', () => {
     expect(out.content).toMatch(/first 8000 are shown/);
     expect(out.subagent?.costUsd).toBe(0.001);
     expect((await broker().execute({ id: 'x', name: 'Task', input: { description: 'd', prompt: 'p' } })).refusal).toBe('invalid');
+  });
+
+  it('keeps a bounded output in the result store and names its result:// reference; FetchResult reads it back', async () => {
+    const results = new ToolResultStore();
+    const b = broker({ results });
+    expect(b.definitions.map((d) => d.name)).toContain('FetchResult');
+    expect(broker().definitions.map((d) => d.name)).not.toContain('FetchResult');
+    const out = await b.execute({ id: 'toolu_big', name: 'Bash', input: { command: `seq 1 20000; echo NEEDLE` } });
+    expect(out.resultRef?.uri).toBe('result://toolu_big');
+    expect(out.content).toContain('Full result: result://toolu_big');
+    const hit = await b.execute({ id: 'f1', name: 'FetchResult', input: { ref: 'result://toolu_big', pattern: '^NEEDLE$' } });
+    expect(hit).toMatchObject({ isError: false });
+    expect(hit.content).toContain('20001\tNEEDLE');
+    const range = await b.execute({ id: 'f2', name: 'FetchResult', input: { ref: 'result://toolu_big', offset: 5, limit: 2 } });
+    expect(range.content.split('\n').slice(1)).toEqual(['5\t5', '6\t6']);
+    expect((await b.execute({ id: 'f3', name: 'FetchResult', input: { ref: 'result://none' } })).isError).toBe(true);
+    // A small output is shown in full and needs no reference.
+    expect((await b.execute({ id: 's', name: 'Bash', input: { command: 'echo hi' } })).resultRef).toBeUndefined();
+  });
+
+  it('offers FetchResult under any grant: it re-reads only what permitted calls returned', async () => {
+    const b = broker({ results: new ToolResultStore(), grant: { allowedTools: ['Read'], readOnly: true } });
+    expect(b.definitions.map((d) => d.name)).toEqual(['Read', 'FetchResult']);
+    expect(authorityRefusal('FetchResult', { allowedTools: ['Read'], readOnly: true })).toBeNull();
+    expect((await b.execute({ id: 'f', name: 'FetchResult', input: { ref: 'result://x' } })).refusal).toBeUndefined();
+  });
+
+  it('shares one store between a parent and its sub-agent: a ref in the prompt is fetchable, the full report is kept', async () => {
+    const results = new ToolResultStore();
+    let childSaw = '';
+    const parent = broker({ results, subagent: async (prompt) => {
+      const child = broker({ results });
+      const ref = /result:\/\/\w+/.exec(prompt)![0];
+      childSaw = (await child.execute({ id: 'cf', name: 'FetchResult', input: { ref, pattern: 'NEEDLE' } })).content;
+      return { text: `report ${'r'.repeat(SUBAGENT_REPORT_CAP + 50)}`, failed: false, usage: { inputTokens: 1, outputTokens: 1, cacheReadTokens: 0, cacheCreationTokens: 0, numTurns: 1 }, costUsd: 0, events: [] };
+    } });
+    await parent.execute({ id: 'pbig', name: 'Bash', input: { command: 'seq 1 20000; echo NEEDLE' } });
+    const out = await parent.execute({ id: 'toolu_t', name: 'Task', input: { description: 'check', prompt: 'Look for NEEDLE in result://pbig' } });
+    expect(childSaw).toContain('NEEDLE');
+    expect(out.content).toContain('The full report: result://toolu_t');
+    expect(results.content('result://toolu_t')).toHaveLength(SUBAGENT_REPORT_CAP + 57);
   });
 
   it('edits notebook cells, and a read-only mandate cannot', async () => {

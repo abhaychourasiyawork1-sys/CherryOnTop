@@ -7,6 +7,7 @@ import { SUMMARY_INSTRUCTIONS, MOVED_MARK } from './compaction.js';
 import { fakeMessage, scriptedModelClient, toolUse, ModelError, type ScriptedTurn, type MessageParam } from './model-client.js';
 import { hostSandbox } from './sandbox.js';
 import { ToolBroker } from './tools.js';
+import { ToolResultStore } from './result-store.js';
 import { quietState } from '../adapters/anthropic-owned.js';
 import { usageFromEvents, visibleContextProfile } from '../execution/tokens.js';
 import { observationsFromEvents } from '../execution/observation.js';
@@ -367,6 +368,38 @@ describe('ToFu three-layer compaction in the loop', () => {
     expect(readFileSync(saved!, 'utf8')).toContain('line of data');
     // Every call is still in the conversation.
     expect((last.match(/"tool_use"/g) ?? []).length).toBe(8);
+  });
+
+  it('layer 2 with a result store: placeholders name a result:// reference that FetchResult recovers, and the receipt says what it all cost', async () => {
+    writeFileSync(path.join(dir, 'big.txt'), 'line of data\n'.repeat(4000));
+    const results = new ToolResultStore();
+    const state = quietState('fix app.py', 'haiku', 'n');
+    const turns = [
+      ...Array.from({ length: 8 }, (_, i) => fakeMessage([toolUse(`t${i}`, 'Bash', { command: `cat big.txt; echo ${i}` })], { usage: { input_tokens: 2_000 + i * 12_000, output_tokens: 50 } })),
+      fakeMessage([toolUse('f', 'FetchResult', { ref: 'result://t0', pattern: '^0$' })]),
+      fakeMessage('done'),
+    ];
+    const { run, client } = session(turns, {
+      state, broker: new ToolBroker({ sandbox: hostSandbox(dir), infoControl: state, results }), microCompaction: true, pastTurns: Array(30).fill(80),
+    });
+    const r = await run();
+    const last = JSON.stringify(client.requests.at(-1)!.messages);
+    expect(last).toContain(MOVED_MARK);
+    expect(last).toMatch(/Full output: result:\/\/t0 — FetchResult it/);
+    // The fetch came back from the store, exactly as the call returned it.
+    expect(last).toContain('4001\\t0');
+    const ctx = r.context;
+    expect(ctx.microCompactions).toBeGreaterThan(0);
+    expect(ctx.microSavedTokens).toBeGreaterThan(0);
+    expect(ctx.toolRawTokens).toBeGreaterThan(ctx.microSavedTokens);
+    expect(ctx).toMatchObject({ fetches: 1 });
+    expect(ctx.fetchedTokens).toBeGreaterThan(0);
+    expect(ctx.results).toMatchObject({ stored: 8 });
+    expect((r.events.at(-1)!.payload as { context: unknown }).context).toEqual(ctx);
+    const turn = r.events.filter((e) => e.type === 'owned.turn').at(-1)!.payload as { zones: { stable: number; semiStable: number; hot: number } };
+    expect(turn.zones.stable).toBeGreaterThan(0);
+    expect(turn.zones.semiStable).toBeGreaterThan(0);
+    expect(turn.zones.hot).toBeGreaterThan(0);
   });
 
   it('layer 3: near the limit, a lightweight model summarizes the dropped turns into the compacted context', async () => {

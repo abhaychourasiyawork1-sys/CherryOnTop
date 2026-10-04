@@ -35,6 +35,8 @@ export interface CallRecord {
    *  most needs not to rediscover (HarnessBridge keeps them; so does this). */
   error?: string;
   spilledTo?: string;
+  /** The full output's result-store reference, when it was kept. */
+  resultUri?: string;
 }
 
 export interface CompactionInput {
@@ -125,9 +127,9 @@ export function compact(input: CompactionInput): CompactionResult | null {
   const folded = [...input.calls.values()].filter((c) => !retained.has(c.id));
   const listed = folded.slice(-MAX_INDEX);
   const index = listed.map((c, i) => `${folded.length - listed.length + i + 1}. ${c.name} ${c.target}`
-    + `${c.isError ? ` — failed${c.error ? `: ${c.error}` : ''}` : ''}${c.spilledTo ? ` — full output in ${c.spilledTo}` : ''}`);
+    + `${c.isError ? ` — failed${c.error ? `: ${c.error}` : ''}` : ''}${c.resultUri ? ` — full output: ${c.resultUri}` : c.spilledTo ? ` — full output in ${c.spilledTo}` : ''}`);
   const state = [
-    '[CherryOnTop: the earlier turns of this session were compacted to keep the context small. Nothing was lost: re-run or re-read anything you need again.]',
+    `[CherryOnTop: the earlier turns of this session were compacted to keep the context small. Nothing was lost: ${folded.some((c) => c.resultUri) ? 'FetchResult a result:// output listed below, or re-run or re-read anything else you need' : 're-run or re-read anything you need again'}.]`,
     input.activeState,
     ...(input.summary ? [`Summary of the earlier work (written for this task, exact values kept):\n${input.summary.trim()}`] : []),
     ...(index.length ? [`Calls made before this point (${folded.length}${folded.length > listed.length ? `, the last ${listed.length} listed` : ''}):\n${index.join('\n')}`] : []),

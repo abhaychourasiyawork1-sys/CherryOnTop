@@ -23,6 +23,7 @@ import type { ToolGrant } from '../adapters/adapter.js';
 import { isToolAllowed } from '../engines/enforce-tools.js';
 import { SPILL_DIR } from '../infocontrol/controller.js';
 import type { Sandbox } from './sandbox.js';
+import { RESULT_SCHEME, type ToolResultRef, type ToolResultStore } from './result-store.js';
 
 /** Characters of one tool output a model is handed: Claude Code's own Bash
  *  bound (30 000), kept so an owned run and a Claude Code run see the same
@@ -99,6 +100,12 @@ const schemas = {
     prompt: z.string().min(1),
     subagent_type: z.string().optional(),
   }),
+  FetchResult: z.object({
+    ref: z.string().min(1),
+    offset: z.number().int().positive().optional(),
+    limit: z.number().int().positive().optional(),
+    pattern: z.string().min(1).optional(),
+  }),
 } as const;
 
 export type ToolName = keyof typeof schemas;
@@ -115,7 +122,14 @@ const descriptions: Record<ToolName, string> = {
   NotebookEdit: 'Edit a Jupyter notebook (.ipynb) cell: replace a cell\'s source (default), insert a new cell after the given one (or at the top), or delete a cell. Address the cell by `cell_id` or by 0-based `cell_number`.',
   TodoWrite: 'Create and update the task list for this session. Use it for any task with three or more steps: list the steps, keep exactly one `in_progress`, and mark each `completed` as soon as it is done (not in batches). Send the whole list every time. The list is shown back to you as part of the task state, so it survives a long session.',
   Task: 'Launch a sub-agent with its own fresh context for an independent, well-scoped piece of work: a broad search across a large codebase, investigating one question, or a self-contained change. It has the same sandbox and tools (except Task) and returns only its final report. It cannot see this conversation, so give it a complete, self-contained prompt that says exactly what to find or do and what to report back. Use it when the exploration would otherwise flood this context; do simple lookups yourself.',
+  FetchResult: `Fetch a tool result that was shortened or moved out of the context, by the ${RESULT_SCHEME}<id> reference the shortened view names. Lines come back numbered; \`offset\` (1-based) and \`limit\` select a range, or \`pattern\` (a regular expression) returns only the matching lines. Results are shared with sub-agents: a ${RESULT_SCHEME} reference written into a Task prompt can be fetched by the sub-agent instead of re-running the call.`,
 };
+
+/** Tools of the harness itself rather than of the sandbox: they act on
+ *  nothing the mandate governs. FetchResult re-reads what a call the mandate
+ *  already permitted returned, so it carries no authority of its own and is
+ *  offered whenever there is a result store, whatever the grant lists. */
+export const HARNESS_TOOLS: ReadonlySet<string> = new Set(['FetchResult']);
 
 function inputSchema(schema: z.ZodType): Anthropic.Tool['input_schema'] {
   const { $schema: _drop, ...json } = z.toJSONSchema(schema) as Record<string, unknown>;
@@ -125,8 +139,9 @@ function inputSchema(schema: z.ZodType): Anthropic.Tool['input_schema'] {
 /** The tool definitions a grant permits, in a fixed order: part of the cached
  *  prefix, so the same grant always yields byte-identical definitions. `Task`
  *  is offered only where a sub-agent can be run (never inside a sub-agent). */
-export function toolDefinitions(grant?: ToolGrant, opts: { subagents?: boolean } = {}): Anthropic.Tool[] {
-  return TOOL_NAMES.filter((name) => authorityRefusal(name, grant) === null && (name !== 'Task' || opts.subagents === true))
+export function toolDefinitions(grant?: ToolGrant, opts: { subagents?: boolean; results?: boolean } = {}): Anthropic.Tool[] {
+  return TOOL_NAMES.filter((name) => authorityRefusal(name, grant) === null && (name !== 'Task' || opts.subagents === true)
+    && (name !== 'FetchResult' || opts.results === true))
     .map((name) => ({ name, description: descriptions[name], input_schema: inputSchema(schemas[name]) }));
 }
 
@@ -147,6 +162,7 @@ export const SUBAGENT_REPORT_CAP = 8_000;
  *  writer even when its list names one (`isReadOnly` derives readOnly from the
  *  list; a caller may also set it outright). */
 export function authorityRefusal(tool: string, grant?: ToolGrant): string | null {
+  if (HARNESS_TOOLS.has(tool)) return null;
   if (grant?.allowedTools && !isToolAllowed({ tools: grant.allowedTools }, tool)) return `${tool} is not in this task's mandate`;
   if (grant?.readOnly && WRITERS.has(tool)) return `${tool} can change files, and this task's mandate is read-only`;
   return null;
@@ -176,6 +192,8 @@ export interface ToolOutcome {
   projected: boolean;
   /** Where the full output was saved in the sandbox, when it was. */
   spilledTo?: string;
+  /** The full output's reference in the result store, when it was kept. */
+  resultRef?: ToolResultRef;
   /** A sub-agent's own run, when the call was Task: its spend is the parent's. */
   subagent?: SubagentResult;
 }
@@ -191,6 +209,9 @@ export interface ToolBrokerOptions {
   refusalCap?: number;
   /** Runs a sub-agent for Task. Absent: Task is not offered. */
   subagent?(prompt: string, toolUseId: string, budget: { remainingUsd?: number }): Promise<SubagentResult>;
+  /** Where full outputs are kept and FetchResult reads from; shared with the
+   *  dispatch's sub-agents. Absent: outputs live only in the sandbox spill. */
+  results?: ToolResultStore;
 }
 
 export interface ExecuteContext {
@@ -222,7 +243,14 @@ export function recoverArgs(input: unknown): unknown {
   return out;
 }
 
-interface Ran { text: string; failed: boolean; response: unknown; subagent?: SubagentResult }
+interface Ran {
+  text: string;
+  failed: boolean;
+  response: unknown;
+  subagent?: SubagentResult;
+  /** The whole output when `text` is already a capped view of it (a sub-agent's report). */
+  full?: string;
+}
 
 const CWD_MARK = '__CTO_CWD__';
 
@@ -236,9 +264,14 @@ export class ToolBroker {
   private todoList: Todo[] = [];
 
   constructor(private readonly opts: ToolBrokerOptions) {
-    this.definitions = toolDefinitions(opts.grant, { subagents: opts.subagent !== undefined });
+    this.definitions = toolDefinitions(opts.grant, { subagents: opts.subagent !== undefined, results: opts.results !== undefined });
     this.allowsWebSearch = authorityRefusal('WebSearch', opts.grant) === null;
     this.cwd = opts.sandbox.workdir;
+  }
+
+  /** The result store this broker keeps outputs in, when it has one. */
+  get results(): ToolResultStore | undefined {
+    return this.opts.results;
   }
 
   /** The session's task list, rendered for the task state; empty when none. */
@@ -249,7 +282,7 @@ export class ToolBroker {
 
   async execute(call: ToolCall, ctx: ExecuteContext = {}): Promise<ToolOutcome> {
     // A tool this session does not offer is unknown, whatever the schema table holds.
-    if (!(call.name in schemas) || (call.name === 'Task' && !this.opts.subagent)) {
+    if (!(call.name in schemas) || (call.name === 'Task' && !this.opts.subagent) || (call.name === 'FetchResult' && !this.opts.results)) {
       return refuse('invalid', `Unknown tool ${call.name}. Available: ${this.definitions.map((d) => d.name).join(', ')}.`);
     }
     const name = call.name as ToolName;
@@ -260,6 +293,17 @@ export class ToolBroker {
       return refuse('invalid', `Invalid input for ${name}: ${parsed.error.issues.map((i) => `${i.path.join('.') || 'input'}: ${i.message}`).join('; ')}. Received ${JSON.stringify(call.input).slice(0, 500)}`);
     }
     const input = parsed.data as Record<string, unknown>;
+    // The harness's own read-back: no sandbox, no information control (it
+    // would price a re-read of evidence as a repeat), no circuit breaker.
+    if (name === 'FetchResult') {
+      const got = this.opts.results!.fetch(String(input.ref), {
+        ...(input.offset !== undefined ? { offset: input.offset as number } : {}),
+        ...(input.limit !== undefined ? { limit: input.limit as number } : {}),
+        ...(input.pattern !== undefined ? { pattern: input.pattern as string } : {}),
+        maxChars: OUTPUT_CAP,
+      });
+      return { content: got.text, isError: !got.found, raw: '', projected: false };
+    }
     const signature = `${name}\u0000${JSON.stringify(input, Object.keys(input).sort())}`;
     const tripped = this.failures.get(signature);
     if (tripped && tripped.count >= BREAKER_FAILURES) {
@@ -288,6 +332,7 @@ export class ToolBroker {
     }
     let content = ran.text;
     let spilledTo: string | undefined;
+    let resultRef: ToolResultRef | undefined;
     const cap = name === 'WebFetch' ? WEB_CAP : OUTPUT_CAP;
     if (content.length > cap) {
       if (name === 'Read') {
@@ -299,7 +344,11 @@ export class ToolBroker {
         content = `${page}… output limit reached${last ? ` at line ${last}; Read with offset ${last + 1} to continue` : '; Read a smaller range with offset/limit'}.`;
       } else {
         spilledTo = await this.spill(call.id, ran.text);
-        const where = spilledTo ? `The complete output is in ${spilledTo} — Read it (with offset/limit) for what is not shown` : 'The complete output could not be saved';
+        resultRef = this.keep(call, input, ran, spilledTo);
+        const where = [
+          resultRef ? `Full result: ${resultRef.uri} — FetchResult it (offset/limit, or pattern) for what is not shown` : '',
+          spilledTo ? `The complete output is also in ${spilledTo}` : '',
+        ].filter(Boolean).join('. ') || 'The complete output could not be saved';
         const banner = `[Preview only: ${content.length - cap} of ${content.length} characters are not shown. Do not infer success or failure from this preview. ${where}.]`;
         content = name === 'WebFetch' ? `${banner}\n${content.slice(0, cap)}` : `${banner}\n${content.slice(0, cap / 2)}\n…\n${content.slice(-cap / 2)}`;
       }
@@ -330,7 +379,14 @@ export class ToolBroker {
     }
     if (advice) content = `${content}\n\n[Information control advised against this call: ${advice}]`;
     if (preOut?.additionalContext) content = `${content}\n\n${preOut.additionalContext}`;
-    return { content: content || '(no output)', isError: ran.failed, raw: ran.text, projected, ...(spilledTo ? { spilledTo } : {}), ...(ran.subagent ? { subagent: ran.subagent } : {}) };
+    // Every substantial output is kept, shown in full or not: micro-compaction
+    // and compaction can then always point at it rather than drop it.
+    resultRef ??= this.keep(call, input, ran, spilledTo);
+    if (resultRef && spilledTo && !resultRef.spilledTo) this.opts.results!.noteSpill(resultRef.uri, spilledTo);
+    return {
+      content: content || '(no output)', isError: ran.failed, raw: ran.text, projected,
+      ...(spilledTo ? { spilledTo } : {}), ...(resultRef ? { resultRef } : {}), ...(ran.subagent ? { subagent: ran.subagent } : {}),
+    };
   }
 
   /** Identical failing calls, by exact signature, for the circuit breaker. */
@@ -355,6 +411,20 @@ export class ToolBroker {
     if (this.known.has(file)) return null;
     const r = await this.opts.sandbox.exec(['test', '-e', file]).catch(() => null);
     return r?.exitCode === 0 ? String(input.file_path) : null;
+  }
+
+  /** Puts a call's whole output in the result store, when there is one. */
+  private keep(call: ToolCall, input: Record<string, unknown>, ran: Ran, spilledTo?: string): ToolResultRef | undefined {
+    const store = this.opts.results;
+    if (!store) return undefined;
+    const already = store.ref(call.id);
+    if (already) return already;
+    const t = call.name === 'Bash' ? input.command : call.name === 'Task' ? input.description : input.file_path ?? input.pattern ?? input.url ?? input.path;
+    return store.put({
+      id: call.id, tool: call.name, text: ran.full ?? ran.text,
+      ...(t === undefined ? {} : { target: String(t).replace(/\s+/g, ' ').slice(0, 160) }),
+      ...(spilledTo ? { spilledTo } : {}),
+    });
   }
 
   /** Saves a tool's full output in the sandbox, for a placeholder to point at. */
@@ -456,11 +526,15 @@ export class ToolBroker {
       case 'Task': {
         if (!this.opts.subagent) return { text: 'Sub-agents are not available in this session.', failed: true, response: null };
         const sub = await this.opts.subagent(String(input.prompt), id, { ...(ctx.remainingUsd !== undefined ? { remainingUsd: ctx.remainingUsd } : {}) });
-        const report = sub.text.length > SUBAGENT_REPORT_CAP
-          ? `${sub.text.slice(0, SUBAGENT_REPORT_CAP)}\n… [the sub-agent's report was ${sub.text.length} characters; the first ${SUBAGENT_REPORT_CAP} are shown]`
-          : sub.text;
-        return { text: report || '(the sub-agent returned no report)', failed: sub.failed, response: null, subagent: sub };
+        if (sub.text.length <= SUBAGENT_REPORT_CAP) return { text: sub.text || '(the sub-agent returned no report)', failed: sub.failed, response: null, subagent: sub };
+        // The whole report stays fetchable: the cap bounds the context, not what the parent may know.
+        const kept = this.opts.results?.put({ id, tool: 'Task', target: String(input.description), text: sub.text });
+        const report = `${sub.text.slice(0, SUBAGENT_REPORT_CAP)}\n… [the sub-agent's report was ${sub.text.length} characters; the first ${SUBAGENT_REPORT_CAP} are shown${kept ? `. The full report: ${kept.uri} — FetchResult it` : ''}]`;
+        return { text: report, failed: sub.failed, response: null, subagent: sub, full: sub.text };
       }
+      case 'FetchResult':
+        // Answered in execute(), before anything runs.
+        return { text: 'FetchResult is answered by the harness.', failed: true, response: null };
       case 'WebFetch': {
         const r = await this.sh('curl -sSL --max-time 30 --max-filesize 5000000 -- "$1"', [String(input.url)], undefined, 45_000);
         if (r.exitCode !== 0) return { text: r.stderr.trim() || `WebFetch failed (exit ${r.exitCode})`, failed: true, response: null };

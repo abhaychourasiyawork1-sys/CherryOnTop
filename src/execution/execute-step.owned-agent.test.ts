@@ -84,6 +84,24 @@ describe('anthropic-owned through executeStep', () => {
     expect(other.requests[0].messages).toHaveLength(1);
   });
 
+  it('a resumed attempt can still fetch the result:// references its conversation holds; FetchResult is never a violation', async () => {
+    writeFileSync(path.join(dir, 'big.txt'), Array.from({ length: 3000 }, (_, i) => `row ${i}`).join('\n'));
+    const client = scriptedModelClient([
+      fakeMessage([toolUse('big', 'Read', { file_path: 'big.txt' })]), fakeMessage('first: done'), fakeMessage('first: confirmed'),
+      fakeMessage([toolUse('f', 'FetchResult', { ref: 'result://big', pattern: 'row 2999' })]), fakeMessage('second: done'), fakeMessage('second: confirmed'),
+    ]);
+    const violations: string[] = [];
+    const adapter = createOwnedAdapter({ client: () => client, sandbox: async () => ({ ...hostSandbox(dir), close: async () => {} }) }, () => true);
+    const grant = { allowedTools: ['Read'], readOnly: true };
+    await executeStep(input(adapter, { nodeId: 'store-node', grant, onViolation: (t) => violations.push(t) }));
+    const r = await executeStep(input(adapter, { nodeId: 'store-node', grant, onViolation: (t) => violations.push(t) }));
+    expect(r.succeeded).toBe(true);
+    const fetched = client.requests[4].messages.at(-1)!.content as Array<{ type: string; content?: string; is_error?: boolean }>;
+    expect(fetched[0].is_error).toBeUndefined();
+    expect(fetched[0].content).toContain('row 2999');
+    expect(violations).toEqual([]);
+  });
+
   it('reports a forbidden request as a violation and never runs it', async () => {
     const violations: string[] = [];
     const r = await executeStep(input(owned([
